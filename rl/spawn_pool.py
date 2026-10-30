@@ -7,13 +7,16 @@ task per worker, so it always knows which task a dead worker held, and it has wh
 
 - a death is reported (`Done.status == "died"`), the worker replaced, and the task is the caller's to run again;
 - a per-run wall timeout kills the worker (this pool's own child, by its Process object) and reports `"timeout"`;
-- a worker is recycled after `recycle` finished runs, only while idle (between runs), never with a task in flight.
+- a worker is recycled after `recycle` finished runs, only while idle (between runs), never with a task in flight;
+- `grow` widens it and `reprioritize` moves its workers to another Windows priority class (the streamed emulator arm of
+  rl/gen0.py plays on a few Idle workers beside the real game, then on the full width at BelowNormal).
 
 The retry policy (once, then a `lost` row) belongs to the caller. Everything is polled from one thread: no locks.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +25,30 @@ from typing import Any
 
 STOP_JOIN_S = 10.0  # a retired worker is given this long to exit on its own before it is terminated
 GRAVE_S = 30.0
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000  # the Windows priority classes (as in sts2_gym.procutil)
+IDLE_PRIORITY_CLASS = 0x00000040
+
+
+def set_priority_class_of(pid: int | None, priority_class: int) -> bool:
+    """Put process `pid` (a child of this process) in the Windows `priority_class`. False off Windows or when it cannot be set."""
+    if pid is None or sys.platform != "win32":
+        return False
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.SetPriorityClass.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.OpenProcess(0x0200 | 0x1000, False, int(pid))  # PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        return bool(k32.SetPriorityClass(handle, priority_class))
+    finally:
+        k32.CloseHandle(handle)
 
 
 def _worker_main(conn, initializer) -> None:
@@ -144,6 +171,19 @@ class SupervisedPool:
 
     def pids(self) -> list[int | None]:
         return [s.proc.pid for s in self.slots]
+
+    def grow(self, size: int) -> None:
+        """Widen the pool to `size` workers (never narrows): the new slots' workers start now, with the current `initializer`."""
+        while len(self.slots) < size:
+            slot = _Slot()
+            self.slots.append(slot)
+            self._start(slot)
+
+    def reprioritize(self, priority_class: int, initializer: Callable[[], None] | None) -> int:
+        """Put every live worker in the Windows `priority_class` (they are this pool's own children) and start later ones (a
+        replaced or recycled worker, a slot `grow` adds) with `initializer`. Returns how many workers were changed (0 off Windows)."""
+        self.initializer = initializer
+        return sum(set_priority_class_of(s.proc.pid, priority_class) for s in self.slots if s.proc is not None and s.proc.is_alive())
 
     def submit(self, key: Any, fn: Callable[..., Any], args: tuple = ()) -> None:
         slot = next((s for s in self.slots if s.task is None), None)

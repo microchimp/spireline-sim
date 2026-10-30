@@ -928,11 +928,24 @@ def resume_block(out: Path, stamp: dict, ids: dict[str, int], agent_seed: int) -
             before = 0.0
     tmp = runs_file.with_name("runs.jsonl.tmp")
     tmp.write_text("".join(json.dumps(r) + "\n" for r in kept), encoding="utf-8")
-    os.replace(tmp, runs_file)
+    replace_retry(tmp, runs_file)  # the streamed emulator arm (rl/gen0.py RealFeed) may be reading runs.jsonl at this moment
     (out / "divergences.jsonl").write_text("\n".join(json.dumps(d) for d in _divergence_rows(kept)), encoding="utf-8")
     stamp_file.write_text(json.dumps(want), encoding="utf-8")
     write_wall(out, before)
     return kept, before
+
+
+def replace_retry(src: Path, dst: Path, tries: int = 50, wait_s: float = 0.1) -> None:
+    """os.replace(src, dst), tried again on PermissionError for up to `tries` x `wait_s` seconds: on Windows a rename over a file
+    fails while another process has it open (a reader's brief read, an indexer), and a block must not die of that at its start."""
+    for attempt in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(wait_s)
 
 
 def write_wall(out: Path, seconds: float) -> None:

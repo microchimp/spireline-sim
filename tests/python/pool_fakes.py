@@ -50,3 +50,17 @@ def fake_task(seed, ix, sims, ascension, agent, record, character) -> dict:
     time.sleep(float(os.environ.get("POOL_FAKE_SLEEP", "0")))
     return {"seed": seed, "ix": ix, "win": False, "floor": 5, "end": "death", "decisions": 10, "wall": 0.5, "ai_state_assumed": 0,
             "pid": os.getpid(), "token": os.environ.get("POOL_FAKE_TOKEN", "")}
+
+
+def prio_task(seed, ix, sims, ascension, agent, record, character) -> dict:
+    """fake_task's row plus the worker's Windows priority class under `prio` (None elsewhere): the streamed arm's tests."""
+    row = fake_task(seed, ix, sims, ascension, agent, record, character)
+    prio = None
+    if os.name == "nt":
+        import ctypes  # noqa: PLC0415
+
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.GetPriorityClass.argtypes = [ctypes.c_void_p]
+        prio = int(k32.GetPriorityClass(k32.GetCurrentProcess()))
+    return {**row, "prio": prio}

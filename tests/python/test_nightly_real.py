@@ -190,6 +190,10 @@ class DriverTest(Tmp):
             (out / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in [end("A", 20), {"ev": "crash", "seed": "B", "s": 1.0}]))
             (out / "divergences.jsonl").write_text("")
             (out / "summary.json").write_text(json.dumps({"divergence_rate": 0.002, "reanchors": 1, "wall_s": 5.0, "emu_arm": {"dir": "g3-emu"}}))
+            emu = out.with_name(out.name + "-emu")  # the emulator arm `gen0.py score` plays: a row for every seed of the block
+            emu.mkdir(exist_ok=True)
+            seeds = gen0.load_seeds(cmd[cmd.index("--seeds-file") + 1])
+            (emu / "runs.jsonl").write_text("".join(json.dumps({"seed": s, "ix": i, "win": False, "floor": 3}) + "\n" for i, s in enumerate(seeds)))
             return types.SimpleNamespace(returncode=0)
 
         job = self.tmp / "job"

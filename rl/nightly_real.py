@@ -2,6 +2,7 @@
 """The nightly real-game block (D33 addendum 2 item 1): the lab job `nightly-real` runs this driver.
 
     python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--procs 12] [--recycle 60]
+        [--emu-stream-procs 4] [--emu-stream-floor-gb 3]
 
 For the incumbent (agent-root/current.json) and each generation promoted since the last nightly (promotions.tsv rows written after
 LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
@@ -14,8 +15,16 @@ score --resume`): its folder is not cleared and only the seeds without a row are
 Runs per agent (owner, 2026-10-30): `--runs-promoted` on a night that scores a generation promoted since the last nightly, else
 `--runs` (the lab's jobs.json: 2,000 on a promotion day, 500 otherwise). Without `--runs-promoted` every night plays `--runs`.
 
+The two arms stream (owner, 2026-10-30): `gen0.py score --emu-stream` starts the real arm at once and plays each seed's emulator run
+after its real run has ended, on `--emu-stream-procs` (4) Idle-priority workers while the real arm plays and on `--procs` once it has
+ended, so the block ends soon after its real arm does. The arm is the same as before (every seed once, same index, agent, config and
+engine; the CPU path). Agents still go one after the other, each block's two arms done before the next agent's start. A block is
+finished (its mark written) only when the emulator arm has a row for every seed; one that stopped short is resumed by a later start.
+`--emu-stream-procs 0` plays the emulator arm first, as before.
+
 GPU_OK: `gen0.py score --gpu-ok-tag lab-nightly` keeps the line `lab-nightly` first in the GPU_OK file while the real-game arm plays
-(the GPU lane may fit beside it), never during the emulator arm; every start of this driver first removes any such line.
+(the GPU lane may fit beside it; the streamed emulator arm plays the CPU path), never once the real arm has ended; every start of
+this driver first removes any such line.
 
 summary.json keeps the envproto summary and gains `nightly`: the numbers counted with a crashed run as a loss. That is
 gen0.real_runs(): a crash row becomes {win: False, floor: 0, crash: True}, which gen0.engine_block counts as a run with floor 0 and
@@ -240,6 +249,23 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
             "counted": "a crashed run is a loss: floor 0, no win, no boss kill"}
 
 
+def emu_missing(emu: Path, seeds: list[str]) -> int:
+    """How many of the block's seeds have no row in the emulator arm's runs.jsonl (0: the arm played every seed)."""
+    have: set[str] = set()
+    try:
+        text = (Path(emu) / "runs.jsonl").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue  # a line cut by a stop
+        if isinstance(r, dict) and isinstance(r.get("seed"), str):
+            have.add(r["seed"])
+    return len(set(seeds) - have)
+
+
 def gpu_ok_default() -> str:
     import gen0  # noqa: PLC0415
 
@@ -265,6 +291,8 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
            "--gpu-ok-tag", TAG, "--gpu-ok-file", str(getattr(a, "gpu_ok_file", None) or gpu_ok_default())]
     if getattr(a, "sample_machine", 0):  # the one-night sampler of the slow windows: the real arm only (`gen0.py score` hands it to envproto play)
         cmd += ["--sample-machine", f"{a.sample_machine:g}"]
+    if getattr(a, "emu_stream_procs", 0):  # the emulator arm beside the real arm, each seed after its real run (owner, 2026-10-30)
+        cmd += ["--emu-stream", "--emu-stream-procs", str(a.emu_stream_procs), "--emu-stream-floor-gb", f"{a.emu_stream_floor_gb:g}"]
     # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
     # kept (envproto play --resume and gen0.run_block resume; each arm's identity file keeps rows of another agent or setting out),
     # so the lab stopping a 7-9 hour block on the owner's input, on load or on a landing costs only the runs in flight
@@ -273,7 +301,12 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies
     nums = nightly_numbers(folder, date, agent, name, len(seeds), a.engine)
     nums["rc"] = rc
-    if (folder / "summary.json").is_file():
+    missing = emu_missing(emu, seeds)
+    if missing:  # the emulator arm stopped short (it raised while the real arm played on): no finished mark, so a start resumes it
+        nums["emu_missing"] = missing
+        print(f"[{utc_now()}] {agent['label']}: the emulator arm has no row for {missing} of {len(seeds)} seeds; the block is left "
+              "unfinished for a resume", flush=True)
+    elif (folder / "summary.json").is_file():
         doc = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
         (folder / "summary.json").write_text(json.dumps({**doc, "nightly": nums}, indent=1), encoding="utf-8")
     if (folder / "divergences.jsonl").is_file():
@@ -304,6 +337,11 @@ def main(argv: list[str] | None = None) -> int:
                     "lab-nightly in it while the real-game arm plays; a stale one is removed at every start")
     ap.add_argument("--sample-machine", type=float, default=30.0, help="seconds between the lines of machine.jsonl in each real-game block's "
                     "folder (referee/machine_sampler.py; the real arm only); 0: off")
+    ap.add_argument("--emu-stream-procs", type=int, default=4, help="the emulator arm plays beside the real arm on this many Idle "
+                    "workers, each seed after its real run ends, then on --procs once the real arm has ended (`gen0.py score "
+                    "--emu-stream`); 0: the arm is played first, before the real arm, as before 2026-10-30")
+    ap.add_argument("--emu-stream-floor-gb", type=float, default=3.0,
+                    help="while the real arm plays, a new streamed emulator run waits while the memory headroom is under this many GiB")
     ap.add_argument("--wait-h", type=float, default=2.0)
     ap.add_argument("--no-lock", action="store_true", help="the caller holds the QUIET.lock (the dry run)")
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")

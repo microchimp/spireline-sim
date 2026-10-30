@@ -24,6 +24,7 @@ import os
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -417,11 +418,123 @@ def resume_rows(out: Path, stamp: dict, seeds: list[str]) -> list[dict]:
     return kept
 
 
+REAL_FINISHED = ("end", "crash", "hang")  # envproto play's events that end a seed's real run (a row of real_runs, or a hang)
+
+
+class RealFeed:
+    """The real arm as the streamed emulator arm sees it: the seeds whose real run has finished, read from envproto play's
+    runs.jsonl (one line per event as it happens; an `end`, `crash` or `hang` line with a seed ends that seed's run), and
+    whether the real arm still plays (`alive`, e.g. its process has not exited).
+
+    The file is read on from where the last read stopped; a file that got shorter (envproto rewrites it whole at the end of a
+    session, and once at a resumed start) is read again from the top. `poll(final=True)` reads it all, the last unterminated
+    line included. A seed is reported once, in the order its line came."""
+
+    def __init__(self, runs_jsonl: str | Path, alive: Callable[[], bool], poll_s: float = 5.0):
+        self.path, self._alive, self.poll_s = Path(runs_jsonl), alive, poll_s  # poll_s: how often StreamOrder reads it
+        self.seen: dict[str, None] = {}
+        self._offset, self._rest = 0, b""
+
+    def alive(self) -> bool:
+        return bool(self._alive())
+
+    def poll(self, final: bool = False) -> list[str]:
+        """The seeds whose real run ended since the last call, in file order."""
+        try:
+            with self.path.open("rb") as fh:  # a brief read; envproto's resume rename waits it out (replace_retry)
+                size = fh.seek(0, 2)
+                if final or size < self._offset:
+                    self._offset, self._rest = 0, b""
+                fh.seek(self._offset)
+                chunk = fh.read()
+        except OSError:
+            return []
+        self._offset += len(chunk)
+        lines = (self._rest + chunk).split(b"\n")
+        self._rest = b"" if final else lines.pop()
+        new = []
+        for raw in lines:
+            if b'"seed"' not in raw:
+                continue
+            try:
+                e = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue  # a line cut by a stop
+            if not isinstance(e, dict) or e.get("where") == "boot":
+                continue  # a game that did not boot ran no run (envproto plays its seed again)
+            seed = e.get("seed")
+            if isinstance(seed, str) and e.get("ev") in REAL_FINISHED and seed not in self.seen:
+                self.seen[seed] = None
+                new.append(seed)
+        return new
+
+
+class StreamOrder:
+    """The order the emulator arm plays its (index, seed) pairs in. Without a feed: block order, all at once (today's arm).
+    With a `RealFeed`: while the real arm plays, only the seeds whose real run has finished, in the order they finished; once
+    it has ended, those first, then every other seed in block order. Each pair is handed out once; the index stays the seed's
+    place in the block (it seeds the agent's random stream), whatever the order."""
+
+    def __init__(self, todo: list[tuple[int, str]], feed: RealFeed | None = None, clock: Callable[[], float] = time.monotonic):
+        self.feed, self.clock = feed, clock
+        self.waiting: dict[int, tuple[int, str]] = {}  # index -> pair, in block order
+        self._of_seed: dict[str, list[int]] = {}
+        self.ready: collections.deque = collections.deque()
+        self.live = feed is not None
+        self._last = None
+        if feed is None:
+            self.ready.extend(todo)
+        else:
+            for ix, s in todo:
+                self.waiting[ix] = (ix, s)
+                self._of_seed.setdefault(s, []).append(ix)
+
+    def update(self, force: bool = False) -> bool:
+        """Read the feed (every `feed.poll_s` seconds unless forced). True on the call that sees the real arm has ended."""
+        if not self.live:
+            return False
+        now = self.clock()
+        if not force and self._last is not None and now - self._last < self.feed.poll_s:
+            return False
+        self._last = now
+        ended = not self.feed.alive()  # asked before the last read, so every line written before the exit is in it
+        for s in self.feed.poll(final=ended):
+            for ix in self._of_seed.pop(s, []):
+                self.ready.append(self.waiting.pop(ix))
+        if ended:
+            self.live = False
+            self.ready.extend(self.waiting.values())  # the seeds the real arm never ended (its stop, a crash before the row)
+            self.waiting, self._of_seed = {}, {}
+        return ended
+
+    def left(self) -> int:
+        return len(self.ready) + len(self.waiting)
+
+    def pop(self) -> tuple[int, str] | None:
+        return self.ready.popleft() if self.ready else None
+
+    def clear(self) -> None:
+        """No new seed after this (the block's time limit)."""
+        self.ready.clear()
+        self.waiting, self._of_seed = {}, {}
+
+
+def _init_stream_worker() -> None:
+    """A worker of the streamed arm beside the real game: Idle priority (the real arm's BelowNormal processes come first)."""
+    _setup()
+    from sts2_gym import procutil  # noqa: PLC0415
+
+    procutil.set_priority_class(procutil.IDLE_PRIORITY_CLASS)
+    _init_worker()  # lower_priority leaves Idle as it is
+
+
 def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascension: int = 10, character: str = "IRONCLAD",
               block_min: float | None = None, start_ix: int = 0, agent=None, record: bool = False,
               prior_server=None, server_procs: int | None = None, latency_p99_ms: float = 20.0,
               run_timeout_s: float | None = RUN_TIMEOUT_S, recycle: int = WORKER_RECYCLE, resume: bool = False,
-              resume_key: dict | None = None, task=None, initializer=_init_worker) -> dict:
+              resume_key: dict | None = None, task=None, initializer=_init_worker, stream: RealFeed | None = None,
+              stream_procs: int = 4, stream_floor_gb: float = 3.0, stream_initializer=_init_stream_worker,
+              idle_s: float = 0.5) -> dict:
     """Play the seeds on a spawn pool of `procs` single-emulator processes (`spawn_pool.SupervisedPool`). With `block_min`, stop
     starting runs after that many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended
     to runs.jsonl.
@@ -443,10 +556,20 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     terminates that pool and goes on, on a fresh pool of `procs` plain CPU-path workers whose agent has no server. Nothing is
     replayed or skipped: the next seed is the next in the stream. summary.json then has `pool_shrunk` = {"from", "to",
     "at_run", "drained_s"}: the two pool widths, the runs finished when the second death was seen (the ones in flight then
-    finish after it) and the seconds the drain took; `procs` is the width the block started with."""
+    finish after it) and the seconds the drain took; `procs` is the width the block started with.
+
+    With `stream` (a `RealFeed`: the nightly block's real arm, playing at the same time) the arm is streamed: the same seeds,
+    indices and settings, one run each, in `StreamOrder`'s order. While the real arm plays, the pool has `stream_procs` workers
+    started by `stream_initializer` (Idle priority), each run starts only after its seed's real run has ended, and a new run
+    waits while the memory headroom (`prior_client.memory_headroom_gb`) is under `stream_floor_gb`. When the real arm has ended
+    the pool grows to `procs` BelowNormal workers (the beside ones raised) and plays the rest. A streamed arm has no prior
+    server (the real arm holds GPU_OK while it plays). summary.json then has `stream` = {"beside_procs", "floor_gb",
+    "real_ended_s" (seconds into the arm; None: the real arm outlived it), "rows_beside", "memory_waits"}."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
+    if stream is not None and prior_server is not None:
+        raise ValueError("a streamed emulator arm plays the CPU path: the real arm holds GPU_OK beside it")
     task = task or _run_safe  # looked up now, so a test can replace gen0._run_safe
     agent = agent or gen_loop.Agent()
     nprocs = server_procs if (prior_server is not None and server_procs) else procs
@@ -492,11 +615,37 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     new_decisions = 0
     pools_stats: list[dict] = []
 
-    def new_pool(width: int) -> spawn_pool.SupervisedPool:
-        return spawn_pool.SupervisedPool(ctx, width, initializer=initializer, recycle=recycle, run_timeout_s=run_timeout_s)
+    order = StreamOrder(todo, stream)
+    order.update(force=True)
+    stream_doc = None
+    headroom = None
+    if stream is not None:
+        import prior_client  # noqa: PLC0415
+
+        headroom = prior_client.memory_headroom_gb
+        stream_doc = {"beside_procs": max(1, min(stream_procs, nprocs)), "floor_gb": stream_floor_gb,
+                      "real_ended_s": None if order.live else 0.0, "rows_beside": 0, "memory_waits": 0}
+    held_back = False  # new runs are waiting for memory headroom
+
+    def new_pool(width: int, init=initializer) -> spawn_pool.SupervisedPool:
+        return spawn_pool.SupervisedPool(ctx, width, initializer=init, recycle=recycle, run_timeout_s=run_timeout_s)
+
+    def real_ended() -> None:
+        """The real arm has ended: the beside workers go to BelowNormal and the pool to its full width for the rest."""
+        stream_doc["real_ended_s"] = round(time.time() - t0, 1)
+        stream_doc["rows_beside"] = len(rows) - len(held)
+        pool.reprioritize(spawn_pool.BELOW_NORMAL_PRIORITY_CLASS, initializer)
+        pool.grow(nprocs)
+        print(f"stream: the real arm has ended; {stream_doc['rows_beside']} runs were played beside it, the other "
+              f"{order.left() + len(retry) + pool.inflight()} go on {nprocs} workers", file=sys.stderr, flush=True)
 
     try:
-        pool = new_pool(nprocs)
+        if order.live:
+            pool = new_pool(stream_doc["beside_procs"], stream_initializer)
+            print(f"stream: {len(todo)} seeds, each played after its real run ends, on {stream_doc['beside_procs']} Idle workers "
+                  f"while the real arm plays (new runs wait under {stream_floor_gb:g} GiB of memory headroom)", file=sys.stderr, flush=True)
+        else:
+            pool = new_pool(nprocs)
         with open(runs_file, "a", encoding="utf-8") as fh:
 
             def write_row(r: dict) -> None:
@@ -531,8 +680,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     raise RuntimeError(f"the pool failed {fail_limit} attempts in a row with no run finishing between: last {d.status}: "
                                        f"{d.value}; stopped instead of writing lost rows for the rest of the block")
 
-            nxt = 0
-            while nxt < len(todo) or retry or pool.inflight():
+            while order.left() or retry or pool.inflight():
                 if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
                     gave_up = True  # the second death: drain, then go on with plain CPU-path workers
                     print("prior-server: the server is gone and cannot be restarted; the block drains its runs in flight and goes "
@@ -550,18 +698,28 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     pool_shrunk = {"from": nprocs, "to": procs, "at_run": at_run, "drained_s": drained_s}
                     nprocs = procs
                     pool = new_pool(nprocs)
-                while pool.free() and (retry or (nxt < len(todo) and (deadline is None or time.time() < deadline))):
+                if order.update():
+                    real_ended()
+                room = True
+                if order.live and stream_floor_gb and pool.free() and (retry or order.ready):
+                    room = headroom() >= stream_floor_gb
+                    if not room and not held_back:
+                        stream_doc["memory_waits"] += 1
+                        print(f"stream: memory headroom under {stream_floor_gb:g} GiB; new runs wait", file=sys.stderr, flush=True)
+                    held_back = not room
+                while room and pool.free() and (retry or (order.ready and (deadline is None or time.time() < deadline))):
                     if retry:
                         ix, seed = retry.popleft()
                     else:
-                        ix, seed = todo[nxt]
-                        nxt += 1
+                        ix, seed = order.pop()
                     pool.submit((ix, seed), task, (seed, ix, sims, ascension, agent, record, character))
                 if deadline is not None and time.time() >= deadline:
-                    nxt = len(todo)
+                    order.clear()
                 for d in pool.collect():
                     settle(d)
                 pool.wait(0.5)
+                if order.live and not pool.inflight():
+                    time.sleep(idle_s)  # waiting for the real arm's next row
         pools_stats.append(pool.stats)
     finally:
         if pool is not None:
@@ -579,6 +737,10 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     summary["pool"] = {**pool_stats, "retried": counts["retried"], "lost": counts["lost"]}
     if held:
         summary["resumed_rows"] = len(held)
+    if stream_doc is not None:
+        if stream_doc["real_ended_s"] is None:  # the real arm outlived the emulator arm: every run was played beside it
+            stream_doc["rows_beside"] = len(rows) - len(held)
+        summary["stream"] = stream_doc
     if shard_doc is not None:
         summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
     if resumed is not None:
@@ -800,8 +962,10 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") 
     return True, "names the scored agent"
 
 
-def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
-    """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`."""
+def play_emu_arm(a: argparse.Namespace, agent, out: Path, stream: RealFeed | None = None) -> dict:
+    """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`. With `stream`
+    (the real arm playing at the same time) the arm is streamed beside it (`run_block`; `--emu-stream-procs` workers and
+    `--emu-stream-floor-gb` while the real arm plays)."""
     if a.lib:
         os.environ["STS2_LIB_PATH"] = a.lib
     engine = getattr(a, "engine", "old")
@@ -810,8 +974,12 @@ def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
     # resume: a stopped arm is rerun into the same folder and keeps its finished seeds (the identity file guards the agent, the
     # config and the engine); run_timeout_s None (not given) is the dispatcher's default, the run cap plus 5 minutes
     timeout = getattr(a, "run_timeout_s", None)
+    beside = {}
+    if stream is not None:
+        beside = {"stream": stream, "stream_procs": int(getattr(a, "emu_stream_procs", 4) or 4),
+                  "stream_floor_gb": float(getattr(a, "emu_stream_floor_gb", 3.0))}
     summ = run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent, resume=True,
-                     resume_key={"engine": engine}, **({"run_timeout_s": timeout} if timeout else {}))
+                     resume_key={"engine": engine}, **({"run_timeout_s": timeout} if timeout else {}), **beside)
     if engine != "old":  # an old arm's summary stays as every self-play block writes it
         summ = {**summ, "engine": engine}
         (out / "summary.json").write_text(json.dumps(summ, indent=1), encoding="utf-8")
@@ -852,6 +1020,59 @@ def gpu_ok_remove(path: str | Path, tag: str) -> None:
         print(f"gpu ok: {p.name} not cleaned ({type(e).__name__})", file=sys.stderr, flush=True)
 
 
+def play_streamed(a: argparse.Namespace, agent, emu_dir: Path, cmd: list[str], env: dict, tag: str | None, gpu_file: str) -> int:
+    """The real arm (envproto play, `cmd`) and its emulator arm at once (score_real with `emu_stream`). The real arm's process
+    starts with the GPU_OK line `tag` first in `gpu_file`; the emulator arm (`play_emu_arm` with a `RealFeed` on the real arm's
+    runs.jsonl) plays each seed after its real run has ended, then the rest once the process has exited. The line goes when the
+    arm sees the process has exited (within its feed's poll) and in any case on the way out.
+
+    The real arm is never stopped for the emulator arm: an arm that raises is reported, the real arm is waited for, and the error
+    is raised then (nightly_real's finished mark needs an emulator row for every seed, so the next start resumes the arm's
+    missing seeds). An interrupt (KeyboardInterrupt, SystemExit) kills the real arm's process, as subprocess.run does. Returns
+    the real arm's exit code."""
+    import subprocess  # noqa: PLC0415
+
+    if tag:
+        gpu_ok_add(gpu_file, tag)
+    try:
+        proc = subprocess.Popen(cmd, env=env)
+    except BaseException:
+        if tag:
+            gpu_ok_remove(gpu_file, tag)
+        raise
+    ended: list[int] = []
+
+    def alive() -> bool:
+        if not ended:
+            code = proc.poll()
+            if code is not None:
+                ended.append(code)
+                if tag:
+                    gpu_ok_remove(gpu_file, tag)  # the real arm's consent ends with it, while the emulator arm plays on
+        return not ended
+
+    try:
+        try:
+            play_emu_arm(a, agent, emu_dir, stream=RealFeed(Path(a.out) / "runs.jsonl", alive))
+        except Exception as e:
+            print(f"stream: the emulator arm failed ({type(e).__name__}: {str(e)[:200]}); the real arm plays on and is waited for",
+                  file=sys.stderr, flush=True)
+            proc.wait()
+            raise
+        if alive():
+            print("stream: the emulator arm has ended; waiting for the real arm", file=sys.stderr, flush=True)
+        proc.wait()
+        return proc.returncode
+    except BaseException:
+        if proc.poll() is None:  # an interrupt: the real arm's process goes with it
+            proc.kill()
+            proc.wait()
+        raise
+    finally:
+        if tag:
+            gpu_ok_remove(gpu_file, tag)
+
+
 def score_real(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys.
 
@@ -864,7 +1085,13 @@ def score_real(a: argparse.Namespace) -> int:
     compare.json below are computed over every row of the block. The emulator arm resumes in either case (play_emu_arm).
 
     With `gpu_ok_tag` the line TAG is first in the GPU_OK file (`gpu_ok_file`) exactly while the game's side plays: written after the
-    emulator arm has returned (the arm plays through the prior server on the GPU) and removed when the subprocess ends, however it ends."""
+    emulator arm has returned (when it is played first) and removed when the subprocess ends, however it ends.
+
+    With `emu_stream` (the nightly block, owner 2026-10-30) an arm that must be played is streamed instead of played first
+    (`play_streamed`): the real arm starts at once and each seed's emulator run starts after its real run has ended, so the
+    block ends soon after the real arm does. The arm is the same (seeds, indices, agent, config, engine, one run per seed) and
+    plays the CPU path, as `play_emu_arm` always has, so the GPU_OK line can stand while it plays beside the real arm; the line
+    still goes when the real arm's process ends, while the arm plays on."""
     import subprocess  # noqa: PLC0415
 
     out = Path(a.out)
@@ -875,16 +1102,25 @@ def score_real(a: argparse.Namespace) -> int:
     agent = gen_loop.load_agent(getattr(a, "gen_dir", None) or None)
     only = getattr(a, "only", None)
     engine = getattr(a, "engine", "old")
+    streamed = False
     if only:  # a probe of chosen seeds: the game's side only, no emulator arm to pair with
         ok, why, emu_dir = True, "only: no emulator arm", None
     else:
         ok, why = emu_arm_match(a.emu_dir, agent.describe(), engine)
         emu_dir = Path(a.emu_dir) if ok else out.with_name(out.name + "-emu")
-        if not ok:
+        streamed = not ok and bool(getattr(a, "emu_stream", False))
+        if streamed:
+            print(f"emulator arm: {why}; streamed into {emu_dir.name} beside the real arm", file=sys.stderr)
+            if a.lib:
+                os.environ["STS2_LIB_PATH"] = a.lib  # what play_emu_arm sets, before the real arm's environment is copied
+            select_engine(engine)
+        elif not ok:
             print(f"emulator arm: {why}; playing it into {emu_dir.name}", file=sys.stderr)
             play_emu_arm(a, agent, emu_dir)
     arm = {"dir": None if only else emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
            "reason": "played: " + why if not ok else why, "engine": engine}
+    if streamed:
+        arm["streamed"] = True
     env = dict(os.environ)
     if a.lib:
         env["STS2_LIB_PATH"] = a.lib
@@ -903,13 +1139,16 @@ def score_real(a: argparse.Namespace) -> int:
     if getattr(a, "resume", False):
         cmd += ["--resume", "--agent-identity", json.dumps(agent.describe())]
     tag, gpu_file = getattr(a, "gpu_ok_tag", None), getattr(a, "gpu_ok_file", None) or GPU_OK_FILE
-    if tag:
-        gpu_ok_add(gpu_file, tag)
-    try:
-        rc = subprocess.run(cmd, env=env, check=False).returncode
-    finally:
+    if streamed:
+        rc = play_streamed(a, agent, emu_dir, cmd, env, tag, gpu_file)
+    else:
         if tag:
-            gpu_ok_remove(gpu_file, tag)
+            gpu_ok_add(gpu_file, tag)
+        try:
+            rc = subprocess.run(cmd, env=env, check=False).returncode
+        finally:
+            if tag:
+                gpu_ok_remove(gpu_file, tag)
     rows = real_runs(out / "runs.jsonl") if (out / "runs.jsonl").exists() else []
     summ = json.loads((out / "summary.json").read_text(encoding="utf-8")) if (out / "summary.json").exists() else {}
     res = result_json(rows, float(summ.get("wall_s") or 0.0)) if rows else {"runs": 0}
@@ -1060,6 +1299,13 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--resume", action="store_true",
                     help="a stopped block rerun into OUT keeps the real game's finished rows (envproto play --resume) and plays the "
                     "seeds it has no row for; the emulator arm resumes either way")
+    sc.add_argument("--emu-stream", action="store_true",
+                    help="an emulator arm that must be played is streamed beside the real arm (each seed after its real run ends, "
+                    "the rest at full width once the real arm has ended) instead of played first")
+    sc.add_argument("--emu-stream-procs", type=int, default=4,
+                    help="the streamed arm's workers (Idle priority) while the real arm plays; --procs after it")
+    sc.add_argument("--emu-stream-floor-gb", type=float, default=3.0,
+                    help="while the real arm plays, a new streamed run waits while the memory headroom is under this many GiB (0: off)")
     for name in ("bench-env", "bench-emu"):
         b = sub.add_parser(name)
         b.add_argument("--game", default="")
