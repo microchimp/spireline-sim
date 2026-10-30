@@ -336,6 +336,12 @@ class Lockstep:
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
         self._track(kind, msg)
+        if self.emu is not None and self._after_the_end(msg):
+            # Both sides have ended the run at the same death: nothing is compared, ranked or added to an open span.
+            self.stats["after_end"] = self.stats.get("after_end", 0) + 1
+            self.stats["not_ranked"] += 1
+            self.prev_kind = kind
+            return self.fallback(msg)
         ranked = False
         if self.emu is not None:
             ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
@@ -450,6 +456,18 @@ class Lockstep:
             except Exception as e:  # noqa: BLE001 -- a probe never costs the record
                 out["emu_probe_error"] = type(e).__name__
         return out
+
+    def _after_the_end(self, msg: dict) -> bool:
+        """Whether the game asks after its player died outside a fight. The game ends the run at the kill (its game-over
+        screen opens), but an event that dealt the damage still sets its next page after it (Abyssal Baths' Linger, Slippery
+        Bridge's Hold On), so the driver goes on asking on a dead player. The emulator ended the run at that death. When the
+        game's player is at 0 HP and the emulator's run is over with its player dead too, both sides agree the run has ended:
+        the decision is neither compared nor ranked, and an open record's span does not grow. (2026-10-29: group Gfa785ae413,
+        674 weight, 22 records whose views were equal and whose spans ran to the run's end.) An emulator side without
+        `run_over` (the tests' fakes) never matches."""
+        hp = (msg.get("obs") or {}).get("hp")
+        over = getattr(self.emu, "run_over", None)
+        return isinstance(hp, (int, float)) and hp <= 0 and callable(over) and bool(over())
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
@@ -701,6 +719,10 @@ class EmuLock:
         obs, ls = self._obs(), self.ls
         return [[self.slug["cards"].get(obs[ls._HAND + k * ls._CARD], "?"), int(obs[ls._HAND + k * ls._CARD + 1])]
                 for k in range(ls._hand_size(obs))]
+
+    def run_over(self) -> bool:
+        """Whether the emulator's run has ended with the player dead (`Lockstep._after_the_end`)."""
+        return self.s.phase == self.E.rc.PHASE_COMPLETE and self.s.view().hp <= 0
 
     def view(self) -> dict:
         v = self.s.view()

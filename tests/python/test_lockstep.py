@@ -171,6 +171,48 @@ class DivergenceTests(unittest.TestCase):
         self.assertIsNone(lockstep.reanchor_plan("rest", "map"))
 
 
+class AfterTheEndTests(unittest.TestCase):
+    """The game asks on after its player died in an event (the page the killing option set stays up); the emulator has
+    ended the run at that death. 2026-10-29, Gfa785ae413: 22 records, equal views, spans to the run's end."""
+
+    class DeadEmu(FakeEmu):
+        def __init__(self, views, over):
+            super().__init__(views)
+            self.over = over
+
+        def run_over(self):
+            return self.over
+
+    def test_a_decision_on_a_dead_player_the_emulator_also_ended_is_not_a_divergence(self):
+        dead = obs(hp=0)
+        ls = lockstep.Lockstep(self.DeadEmu([view_of(dead)], over=True), lambda m: 0)
+        for _ in range(3):
+            ls.decide(msg("event", dead))
+        self.assertEqual(ls.log.records, [])
+        self.assertEqual((ls.stats["after_end"], ls.stats["not_ranked"], ls.stats["ranked"]), (3, 3, 0))
+        self.assertIsNone(ls.lost)
+
+    def test_an_open_span_does_not_grow_after_the_end(self):
+        a, b = obs(hp=30), obs(hp=20)
+        emu = self.DeadEmu([view_of(a), view_of(b)], over=False)
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        ls.decide(msg("event", a))
+        ls.decide(msg("event", obs(hp=30)))  # the views differ: a record opens, its span starts
+        emu.over = True
+        for _ in range(4):
+            ls.decide(msg("event", obs(hp=0)))
+        self.assertEqual(len(ls.log.records), 1)
+        self.assertEqual(ls.log.records[0]["not_ranked_span"]["count"], 1)
+
+    def test_a_living_player_or_an_emulator_still_playing_is_compared_as_before(self):
+        for o, over in ((obs(hp=5), True), (obs(hp=0), False)):
+            emu = self.DeadEmu([view_of(obs(hp=40))], over=over)
+            ls = lockstep.Lockstep(emu, lambda m: 0)
+            ls.decide(msg("event", o))
+            self.assertEqual(len(ls.log.records), 1, (o["hp"], over))
+            self.assertNotIn("after_end", ls.stats)
+
+
 class ProvEmu(FakeEmu):
     """A fake emulator side that reports how its last re-anchor was done, as EmuLock does."""
 
