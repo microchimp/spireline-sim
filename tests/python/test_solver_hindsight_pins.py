@@ -40,7 +40,7 @@ def _pinned_commands() -> list[str]:
 
 
 # The lab's self-play, promotion and training commands, and the search's entry points.
-SEARCH_COMMANDS = ["rl.combat_mcts", "rl.live_search"]
+SEARCH_COMMANDS = ["rl.combat_mcts", "rl.live_search", "rl.gym_lockstep"]  # gym_lockstep: the lockstep gym and its solver grades
 
 PROBE = r"""
 import importlib, importlib.abc, importlib.machinery, json, runpy, sys, types

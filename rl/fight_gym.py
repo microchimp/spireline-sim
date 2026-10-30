@@ -2,6 +2,7 @@
 
     python rl/fight_gym.py starts --source ARM --out OUT --act1-boss 200 --act2 200 --seed S
     python rl/fight_gym.py play   --out OUT --arm a3-v1|x4|x16 --seeds 10 [--cat act1-boss|act2] [--limit N]
+                                  [--lockstep K --prior cpu|cpu-stacked|server ...]  (rl/gym_lockstep.py)
     python rl/fight_gym.py m3     --out OUT [--seeds 10]
     python rl/fight_gym.py run    --out OUT --plan a3-v1:act1-boss,x16:act1-boss,x4:act1-boss,m3 --seeds 10
     python rl/fight_gym.py report --out OUT
@@ -620,22 +621,43 @@ def _fresh_world(doc: dict, start: str, j: int, ns: str):
 
 def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool = False, deadline: float | None = None) -> dict:
     """Play the world to the fight's end under the search config; `capture` keeps the end of the first player turn. A game
-    still going at `deadline` seconds (asked between decisions) or at DECISION_CAP decisions stops there: capped, not won."""
+    still going at `deadline` seconds (asked between decisions) or at DECISION_CAP decisions stops there: capped, not won.
+    The game's steps (`play_steps`) driven with the agent's own prior: `search_live`, call for call."""
+    import live_search  # noqa: PLC0415
+
+    return live_search._drive(play_steps(world, start, j, cfg, extra, ns, capture, deadline, progress=_progress),  # noqa: SLF001
+                              extra.get("prior_fn"))
+
+
+def moves_sha(moves: list) -> str:
+    """A short hash of the moves a game played, (action, target, kind) in order: two games with the same hash played alike."""
+    return hashlib.sha256(";".join(f"{a},{t},{kd}" for a, t, kd in moves).encode()).hexdigest()[:16]
+
+
+def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool = False, deadline: float | None = None, *,
+               clock=time.perf_counter, progress=None, grader=None):
+    """`_play` as steps (a generator): every prior call of every search is a request `(handle, legal)` yielded to the driver
+    and answered by what it sends back (`live_search.search_steps`); the return value is the game's row. `clock` is the game's
+    clock (`gym_lockstep` gives each game the time it ran itself, so the deadline and the searches' budgets mean what they mean
+    alone). `grader(world, k, best)`, when given, grades each decision before its move is stepped and never changes it; its
+    answers go in the row's `grades`."""
     import live_search  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
 
-    t0 = time.perf_counter()
+    t0 = clock()
     k = sims = potions_used = end_turns = exhausted = assumed = 0
     first: dict = {}
     leaf = None
     max_search = 0.0
-    while not world.done and k < DECISION_CAP and (deadline is None or time.perf_counter() - t0 < deadline):
+    moves: list = []
+    grades: list = []
+    while not world.done and k < DECISION_CAP and (deadline is None or clock() - t0 < deadline):
         info = {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
         pos = search_configs.position_of(world, info)
         kw = cfg.search_kwargs(pos, env_prior=False)
         kw.update(extra)
-        res = live_search.search_live(world.handle, seed=game_seed(start["id"], j, f"{ns}{k}"), **kw)
+        res = yield from live_search.search_steps(world.handle, seed=game_seed(start["id"], j, f"{ns}{k}"), clock=clock, **kw)
         sims += res.sims
         exhausted += bool(res.budget_exhausted)
         assumed += bool(res.ai_state_assumed)
@@ -647,6 +669,9 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
                      "root_p_death": dead / vis if vis else None, "root_best_value": None if math.isnan(res.best.value_mean) else res.best.value_mean,
                      "root_sims": res.sims, "first_move": [res.best.action, res.best.target, res.best.kind]}
         best = res.best
+        if grader is not None:
+            grades.append(grader(world, k, best))
+        moves.append((best.action, best.target, best.kind))
         if best.kind == "potion":
             potions_used += 1
         if best.kind == "end_turn":
@@ -655,17 +680,21 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
             end_turns += 1
         live_search._step(world, best.action, best.target)  # noqa: SLF001
         k += 1
-        _progress({"k": k, "turns": end_turns + 1, "sims": sims, "potions_used": potions_used, "max_hp": world.max_hp(),
-                   "max_search_s": round(max_search, 3), **first})
+        if progress is not None:
+            progress({"k": k, "turns": end_turns + 1, "sims": sims, "potions_used": potions_used, "max_hp": world.max_hp(),
+                      "max_search_s": round(max_search, 3), **first})
     won = bool(world.done and world.won())
     out = live_search._outcome(world, POTION_VALUE)  # noqa: SLF001
     held = int(round((out.value - out.hp) / POTION_VALUE)) if not out.died else 0
     row = {"won": won, "end_hp": world.hp() if won else 0, "max_hp": world.max_hp(), "potions_used": potions_used,
            "potions_held": held, "turns": end_turns + 1, "decisions": k, "sims": sims, "capped": not world.done,
            "budget_exhausted": exhausted, "ai_assumed": assumed, "max_search_s": round(max_search, 3),
-           "L0": l0(won, world.hp(), held, world.max_hp()), "seconds": round(time.perf_counter() - t0, 2), **first}
+           "L0": l0(won, world.hp(), held, world.max_hp()), "seconds": round(clock() - t0, 2), "moves_sha": moves_sha(moves),
+           **first}
     if not world.done:
         row["cap_reason"] = "decision cap" if k >= DECISION_CAP else "deadline"
+    if grader is not None:
+        row["grades"] = grades
     if capture:
         row["_leaf"] = leaf
     return row
@@ -837,6 +866,10 @@ def m3_stage(out: Path, seeds: int, procs: int) -> None:
 
 
 def cmd_play(a) -> int:
+    if getattr(a, "lockstep", 0):
+        import gym_lockstep  # noqa: PLC0415 -- loads the emulator library
+
+        return gym_lockstep.cmd_play(a)
     play_stage(Path(a.out), a.arm, a.cat, a.seeds, a.limit, a.procs)
     return 0
 
@@ -1009,6 +1042,18 @@ def cmd_report(a) -> int:
     return 0
 
 
+def add_lockstep_arguments(ap: argparse.ArgumentParser) -> None:
+    """`play --lockstep K`'s options (rl/gym_lockstep.py), here so this module stays free of the emulator library."""
+    ap.add_argument("--lockstep", type=int, default=0, metavar="K", help="play: K games at once per process (rl/gym_lockstep.py)")
+    ap.add_argument("--prior", choices=("cpu", "cpu-stacked", "server"), default="cpu", help="lockstep: who answers the batch")
+    ap.add_argument("--grade-wall-s", type=float, default=0.0, help="lockstep: grade each decision with an expected solve under this wall")
+    ap.add_argument("--worlds", choices=("reload", "memory"), default="reload", help="lockstep: reload the document per seed, or fork it")
+    ap.add_argument("--games-name", default="games.jsonl", help="lockstep: the rows file in --out")
+    ap.add_argument("--gpu-python", default=None, help="lockstep server: the GPU venv's python")
+    ap.add_argument("--hang-s", type=float, default=180.0, help="lockstep: a process with no step this long is killed")
+    ap.add_argument("--mem-gb", type=float, default=MEM_LIMIT_GB, help="lockstep: a process over this private memory is killed")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("cmd", choices=("starts", "play", "m3", "run", "report"))
@@ -1024,6 +1069,7 @@ def main(argv=None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--plan", default="a3-v1:act1-boss,x16:act1-boss,x4:act1-boss,m3")
     ap.add_argument("--procs", type=int, default=MAX_PROCS)
+    add_lockstep_arguments(ap)
     a = ap.parse_args(argv)
     return {"starts": cmd_starts, "play": cmd_play, "m3": cmd_m3, "run": cmd_run, "report": cmd_report}[a.cmd](a)
 

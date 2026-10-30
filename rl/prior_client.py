@@ -248,6 +248,19 @@ def _local(prior: RemotePrior):
     return found
 
 
+def encode_position(handle: int, probe: bool):
+    """The tokens `combat_prior.LivePrior` reads off a handle: the observation of a faithful clone (made and destroyed here,
+    so the handle is only read), then `combat_tokens.encode`."""
+    from combat_tokens import encode  # noqa: PLC0415 -- loads the emulator library, which a worker has anyway
+
+    from sts2_gym import native  # noqa: PLC0415
+
+    obs = (ctypes.c_int * native.OBS_SIZE)()
+    view = native.clone(handle, False, 0, obs)
+    native.destroy(view)
+    return encode(handle, obs, native.encounter_id(handle), probe=probe)
+
+
 @dataclass(frozen=True)
 class RemotePrior:
     """`live_search`'s `prior_fn(handle, legal)`, answered by the prior server and, failing that, in process.
@@ -290,16 +303,45 @@ class RemotePrior:
             _sample(elapsed)
             return logits
 
+    def _ask_many(self, tokens: list) -> np.ndarray:
+        with _LOCK:
+            conn = _connection(self)
+            req_id = next(_REQUEST_IDS) & 0xFFFFFFFF
+            frame = proto.pack_priors(req_id, tokens)
+            started = time.perf_counter()
+            conn.send_bytes(frame)
+            if not conn.poll(self.timeout_s):
+                raise TimeoutError(f"no reply within {self.timeout_s:g} s")
+            status, got, logits = proto.unpack_priors_reply(conn.recv_bytes())
+            elapsed = (time.perf_counter() - started) * 1000.0
+            if got != req_id:
+                raise proto.ProtocolError(f"reply for request {got}, expected {req_id}")
+            if status != proto.REPLY_OK or logits.shape[0] != len(tokens):
+                raise proto.ProtocolError(f"server answered status {status} for {logits.shape[0]} of {len(tokens)} rows")
+            _sample(elapsed)
+            return logits
+
+    def batch(self, requests: Sequence[tuple[int, Sequence[int]]]) -> list[np.ndarray]:
+        """Many `(handle, legal)` calls at once (the lockstep gym's pending calls): one PRIORS frame, one reply, and each row's
+        probabilities exactly as `__call__` would give them from the same logits. A transport failure falls back as a call
+        does (sticky, one stderr line); the rows are then answered one by one in process."""
+        if not requests:
+            return []
+        if _FALLBACK[0] is None:
+            tokens = [encode_position(handle, self.probe) for handle, _ in requests]
+            try:
+                rows = self._ask_many(tokens)
+            except Exception as error:  # noqa: BLE001 -- any transport failure falls back; the searches go on
+                _fall_back(error)
+            else:
+                with _LOCK:
+                    _COUNTS["server"] += len(requests)
+                return [legal_weights(row, list(legal)) for row, (_, legal) in zip(rows, requests)]
+        return [self(handle, legal) for handle, legal in requests]
+
     def __call__(self, handle: int, legal: Sequence[int]) -> np.ndarray:
         if _FALLBACK[0] is None:
-            from combat_tokens import encode  # noqa: PLC0415 -- loads the emulator library, which a worker has anyway
-
-            from sts2_gym import native  # noqa: PLC0415
-
-            obs = (ctypes.c_int * native.OBS_SIZE)()
-            view = native.clone(handle, False, 0, obs)
-            native.destroy(view)
-            tokens = encode(handle, obs, native.encounter_id(handle), probe=self.probe)
+            tokens = encode_position(handle, self.probe)
             try:
                 row = self._ask(tokens)
             except Exception as error:  # noqa: BLE001 -- any transport failure falls back; the search goes on

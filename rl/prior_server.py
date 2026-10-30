@@ -83,7 +83,7 @@ TOKEN_STEP = 8
 DEFAULT_MAX_TOKENS = 64
 HARD_MAX_TOKENS = 1024  # longer than this is a bad request, not an eager forward
 MIN_AUTHKEY_BYTES = 16  # a short or empty key would let any local client in
-MAX_FRAME = 1 << 17
+MAX_FRAME = 1 << 23  # a PRIORS frame of a lockstep process's batch (about 2 KB a row) fits with room to spare
 # One float32 row per token: the 18 features, then type, id, owner. Every integer here is far below 2**24, so the
 # float is exact, and a batch is one staging buffer, one host-to-device copy and one device-to-host copy.
 WIDTH = N_FEATURES + 3
@@ -375,8 +375,10 @@ class PriorServer:
                 self.total.append((done - request.t_enq) * 1000.0)
 
     def batcher(self) -> None:
+        """Queue items are lists of requests: one for a PRIOR frame, a frame's rows for PRIORS, which stay together. What is
+        drained goes out in replays of at most `max_batch` rows."""
         while True:
-            batch = [self.queue.get()]  # blocks: no GPU work on an empty queue
+            batch = list(self.queue.get())  # blocks: no GPU work on an empty queue
             if self.deadline:
                 limit = time.perf_counter() + self.deadline
             while len(batch) < self.max_batch:
@@ -385,12 +387,13 @@ class PriorServer:
                         left = limit - time.perf_counter()
                         if left <= 0:
                             break
-                        batch.append(self.queue.get(timeout=left))
+                        batch.extend(self.queue.get(timeout=left))
                     else:
-                        batch.append(self.queue.get_nowait())
+                        batch.extend(self.queue.get_nowait())
                 except queue.Empty:
                     break
-            self.run(batch)
+            for at in range(0, len(batch), self.max_batch):
+                self.run(batch[at : at + self.max_batch])
 
     # ------------------------------------------------------------------ connections
 
@@ -433,8 +436,13 @@ class PriorServer:
                 while True:
                     data = conn.recv_bytes(MAX_FRAME)
                     try:
-                        if proto.peek_kind(data) == proto.BYE:
+                        kind = proto.peek_kind(data)
+                        if kind == proto.BYE:
                             return
+                        if kind == proto.PRIORS:
+                            if not self._serve_rows(conn, data):
+                                return
+                            continue
                         req_id, types, ids, owners, feats, _flags = proto.unpack_prior(data)
                     except proto.ProtocolError:
                         conn.send_bytes(proto.pack_reply(proto.REPLY_BAD_REQUEST, 0))  # status 1, then close
@@ -445,7 +453,7 @@ class PriorServer:
                         return
                     if self.fault == "connection":
                         raise RuntimeError("injected fault (connection)")
-                    self.queue.put(request)
+                    self.queue.put([request])
                     request.event.wait()
                     conn.send_bytes(proto.pack_reply(proto.REPLY_OK, req_id, request.logits))
             except (EOFError, OSError, ValueError, proto.ProtocolError, multiprocessing.AuthenticationError):
@@ -455,6 +463,25 @@ class PriorServer:
                 conn.close()
             except OSError:
                 pass
+
+    def _serve_rows(self, conn, data: bytes) -> bool:
+        """Answer one PRIORS frame (many rows, one reply); False when it was a bad request and the connection must close."""
+        try:
+            req_id, rows, _flags = proto.unpack_priors(data)
+        except proto.ProtocolError:
+            conn.send_bytes(proto.pack_priors_reply(proto.REPLY_BAD_REQUEST, 0, 0))
+            return False
+        requests = [Request(*row) for row in rows]
+        if not all(self._valid(r) for r in requests):
+            conn.send_bytes(proto.pack_priors_reply(proto.REPLY_BAD_REQUEST, req_id, len(requests)))
+            return False
+        if self.fault == "connection":
+            raise RuntimeError("injected fault (connection)")
+        self.queue.put(requests)
+        for request in requests:
+            request.event.wait()
+        conn.send_bytes(proto.pack_priors_reply(proto.REPLY_OK, req_id, len(requests), np.stack([r.logits for r in requests])))
+        return True
 
     def accept_loop(self) -> None:
         while True:
