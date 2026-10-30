@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_utility_gains.py; do not edit. Every site that can raise the solver's utility within a combat (heal, HP, max HP, potion, generation), classed in utility_gain_classes.json; the holders turn the tight bound off while present (FIGHT_SOLVER.md section 19).",
- "sources_sha256": "6232c423086e5ca3b3ffb65afc803edb55a81e1ff15a4ce7103d9d05d33d8685",
+ "sources_sha256": "612e1800b34926c5e6087d467c9f1ded908b6487872ca7cb94d221b4ab09f52d",
  "holders": [
   "buff:CalamityPower",
   "buff:CallOfTheVoid",
@@ -87,7 +87,7 @@
     "card:Calamity"
    ],
    "unlabeled_lines": [
-    "CombatEngine:1087"
+    "CombatEngine:1088"
    ]
   },
   "applies:buff:CallOfTheVoid": {
@@ -95,7 +95,7 @@
     "card:CallOfTheVoid"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2787"
+    "CombatEngine:2788"
    ]
   },
   "applies:buff:HelloWorld": {
@@ -105,7 +105,7 @@
     "card:HelloWorld"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2733"
+    "CombatEngine:2734"
    ]
   },
   "applies:buff:PaperCuts": {
@@ -119,11 +119,11 @@
     "potion:RegenPotion"
    ],
    "unlabeled_lines": [
-    "CombatEngine:1770",
-    "CombatEngine:1774",
-    "CombatEngine:1994",
-    "CombatEngine:2006",
-    "CombatEngine:2009"
+    "CombatEngine:1771",
+    "CombatEngine:1775",
+    "CombatEngine:1995",
+    "CombatEngine:2007",
+    "CombatEngine:2010"
    ]
   },
   "applies:buff:SpectrumShift": {
@@ -131,7 +131,7 @@
     "card:SpectrumShift"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2777"
+    "CombatEngine:2778"
    ]
   }
  },
@@ -1877,7 +1877,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "?",
    "kind": "hp",
-   "line": 5133,
+   "line": 5129,
    "holders": [
     "engine"
    ],
@@ -1889,7 +1889,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ApplyAfterCardPlayedPowers",
    "kind": "generate",
-   "line": 6746,
+   "line": 6742,
    "holders": [
     "engine"
    ],
@@ -1904,7 +1904,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "DoomThePlayerAtTurnEnd",
    "kind": "hp",
-   "line": 5430,
+   "line": 5426,
    "holders": [
     "buff:Doom"
    ],
@@ -1916,7 +1916,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "heal",
-   "line": 2008,
+   "line": 2009,
    "holders": [
     "buff:Regen"
    ],
@@ -1928,7 +1928,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 1773,
+   "line": 1774,
    "holders": [
     "buff:Regen"
    ],
@@ -1940,7 +1940,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 2163,
+   "line": 2164,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -2600,7 +2600,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 2245,
+   "line": 2246,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -3260,7 +3260,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "heal",
-   "line": 3448,
+   "line": 3449,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3272,7 +3272,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "hp",
-   "line": 3452,
+   "line": 3453,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3284,7 +3284,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "potion",
-   "line": 3444,
+   "line": 3445,
    "holders": [
     "buff:Poison",
     "card:Havoc",
@@ -3300,7 +3300,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4142,
+   "line": 4143,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -3963,7 +3963,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4417,
+   "line": 4418,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -4626,7 +4626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4426,
+   "line": 4427,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -5289,7 +5289,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4463,
+   "line": 4460,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -5952,7 +5952,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolvePlayRepetition",
    "kind": "generate",
-   "line": 1075,
+   "line": 1076,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -6614,7 +6614,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 5951,
+   "line": 5947,
    "holders": [
     "engine"
    ],
@@ -6626,7 +6626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 5968,
+   "line": 5964,
    "holders": [
     "engine"
    ],
@@ -6638,7 +6638,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "TryRespawnAxebot",
    "kind": "hp",
-   "line": 5832,
+   "line": 5828,
    "holders": [
     "engine"
    ],
@@ -6650,7 +6650,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "UsePotion",
    "kind": "potion",
-   "line": 3415,
+   "line": 3416,
    "holders": [
     "engine"
    ],
@@ -7330,7 +7330,7 @@
    "file": "src/Sts2Emulator/Core/Run/RunRewardGenerator.cs",
    "method": "AddPotion",
    "kind": "potion",
-   "line": 1870,
+   "line": 1892,
    "holders": [
     "engine"
    ],
@@ -7342,7 +7342,7 @@
    "file": "src/Sts2Emulator/Core/Run/RunRewardGenerator.cs",
    "method": "AddPotionAt",
    "kind": "potion",
-   "line": 1846,
+   "line": 1868,
    "holders": [
     "engine"
    ],
@@ -7354,7 +7354,7 @@
    "file": "src/Sts2Emulator/Core/Run/RunRewardGenerator.cs",
    "method": "EnterShop",
    "kind": "hp",
-   "line": 1518,
+   "line": 1540,
    "holders": [
     "engine"
    ],
