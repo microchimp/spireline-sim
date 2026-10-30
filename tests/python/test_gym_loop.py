@@ -215,6 +215,28 @@ def _fake_fight(rows: int, player: str, start: str, split: str, won: bool, rng) 
             "played": np.zeros(rows, np.int16), "meta": np.array(json.dumps(meta))}
 
 
+class BoardTests(unittest.TestCase):
+    def test_a_rebuild_keeps_every_row_on_the_page_and_adds_the_versions(self):
+        html = ('const ARMS = [{"key":"a3-v1","label":"Usual thinking"},{"key":"x16","label":"Sixteen"},'
+                '{"key":"judge-v0","label":"The judge"}]; const LOG = ["a", "b"];')
+        self.assertEqual(gl.page_arms(html), [("a3-v1", "Usual thinking"), ("x16", "Sixteen"), ("judge-v0", "The judge")])
+        self.assertEqual(gl.page_log(html), ["a", "b"])
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            loop = gl.Loop(t / "loop")
+            m2, jg = t / "m2.jsonl", t / "judge.jsonl"
+            m2.write_text("{}\n")
+            jg.write_text("{}\n")
+            (loop.board / "fp-v1.jsonl").write_text("{}\n")
+            with mock.patch.object(gl, "BOARD_GAMES", {"a3-v1": m2, "x16": m2}):
+                with self.assertRaisesRegex(RuntimeError, "judge-v0"):  # a row whose games are unknown is never dropped
+                    gl.board_args(loop, gl.page_arms(html), ["v1"])
+                gl.write_json(loop.board / "games.json", {"judge-v0": str(jg)})
+                files, arms = gl.board_args(loop, gl.page_arms(html), ["v1"])
+        self.assertEqual(files, [str(m2), str(jg), str(loop.board / "fp-v1.jsonl")])
+        self.assertEqual(arms, ["a3-v1=Usual thinking", "x16=Sixteen", "judge-v0=The judge", "fp-v1=Fight player, version 1"])
+
+
 class BufferTests(unittest.TestCase):
     def test_compaction_retention_and_the_disk_cap(self):
         rng = np.random.default_rng(0)

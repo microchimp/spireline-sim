@@ -757,8 +757,22 @@ def play_tasks(loop: Loop, tasks: list, target: Path, player_dir: Path, procs: i
     server = Server(loop, player_dir, what) if prior == "server" else None
     opts = {"prior": "server" if server is not None and server.opts else "cpu", "server": server.opts if server else None,
             "game_steps": steps, "worlds": "reload", "grade_wall_s": 0, "paths": [str(ROOT / "rl")], **(extra_opts or {})}
+    judge_server = None
+    if opts.get("judge"):  # the judge's leaves: on its own server on the card beside the prior's, as the judge's arm plays them
+        j = {"path": str(opts["judge"]["path"]), "sha256": sha256_file(Path(opts["judge"]["path"]))}
+        if server is not None and server.opts:
+            from prior_launch import start_prior_server  # noqa: PLC0415
+
+            judge_server = start_prior_server(GPU_PYTHON, j["path"], lib_path=ROOT / "out", kill_file=GPU_OFF,
+                                              stats_path=loop.games / f"judge-server-{what}.json", priority="below")
+            if judge_server is not None:
+                j.update(endpoint=judge_server.endpoint, authkey=judge_server.authkey)
+            else:
+                loop.log(f"{what}: the judge's server did not start; the judge plays on the CPU")
+        opts["judge"] = j
     if daemon is not None:
         daemon.server_pid = server.pid if server else None
+        daemon.judge_pid = judge_server.proc.pid if judge_server is not None and judge_server.proc is not None else None
     t0 = time.perf_counter()
     last = [time.time()]
 
@@ -774,9 +788,11 @@ def play_tasks(loop: Loop, tasks: list, target: Path, player_dir: Path, procs: i
                                                    log=lambda m: loop.log(f"{what}: {m}"))
     finally:
         hold_quiet(False)
+        if judge_server is not None:
+            judge_server.stop()
         sstats = server.stop() if server is not None else {}
         if daemon is not None:
-            daemon.server_pid = None
+            daemon.server_pid = daemon.judge_pid = None
     wall = time.perf_counter() - t0
     with open(loop.games / "steps.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"t": stamp(), "what": what, "tasks": len(tasks), "wall_s": round(wall, 1), "stopped": stopped,
@@ -961,7 +977,10 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
 BOARD_REPO = Path(os.environ.get("GYM_LOOP_BOARD_REPO", "D:/spireline/spireline"))
 BOARD_WT = Path(os.environ.get("GYM_LOOP_BOARD_WT", "D:/spireline/wt-board"))
 BOARD_PAGE = "docs/paper/fight-board.html"
-STANDING_ARMS = (("a3-v1", "Usual thinking"), ("x16", "Sixteen times the thinking"), ("x4", "Four times the thinking"))
+# Where each arm already on the board has its games: the page keeps no games, so a rebuild passes every arm's file again. An arm
+# on the page with no known file stops the step (a row is never dropped); `board/games.json` in the loop's folder adds arms.
+BOARD_GAMES = {"a3-v1": BOARD_DIR / "games.jsonl", "x16": BOARD_DIR / "games.jsonl", "x4": BOARD_DIR / "games.jsonl",
+               "judge-v0": REF / "lab" / "results" / "fight-gym" / "2026-10-30-judge" / "games.jsonl"}
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 
@@ -971,6 +990,29 @@ def _git(*args: str, cwd: Path) -> str:
     if r.returncode != 0:
         raise RuntimeError(clean(f"git {' '.join(args[:2])}: {r.stderr.strip()[-300:]}"))
     return r.stdout
+
+
+def page_arms(html: str) -> list[tuple[str, str]]:
+    """The arms already on the page, in order: (key, label)."""
+    out = []
+    for m in re.finditer(r'"key":\s*"([^"]+)",\s*"label":\s*"([^"]+)"', html):
+        if m.group(1) not in [k for k, _ in out]:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
+def board_args(loop: Loop, arms: list[tuple[str, str]], vers: list[str]) -> tuple[list[str], list[str]]:
+    """(--games files, --arm entries): the page's arms with their games, then every promoted version not on it yet."""
+    known = {k: Path(v) for k, v in BOARD_GAMES.items()}
+    known.update({k: Path(v) for k, v in (read_json(loop.board / "games.json", {}) or {}).items()})
+    known.update({f"fp-{v}": loop.board / f"fp-{v}.jsonl" for v in vers})
+    keys = [k for k, _ in arms] + [f"fp-{v}" for v in vers if f"fp-{v}" not in [k for k, _ in arms]]
+    labels = dict(arms) | {f"fp-{v}": f"Fight player, version {v[1:]}" for v in vers}
+    missing = [k for k in keys if k not in known or not known[k].is_file()]
+    if missing:
+        raise RuntimeError(f"board: no games for the arms {missing}; nothing rebuilt (add them to board/games.json)")
+    files = list(dict.fromkeys(str(known[k]) for k in keys))
+    return files, [f"{k}={labels[k]}" for k in keys]
 
 
 def page_log(html: str) -> list[str]:
@@ -994,18 +1036,17 @@ def board_commit(loop: Loop, ver: str, verdict: dict, commit: bool = True) -> st
     _git("fetch", "-q", "origin", cwd=BOARD_WT)
     _git("checkout", "-q", "--detach", "origin/main", cwd=BOARD_WT)
     page = BOARD_WT / BOARD_PAGE
-    old = page_log(page.read_text(encoding="utf-8"))
+    html = page.read_text(encoding="utf-8")
+    old = page_log(html)
     vers = sorted((v for v in loop.state["versions"] if v != "v0"), key=lambda x: int(x[1:]))
     eng_commit = _git("rev-parse", "--short", "HEAD", cwd=ROOT).strip()
     line = board_line(ver, verdict, eng_commit)
-    cmd = [sys.executable, "tools/fight_board.py", "--out", BOARD_PAGE, "--starts", str(BOARD_DIR / "starts.jsonl"),
-           "--games", str(BOARD_DIR / "games.jsonl")]
-    for v in vers:
-        cmd += ["--games", str(loop.board / f"fp-{v}.jsonl")]
-    for key, label in STANDING_ARMS:
-        cmd += ["--arm", f"{key}={label}"]
-    for v in vers:
-        cmd += ["--arm", f"fp-{v}=Fight player, version {v[1:]}"]
+    files, arms = board_args(loop, page_arms(html), vers)
+    cmd = [sys.executable, "tools/fight_board.py", "--out", BOARD_PAGE, "--starts", str(BOARD_DIR / "starts.jsonl")]
+    for f in files:
+        cmd += ["--games", f]
+    for a in arms:
+        cmd += ["--arm", a]
     for x in [*old, line] if line not in old else old:
         cmd += ["--log", x]
     r = subprocess.run(cmd, cwd=str(BOARD_WT), capture_output=True, text=True, check=False,
@@ -1080,7 +1121,7 @@ class GpuWatch:
         names = _python_pids()
         parents = process_parents()
         # a venv's python.exe is a launcher that starts the interpreter as its child: a process is ours with its descendants
-        srv = descendants(parents, self.daemon.server_pid)
+        srv = descendants(parents, self.daemon.server_pid) | descendants(parents, getattr(self.daemon, "judge_pid", None))
         trn = descendants(parents, self.daemon.trainer_pid)
         inf = sum(per.get(p, 0.0) for p in srv)
         tr = sum(per.get(p, 0.0) for p in trn)
@@ -1175,6 +1216,7 @@ class Daemon:
         self.loop = Loop(a.root)
         self.phase = "start"
         self.server_pid: int | None = None
+        self.judge_pid: int | None = None
         self.trainer_pid: int | None = None
         self.trainer = None
         self.job = None
@@ -1398,9 +1440,11 @@ def main(argv=None) -> int:
         if name == "starts":
             p.add_argument("--runs-per-night", type=int, default=50)
         if name in ("run", "gate"):
-            p.add_argument("--player-config", default="a3-v1", help="the search config the gate scores (the judge's once it lands)")
+            p.add_argument("--player-config", default="judge-v0",
+                           help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
             p.add_argument("--gate-k", type=int, default=32)
-            p.add_argument("--judge", default="", help="the judge checkpoint a judge config's leaves read (once the judge lands)")
+            p.add_argument("--judge", default=str(REF / "agent" / "judge" / "v0" / "judge.pt"),
+                           help="the judge checkpoint a judge config's leaves read ('' for a config without one)")
         if name == "gate":
             p.add_argument("--candidate", required=True)
         if name == "stop":

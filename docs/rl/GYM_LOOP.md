@@ -77,13 +77,13 @@ on the same rows.
 ## 5. The gate and the board (decided before the first checkpoint)
 
 `PROMOTION_RULE` (`gym-loop-promote-v1`): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
-player config (`--player-config`, a3-v1 now; the judge-equipped config when it lands: the incumbent's games are kept per config),
+player (`--player-config judge-v0 --judge D:/spireline/referee/agent/judge/v0/judge.pt`, the defaults since the judge landed (D41): JUDGE_V0's search with the judge v0 at its leaves, the judge on its own server on the card beside the prior's; the incumbent's games are kept per config and judge; measured: the gate's judge-v0 games of version 0 are the board's judge-v0 games move for move),
 the candidate and the incumbent on the same games. A capped game is lost. Stage 1, j = 0..1 (400 pairs): go on only if the candidate
 wins at least 1.0 point more. Stage 2, j = 0..9 (2,000 pairs, the board's games): promote only if the exact one-sided McNemar test
 on the discordant pairs gives p < 0.05 and the paired mean L0 difference is not negative. Only the newest ungated checkpoint is
 scored; older ones are marked superseded. A promoted checkpoint becomes `players/vN`, the incumbent, and its board row "Fight player,
 version N": `board_commit` rebuilds `docs/paper/fight-board.html` in its own Spireline worktree (`D:/spireline/wt-board`) with the
-standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main.
+standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main. The page's own arms are kept in its order (`page_arms`), each with its games file (`BOARD_GAMES`, or `board/games.json` in the loop's folder for an arm added later); an arm with no known games stops the step, so a rebuild never drops a row.
 
 The power, estimated: with about a quarter of pairs discordant, a +3-point candidate passes stage 1 four times in five and stage 2
 (SE about 1.1 points on 2,000 pairs) about 85% of the time; a candidate with no gain reaches stage 2 a third of the time and is
