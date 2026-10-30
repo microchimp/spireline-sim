@@ -336,7 +336,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
         State.UnknownMapPointsVisited++;
         State.CurrentNodeType = resolvedNodeType;
         State.LastResolvedRoomType = resolvedNodeType;
-        RunNonCombatEffects.PayMawBank(State);
+        // Maw Bank is not paid here: the map step already paid it for this walk. The "?" is
+        // resolved to its room and that room is the one room entered, so the bank's
+        // `AfterRoomEntered` runs once; paying here as well gave 24 for every "?".
 
         // `Planisphere.AfterRoomEntered` asks about `CurrentMapPoint.PointType`, not about
         // the room -- so it pays out on whatever the "?" turned out to be, a fight
@@ -1437,10 +1439,10 @@ public sealed class RunEngine : Core2.ICombatEndHost
             }
 
             // `MawBank.AfterRoomEntered(RunState.BaseRoom == room)` -- the room the player
-            // just walked into, whatever kind it is. Fired here rather than inside the
-            // switch because every branch below either starts a combat or changes phase,
-            // and the bank does not care which. The unknown-node path pays through
-            // `EnterUnknownMapPoint`, which resolves to a room of its own.
+            // just walked into, whatever kind it is, a "?" included: the "?" resolves to the
+            // one room that is entered, so this is its only payment. Fired here rather than
+            // inside the switch because every branch below either starts a combat or
+            // changes phase, and the bank does not care which.
             RunNonCombatEffects.PayMawBank(State);
             // `LavaLamp.AfterRoomEntered` clears its flag on entering ANY room, not only a
             // fight's: a card reward outside combat (an event's, a shop's) is upgraded unless
@@ -5504,6 +5506,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
         int bought = stall[action];
         stall[action] = 0;
         RunNonCombatEffects.ApplyRelicPickup(State, bought);
+        // The stall's entries are merchant entries: a purchase that succeeds raises
+        // `AfterItemPurchased` with the gold spent, and Maw Bank closes as at a shop.
+        RunNonCombatEffects.CloseMawBank(State, price);
         return 0;
     }
 
