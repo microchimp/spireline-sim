@@ -5,6 +5,7 @@ Trivial `python -c` commands only: no game, no emulator, no long or multi-proces
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import shutil
@@ -252,6 +253,86 @@ class LadderTest(Base):
         self.assertIsNone(r.unavailable("bench-env", "abc"))
         jb._atomic(self.lab_dir / "bench-env" / "last-ok", "now\n")
         self.assertIn("within the last night", r.unavailable("bench-env", "abc"))
+
+
+class SlowTierKindTest(Base):
+    """pytest-slow: the slow tier of the Python suite, once a night, after the night and outside the window the night starts in."""
+
+    def on(self, **extra):
+        doc = {"pytest-slow": {"enabled": True, "cwd": "{lab}", "needs": [], "cmd": ["{python}", "-c", "pass"], **extra}}
+        (self.lab_dir / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    def at(self, hhmm: str) -> float:
+        h, m = (int(x) for x in hhmm.split(":"))
+        return calendar.timegm((2026, 10, 30, h, m, 0))  # that UTC time as epoch seconds
+
+    def test_the_kind_is_off_by_default_and_its_default_command_is_the_tiers_entry_point(self):
+        cfg = jb.load_config(self.lab_dir)["pytest-slow"]
+        self.assertFalse(cfg["enabled"])
+        self.assertIn("is off", jb.unready("pytest-slow", self.lab_dir, cfg))
+        self.assertEqual(cfg["cmd"][:3], ["{python}", "tools/py_tests.py", "slow"])
+        self.assertIn("--require-aot", cfg["cmd"])
+        self.assertEqual(cfg["needs"], ["{tree}/tools/py_tests.py"])  # a tree without the entry point cannot run it
+        self.assertIn("pytest-slow", jb.NEW_KINDS)
+        self.assertEqual(jb.PRIORITY["pytest-slow"], 2)
+
+    def test_it_is_due_when_it_never_ran_or_last_ran_over_every_h_ago(self):
+        self.on()
+        cfg = jb.load_config(self.lab_dir)["pytest-slow"]
+        with unittest.mock.patch.object(jb, "slow_tier_blocked", return_value=None):
+            self.assertIsNone(jb.unready("pytest-slow", self.lab_dir, cfg))
+            jb._atomic(self.lab_dir / "pytest-slow" / "last-ok", "now\n")
+            self.assertEqual("ran within the last night", jb.unready("pytest-slow", self.lab_dir, cfg))
+            old = time.time() - 21 * 3600
+            os.utime(self.lab_dir / "pytest-slow" / "last-ok", (old, old))
+            self.assertIsNone(jb.unready("pytest-slow", self.lab_dir, cfg))
+
+    def test_it_waits_for_a_running_night_and_for_the_nights_start_window(self):
+        cfg = {"expected_min": 0}
+        self.assertIsNone(jb.slow_tier_blocked(self.lab_dir, cfg, self.at("03:09")))
+        for t in ("03:10", "03:23", "03:44"):
+            self.assertIn("start window", jb.slow_tier_blocked(self.lab_dir, cfg, self.at(t)), t)
+        self.assertIsNone(jb.slow_tier_blocked(self.lab_dir, cfg, self.at("03:45")))
+        self.assertIsNone(jb.slow_tier_blocked(self.lab_dir, cfg, self.at("12:00")))
+        # a tier that takes 30 minutes must start 30 minutes before the window, so it is over when the window opens
+        cfg = {"expected_min": 30}
+        self.assertIsNone(jb.slow_tier_blocked(self.lab_dir, cfg, self.at("02:39")))
+        self.assertIn("02:40", jb.slow_tier_blocked(self.lab_dir, cfg, self.at("02:40")))
+        self.marker("nightly/active")
+        self.assertIn("nightly block is running", jb.slow_tier_blocked(self.lab_dir, {}, self.at("12:00")))
+        old = time.time() - (jb.NIGHTLY_ACTIVE_STALE_H + 1) * 3600  # a crash's leftover marker does not hold it
+        os.utime(self.lab_dir / "nightly" / "active", (old, old))
+        self.assertIsNone(jb.slow_tier_blocked(self.lab_dir, {}, self.at("12:00")))
+
+    def test_the_ladder_picks_it_once_when_due_before_the_rotation_and_not_again(self):
+        self.config()
+        self.on()
+        pl.PLANS["fights"] = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "pass"], core=True)])]
+        r = self.runner()
+        with unittest.mock.patch.object(jb, "slow_tier_blocked", return_value=None):
+            job, run, why = r.choose("abc")
+            self.assertEqual(("pytest-slow", None), (job, run))
+            self.assertIn("ladder", why)
+            r.execute(r.new_run("pytest-slow", "abc"))
+            self.assertTrue((self.lab_dir / "pytest-slow" / "last-ok").exists())
+            self.assertEqual("fights", r.choose("abc")[0])
+        with unittest.mock.patch.object(jb, "slow_tier_blocked", return_value="inside the window"):
+            (self.lab_dir / "pytest-slow" / "last-ok").unlink()
+            self.assertEqual("fights", r.choose("abc")[0])
+
+    def test_a_failing_test_is_a_result_and_a_broken_setup_is_a_failed_job(self):
+        self.on(cmd=["{python}", "-c", "import sys; sys.exit(1)"])
+        r = self.runner()
+        run = r.new_run("pytest-slow", "abc")
+        r.execute(run)
+        self.assertEqual(0, json.loads((run.dir / "job.json").read_text(encoding="utf-8"))["rc"])  # exit 1: tests failed, the job ran
+        self.assertTrue((self.lab_dir / "pytest-slow" / "last-ok").exists())  # so it is not re-run at every pick
+        (self.lab_dir / "pytest-slow" / "last-ok").unlink()
+        self.on(cmd=["{python}", "-c", "import sys; sys.exit(2)"])
+        run = r.new_run("pytest-slow", "abc")
+        r.execute(run)
+        self.assertEqual(1, json.loads((run.dir / "job.json").read_text(encoding="utf-8"))["rc"])  # exit 2: the tier could not run
+        self.assertFalse((self.lab_dir / "pytest-slow" / "last-ok").exists())
 
 
 class GuardTest(Base):

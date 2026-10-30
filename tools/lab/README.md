@@ -141,7 +141,7 @@ groups step did not finish. The rows of the other job types carry the job type a
 
 ## Agent-era job kinds and the priority ladder (`jobs.py`)
 
-Five more job types, one command each, configured as data (defaults in `jobs.DEFAULTS`, overridden per kind in an optional
+Six more job types, one command each, configured as data (defaults in `jobs.DEFAULTS`, overridden per kind in an optional
 `LAB/jobs.json`: `enabled`, `cmd` (symbolic, `{python}` `{tree}` `{lab}` `{job}` expand), `cwd`, `timeout_min`, `needs`, and per
 kind `share`, `weekly`, `weekly_days`, `every_h`, `procs`). Priority ladder, each tick the highest ready job whose guards pass:
 presort (1), `score-real` (2), `train` (3), aimed fights (4), runs/rank (5), `selfplay` (6), the rest and the nightly benches (7).
@@ -163,6 +163,7 @@ older) means self-play first, and the runner log says so; the log also says the 
 | `nightly-real` | 2 | `enabled`, `every_h` (20) since `LAB/nightly/last-ok`; held (reason in runner.log) while `LAB/HALT` or `LAB/PAUSE` exists, `LAB/nightly/active` or `LAB/score/active` is fresh, or the last try was skipped under 1 h ago; 600 min cap | off; placeholder command | runs `rl/nightly_real.py`: per night a fresh 2,000-seed block (`N-<date>[-<agent>]` in `LAB/seeds/`) for the incumbent and each generation promoted since the last night, the lockstep with the emulator arm on `--engine core2`, `--recycle 60`, under `QUIET.lock` (`lab-nightly <UTC>`, refreshed while it runs; waits up to 2 h, then skips). Folder `LAB/nightly/<date>/<agent>/` (+ sibling `<agent>-emu/`); summary.json `nightly` counts a crash as a loss; readiness.json `nightly`; yield: runs, wins, mean_floor, crashes, divergences |
 | `bench-env` | 7 | `enabled` and `every_h` (20) since `LAB/bench-env/last-ok` | off | yield: dec_s, crashes, mem_mb_per_run; readiness.json `bench.env` (next to LAB) |
 | `bench-emu` | 7 | same; needs `{tree}/rl/bench_emu.py` | off | yield: steps_s, clones_s, sims_s; readiness.json `bench.emu` |
+| `pytest-slow` | 2 | `enabled`, `every_h` (20) since `LAB/pytest-slow/last-ok`; held while `LAB/nightly/active` is fresh and from `expected_min` minutes before 03:10Z until 03:45Z (the window the night starts in); needs `{tree}/tools/py_tests.py`; 120 min cap | off | runs `tools/py_tests.py slow` (the modules of `tests/python/slow_tier.txt`, see `docs/PYTHON_TIERS.md`) on the presorted tree; exit 1 (a failing test) is a result, not a failed job, and exit 2 (the list names a missing module) fails it; `timing.json` (seconds per module) in the job folder; add `--baseline <file>` to the command so known failures exit 0 |
 
 Ranking input of the nightly blocks (each folder is already ranked in place; to rank one again or join its arm by hand): `python tools/lab/rank.py LAB/nightly/<date>/<agent> --out <dir> --emu-dir LAB/nightly/<date>/<agent>-emu` (by_family.md/json are written beside top20.md; weights unchanged).
 

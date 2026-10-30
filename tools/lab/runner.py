@@ -556,7 +556,7 @@ class Runner:
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
         cfg = jobs.load_config(self.lab.root)
-        for kind in ("score-real", "train", "nightly-real"):
+        for kind in ("score-real", "train", "nightly-real", *jobs.TIER_KINDS):
             why = jobs.unready(kind, self.lab.root, cfg[kind])
             if kind == "nightly-real" and why and cfg[kind].get("enabled") and jobs.due(self.lab.root, "nightly", float(cfg[kind].get("every_h", 20.0))):
                 if why != self.last_nightly_note:  # due but held: say why once, not at every pick

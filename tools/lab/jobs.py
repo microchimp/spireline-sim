@@ -1,4 +1,5 @@
-"""The agent-era job kinds of the CPU schedule (docs/PLAN.md section 7): selfplay, train, score-real, nightly-real, bench-env, bench-emu.
+"""The agent-era job kinds of the CPU schedule (docs/PLAN.md section 7): selfplay, train, score-real, nightly-real, bench-env, bench-emu,
+pytest-slow.
 
 Each kind is data: a default command, a limit, whether it is on, and the input that makes it ready. ``LAB/jobs.json``
 (optional, read at every choice, keys starting with "_" are notes) overrides any of it per kind:
@@ -17,6 +18,12 @@ nightly-real is a kind of its own (D8, D33 addendum 2): score-real is one comman
 work sits in the driver. Due: LAB/nightly/last-ok older than `every_h` (20); skipped, with the reason, while LAB/HALT or
 LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not finished) or LAB/score/active is fresh.
 
+pytest-slow runs the slow tier of the Python suite (tools/py_tests.py slow; the modules of tests/python/slow_tier.txt) once a night, on the
+presorted tree, after the night: due when LAB/pytest-slow/last-ok is older than `every_h` (20), and held while a nightly block runs
+(LAB/nightly/active fresh) and from `expected_min` minutes before 03:10Z until 03:45Z, the window the night starts in, so it is never
+running when the night is due. Off until LAB/jobs.json turns it on. Its exit code is the tier's (add `--baseline FILE` to the command
+so known failures pass); it writes timing.json (seconds per module) into the job folder.
+
 A job's command may write ``<job>/result.json`` (an object); its keys named in mix.YIELD_COLUMNS become the job's
 yield.tsv columns, and the bench kinds also store it under readiness.json ``bench.env`` / ``bench.emu``.
 """
@@ -30,18 +37,20 @@ import time
 from pathlib import Path
 from typing import Any
 
-NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "bench-emu")
+NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "bench-emu", "pytest-slow")
 BENCHES = ("bench-env", "bench-emu")
+TIER_KINDS = ("pytest-slow",)  # the slow tier of the Python suite, once a night
 # The kinds that exist only because self-play does: self-play, the training (and the promotion it runs) of what it recorded, and the
 # real-game score of what training promoted. `selfplay.share` is judged on their CPU together (mix.loop_cpu), not on self-play alone.
 LOOP_KINDS = ("selfplay", "train", "score-real")  # nightly-real is outside the loop share: it scores the incumbent whether or not self-play ran (D29 accounting)
-PRIORITY = {"presort": 1, "score-real": 2, "nightly-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
+PRIORITY = {"presort": 1, "score-real": 2, "nightly-real": 2, "pytest-slow": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
             "bench-env": 7, "bench-emu": 7}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run
 ACTIVE_STALE_H = SCORE_WINDOW_H + 1.0  # an `active` marker older than this is a crash's leftover
 NIGHTLY_WINDOW_H = 10.0  # the longest a nightly block may run (all agents)
 NIGHTLY_ACTIVE_STALE_H = NIGHTLY_WINDOW_H + 1.0
 NIGHTLY_RETRY_H = 1.0  # after a block that was skipped (the QUIET.lock never freed), the next try is this much later
+NIGHT_START_UTC = (3 * 60 + 10, 3 * 60 + 45)  # minutes of the UTC day: the window the nightly block starts in (due at about 03:23Z)
 
 
 def _placeholder(kind: str, entry: str) -> list[str]:
@@ -62,6 +71,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                   "timeout_min": 40, "procs": 12, "every_h": 20.0, "needs": []},
     "bench-emu": {"enabled": False, "cmd": ["{python}", "rl/bench_emu.py"], "cwd": "{tree}", "timeout_min": 30, "every_h": 20.0,
                   "needs": ["{tree}/rl/bench_emu.py"]},
+    "pytest-slow": {"enabled": False, "cmd": ["{python}", "tools/py_tests.py", "slow", "--require-aot", "--durations", "15", "--timing", "{job}/timing.json"],
+                    "cwd": "{tree}", "timeout_min": 120, "every_h": 20.0, "expected_min": 30.0, "needs": ["{tree}/tools/py_tests.py"]},
 }
 BENCH_KEY = {"bench-env": "env", "bench-emu": "emu"}
 
@@ -176,6 +187,20 @@ def nightly_blocked(lab: Path) -> str | None:
     return None
 
 
+def slow_tier_blocked(lab: Path, cfg: dict[str, Any], now: float | None = None) -> str | None:
+    """Why the slow tier must not start now (None: it may). A nightly block is running, or the clock is inside the window the night
+    starts in, widened at its front by the minutes the tier takes (`expected_min`), so a tier started just before it is over by then."""
+    a = _age_h(Path(lab) / "nightly" / "active")
+    if a is not None and a < NIGHTLY_ACTIVE_STALE_H:
+        return "a nightly block is running (LAB/nightly/active is fresh)"
+    t = time.gmtime(time.time() if now is None else now)
+    minute = t.tm_hour * 60 + t.tm_min
+    lo, hi = NIGHT_START_UTC[0] - int(float(cfg.get("expected_min", 0) or 0)), NIGHT_START_UTC[1]
+    if lo <= minute < hi:
+        return f"inside the nightly block's start window ({lo // 60:02d}:{lo % 60:02d}-{hi // 60:02d}:{hi % 60:02d} UTC)"
+    return None
+
+
 def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
     """None when the kind's input is ready, else why not. The guards are separate (they apply to every kind alike)."""
     if not cfg.get("enabled"):
@@ -196,6 +221,10 @@ def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
         return nightly_blocked(lab)
     if kind in BENCHES:
         return None if due(lab, kind, float(cfg.get("every_h", 20.0))) else "ran within the last night"
+    if kind in TIER_KINDS:
+        if not due(lab, kind, float(cfg.get("every_h", 20.0))):
+            return "ran within the last night"
+        return slow_tier_blocked(lab, cfg)
     return f"unknown kind {kind}"
 
 
@@ -268,6 +297,8 @@ def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str |
                     store_nightly(lab.parent / "readiness.json", res)
                 _atomic(lab / "nightly" / "last-ok", stamp)
                 (lab / "nightly" / "last-skip").unlink(missing_ok=True)
+        elif kind in TIER_KINDS:
+            _atomic(lab / kind / "last-ok", stamp)
         elif kind in BENCHES:
             res = read_result(job_dir)
             if res:

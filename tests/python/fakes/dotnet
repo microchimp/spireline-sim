@@ -3,6 +3,12 @@
 # against it step by step. Each subcommand's exit status and output come from FAKE_* variables.
 # FAKE_CALL_LOG, when set, gets one line per call (the fake python adds its own), to check the order.
 [ -n "${FAKE_CALL_LOG:-}" ] && echo "dotnet $*" >> "$FAKE_CALL_LOG"
+# FAKE_STEP_LOG, FAKE_SLEEP and FAKE_PRIO_LOG: as in the fake python (the C# and EmuDump test steps).
+step() {
+  [ -n "${FAKE_PRIO_LOG:-}" ] && [ -n "${FAKE_PRIO_PY:-}" ] && echo "$1 $("$FAKE_PRIO_PY" "$FAKE_PRIO_SCRIPT")" >> "$FAKE_PRIO_LOG"
+  [ -n "${FAKE_STEP_LOG:-}" ] || return 0
+  local s e; s=$(date +%s.%N); sleep "${FAKE_SLEEP:-0}"; e=$(date +%s.%N); echo "$1 $s $e" >> "$FAKE_STEP_LOG"
+}
 case "$1" in
   --version) echo "9.0.0-fake" ;;
   restore) exit "${FAKE_RESTORE:-0}" ;;
@@ -14,10 +20,12 @@ case "$1" in
     # tools/emudump.Tests has its own pair (FAKE_EMU_SUMMARY, FAKE_EMU_TEST).
     case "$*" in
       *emudump.Tests*)
+        step emudump-tests
         summary="${FAKE_EMU_SUMMARY-Passed!  - Failed:     0, Passed:     3, Skipped:     0, Total:     3}"
         [ -n "$summary" ] && echo "$summary"
         exit "${FAKE_EMU_TEST:-0}" ;;
     esac
+    step csharp
     summary="${FAKE_CS_SUMMARY-Passed!  - Failed:     0, Passed:     7, Skipped:     0, Total:     7}"
     [ -n "$summary" ] && echo "$summary"
     exit "${FAKE_TEST:-0}" ;;

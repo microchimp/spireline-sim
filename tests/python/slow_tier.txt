@@ -1,0 +1,5 @@
+# The slow tier of the Python suite: one test module per line (the name without .py), `# <seconds> s` after it is the
+# time it was measured at. tools/py_tests.py slow runs these (a nightly lab job); tools/py_tests.py fast runs every other
+# module under tests/python (every landing: gate-py.sh and tools/build_and_test.sh). To move a test module between tiers,
+# add or remove its line. Measure with: python tools/py_tests.py all --timing <file.json> on a quiet machine.
+# Rule of thumb: a module over 60 s, or a spawn-pool timing test, or live search.

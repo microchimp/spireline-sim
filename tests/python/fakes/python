@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # A stand-in for the Python that tools/build_and_test.sh is given, for
-# tests/python/test_build_and_test.py. "-m unittest ..." prints FAKE_PY_LOG_FILE and exits
+# tests/python/test_build_and_test.py. "tools/py_tests.py <tier>" (or "-m unittest ...") prints FAKE_PY_LOG_FILE and exits
 # FAKE_PY_EXIT; "tools/fidelity/corpus.py ... check" prints a check line and exits FAKE_CORPUS.
 # FAKE_CALL_LOG, when set, gets one line per call (the fake dotnet adds its own), to check the order.
+# FAKE_STEP_LOG, when set, gets "<step> <start> <end>" (epoch seconds) after the step slept FAKE_SLEEP seconds: the steps'
+# overlap. FAKE_PRIO_LOG gets "<step> <Windows priority class>", read by FAKE_PRIO_PY (a real Python) from this process.
 [ -n "${FAKE_CALL_LOG:-}" ] && echo "python $*" >> "$FAKE_CALL_LOG"
-if [ "$1" = "-m" ]; then
+step() {
+  [ -n "${FAKE_PRIO_LOG:-}" ] && [ -n "${FAKE_PRIO_PY:-}" ] && echo "$1 $("$FAKE_PRIO_PY" "$FAKE_PRIO_SCRIPT")" >> "$FAKE_PRIO_LOG"
+  [ -n "${FAKE_STEP_LOG:-}" ] || return 0
+  local s e; s=$(date +%s.%N); sleep "${FAKE_SLEEP:-0}"; e=$(date +%s.%N); echo "$1 $s $e" >> "$FAKE_STEP_LOG"
+}
+if [ "$1" = "-m" ] || [ "$1" = "tools/py_tests.py" ]; then
+  step python
   [ -n "${FAKE_PY_LOG_FILE:-}" ] && cat "$FAKE_PY_LOG_FILE"
   exit "${FAKE_PY_EXIT:-0}"
 fi
+step corpus
 echo "check: ${FAKE_CORPUS_LINE:-ok: 0 regressed fights}"
 exit "${FAKE_CORPUS:-0}"

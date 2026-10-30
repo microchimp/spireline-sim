@@ -17,7 +17,6 @@ Standard library only: the runner starts this file from its own code folder, not
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import os
@@ -36,9 +35,13 @@ SCAN_LIMIT = 80  # presort folders looked at, newest first
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-@functools.lru_cache(maxsize=512)
+_TREES: dict[tuple[str, str], tuple[str, ...]] = {}  # (fork, sha) -> tree ids: a commit's trees never change; a failure is not kept
+
+
 def trees(fork: str, sha: str) -> tuple[str, ...] | None:
     """The git tree ids of WALK_TREES at a commit of the fork; None when the commit or a path is not there."""
+    if (fork, sha) in _TREES:
+        return _TREES[(fork, sha)]
     out = []
     for p in WALK_TREES:
         try:
@@ -50,7 +53,8 @@ def trees(fork: str, sha: str) -> tuple[str, ...] | None:
         if r.returncode != 0 or not t:
             return None
         out.append(t)
-    return tuple(out)
+    _TREES[(fork, sha)] = tuple(out)
+    return _TREES[(fork, sha)]
 
 
 def data_floor(*paths: Path) -> float:

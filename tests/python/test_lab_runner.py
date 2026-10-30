@@ -1119,7 +1119,7 @@ class WalkReuseTest(unittest.TestCase):
         for f in (self.codex, self.dec, self.dec / "a.cs"):
             os.utime(f, (self.old - 100, self.old - 100))
         self.sig = pl.walk_sig()
-        wr.trees.cache_clear()
+        wr._TREES.clear()
 
     def git(self, *a: str) -> str:
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
@@ -1150,7 +1150,7 @@ class WalkReuseTest(unittest.TestCase):
         return d
 
     def find(self, sha: str) -> str | None:
-        wr.trees.cache_clear()
+        wr._TREES.clear()
         return wr.find_source(self.runs, self.fork, sha, self.sig, wr.data_floor(self.codex, self.dec))
 
     def test_walk_trees_are_what_refset_score_builds_emudump_from(self):
