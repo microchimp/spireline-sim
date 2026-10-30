@@ -1480,8 +1480,10 @@ public sealed class RunEngine : Core2.ICombatEndHost
                         isRestSite: true,
                         cameFromUnknown: false
                     );
+                    // Every rest site is a room of its own with its options built fresh, so
+                    // nothing of the last visit's screen comes along.
                     State.RestOptionsTaken = 0;
-                    State.RestOptionsTaken = 0;
+                    State.RestResultPending = false;
                     State.Phase = RunPhase.Rest;
                     break;
                 case RunConstants.NodeShop:
@@ -3017,6 +3019,23 @@ public sealed class RunEngine : Core2.ICombatEndHost
     private int AdvanceAfterNode(out bool terminal)
     {
         terminal = false;
+        // A screen a rest-site option opened (the heal's rewards: Dream Catcher's card, Tiny
+        // Mailbox's potions; a dug relic's own screen) closes back onto the rest site, as the
+        // game's option awaits it and the room's screen comes back: its result page, or under
+        // Miniature Tent the options left. Only the rest site's own leave, from the Rest phase,
+        // walks on. Walking on from the reward screen left `RestResultPending` set, and the next
+        // rest site of the run then answered its first action as that stale result page and
+        // was left without a choice (nightly 2026-10-29, G1b02fc9e96).
+        if (
+            State.Phase != RunPhase.Rest
+            && State.CurrentNodeType == RunConstants.NodeRest
+            && State.RestOptionsTaken != 0
+        )
+        {
+            State.Phase = RunPhase.Rest;
+            return 0;
+        }
+
         // The BACKSTOP, not the real ending: a run finishes by beating the last act's boss,
         // which `AdvanceAfterRelicReward` handles. This only catches a run that has walked
         // past where any map could take it -- so it reads the boss row off the map the run
@@ -3092,9 +3111,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 QueuePotionRewards([0, 0]);
                 OfferNextRestPotion();
                 State.Phase = RunPhase.RelicReward;
-                return 0;
             }
 
+            // The heal is taken whether or not its rewards opened a screen: the game's heal
+            // option waits for its rewards screen to close and the rest site then shows again,
+            // which `AdvanceAfterNode` does once that screen closes.
             FinishRestOption(action);
             return 0;
         }
@@ -5732,8 +5753,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
 
             State.Deck[action] = State.Deck[action] with { Upgraded = true };
             State.PendingRestUpgrade = false;
-            State.RestResultPending = true;
-            State.RestOptionsTaken = 0;
+            // The smith's card screen closes back onto the rest site as every option's screen
+            // does: its result page, or under Miniature Tent the options left with the smith
+            // spent. It went to the result page whatever the relics said, so a Tent run that
+            // smithed was walked out of a rest site the game kept open.
+            FinishRestOption(RunConstants.RestUpgradeAction);
             State.Phase = RunPhase.Rest;
             return 0;
         }
