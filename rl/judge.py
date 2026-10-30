@@ -56,20 +56,30 @@ class JudgeNet(CombatNet):
     def __init__(self, vocab, n_buckets: int, d_model: int = 128, layers: int = 2, heads: int = 4, dropout: float = 0.1):
         super().__init__(vocab, n_buckets, d_model=d_model, layers=layers, heads=heads, dropout=dropout)
         self.judge = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, JUDGE_OUT))
+        # The win logit's calibration, scale and shift (Platt scaling), fitted on the validation starts after training; (1, 0)
+        # while training. A buffer, so the checkpoint, the CPU judge and the server all apply it.
+        self.register_buffer("win_cal", torch.tensor([1.0, 0.0]))
+
+    @classmethod
+    def from_blob(cls, blob: dict) -> JudgeNet:
+        model = cls(VOCAB, int(blob["n_buckets"]), d_model=int(blob["d_model"]), layers=int(blob["layers"]), heads=int(blob["heads"]))
+        missing, unexpected = model.load_state_dict(blob["model"], strict=False)
+        if unexpected or set(missing) - {"win_cal"}:  # a checkpoint from before the calibration reads as uncalibrated
+            raise ValueError(f"judge checkpoint keys: missing {missing}, unexpected {unexpected}")
+        return model
 
     def judge_out(self, types, ids, owners, feats, mask) -> torch.Tensor:
         """[B, 3]: win logit, end-HP-fraction logit (given a win), potions held at the end (given a win, softplus applied)."""
         out = self.judge(self._trunk(types, ids, owners, feats, mask)[:, 0])
-        return torch.cat([out[:, :2], nn.functional.softplus(out[:, 2:3])], dim=1)
+        win = out[:, :1] * self.win_cal[0] + self.win_cal[1]
+        return torch.cat([win, out[:, 1:2], nn.functional.softplus(out[:, 2:3])], dim=1)
 
 
 def load(path: str | Path, device: str = "cpu") -> tuple[JudgeNet, dict]:
     blob = torch.load(str(path), map_location="cpu", weights_only=True)
     if blob.get("kind") != KIND:
         raise ValueError(f"{Path(path).name} is not a judge checkpoint")
-    model = JudgeNet(VOCAB, int(blob["n_buckets"]), d_model=int(blob["d_model"]), layers=int(blob["layers"]), heads=int(blob["heads"]))
-    model.load_state_dict(blob["model"])
-    return model.eval().to(device), blob
+    return JudgeNet.from_blob(blob).eval().to(device), blob
 
 
 def batch_tensors(tokens: list, device="cpu") -> dict:
@@ -234,6 +244,27 @@ def judge_loss(out: torch.Tensor, y: torch.Tensor, hp_w: float = 1.0, pot_w: flo
     return loss
 
 
+def fit_calibration(model: JudgeNet, data: Positions, idx: np.ndarray) -> dict:
+    """Platt scaling of the win logit on the validation starts' positions: the scale and shift that minimise its log loss there."""
+    model.win_cal.copy_(torch.tensor([1.0, 0.0]))
+    raw = torch.from_numpy(predict_rows(model, data, idx)[:, 0]).double()
+    y = torch.from_numpy(data.labels[idx, 0]).double()
+    ab = torch.tensor([1.0, 0.0], dtype=torch.float64, requires_grad=True)
+    opt = torch.optim.LBFGS([ab], lr=0.5, max_iter=200)
+
+    def closure():
+        opt.zero_grad()
+        loss = nn.functional.binary_cross_entropy_with_logits(raw * ab[0] + ab[1], y)
+        loss.backward()
+        return loss
+
+    before = float(nn.functional.binary_cross_entropy_with_logits(raw, y))
+    opt.step(closure)
+    after = float(nn.functional.binary_cross_entropy_with_logits(raw * ab[0].detach() + ab[1].detach(), y))
+    model.win_cal.copy_(ab.detach().float())
+    return {"scale": round(float(ab[0]), 4), "shift": round(float(ab[1]), 4), "val_log_loss": [round(before, 5), round(after, 5)]}
+
+
 def predict_rows(model: JudgeNet, data: Positions, idx: np.ndarray, batch: int = 1024) -> np.ndarray:
     model.eval()
     outs = []
@@ -314,7 +345,7 @@ def cmd_train(a) -> int:
     model = JudgeNet(VOCAB, dims["n_buckets"], d_model=dims["d_model"], layers=dims["layers"], heads=dims["heads"], dropout=a.dropout)
     if init_blob:
         missing, unexpected = model.load_state_dict(init_blob["model"], strict=False)
-        assert all(k.startswith("judge.") for k in missing) and not unexpected, (missing, unexpected)
+        assert all(k.startswith("judge.") or k == "win_cal" for k in missing) and not unexpected, (missing, unexpected)
     model.to(device)
     # The judge head learns at lr; the trunk (the agent's, when warm-started) at lr x trunk_lr, or not at all (0): a few hundred
     # starts' positions overfit a whole trunk within an epoch, while the agent's trunk already reads positions well.
@@ -358,13 +389,15 @@ def cmd_train(a) -> int:
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             time.sleep(a.pause)  # the card is shared with the lab's trainer: a breath between epochs
     model.load_state_dict(best_state)
+    cal = fit_calibration(model, data, val_idx)
+    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     held = evaluate(model, data, 2, a.init)
     blob = {"kind": KIND, "version": VERSION, "model": best_state, **dims, "outputs": ["win_logit", "hp_frac_logit", "potions"],
             "trained": {"data_sha256": hashlib.sha256(Path(a.data).read_bytes()).hexdigest(), "positions": int(len(data.lens)),
                         "train": int(len(train_idx)), "val": int(len(val_idx)), "heldout": held["positions"],
                         "init": Path(a.init).parent.name if a.init else None, "epochs": a.epochs, "lr": a.lr, "trunk_lr": a.trunk_lr, "wd": a.wd,
                         "dropout": a.dropout, "batch": a.batch,
-                        "best_val_loss": round(best, 5), "seed": a.seed}}
+                        "best_val_loss": round(best, 5), "seed": a.seed, "win_calibration": cal}}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(blob, a.out)
     report = {"version": VERSION, "trained": blob["trained"], "log": log, "heldout": held}

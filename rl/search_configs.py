@@ -107,7 +107,7 @@ A3_V1 = SearchConfig("a3-v1", 30, min_child_sims=1, c=0.2,
 # judge-v0 (D41): a3-v1's search with the fight judge (rl/judge.py) at each simulation's leaf in place of a play-out, at
 # a3-v1's wall time per decision. A judged simulation costs a fraction of a played-out one, so the same time buys
 # JUDGE_SIMS_X times the simulations (measured on the lockstep gym, docs/rl/JUDGE.md); the schedule's shape is a3-v1's.
-JUDGE_SIMS_X = 4
+JUDGE_SIMS_X = 3
 JUDGE_V0 = SearchConfig("judge-v0", 30 * JUDGE_SIMS_X, min_child_sims=1, c=0.2, leaf="judge",
                         schedule=Schedule(high=30 * JUDGE_SIMS_X, many_moves=99, kind_mult={"target": 4, "select": 4}, lo=1,
                                           hi=2000 * JUDGE_SIMS_X))

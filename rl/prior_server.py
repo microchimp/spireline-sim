@@ -239,7 +239,7 @@ class PriorServer:
         if self.judge_mode:
             from judge import JudgeNet  # noqa: PLC0415
 
-            model = JudgeNet(VOCAB, blob["n_buckets"], d_model=blob["d_model"], layers=blob["layers"], heads=blob["heads"])
+            model = JudgeNet.from_blob(blob)
         else:
             model = CombatNet(
                 VOCAB,
@@ -248,7 +248,7 @@ class PriorServer:
                 layers=blob.get("layers", 4),
                 heads=blob.get("heads", 4),
             )
-        model.load_state_dict(blob["model"])
+            model.load_state_dict(blob["model"])
         self.model = model.eval().to(self.device)
         self.policy_sha = hashlib.sha256(Path(self.policy).read_bytes()).hexdigest()
         self.vocab_sha = combat_prior.vocab_sha256()
