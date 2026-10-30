@@ -245,6 +245,11 @@ class LockstepGameTests(unittest.TestCase):
             self.assertEqual((k1[key]["lockstep"], k1[key]["prior_path"], k1[key]["worlds"]), (1, "cpu", "reload"))
         self.assertGreater(sum(s["requests"] for s in self.k1_stats), 50)  # the prior was asked, through the batch
 
+    def test_a_lockstep_process_plays_on_the_runs_engine_not_its_parents(self):
+        # The test's own process runs whatever engine its environment named (none: old); the gym's processes must run the
+        # meta's (core2), as fight_gym's workers do. Loading the library before choosing the engine ran them on the old one.
+        self.assertEqual([s["engine"] for s in self.k1_stats], ["core2"])
+
     def test_k4_plays_the_same_games_as_k1_in_batches(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "k4.jsonl"

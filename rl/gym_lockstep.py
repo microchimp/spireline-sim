@@ -72,10 +72,12 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 import fight_gym as fg  # noqa: E402
-import live_search  # noqa: E402 -- the search's steps; loads the emulator library
-from sts2_gym import native  # noqa: E402
+
+# Nothing here loads the emulator library at import: a lockstep process selects its engine first (fight_gym._init_worker), and
+# sts2_gym.native takes the engine when it loads. Imported at import, it would run on the parent's.
 
 TAG = "gym-gpu"
+SOLVE_REFUSED = -3  # native.SOLVE_REFUSED
 K_MAX = 100  # fights a process holds: two combats each, inside the emulator's pool of 256 with room for the rest
 HANG_S = 180.0  # no heartbeat this long while a process holds fights: a step that never returns
 MEM_LIMIT_GB = 3.0
@@ -128,6 +130,10 @@ class CpuExact:
                 out.append(error)
         return out
 
+    def warm(self) -> None:
+        if self.prior_fn is not None and hasattr(self.prior_fn, "warm"):
+            self.prior_fn.warm()
+
     def stats(self) -> dict:
         return {}
 
@@ -147,6 +153,11 @@ class CpuStacked:
         tokens = [encode_position(handle, self.probe) for handle, _ in requests]
         return combat_prior.network(self.policy).weights(tokens, [list(legal) for _, legal in requests])
 
+    def warm(self) -> None:
+        import combat_prior  # noqa: PLC0415
+
+        combat_prior.network(self.policy)
+
     def stats(self) -> dict:
         return {}
 
@@ -161,6 +172,9 @@ class ServerBatch:
 
     def __call__(self, requests: list) -> list:
         return self.remote.batch(requests)
+
+    def warm(self) -> None:
+        self.remote.warm()
 
     def stats(self) -> dict:
         import prior_client  # noqa: PLC0415
@@ -177,6 +191,9 @@ class Uniform:
         import numpy as np  # noqa: PLC0415
 
         return [np.full(len(legal), 1.0 / max(1, len(legal))) for _, legal in requests]
+
+    def warm(self) -> None:
+        pass
 
     def stats(self) -> dict:
         return {}
@@ -212,6 +229,7 @@ class Grader:
         self.calls = 0
 
     def __call__(self, world, k: int, best) -> dict:
+        from sts2_gym import native  # noqa: PLC0415
         from tools.solver import coverage  # noqa: PLC0415
 
         t0 = time.perf_counter()
@@ -245,7 +263,7 @@ class Grader:
 
 def grade_summary(grades: list[dict]) -> dict:
     """Per game: decisions graded, horizon 0 finished, exact, and the summed regret (value - q_played) where exact."""
-    ok = [g for g in grades if "error" not in g and g.get("status") != native.SOLVE_REFUSED]
+    ok = [g for g in grades if "error" not in g and g.get("status") != SOLVE_REFUSED]
     exact = [g for g in ok if g.get("exact") and g.get("value") is not None and g.get("q_played") is not None]
     return {"graded": len(grades), "h0": sum(bool(g.get("h0")) for g in ok), "exact": len(exact),
             "regret_exact": round(sum(g["value"] - g["q_played"] for g in exact), 6), "seconds": round(sum(g["s"] for g in grades), 3)}
@@ -259,6 +277,8 @@ def _world(start: dict, j: int, worlds: str, bases: collections.OrderedDict):
     if worlds == "reload":
         return fg._fresh_world(start["doc"], start["id"], j, "g")  # noqa: SLF001
     import combat_mcts  # noqa: PLC0415
+
+    from sts2_gym import native  # noqa: PLC0415
 
     base = bases.pop(start["id"], None)
     if base is None:
@@ -309,6 +329,7 @@ class _Context:
         self.grader = Grader(opts["grade_wall_s"]) if opts.get("grade_wall_s") else None
         self.evaluator = make_evaluator(opts["prior"], self.extra.get("prior_fn"), opts.get("server"))
         self.label = {"lockstep": self.k, "prior_path": self.evaluator.name, "worlds": self.worlds}
+        self.evaluator.warm()  # the network loaded (or the server's connection open) now: the first game's deadline is its own
 
 
 class _Game:
@@ -363,6 +384,11 @@ def _child_main(conn, shared, init_args: tuple, opts: dict) -> None:
             from tools.solver import coverage  # noqa: PLC0415
 
             coverage._below_normal()  # noqa: SLF001
+        from sts2_gym import native  # noqa: PLC0415
+
+        engine = native.engine()
+        if init_args and engine.split(":")[0] != str(init_args[0]).split(":")[0]:
+            raise RuntimeError(f"the process plays on engine {engine.split(':')[0]}, not {init_args[0]}")
         ctx = _Context(opts)
     except Exception as error:  # noqa: BLE001 -- the parent stops the job: a process that cannot start never will
         conn.send(("fatal", f"{type(error).__name__}: {error}"[:300]))
@@ -430,7 +456,7 @@ def _child_main(conn, shared, init_args: tuple, opts: dict) -> None:
     conn.send(("stats", {"games": done, "rounds": rounds, "requests": requests, "batch_hist": {str(k): v for k, v in sorted(hist.items())},
                          "wall_s": round(total, 3), "net_s": round(t_net, 3), "games_s": round(t_games, 3), "idle_s": round(t_idle, 3),
                          "grade_s": round(ctx.grader.seconds, 3) if ctx.grader else 0.0, "cpu_s": round(time.process_time(), 3),
-                         "evaluator": ctx.evaluator.name, "evaluator_stats": ctx.evaluator.stats()}))
+                         "evaluator": ctx.evaluator.name, "evaluator_stats": ctx.evaluator.stats(), "engine": engine.split(":")[0]}))
 
 
 # ---------------------------------------------------------------------------------------------------------- the parent
@@ -456,7 +482,16 @@ def run_lockstep(tasks: list, target: Path, procs: int, k: int, init_args: tuple
         shared = ctx.RawArray(ctypes.c_longlong, 2)
         shared[0] = -2
         p = ctx.Process(target=_child_main, args=(theirs, shared, init_args, {**opts, "k": k}), daemon=True)
-        p.start()
+        saved = os.environ.get("STS2_ENGINE")
+        if init_args:  # the child's environment names its engine too, whatever it imports before choosing it
+            os.environ["STS2_ENGINE"] = str(init_args[0])
+        try:
+            p.start()
+        finally:
+            if saved is None:
+                os.environ.pop("STS2_ENGINE", None)
+            else:
+                os.environ["STS2_ENGINE"] = saved
         theirs.close()
         return {"p": p, "c": mine, "sh": shared, "held": {}, "sent": {}, "prog": {}, "beat": 0, "beat_t": time.perf_counter()}
 
@@ -738,6 +773,8 @@ def cmd_play(a) -> int:
 
 
 def main(argv=None) -> int:
+    import live_search  # noqa: F401, PLC0415 -- the search's steps (and the emulator library) for this command line
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", required=True)
     ap.add_argument("--arm", choices=tuple(fg.ARMS), default="a3-v1")
