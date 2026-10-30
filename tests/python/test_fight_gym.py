@@ -5,6 +5,7 @@ import json
 import math
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -30,6 +31,65 @@ def _runs() -> list[dict]:
     rows += [_run(200 + i, 24, ACT2[:23]) for i in range(10)]  # reached the floor-21 elite only
     rows += [_run(300, 12, ACT1[:11]), _run(301, 17, ACT1, end="lost"), {**_run(302, 17, ACT1), "crash": True}]
     return rows
+
+
+def _fake_task(task):
+    """A worker task for the guard tests: ("sleep", id, seconds), ("alloc", id, MB, then sleeps), ("ok", id, 0)."""
+    kind, tid, x = task
+    fg._progress({"k": 7, "turns": 3})
+    if kind == "sleep":
+        time.sleep(x)
+    if kind == "alloc":
+        blob = bytearray(int(x * 2**20))
+        blob[:: 4096] = b"x" * len(blob[:: 4096])  # touch every page so it is private memory
+        time.sleep(60)
+    if kind == "raise":
+        raise RuntimeError("combat action refused")
+    return {"_task": list(task), "ok": True}
+
+
+def _fake_hard(task):
+    return 3.0
+
+
+class WorkerGuardTests(unittest.TestCase):
+    def test_a_task_past_its_deadline_or_over_memory_is_capped_and_the_rest_still_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "rows.jsonl"
+            tasks = [("sleep", "a", 120), ("ok", "b", 0), ("alloc", "c", 600), ("raise", "d", 0), ("ok", "e", 0)]
+            t0 = time.perf_counter()
+            stopped = fg.run_tasks(tasks, _fake_task, target, 2, hard_of=_fake_hard, mem_limit=300 * 2**20,
+                                   capped_of=fg.capped_row, poll_s=0.2)
+            seconds = time.perf_counter() - t0
+            self.assertIsNone(stopped)
+            self.assertLess(seconds, 60)  # never waits on the sleeper or the allocator
+            rows = {r["_task"][1]: r for r in fg.read_jsonl(target)}
+            self.assertEqual(sorted(rows), ["a", "b", "c", "d", "e"])
+            self.assertTrue(rows["b"]["ok"] and rows["e"]["ok"])
+            self.assertEqual(rows["a"]["cap_reason"], "deadline (killed)")
+            self.assertGreaterEqual(rows["a"]["seconds"], 3.0)
+            self.assertTrue(rows["c"]["cap_reason"].startswith("memory over 0.3 GB"), rows["c"])
+            self.assertTrue(rows["d"]["cap_reason"].startswith("error: RuntimeError"))
+
+    def test_a_capped_game_is_lost_with_how_far_it_got(self):
+        row = fg.capped_row(("x16", "S|f17", 1, "act1-boss"), "deadline (killed)", 1234.5, {"k": 88, "turns": 20, "sims": 9000,
+                                                                                               "max_hp": 93, "root_value": -40.0})
+        self.assertEqual((row["arm"], row["start"], row["j"], row["cat"]), ("x16", "S|f17", 1, "act1-boss"))
+        self.assertEqual((row["won"], row["capped"], row["L0"], row["decisions"], row["turns"], row["seconds"]),
+                         (False, True, 0.0, 88, 20, 1234.5))
+        self.assertEqual(row["root_value"], -40.0)
+        self.assertEqual(fg.game_key(row), ("x16", "S|f17", 1))  # a resume skips it
+        cont = fg.capped_row(("cont", "S|f17", 4), "memory over 3.0 GB (killed)", 9.0, {})
+        self.assertEqual((cont["type"], cont["won"], cont["L0"]), ("cont", False, 0.0))
+
+    def test_deadlines_are_ten_times_the_arms_mean_and_the_kill_comes_later(self):
+        self.assertAlmostEqual(fg.deadline_s("x16", "act1-boss"), 742.0)
+        self.assertAlmostEqual(fg.deadline_s("x4", "act2-elite"), 350.0)
+        self.assertAlmostEqual(fg.task_deadline(("a3-v1", "S|f17", 0, "act1-boss")), 64.0)
+        self.assertAlmostEqual(fg.task_deadline(("cont", "S|f17", 0)), 64.0)
+        self.assertGreater(fg.hard_deadline(("x16", "S|f17", 0, "act1-boss")), fg.deadline_s("x16", "act1-boss"))
+        for (cat, arm), m in fg.MEAN_S.items():
+            self.assertGreater(m, 0, (cat, arm))
 
 
 class SeedPairingTests(unittest.TestCase):

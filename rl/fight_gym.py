@@ -31,17 +31,19 @@ the machine is free. Workers run at BelowNormal, at most six. Lab code: nothing 
 from __future__ import annotations
 
 import argparse
+import ctypes
 import dataclasses
 import datetime as dt
 import hashlib
 import json
 import math
 import multiprocessing as mp
+import multiprocessing.connection
 import os
 import random
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +65,15 @@ ARMS = {"a3-v1": 1, "x4": 4, "x16": 16}
 POTION_VALUE = 10.0  # live_search's and L0's potion value
 DECISION_CAP = 400  # a game still going after this many decisions is counted as capped (and not won)
 M3_PLAYOUTS = 30
+MEM_LIMIT_GB = 3.0  # a worker over this private memory is killed: six of them stay inside the PC's 32 GB with room to spare
+# Mean seconds per game: the full run's a3-v1 and x16 Act-1 boss games (2,000 each); the others from the 5-game cost
+# measurement times 1.5 (the full run's x16 and a3-v1 means came out 1.7 and 1.3 times their measurement's).
+MEAN_S = {("act1-boss", "a3-v1"): 6.4, ("act1-boss", "x4"): 19.0, ("act1-boss", "x16"): 74.2,
+          ("act2", "a3-v1"): 11.0, ("act2", "x4"): 35.0, ("act2", "x16"): 95.0}
+DEADLINE_X = 10  # a game past ten times its arm's mean is capped and lost, never a hang
+HARD_GRACE = 1.5  # the parent kills a worker 1.5x past the deadline plus a minute (a search or a step that never returns)
+PRED_DEADLINE_S = 300.0
+REPLAY_DEADLINE_S = 1800.0
 
 
 # ---------------------------------------------------------------------------------------------------------- pure parts
@@ -309,10 +320,188 @@ def _say(out: Path, msg: str) -> None:
         fh.write(f"{utc().strftime('%Y-%m-%dT%H:%M:%SZ')} {msg}\n")
 
 
+def deadline_s(arm: str, cat: str) -> float:
+    """A game's wall-clock deadline: DEADLINE_X times its arm's mean seconds per game in its category."""
+    return DEADLINE_X * MEAN_S[("act1-boss" if cat.startswith("act1") else "act2", arm)]
+
+
+def task_deadline(task: tuple) -> float:
+    """The soft deadline of any gym task (a game, an M3 continuation or prediction, a replay), in seconds."""
+    if task[0] in ARMS:
+        return deadline_s(task[0], task[3] if len(task) > 3 else "act1-boss")
+    if task[0] == "cont":
+        return deadline_s("a3-v1", "act1-boss")
+    if task[0] == "pred":
+        return PRED_DEADLINE_S
+    return REPLAY_DEADLINE_S
+
+
+def hard_deadline(task: tuple) -> float:
+    """When the parent kills the task's worker: past the soft deadline (which a game checks itself between decisions) by
+    half again plus a minute, for a search or an engine step that never returns."""
+    return task_deadline(task) * HARD_GRACE + 60.0
+
+
+def capped_row(task: tuple, reason: str, seconds: float, prog: dict) -> dict:
+    """The row of a task its worker could not finish (killed at the deadline or by the memory guard, died, or raised): a
+    game is recorded as capped and lost, with how far it got."""
+    kind, tid, j = task[0], task[1], task[2]
+    base = {"_task": [kind, tid, j], "capped": True, "cap_reason": reason, "seconds": round(seconds, 2)}
+    if kind in ARMS or kind == "cont":
+        game = {"won": False, "end_hp": 0, "max_hp": prog.get("max_hp"), "potions_used": prog.get("potions_used", 0),
+                "potions_held": 0, "turns": prog.get("turns", 1), "decisions": prog.get("k", 0), "sims": prog.get("sims", 0),
+                "budget_exhausted": 0, "ai_assumed": 0, "max_search_s": prog.get("max_search_s"), "L0": 0.0,
+                **{k: prog[k] for k in ("root_value", "root_p_death", "root_best_value", "root_sims", "first_move") if k in prog}}
+        if kind == "cont":
+            return {**base, "type": "cont", "start": tid, "j": j, **game}
+        return {**base, "arm": kind, "start": tid, "j": j, "cat": task[3] if len(task) > 3 else "act1-boss", **game}
+    if kind == "pred":
+        return {**base, "type": "pred", "start": tid, "j": j}
+    return {**base, "seed": tid, "ix": j, "same": False, "starts": [], "wanted": len(task[4]) if len(task) > 4 else 0,
+            "captured": 0, "path_same": False, "cards_same": False, "rests_same": False, "floor": None, "end": reason}
+
+
+class _PMC(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_uint32), ("PageFaultCount", ctypes.c_uint32)] + [(n, ctypes.c_size_t) for n in (
+        "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+        "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage", "PrivateUsage")]
+
+
+def private_bytes(pid: int) -> int | None:
+    """A process's private bytes (Windows), or None where it cannot be read."""
+    if os.name != "nt":
+        return None
+    from ctypes import wintypes  # noqa: PLC0415
+
+    k32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD]
+    h = k32.OpenProcess(0x1000 | 0x0010, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ
+    if not h:
+        return None
+    try:
+        c = _PMC()
+        c.cb = ctypes.sizeof(_PMC)
+        return int(c.PrivateUsage) if psapi.GetProcessMemoryInfo(h, ctypes.byref(c), c.cb) else None
+    finally:
+        k32.CloseHandle(h)
+
+
+def _worker_main(conn, init, init_args: tuple, fn) -> None:
+    """A worker: its initializer once, then tasks off its pipe until None; progress and results go back the same way."""
+    if init is not None:
+        init(*init_args)
+    _W["conn"] = conn
+    while True:
+        try:
+            task = conn.recv()
+        except (EOFError, OSError):
+            return
+        if task is None:
+            return
+        try:
+            res = fn(task)
+        except Exception as error:  # noqa: BLE001 -- recorded as the task's capped row, never lost
+            conn.send(("error", f"{type(error).__name__}: {error}"[:300]))
+            continue
+        conn.send(("done", res))
+
+
+def _progress(d: dict) -> None:
+    """Tell the parent how far the task has got (a worker's only message besides its result)."""
+    conn = _W.get("conn")
+    if conn is not None:
+        conn.send(("progress", d))
+
+
+def run_tasks(tasks: list, fn, target: Path, procs: int, *, init=None, init_args: tuple = (), hard_of=hard_deadline,
+              mem_limit: float | None = None, capped_of=capped_row, stop=None, refresh=None, poll_s: float = 1.0) -> str | None:
+    """Run `fn` over `tasks` in this job's own spawned workers, appending each result to `target` as it comes.
+
+    Never waits forever: a worker whose task runs past `hard_of(task)` seconds, or whose private memory passes `mem_limit`
+    bytes, is killed by its own process handle and replaced, and its task gets `capped_of`'s row; a worker that dies or
+    raises gets one too. `stop()` is asked every ten seconds; a reason stops every worker and is returned (the tasks still
+    running get no row and are left for the next run). None when every task has a row.
+    """
+    ctx = mp.get_context("spawn")
+    left = list(tasks)
+
+    def spawn() -> dict:
+        mine, theirs = ctx.Pipe()
+        p = ctx.Process(target=_worker_main, args=(theirs, init, init_args, fn), daemon=True)
+        p.start()
+        theirs.close()
+        return {"p": p, "c": mine, "task": None, "t0": 0.0, "prog": {}}
+
+    def kill(slot: dict) -> None:
+        if slot["p"].is_alive():
+            slot["p"].kill()  # this job's own child, by its handle
+        slot["p"].join(10)
+        slot["c"].close()
+
+    slots = [spawn() for _ in range(min(MAX_PROCS, max(1, procs), max(1, len(left))))]
+    stopped, asked = None, time.time()
+    with open(target, "a", encoding="utf-8") as fh:
+
+        def write(row: dict) -> None:
+            fh.write(json.dumps(row) + "\n")
+            fh.flush()
+
+        try:
+            while left or any(s["task"] is not None for s in slots):
+                for s in slots:
+                    if s["task"] is None and left:
+                        s["task"], s["t0"], s["prog"] = left.pop(0), time.perf_counter(), {}
+                        s["c"].send(s["task"])
+                busy = [s for s in slots if s["task"] is not None]
+                ready = mp.connection.wait([s["c"] for s in busy], timeout=poll_s)
+                for i, s in enumerate(slots):
+                    if s["task"] is None or s["c"] not in ready:
+                        continue
+                    try:
+                        while s["c"].poll():
+                            kind, msg = s["c"].recv()
+                            if kind == "progress":
+                                s["prog"].update(msg)
+                                continue
+                            write(msg if kind == "done" else capped_of(s["task"], f"error: {msg}", time.perf_counter() - s["t0"], s["prog"]))
+                            s["task"] = None
+                            break
+                    except (EOFError, OSError):
+                        write(capped_of(s["task"], "worker died", time.perf_counter() - s["t0"], s["prog"]))
+                        kill(s)
+                        slots[i] = spawn()
+                now = time.perf_counter()
+                for i, s in enumerate(slots):
+                    if s["task"] is None:
+                        continue
+                    reason = None
+                    if now - s["t0"] > hard_of(s["task"]):
+                        reason = "deadline (killed)"
+                    elif mem_limit is not None and (private_bytes(s["p"].pid) or 0) > mem_limit:
+                        reason = f"memory over {mem_limit / 2**30:.1f} GB (killed)"
+                    if reason:
+                        kill(s)
+                        write(capped_of(s["task"], reason, now - s["t0"], s["prog"]))
+                        slots[i] = spawn()
+                if refresh is not None:
+                    refresh()
+                if stop is not None and time.time() - asked > 10:
+                    asked = time.time()
+                    stopped = stop()
+                    if stopped:
+                        break
+        finally:
+            for s in slots:
+                kill(s)
+    return stopped
+
+
 def guarded_run(out: Path, what: str, tasks: list, fn, target: Path, procs: int, init_args: tuple) -> None:
-    """Run `fn` over `tasks` in a spawn pool (this job's own children only), appending each result to `target`; stop the
-    pool whenever `blocked()` and resume when free. The caller filters done tasks before; tasks done here are skipped on a
-    resume by the same filter."""
+    """Run `fn` over `tasks` with `run_tasks` (the deadline and memory guards), appending each row to `target`; stop the
+    workers whenever `blocked()` and resume when free. Done tasks (a row in `target`) are skipped on a resume."""
     left = list(tasks)
     while left:
         why = blocked()
@@ -322,41 +511,24 @@ def guarded_run(out: Path, what: str, tasks: list, fn, target: Path, procs: int,
                 time.sleep(60)
         hold(True)
         _say(out, f"{what}: computing; {len(left)} left")
-        pool = mp.get_context("spawn").Pool(processes=min(MAX_PROCS, max(1, procs)), initializer=_init_worker,
-                                            initargs=init_args, maxtasksperchild=40)
-        stopped, refreshed, finished = None, time.time(), []
+        last = [time.time()]
+
+        def refresh() -> None:
+            if time.time() - last[0] > 3000:
+                hold(True)
+                last[0] = time.time()
+
         try:
-            it = pool.imap_unordered(fn, left)
-            with open(target, "a", encoding="utf-8") as fh:
-                for _ in range(len(left)):
-                    while True:
-                        try:
-                            res = it.next(timeout=10)
-                            break
-                        except mp.TimeoutError:
-                            stopped = blocked()
-                            if stopped:
-                                break
-                    if stopped:
-                        break
-                    fh.write(json.dumps(res) + "\n")
-                    fh.flush()
-                    finished.append(res.get("_task"))
-                    if time.time() - refreshed > 3000:
-                        hold(True)
-                        refreshed = time.time()
-                    stopped = blocked()
-                    if stopped:
-                        break
+            stopped = run_tasks(left, fn, target, procs, init=_init_worker, init_args=init_args,
+                                mem_limit=MEM_LIMIT_GB * 2**30, stop=blocked, refresh=refresh)
         finally:
-            pool.terminate()  # this pool's own children only
-            pool.join()
             hold(False)
-        gone = {json.dumps(t) for t in finished}
+        gone = {json.dumps(r.get("_task")) for r in read_jsonl(target)}
         left = [t for t in left if json.dumps(_task_id(t)) not in gone]
         if stopped:
             _say(out, f"{what}: stopped ({stopped}); {len(left)} left")
-    _say(out, f"{what}: done")
+    capped = sum(1 for r in read_jsonl(target) if r.get("cap_reason"))
+    _say(out, f"{what}: done ({capped} rows of {target.name} capped by a guard)")
 
 
 def _task_id(task: tuple) -> list:
@@ -446,8 +618,9 @@ def _fresh_world(doc: dict, start: str, j: int, ns: str):
     return world
 
 
-def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool = False) -> dict:
-    """Play the world to the fight's end under the search config; `capture` keeps the end of the first player turn."""
+def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool = False, deadline: float | None = None) -> dict:
+    """Play the world to the fight's end under the search config; `capture` keeps the end of the first player turn. A game
+    still going at `deadline` seconds (asked between decisions) or at DECISION_CAP decisions stops there: capped, not won."""
     import live_search  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
@@ -457,7 +630,7 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
     first: dict = {}
     leaf = None
     max_search = 0.0
-    while not world.done and k < DECISION_CAP:
+    while not world.done and k < DECISION_CAP and (deadline is None or time.perf_counter() - t0 < deadline):
         info = {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
         pos = search_configs.position_of(world, info)
         kw = cfg.search_kwargs(pos, env_prior=False)
@@ -482,6 +655,8 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
             end_turns += 1
         live_search._step(world, best.action, best.target)  # noqa: SLF001
         k += 1
+        _progress({"k": k, "turns": end_turns + 1, "sims": sims, "potions_used": potions_used, "max_hp": world.max_hp(),
+                   "max_search_s": round(max_search, 3), **first})
     won = bool(world.done and world.won())
     out = live_search._outcome(world, POTION_VALUE)  # noqa: SLF001
     held = int(round((out.value - out.hp) / POTION_VALUE)) if not out.died else 0
@@ -489,19 +664,22 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
            "potions_held": held, "turns": end_turns + 1, "decisions": k, "sims": sims, "capped": not world.done,
            "budget_exhausted": exhausted, "ai_assumed": assumed, "max_search_s": round(max_search, 3),
            "L0": l0(won, world.hp(), held, world.max_hp()), "seconds": round(time.perf_counter() - t0, 2), **first}
+    if not world.done:
+        row["cap_reason"] = "decision cap" if k >= DECISION_CAP else "deadline"
     if capture:
         row["_leaf"] = leaf
     return row
 
 
 def _game_task(task: tuple) -> dict:
-    arm, start_id, j = task
+    arm, start_id, j = task[:3]
     start = _starts_by_id()[start_id]
     cfg = arm_settings(arm)["cfg"]
     extra = _W["agent"].search_extra()
     world = _fresh_world(start["doc"], start_id, j, "g")
     try:
-        row = _play(world, start, j, cfg, extra, "g", capture=arm == "a3-v1" and j == 0 and start["cat"] == "act1-boss")
+        row = _play(world, start, j, cfg, extra, "g", capture=arm == "a3-v1" and j == 0 and start["cat"] == "act1-boss",
+                    deadline=task_deadline(task))
     finally:
         world.close()
     return {"_task": [arm, start_id, j], "arm": arm, "start": start_id, "j": j, "cat": start["cat"], **row}
@@ -540,7 +718,7 @@ def _value_head(handle: int) -> dict:
 
 def _m3_task(task: tuple) -> dict:
     """("pred", start, 0): the two predictions at the leaf; ("cont", start, j): one fresh-seed a3-v1 game from it."""
-    kind, start_id, j = task
+    kind, start_id, j = task[:3]
     import combat_mcts  # noqa: PLC0415
     import live_search  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
@@ -569,7 +747,7 @@ def _m3_task(task: tuple) -> dict:
     try:
         end = next(m for m in live_search._world_moves(world) if m.kind == "end_turn")  # noqa: SLF001
         live_search._step(world, end.action, end.target)  # noqa: SLF001
-        row = _play(world, start, j, cfg, _W["agent"].search_extra(), "m3") if not world.done else {
+        row = _play(world, start, j, cfg, _W["agent"].search_extra(), "m3", deadline=task_deadline(task)) if not world.done else {
             "won": bool(world.won()), "L0": l0(bool(world.won()), world.hp(), 0, world.max_hp())}
     finally:
         world.close()
@@ -632,7 +810,8 @@ def _cat_starts(out: Path, cat: str, limit: int, same_only: bool = False) -> lis
 def play_stage(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int) -> None:
     starts = _cat_starts(out, cat, limit)
     done = done_keys(read_jsonl(out / "games.jsonl"), game_key)
-    tasks = [(arm, sid, j) for sid, j in todo_games(starts, arm, seeds, done)]
+    cats = {s["id"]: s["cat"] for s in starts}
+    tasks = [(arm, sid, j, cats[sid]) for sid, j in todo_games(starts, arm, seeds, done)]
     guarded_run(out, f"play {arm} {cat}", tasks, _game_task, out / "games.jsonl", procs, _init_args(out))
     if arm == "a3-v1" and cat.startswith("act1"):
         _collect_leaves(out)
@@ -707,6 +886,7 @@ def report(out: Path) -> dict:
                               "turns": sum(r["turns"] for r in g) / len(g), "decisions": sum(r["decisions"] for r in g) / len(g),
                               "sims": sum(r["sims"] for r in g) / len(g), "seconds": sum(r["seconds"] for r in g) / len(g),
                               "cpu_hours": sum(r["seconds"] for r in g) / 3600, "capped": sum(r["capped"] for r in g),
+                              "cap_reasons": dict(sorted(Counter(r.get("cap_reason") or "decision cap" for r in g if r["capped"]).items())),
                               "budget_exhausted": sum(r["budget_exhausted"] for r in g),
                               "root_value": sum(rv) / len(rv) if rv else None,
                               "root_p_death": _avg([r.get("root_p_death") for r in g])}
@@ -746,7 +926,7 @@ def _by_hp_third(rows: list[dict], starts: dict) -> dict:
 
 
 def _m3_report(m3: list[dict]) -> dict:
-    preds = {r["start"]: r for r in m3 if r["type"] == "pred"}
+    preds = {r["start"]: r for r in m3 if r["type"] == "pred" and not r.get("capped")}
     cont: dict[str, list[dict]] = defaultdict(list)
     for r in m3:
         if r["type"] == "cont":
@@ -784,6 +964,9 @@ def table(rep: dict) -> str:
             lines.append(f"| {arm} | {x['starts']} | {x['games']} | {_pct(x['win_rate'])} | {x['L0']:.3f} | {hp} | "
                          f"{x['potions_used']:.2f} | {x['turns']:.1f} | {x['sims']:.0f} | {x['seconds']:.1f} | {x['cpu_hours']:.2f} | {rv} |")
         lines.append("")
+        for arm, x in c["arms"].items():
+            if x["capped"]:
+                lines.append(f"- {arm}: {x['capped']} games capped and counted as lost ({x['cap_reasons']})")
         for arm, d in c["diffs"].items():
             lines.append(f"- {arm} minus a3-v1: win {_fmt_diff(d['won'])} points; L0 {100 * (d['L0']['diff'] or 0):+.2f} x 0.01; "
                          f"first-decision root value {(d['root_value']['diff'] or 0):+.1f} HP over {d['root_value']['pairs']} pairs")
