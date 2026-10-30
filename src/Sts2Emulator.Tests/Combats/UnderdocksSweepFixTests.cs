@@ -47,6 +47,31 @@ public class UnderdocksSweepFixTests
     }
 
     /// <summary>
+    /// Her enemy turn end runs AsleepPower's very-early listener before PlatingPower's early one. On her last sleeping
+    /// turn (Asleep 1) the first takes the Plating off, so the second has nothing to grant and she wakes into the
+    /// player's fourth turn with no block. The copy granted the Plating block first (10 at that turn) and only then
+    /// took the power off, so the fourth turn's first 10 damage hit her block (night 2026-10-29, group Gb25e996655:
+    /// 15 Matriarch records, the copy's boss 6 to 10 HP higher).
+    /// </summary>
+    [Fact]
+    public void SheWakesWithNoPlatingBlock()
+    {
+        var fight = Fight.Encounter(CombatFactory.ActOneEncounter.LagavulinMatriarch);
+
+        fight.EndTurn();
+        fight.EndTurn();
+        // The control: her second sleeping turn ends on the decayed Plating's block.
+        Assert.Equal(11, fight.EnemyBuffAmount(BuffId.Plating));
+        Assert.Equal(11, fight.Enemy0.Block);
+
+        fight.EndTurn();
+
+        Assert.Equal(0, fight.EnemyBuffAmount(BuffId.Asleep));
+        Assert.Equal(0, fight.EnemyBuffAmount(BuffId.Plating));
+        Assert.Equal(0, fight.Enemy0.Block);
+    }
+
+    /// <summary>
     /// `SmoggyPower` has NO self-removal: it stands for the rest of the fight. What
     /// `AfterSideTurnEnd` clears is the SMOG AFFLICTION on the cards, which is the
     /// emulator's one-Skill-a-turn flag.

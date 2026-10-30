@@ -882,6 +882,17 @@ public static class EnemyAI
             TickRatSummonCooldown(enemy);
         }
 
+        // `AsleepPower.BeforeSideTurnEndVeryEarly`: on the Matriarch's LAST sleeping turn --
+        // amount one, checked BEFORE the decrement -- the Plating comes off. Very early, so
+        // before `PlatingPower.BeforeSideTurnEndEarly` below can grant its block: she wakes
+        // with none. (Granting first left her 10 block into the player's fourth turn.)
+        bool sleepingMatriarch =
+            enemy.DefId == KE.LagavulinMatriarch && BuffSystem.Get(enemy.Buffs, BuffId.Asleep) > 0;
+        if (sleepingMatriarch && BuffSystem.Get(enemy.Buffs, BuffId.Asleep) <= 1)
+        {
+            BuffSystem.Remove(enemy.Buffs, BuffId.Plating);
+        }
+
         // PlatingPower decrements on AfterSideTurnStart and grants its block on
         // BeforeSideTurnEndEarly -- in that order -- so the block a turn ends with is the
         // ALREADY decremented amount. Granting first and decrementing after left every
@@ -912,16 +923,9 @@ public static class EnemyAI
             );
         }
 
-        if (enemy.DefId == KE.LagavulinMatriarch && BuffSystem.Get(enemy.Buffs, BuffId.Asleep) > 0)
+        if (sleepingMatriarch)
         {
-            // `AsleepPower.BeforeSideTurnEndVeryEarly`: on the LAST sleeping turn -- amount
-            // one, checked BEFORE the decrement -- the Plating comes off. Without it the
-            // Matriarch woke up still armoured and kept the shield for the whole fight.
-            if (BuffSystem.Get(enemy.Buffs, BuffId.Asleep) <= 1)
-            {
-                BuffSystem.Remove(enemy.Buffs, BuffId.Plating);
-            }
-
+            // `AsleepPower.AfterSideTurnEnd`: the decrement, after every turn-end hook above.
             BuffSystem.Apply(enemy.Buffs, BuffId.Asleep, -1);
             // SLEEP_MOVE loops on itself for as long as AsleepPower lasts, and only then
             // does SLEEP_BRANCH send her to SLASH. Sleeping turns are all one move, so
