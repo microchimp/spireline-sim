@@ -845,10 +845,28 @@ class EmuLock:
                 self._forced("map")
             return None
         self._forced(self.SCREEN[kind])
+        if kind == "map":
+            self._pass_lone_maps(msg)
         if kind == "event":
             return self._sync_event(msg)
         got = None if self.dec is None else self.dec.type
         return None if got == self.SCREEN[kind] else f"screen:{got}!={self.SCREEN[kind]}"
+
+    def _pass_lone_maps(self, msg: dict | None) -> None:
+        """Reach the map the referee asks about when it stands at a later floor. A map with one node is one the referee
+        passes without asking (Env.Decide asks only with two or more), and so is a room behind it that asks nothing (a shop
+        with only its leave, a chest the engine takes itself): the referee's next question is the map after that room, one
+        floor on. `_forced("map")` stopped at the emulator's first map, the lone one, so the emulator stood a floor behind
+        (2026-10-29: Gf45701a3de, 106 `.floor` records, game one floor ahead at a map, the room passed a shop or a chest).
+        Only a single-node map below the referee's floor is walked; a map the referee asks with one node and a potion to use
+        is at its own floor and stays."""
+        want = ((msg or {}).get("obs") or {}).get("floor")
+        for _ in range(4):
+            d = self.dec
+            if want is None or d is None or d.type != "map" or len(d.options) != 1 or self.s.floor >= want:
+                return
+            self.s.apply(d.options[0])
+            self._forced("map")
 
     def _sync_event(self, msg: dict | None) -> str | None:
         """Reach the event page the referee is asking about. The referee asks only with two or more enabled options, so
