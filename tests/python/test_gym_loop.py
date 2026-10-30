@@ -253,6 +253,10 @@ class BufferTests(unittest.TestCase):
                 self.assertEqual(z["label"].tolist()[:5], [30, 30, 30, 30, 0])
                 self.assertEqual(int(z["lengths"].sum()), z["types"].size)
             self.assertIsNone(gl.compact(loop, 2))
+            gl.save_npz(loop.incoming / "cut.npz", _fake_fight(3, "v0", "S7", "train", True, rng))
+            cut = gl.compact(loop, 9, value_labels=False)  # a segment stopped early: policy targets kept, value labels off
+            self.assertEqual((cut["rows"], cut["value_rows"]), (3, 0))
+            (loop.shards / cut["shard"]).unlink()
             for seg in (2, 3):
                 gl.save_npz(loop.incoming / "g.npz", _fake_fight(10, "c0001", "S9", "train", True, rng))
                 gl.compact(loop, seg)

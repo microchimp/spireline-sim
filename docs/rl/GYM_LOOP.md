@@ -53,7 +53,7 @@ and the gate's games on disk are kept.
   it), the loss from 50 training starts per kind x 2 games at a3-v1 with the incumbent (`weights.json`). A segment draws kinds by
   these weights, then a start uniformly in the kind, then the start's next unplayed game j (seed namespace `L`, so no generation
   game is a board game).
-- **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 8 a process,
+- **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 2 a process,
   six processes, the prior on the card through P1's server when allowed). The x16 rate is P1's: about 55 s of a process's own time
   per Act-1 boss game.
 - **Labels** (`gen_game_steps`, `Recorder`). Per decision: the tokens the root prior reads (the probe copy, `encode_position`),
@@ -62,6 +62,7 @@ and the gate's games on disk are kept.
   fight's outcome is the value label (end HP; 0 for a death); a fight a guard stopped has none. The recorder reads the search's
   result through a wrapper around `live_search.search_steps` installed in the generation's own processes only; it never changes a
   move (a test plays the same fights recorded, unrecorded and in the sequential gym: same moves).
+- **Cut segments** (measured on the first evening: other workers' short QUIET.lock holds stopped four segments in 40 minutes). A stop loses the fights in flight, and the long ones are the likelier to be in flight, so the fights a cut segment finished lean towards quick deaths: their value labels are dropped (the policy targets stay), and K is 2 so a stop loses few fights (at 8, an x16 boss fight took about ten minutes of wall time).
 - **Buffer.** Shards are kept newest first while within 3,000,000 rows, 21 days and 20 GB (`retain`); older ones are deleted.
 
 ## 4. Training

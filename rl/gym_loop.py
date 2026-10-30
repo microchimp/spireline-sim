@@ -581,9 +581,14 @@ def gen_game_steps(task: tuple, clock, game, ctx):
 # ---------------------------------------------------------------------------------------------------------- the buffer
 
 
-def compact(loop: Loop, segment: int) -> dict | None:
+def compact(loop: Loop, segment: int, value_labels: bool = True) -> dict | None:
     """Merge the incoming fight files into one shard (`buffer/shards/sNNNNNN.npz`) and index it; the fight files go. Run after a
-    segment and at start-up (a killed segment's finished fights are kept)."""
+    segment and at start-up (a killed segment's finished fights are kept).
+
+    `value_labels` False (a segment stopped before its end, or killed): its fights keep their policy targets but lose their value
+    labels. The fights still running at a stop are lost, and the long ones are the likelier to be running, so the fights a cut
+    segment did finish lean towards short ones (quick deaths); their outcomes would bias the value head. The visit targets do not
+    depend on how the fight ended."""
     import numpy as np  # noqa: PLC0415
 
     files = sorted(loop.incoming.glob("*.npz"))
@@ -610,14 +615,14 @@ def compact(loop: Loop, segment: int) -> dict | None:
     n = sum(rows_of)
     merged["fight"] = np.repeat(np.arange(len(parts), dtype=np.int32), rows_of)
     merged["label"] = np.repeat(np.array([m["label"] for m in metas], dtype=np.int16), rows_of)
-    merged["value_ok"] = np.repeat(np.array([bool(m["value_ok"]) for m in metas], dtype=np.int8), rows_of)
+    merged["value_ok"] = np.repeat(np.array([bool(m["value_ok"]) and value_labels for m in metas], dtype=np.int8), rows_of)
     merged["val"] = np.repeat(np.array([m.get("split") == "val" for m in metas], dtype=np.int8), rows_of)
     merged["fights_meta"] = np.array(json.dumps(metas))
     name = f"s{segment:06d}-{int(time.time())}.npz"
     save_npz(loop.shards / name, merged)
     entry = {"shard": name, "segment": segment, "rows": n, "fights": len(parts), "bytes": (loop.shards / name).stat().st_size,
              "players": dict(Counter(m["player"] for m in metas)), "cats": dict(Counter(m["cat"] for m in metas)),
-             "val_rows": int(merged["val"].sum()), "t": stamp()}
+             "val_rows": int(merged["val"].sum()), "value_rows": int(merged["value_ok"].sum()), "t": stamp()}
     with open(loop.root / "buffer" / "index.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
     for f in files:
@@ -1305,7 +1310,7 @@ class Daemon:
         stopped = play_tasks(loop, tasks, target, pdir, self.a.procs, self.a.k, self.a.prior, f"seg{seg}", daemon=self)
         rows = fg.read_jsonl(target)
         learn_seconds(loop, rows)
-        entry = compact(loop, seg)
+        entry = compact(loop, seg, value_labels=stopped is None)
         loop.save()
         with open(loop.games / "segments.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), "segment": seg, "player": player, "fights": len(rows), "tasks": len(tasks),
@@ -1345,7 +1350,7 @@ class Daemon:
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")
-        entry = compact(self.loop, self.loop.state["segment"])  # a killed segment's finished fights
+        entry = compact(self.loop, self.loop.state["segment"], value_labels=False)  # a killed segment's finished fights
         if entry:
             self.loop.log(f"buffer: {entry['fights']} fights of an interrupted segment kept")
         rc = 0
@@ -1451,7 +1456,7 @@ def main(argv=None) -> int:
             p.add_argument("--wait-s", type=float, default=300.0)
         if name == "run":
             p.add_argument("--teacher", default="x16", help="the generation's search: the stronger search grades the fights")
-            p.add_argument("--k", type=int, default=8, help="fights a lockstep process holds during generation")
+            p.add_argument("--k", type=int, default=2, help="fights a lockstep process holds during generation (few: a stop loses them)")
             p.add_argument("--segment-min", type=float, default=20.0)
             p.add_argument("--yield-s", type=float, default=150.0)
             p.add_argument("--exact-wall-s", type=float, default=0.25)
