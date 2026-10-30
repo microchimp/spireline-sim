@@ -216,7 +216,7 @@ public static partial class Driver
                 else if (hi < 0)
                 {
                     action = new JsonObject { ["kind"] = "end_turn" };
-                    run.ActionQueueSynchronizer.RequestEnqueue(new EndPlayerTurnAction(player, combat.RoundNumber));
+                    run.ActionQueueSynchronizer.RequestEnqueue(new EndPlayerTurnAction(player, player.PlayerCombatState.TurnNumber));
                 }
                 else
                 {
