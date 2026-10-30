@@ -12,7 +12,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import types
 import unittest
 import unittest.mock
@@ -85,6 +84,21 @@ class FeedTest(Tmp):
 
     def test_no_file_yet_is_no_seed_yet(self):
         self.assertEqual([], self.feed().poll())
+
+    def test_idle_games_are_the_real_arms_slots_empty_through_the_window(self):
+        m = self.tmp / "machine.jsonl"
+        now = 1000.0
+
+        def feed(lines: list[tuple[float, int]], procs: int = 12) -> gen0.RealFeed:
+            m.write_text("".join(json.dumps({"t": now - age, "cpu_pct": 50.0, "games": g}) + "\n" for age, g in lines) + '{"t": 99',
+                         encoding="utf-8")
+            return gen0.RealFeed(self.tmp / "runs.jsonl", lambda: True, machine_jsonl=m, procs=procs, window_s=90.0, clock=lambda: now)
+
+        self.assertEqual(2, feed([(200, 3), (60, 9), (20, 10)]).idle_games())  # the most games in the window: 10 of 12
+        self.assertEqual(0, feed([(60, 12), (20, 7)]).idle_games())  # a dip in one sample is not a trend
+        self.assertIsNone(feed([(200, 3), (20, 7)]).idle_games())  # one fresh sample: not known yet
+        self.assertIsNone(feed([(60, 3), (20, 3)], procs=0).idle_games())
+        self.assertIsNone(gen0.RealFeed(self.tmp / "runs.jsonl", lambda: True, procs=12).idle_games())  # no sampler
 
 
 class FakeFeed:
@@ -224,6 +238,16 @@ class StreamBlockTest(Tmp):
         self.assertEqual(sorted(self.SEEDS), sorted(r["seed"] for r in rows))
         self.assertEqual((0, 1), (summ["stream"]["rows_beside"], summ["stream"]["memory_waits"]))  # all of them after the real arm
 
+    def test_the_beside_pool_widens_by_the_real_arms_empty_game_slots(self):
+        real = self.real([{"ev": "tick"}], need=3)
+        real.path.write_text("".join(json.dumps(end(s)) + "\n" for s in ("S0", "S1", "S2")), encoding="utf-8")
+        with unittest.mock.patch.object(gen0.RealFeed, "idle_games", lambda self: 1), \
+                unittest.mock.patch.dict(os.environ, {"POOL_FAKE_SLEEP": "0.5"}):
+            summ, rows = self.block(real, procs=3)
+        self.assertEqual(sorted(self.SEEDS), sorted(r["seed"] for r in rows))
+        self.assertEqual((1, 2, 3), (summ["stream"]["beside_procs"], summ["stream"]["max_width"], summ["stream"]["rows_beside"]))
+        self.assertEqual(2, len({r["pid"] for r in rows[:3]}))  # two workers beside the real arm
+
     def test_a_streamed_arm_refuses_a_prior_server(self):
         feed = gen0.RealFeed(self.tmp / "runs.jsonl", lambda: True)
         with self.assertRaises(ValueError):
@@ -247,6 +271,10 @@ class PoolGrowTest(unittest.TestCase):
             pids = pool.pids()
             self.assertEqual(2, len(set(pids)))
             n = pool.reprioritize(BELOW_NORMAL, None)
+            pool.grow(3)
+            pool.submit("busy", pf.hang, (2.0,))
+            self.assertEqual(2, pool.shrink(1))  # the idle ones leave; the busy one stays for its run
+            self.assertEqual((1, 1), (len(pool.slots), pool.inflight()))
             if sys.platform == "win32":
                 from sts2_gym import procutil
 

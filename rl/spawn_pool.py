@@ -8,8 +8,9 @@ task per worker, so it always knows which task a dead worker held, and it has wh
 - a death is reported (`Done.status == "died"`), the worker replaced, and the task is the caller's to run again;
 - a per-run wall timeout kills the worker (this pool's own child, by its Process object) and reports `"timeout"`;
 - a worker is recycled after `recycle` finished runs, only while idle (between runs), never with a task in flight;
-- `grow` widens it and `reprioritize` moves its workers to another Windows priority class (the streamed emulator arm of
-  rl/gen0.py plays on a few Idle workers beside the real game, then on the full width at BelowNormal).
+- `grow` widens it, `shrink` narrows it between runs, and `reprioritize` moves its workers to another Windows priority
+  class (the streamed emulator arm of rl/gen0.py plays on a few Idle workers beside the real game, more while some of its
+  game slots stand empty, then on the full width at BelowNormal).
 
 The retry policy (once, then a `lost` row) belongs to the caller. Everything is polled from one thread: no locks.
 """
@@ -178,6 +179,27 @@ class SupervisedPool:
             slot = _Slot()
             self.slots.append(slot)
             self._start(slot)
+
+    def shrink(self, size: int) -> int:
+        """Narrow toward `size` workers: idle ones above it leave (asked to exit and reaped later, as a recycled one); busy ones are
+        left to end their run, for a later call. Returns how many left."""
+        gone = 0
+        while len(self.slots) > max(size, 0):
+            slot = next((s for s in reversed(self.slots) if s.task is None), None)
+            if slot is None:
+                break
+            self.slots.remove(slot)
+            try:
+                slot.conn.send(None)
+            except (OSError, ValueError):
+                pass
+            self._grave.append((slot.proc, self.clock()))
+            try:
+                slot.conn.close()
+            except OSError:
+                pass
+            gone += 1
+        return gone
 
     def reprioritize(self, priority_class: int, initializer: Callable[[], None] | None) -> int:
         """Put every live worker in the Windows `priority_class` (they are this pool's own children) and start later ones (a

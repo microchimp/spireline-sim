@@ -428,12 +428,41 @@ class RealFeed:
 
     The file is read on from where the last read stopped; a file that got shorter (envproto rewrites it whole at the end of a
     session, and once at a resumed start) is read again from the top. `poll(final=True)` reads it all, the last unterminated
-    line included. A seed is reported once, in the order its line came."""
+    line included. A seed is reported once, in the order its line came.
 
-    def __init__(self, runs_jsonl: str | Path, alive: Callable[[], bool], poll_s: float = 5.0):
+    With `machine_jsonl` (envproto play's machine sampler, a line every 30 s with `games`, the game processes alive) and `procs`
+    (the real arm's width), `idle_games()` is how many of the real arm's game slots stood empty over the last `window_s`
+    seconds (its fewest empty slots then); None without a fresh sample."""
+
+    def __init__(self, runs_jsonl: str | Path, alive: Callable[[], bool], poll_s: float = 5.0, machine_jsonl: str | Path | None = None,
+                 procs: int = 0, window_s: float = 90.0, clock: Callable[[], float] = time.time):
         self.path, self._alive, self.poll_s = Path(runs_jsonl), alive, poll_s  # poll_s: how often StreamOrder reads it
+        self.machine, self.procs, self.window_s, self.clock = (Path(machine_jsonl) if machine_jsonl else None), procs, window_s, clock
         self.seen: dict[str, None] = {}
         self._offset, self._rest = 0, b""
+
+    def idle_games(self) -> int | None:
+        """The real arm's game slots that stood empty through the last `window_s` seconds (procs minus the most games alive in any
+        sample then), None when the sampler has written fewer than two samples in that window (or there is no sampler)."""
+        if self.machine is None or self.procs <= 0:
+            return None
+        try:
+            with self.machine.open("rb") as fh:
+                size = fh.seek(0, 2)
+                fh.seek(max(0, size - 16384))
+                tail = fh.read().split(b"\n")
+        except OSError:
+            return None
+        since = self.clock() - self.window_s
+        games = []
+        for raw in tail:
+            try:
+                e = json.loads(raw.decode("utf-8", errors="replace"))
+            except ValueError:
+                continue
+            if isinstance(e, dict) and isinstance(e.get("t"), (int, float)) and e["t"] >= since and isinstance(e.get("games"), int):
+                games.append(e["games"])
+        return max(0, self.procs - max(games)) if len(games) >= 2 else None  # two samples at least: one is not a trend
 
     def alive(self) -> bool:
         return bool(self._alive())
@@ -560,11 +589,13 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
 
     With `stream` (a `RealFeed`: the nightly block's real arm, playing at the same time) the arm is streamed: the same seeds,
     indices and settings, one run each, in `StreamOrder`'s order. While the real arm plays, the pool has `stream_procs` workers
-    started by `stream_initializer` (Idle priority), each run starts only after its seed's real run has ended, and a new run
-    waits while the memory headroom (`prior_client.memory_headroom_gb`) is under `stream_floor_gb`. When the real arm has ended
-    the pool grows to `procs` BelowNormal workers (the beside ones raised) and plays the rest. A streamed arm has no prior
-    server (the real arm holds GPU_OK while it plays). summary.json then has `stream` = {"beside_procs", "floor_gb",
-    "real_ended_s" (seconds into the arm; None: the real arm outlived it), "rows_beside", "memory_waits"}."""
+    started by `stream_initializer` (Idle priority), plus one for each of the real arm's game slots that stood empty through the
+    feed's window (`RealFeed.idle_games`; at most `procs` in all; idle workers above the width leave when the games come back);
+    each run starts only after its seed's real run has ended, and a new run waits while the memory headroom
+    (`prior_client.memory_headroom_gb`) is under `stream_floor_gb`. When the real arm has ended the pool grows to `procs`
+    BelowNormal workers (the beside ones raised) and plays the rest. A streamed arm has no prior server (the real arm holds GPU_OK
+    while it plays). summary.json then has `stream` = {"beside_procs", "max_width" (the widest the pool was beside the real arm),
+    "floor_gb", "real_ended_s" (seconds into the arm; None: the real arm outlived it), "rows_beside", "memory_waits"}."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
@@ -625,7 +656,15 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         headroom = prior_client.memory_headroom_gb
         stream_doc = {"beside_procs": max(1, min(stream_procs, nprocs)), "floor_gb": stream_floor_gb,
                       "real_ended_s": None if order.live else 0.0, "rows_beside": 0, "memory_waits": 0}
+        stream_doc["max_width"] = stream_doc["beside_procs"] if order.live else 0
     held_back = False  # new runs are waiting for memory headroom
+    width = stream_doc["beside_procs"] if order.live else nprocs  # the runs in flight at most
+    width_t = time.monotonic()
+
+    def beside_width() -> int:
+        """The beside pool's width now: stream_procs, plus the real arm's game slots that stood empty (none known: 0)."""
+        idle = getattr(stream, "idle_games", lambda: None)()
+        return max(1, min(nprocs, stream_doc["beside_procs"] + (idle or 0)))
 
     def new_pool(width: int, init=initializer) -> spawn_pool.SupervisedPool:
         return spawn_pool.SupervisedPool(ctx, width, initializer=init, recycle=recycle, run_timeout_s=run_timeout_s)
@@ -700,6 +739,18 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     pool = new_pool(nprocs)
                 if order.update():
                     real_ended()
+                    width = nprocs
+                elif order.live and time.monotonic() - width_t >= stream.poll_s:
+                    width_t = time.monotonic()
+                    w = beside_width()
+                    if w > len(pool.slots):
+                        pool.grow(w)
+                    if w > stream_doc["max_width"]:
+                        stream_doc["max_width"] = w
+                        print(f"stream: {w} workers beside the real arm (its empty game slots)", file=sys.stderr, flush=True)
+                    width = w
+                if order.live and len(pool.slots) > width:
+                    pool.shrink(width)  # idle workers above the width leave (the games came back); busy ones finish first
                 room = True
                 if order.live and stream_floor_gb and pool.free() and (retry or order.ready):
                     room = headroom() >= stream_floor_gb
@@ -707,7 +758,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                         stream_doc["memory_waits"] += 1
                         print(f"stream: memory headroom under {stream_floor_gb:g} GiB; new runs wait", file=sys.stderr, flush=True)
                     held_back = not room
-                while room and pool.free() and (retry or (order.ready and (deadline is None or time.time() < deadline))):
+                while room and pool.free() and (not order.live or pool.inflight() < width) and (
+                        retry or (order.ready and (deadline is None or time.time() < deadline))):
                     if retry:
                         ix, seed = retry.popleft()
                     else:
@@ -1053,7 +1105,8 @@ def play_streamed(a: argparse.Namespace, agent, emu_dir: Path, cmd: list[str], e
 
     try:
         try:
-            play_emu_arm(a, agent, emu_dir, stream=RealFeed(Path(a.out) / "runs.jsonl", alive))
+            feed = RealFeed(Path(a.out) / "runs.jsonl", alive, machine_jsonl=Path(a.out) / "machine.jsonl", procs=int(a.procs))
+            play_emu_arm(a, agent, emu_dir, stream=feed)
         except Exception as e:
             print(f"stream: the emulator arm failed ({type(e).__name__}: {str(e)[:200]}); the real arm plays on and is waited for",
                   file=sys.stderr, flush=True)
