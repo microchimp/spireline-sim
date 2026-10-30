@@ -127,6 +127,23 @@ public class EnchantmentTests
     }
 
     /// <summary>
+    /// Spiral's and Glam's <c>EnchantPlayCount</c> add their own <c>Times</c> var, 1, not the amount the enchantment
+    /// was applied at: a card carrying either at 2 is still played twice, not three times.
+    /// </summary>
+    [Theory]
+    [InlineData(Enchantment.Spiral)]
+    [InlineData(Enchantment.Glam)]
+    public void PlayCountEnchantmentsAddOnePlayWhateverTheAmount(Enchantment enchantment)
+    {
+        var (state, enemy) = OneEnemy(
+            new CardInstance(IC.StrikeIronclad, false) { Enchantment = enchantment, EnchantAmount = 2 }
+        );
+        CombatEngine.Step(state, 0, new Random(0));
+
+        Assert.Equal(12, 60 - enemy.Hp);
+    }
+
+    /// <summary>
     /// The game's <c>EnchantmentModel.CanEnchant</c>, which every event's option gating
     /// reads through. Status, Curse and Quest cards are never enchantable, an already
     /// enchanted card is refused, and each enchantment narrows it further.

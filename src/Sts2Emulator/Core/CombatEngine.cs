@@ -1441,15 +1441,18 @@ public static class CombatEngine
     /// <returns>The plays beyond the first.</returns>
     private static int SettlePlayCount(CombatState state, CardInstance card, CardDef def)
     {
-        // Spiral.EnchantPlayCount(original) => original + Times, and Times is 1.
-        int extraPlays = card.EnchantedWith(Enchantment.Spiral);
+        const int EnchantExtraPlays = 1;
+
+        // Spiral.EnchantPlayCount(original) => original + Times, and Times is the
+        // enchantment's own var, 1: the amount it was applied at is not read.
+        int extraPlays = card.Enchantment == Enchantment.Spiral ? EnchantExtraPlays : 0;
 
         // Glam.EnchantPlayCount is the same +Times(1), but it burns out: `AfterCardPlayed`
         // sets UsedThisCombat and the enchantment goes Disabled. `EnchantSpent` is the
         // field Vigorous already uses for exactly that once-only shape.
         if (card.Enchantment == Enchantment.Glam && !card.EnchantSpent)
         {
-            extraPlays += card.EnchantAmount;
+            extraPlays += EnchantExtraPlays;
         }
 
         // Hidden Gem's Replay rides on the copy it was granted to, the same way.

@@ -9692,6 +9692,8 @@ public static class CardEffects
     /// </summary>
     internal static int EnchantDamageAdditive(CardInstance card)
     {
+        // Sharp, Vigorous and Momentum pay from the amount (or what it accumulated); Tezcatara's Ember and Inky
+        // pay a damage var of their own, whatever amount they were applied at.
         int damage = card.EnchantedWith(Enchantment.Sharp);
 
         // Vigorous.EnchantDamageAdditive adds its amount while the enchantment is Normal
@@ -9701,11 +9703,13 @@ public static class CardEffects
             damage += card.EnchantAmount;
         }
 
-        // TezcatarasEmber.EnchantDamageAdditive adds its amount to a powered attack, with
-        // no once-only status -- every play, like Sharp.
+        // TezcatarasEmber.EnchantDamageAdditive adds its own damage var (3) to a powered
+        // attack, every play, with no once-only status. Not the amount it was applied at:
+        // Nutritious Soup applies it at 1 and the embered Strike still lands 6 + 3. Reading
+        // the amount left every souped Strike 2 short (3 on a Vulnerable enemy).
         if (card.Enchantment == Enchantment.TezcatarasEmber)
         {
-            damage += card.EnchantAmount;
+            damage += TezcatarasEmberDamage;
         }
 
         // Momentum.EnchantDamageAdditive pays the bonus the card has ACCUMULATED. It rides
@@ -9728,6 +9732,9 @@ public static class CardEffects
 
         return damage;
     }
+
+    /// <summary>Tezcatara's Ember's own damage var: what it adds to a powered attack, whatever its amount.</summary>
+    internal const int TezcatarasEmberDamage = 3;
 
     /// <summary>
     /// The factor a card's enchantment multiplies its powered attack by (game: Corrupted and Instinct's

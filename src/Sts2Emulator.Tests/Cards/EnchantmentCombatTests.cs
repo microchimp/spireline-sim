@@ -53,8 +53,8 @@ public class EnchantmentCombatTests
     }
 
     /// <summary>
-    /// <c>EnchantDamageAdditive</c> adds its amount to a powered attack, every play — the
-    /// same shape as Sharp, with no once-only status of its own.
+    /// <c>EnchantDamageAdditive</c> adds 3 to a powered attack, every play — with no
+    /// once-only status of its own.
     /// </summary>
     [Fact]
     public void EmberAddsItsAmountToTheAttack()
@@ -68,6 +68,29 @@ public class EnchantmentCombatTests
         );
 
         Assert.Equal(plain.Enemies[0].Hp - 3, embered.Enemies[0].Hp);
+    }
+
+    /// <summary>
+    /// The Ember's bonus is its own damage var, 3, whatever amount it was applied at; the amount only names the
+    /// enchantment on the card. Nutritious Soup applies it at 1, and the game's embered Strike still lands 6 + 3 = 9
+    /// (nights 2026-10-26 to 2026-10-29, group Gb25e996655: the copy's embered Strikes landed 2 short, 3 short on a
+    /// Vulnerable enemy, because it added the amount).
+    /// </summary>
+    [Theory]
+    [InlineData(1, false, 9)]
+    [InlineData(2, false, 9)]
+    [InlineData(1, true, 13)]
+    public void EmberAddsItsOwnThreeWhateverTheAmount(int amount, bool vulnerable, int expectedDamage)
+    {
+        BuffState[] buffs = vulnerable ? [new BuffState(BuffId.Vulnerable, 2)] : [];
+        var embered = Played(
+            Fight
+                .Hand(Enchanted(IC.StrikeIronclad, Enchantment.TezcatarasEmber, amount))
+                .Energy(3)
+                .Enemy(hp: 40, buffs: buffs)
+        );
+
+        Assert.Equal(40 - expectedDamage, embered.Enemies[0].Hp);
     }
 
     // ---- Goopy ----------------------------------------------------------------------
