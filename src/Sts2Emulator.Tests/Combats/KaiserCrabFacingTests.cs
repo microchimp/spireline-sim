@@ -58,6 +58,58 @@ public class KaiserCrabFacingTests
     }
 
     /// <summary>
+    /// Havoc plays the top card of the draw pile with `CardCmd.AutoPlay(card, null)`: a Strike
+    /// rolls its target on CombatTargets, and its BeforeCardPlayed turns the player toward
+    /// whichever half it hits. The copy turned the player only at a chosen play, so a Strike
+    /// Havoc sent into the Crusher left the copy's player facing the Rocket. Over ten seeds
+    /// the facing after Havoc is the side of the half the Strike hit, and some seeds hit the
+    /// Crusher (the case the copy got wrong).
+    /// </summary>
+    [Fact]
+    public void ACardHavocPlaysTurnsThePlayerToItsTarget()
+    {
+        int crusherHits = 0;
+        for (int seed = 0; seed < 10; seed++)
+        {
+            var fight = Crab(seed);
+            fight.State.Hand.Clear();
+            fight.State.Hand.Add(TestDeck.Card(Core.Effects.IC.Havoc));
+            fight.State.DrawPile.Clear();
+            fight.State.DrawPile.Add(TestDeck.Card(Core.Effects.IC.StrikeIronclad));
+            fight.State.Energy = 3;
+            int[] before = fight.State.Enemies.Select(e => e.Hp).ToArray();
+
+            fight.Play(0);
+
+            int hit = Enumerable.Range(0, 2).Single(i => fight.State.Enemies[i].Hp < before[i]);
+            crusherHits += hit == 0 ? 1 : 0;
+            Assert.Equal(hit == 0 ? RunConstants.FacingLeft : RunConstants.FacingRight, Facing(fight));
+        }
+
+        Assert.InRange(crusherHits, 1, 9);
+    }
+
+    /// <summary>
+    /// Control: a chosen Strike still turns the player toward its target, and a later Defend
+    /// (no target) does not turn them back.
+    /// </summary>
+    [Fact]
+    public void AChosenStrikeTurnsThePlayerAndADefendDoesNot()
+    {
+        var fight = Crab();
+        fight.State.Hand.Clear();
+        fight.State.Hand.Add(TestDeck.Card(Core.Effects.IC.StrikeIronclad));
+        fight.State.Hand.Add(TestDeck.Card(Core.Effects.IC.DefendIronclad));
+        fight.State.Energy = 3;
+
+        fight.Play(0, target: 0);
+        Assert.Equal(RunConstants.FacingLeft, Facing(fight));
+
+        fight.Play(0);
+        Assert.Equal(RunConstants.FacingLeft, Facing(fight));
+    }
+
+    /// <summary>
     /// Control: a potion aimed at an enemy (Weak Potion at the Crusher) does turn the player,
     /// and back again when aimed at the Rocket.
     /// </summary>

@@ -457,8 +457,6 @@ public static class CombatEngine
         }
         else if (action < endTurnAction)
         {
-            // SurroundedPower.BeforeCardPlayed, and it fires BEFORE the card resolves.
-            TurnPlayerTowardTarget(state, state.Hand[action]);
             result = PlayCard(state, action, rng);
         }
         else
@@ -927,6 +925,10 @@ public static class CombatEngine
         {
             state.SkillPlayedWhileSmoggy = true;
         }
+
+        // `SurroundedPower.BeforeCardPlayed`: the player turns toward this play's target, for a
+        // chosen play, every auto-play and each repetition alike.
+        TurnPlayerTowardPlayTarget(state, card, def, autoPlay);
 
         // FreeAttackPower / FreeSkillPower: consume one stack before the card effect runs
         // (BeforeCardPlayed timing).
@@ -5749,6 +5751,51 @@ public static class CombatEngine
         }
 
         FacePast(state, target, facing);
+    }
+
+    /// <summary>
+    /// <c>SurroundedPower.BeforeCardPlayed</c> for one play of <see cref="ResolvePlay" />: the
+    /// game raises the hook inside `CardModel.OnPlayWrapper`, once per repetition, for the chosen
+    /// play and for every `CardCmd.AutoPlay` alike, with the play's own target.
+    /// </summary>
+    /// <remarks>
+    /// The turn used to be taken at the step, before a chosen card was played, and nowhere
+    /// else: a card Havoc, Mayhem, Hellraiser, Stampede or Distilled Chaos plays at the
+    /// Crusher (the target `CardCmd.AutoPlay` rolls) turned the game's player and not the
+    /// copy's, and the enemy turn after it differed by the half's bonus.
+    ///
+    /// A chosen play has a target when the card is aimed (AnyEnemy), as before. An auto-play's
+    /// target is the one it was given or rolled, whatever the card's type (Knife Trap hands its
+    /// Shivs one): <see cref="AutoPlayCore" /> aims <see cref="CombatState.TargetEnemyIndex" /> at
+    /// it, and at nothing when there is none. A target that died in an earlier repetition
+    /// lost its powers with its life (`RemoveAllPowersAfterDeath`), so it turns no one.
+    /// </remarks>
+    private static void TurnPlayerTowardPlayTarget(
+        CombatState state,
+        CardInstance card,
+        CardDef def,
+        bool autoPlay
+    )
+    {
+        int facing = BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded);
+        if (facing == 0)
+        {
+            return;
+        }
+
+        if (!autoPlay)
+        {
+            TurnPlayerTowardTarget(state, card);
+            return;
+        }
+
+        int index = state.TargetEnemyIndex;
+        if (index < 0 || index >= state.Enemies.Count || state.Enemies[index].Hp <= 0)
+        {
+            return;
+        }
+
+        FacePast(state, state.Enemies[index], facing);
     }
 
     /// <summary>
