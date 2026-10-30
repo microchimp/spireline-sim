@@ -474,8 +474,13 @@ def run_lockstep(tasks: list, target: Path, procs: int, k: int, init_args: tuple
             fh.write(json.dumps(row) + "\n")
             fh.flush()
 
-        def feed(s: dict) -> None:
-            while left and len(s["held"]) < hold:
+        def feed() -> None:
+            """Hand out queued games one at a time to the process holding fewest, up to `hold` each: the processes stay even."""
+            while left:
+                room = [s for s in slots if len(s["held"]) < hold]
+                if not room:
+                    return
+                s = min(room, key=lambda x: len(x["held"]))
                 task = left.popleft()
                 n = next(serials)
                 s["held"][n], s["sent"][n] = task, time.perf_counter()
@@ -524,8 +529,7 @@ def run_lockstep(tasks: list, target: Path, procs: int, k: int, init_args: tuple
             s["held"].clear()
 
         try:
-            for s in slots:
-                feed(s)
+            feed()
             while left or any(s["held"] for s in slots):
                 busy = [s["c"] for s in slots if s["held"]]
                 ready = mp.connection.wait(busy, timeout=poll_s) if busy else []
@@ -539,8 +543,7 @@ def run_lockstep(tasks: list, target: Path, procs: int, k: int, init_args: tuple
                         lose(s, "worker died")
                         kill(s)
                         slots[i] = spawn()
-                for s in slots:
-                    feed(s)
+                feed()
                 now = time.perf_counter()
                 for i, s in enumerate(slots):
                     beat = int(s["sh"][1])
@@ -559,7 +562,7 @@ def run_lockstep(tasks: list, target: Path, procs: int, k: int, init_args: tuple
                         lose(s, reason)
                         kill(s)
                         slots[i] = spawn()
-                        feed(slots[i])
+                        feed()
                 if stop is not None and time.time() - asked > 10:
                     asked = time.time()
                     stopped = stop()
