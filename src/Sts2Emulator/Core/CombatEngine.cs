@@ -517,6 +517,7 @@ public static class CombatEngine
                         or CardSelectionKind.ExhaustFromHandRepeated
                         or CardSelectionKind.DrawPileToHand
                         or CardSelectionKind.TransformInHand
+                        or CardSelectionKind.TransformDrawToMinionDiveBomb
                     ? Math.Max(1, screen.Amount)
                     : 1
             );
@@ -4428,17 +4429,13 @@ public static class CombatEngine
                 }
 
                 // `CardSelectorPrefs(prompt, 0, 999999999)`: any number, so the screen comes
-                // back until the player declines or the hand is spent.
+                // back until the player declines or the hand is spent. It is ONE selection in
+                // the game, every pick made before any card is transformed, so a later pick
+                // offers the first screen's cards less the ones already picked -- a Minion
+                // Sacrifice that was in the hand before Guards included: the game filters nothing.
                 if (state.Hand.Count > 0)
                 {
-                    var rest = new List<int>();
-                    for (int i = 0; i < state.Hand.Count; i++)
-                    {
-                        if (state.Hand[i].DefId != 309)
-                        {
-                            rest.Add(i);
-                        }
-                    }
+                    var rest = selection.Candidates.Where(c => c != index && c < state.Hand.Count).ToList();
 
                     if (rest.Count > 0)
                     {
@@ -4464,18 +4461,17 @@ public static class CombatEngine
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
-                if (selection.Amount > 1 && state.DrawPile.Count > 0)
+                // Charge chooses its two cards on ONE screen and transforms them only after both
+                // are chosen, so the second pick offers the pile less
+                // the first pick: never the Minion Dive Bomb it has become here, in place
+                // (nightly 2026-10-29, G48b11e5631: the copy's second screen held a Dive Bomb).
+                var chargeLeft = selection.Candidates.Where(c => c != index && c < state.DrawPile.Count).ToList();
+                if (selection.Amount > 1 && chargeLeft.Count > 0)
                 {
-                    var more = new List<int>();
-                    for (int i = 0; i < state.DrawPile.Count; i++)
-                    {
-                        more.Add(i);
-                    }
-
                     state.PendingSelection = new PendingCardSelection
                     {
                         Kind = CardSelectionKind.TransformDrawToMinionDiveBomb,
-                        Candidates = more,
+                        Candidates = chargeLeft,
                         SourceCardDefId = selection.SourceCardDefId,
                         Amount = selection.Amount - 1,
                         Skippable = selection.Skippable,
