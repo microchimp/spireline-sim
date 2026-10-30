@@ -63,6 +63,7 @@ class SearchConfig:
     confirm_pairs: int = 0
     time_budget_s: float = 120.0  # a safety cap; the budget is the simulation count
     schedule: Schedule | None = None
+    leaf: str = "rollout"  # how a simulation's leaf is valued: a rollout to the fight's end, or the fight judge ("judge")
 
     def high_stakes(self, pos: Position) -> bool:
         s = self.schedule
@@ -83,6 +84,8 @@ class SearchConfig:
         the emulator driver passes False, because there the agent argument alone decides the prior."""
         kw = {"max_sims": self.sims_for(pos), "min_child_sims": self.min_child_sims, "c": self.c,
               "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s, "resample": True}
+        if self.leaf != "rollout":  # a rollout config's arguments stay what they always were
+            kw["leaf"] = self.leaf
         if env_prior and os.environ.get("SPIRELINE_GEN_DIR"):  # score-real's lockstep player: the promoted generation's combat prior
             import gen_loop  # noqa: PLC0415
 
@@ -101,10 +104,19 @@ def flat(sims: int, name: str | None = None, **kw) -> SearchConfig:
 A3_V1 = SearchConfig("a3-v1", 30, min_child_sims=1, c=0.2,
                      schedule=Schedule(high=30, many_moves=99, kind_mult={"target": 4, "select": 4}, lo=1, hi=2000))
 
+# judge-v0 (D41): a3-v1's search with the fight judge (rl/judge.py) at each simulation's leaf in place of a play-out, at
+# a3-v1's wall time per decision. A judged simulation costs a fraction of a played-out one, so the same time buys
+# JUDGE_SIMS_X times the simulations (measured on the lockstep gym, docs/rl/JUDGE.md); the schedule's shape is a3-v1's.
+JUDGE_SIMS_X = 4
+JUDGE_V0 = SearchConfig("judge-v0", 30 * JUDGE_SIMS_X, min_child_sims=1, c=0.2, leaf="judge",
+                        schedule=Schedule(high=30 * JUDGE_SIMS_X, many_moves=99, kind_mult={"target": 4, "select": 4}, lo=1,
+                                          hi=2000 * JUDGE_SIMS_X))
+
 CONFIGS: dict[str, SearchConfig] = {
     "gen0-60": flat(60),
     "gen0-120": flat(120),
     "a3-v1": A3_V1,
+    "judge-v0": JUDGE_V0,
 }
 SELFPLAY = "a3-v1"  # the config self-play runs
 SCORE_REAL = "a3-v1"  # the config score-real plays (the same agent, so the promotion test grades what self-play made)

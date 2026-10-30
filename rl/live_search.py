@@ -73,6 +73,14 @@ Turn and potions keep the weight every measurement gave them, `W_OTHER`. What is
             imagined world holds a different hand, and the tree no longer describes the
             real one.
 
+  leaf      Where a simulation leaves the tree, its value comes from a rollout to the end of
+            the fight (`leaf="rollout"`, the default and every config before the judge), or
+            from the fight judge (`leaf="judge"`, rl/judge.py: win chance, end HP and potions
+            held at the end, read as P(win) x (end HP + potion value x potions) + P(death)
+            x -100). A judge leaf is asked for by a request, `LeafAsk(handle)`, which the
+            driver answers with the judge's raw row (see `_drive`); its death counts as its
+            probability in the move's statistics. The confirmation always rolls out.
+
 No hidden information is used. Every simulation starts from a resampling clone. The one
 faithful clone is read for the observation the player can see, then destroyed.
 
@@ -294,6 +302,17 @@ class _Outcome(NamedTuple):
     died: bool
     truncated: bool
     hp: int
+    # A judged leaf's chance of death (its `hp` is then the end HP if won); None for a played-out outcome.
+    p_died: float | None = None
+
+
+class LeafAsk(NamedTuple):
+    """A search's request for the judge's row at a leaf (`leaf="judge"`): the handle of the world it stopped in."""
+
+    handle: int
+
+
+LEAVES = ("rollout", "judge")
 
 
 class _Policy(NamedTuple):
@@ -306,6 +325,7 @@ class _Policy(NamedTuple):
     # A node asks `prior_fn` once it has this many visits, and reads the rollout's tempo
     # weights until then (see `_tree_choice`).
     prior_min_visits: int = 0
+    leaf: str = "rollout"  # how a simulation's leaf is valued: a rollout, or the judge (see the module docstring)
 
 
 class _Node:
@@ -372,7 +392,10 @@ class _RootMove:
 
     def record(self, outcome: _Outcome) -> None:
         self.values.append(outcome.value)
-        if outcome.died:
+        if outcome.p_died is not None:  # a judged leaf: its death and its HP count by their probability
+            self.deaths += outcome.p_died
+            self.win_hp += (1.0 - outcome.p_died) * outcome.hp
+        elif outcome.died:
             self.deaths += 1
         else:
             self.win_hp += outcome.hp
@@ -747,8 +770,9 @@ def _outcome(world: Combat, potion_value: float) -> _Outcome:
     )
 
 
-def _drive(steps, prior_fn: Callable | None):
-    """Run a search's steps to the end, answering each prior request with `prior_fn`.
+def _drive(steps, prior_fn: Callable | None, leaf_fn: Callable | None = None):
+    """Run a search's steps to the end, answering each prior request with `prior_fn` and each
+    `LeafAsk` with `leaf_fn(handle)` (the judge's raw row).
 
     The steps are a generator that yields `(handle, legal)` wherever the search needs the
     prior and is sent the answer, `prior_fn(handle, legal)`, there. Driven this way they
@@ -761,7 +785,12 @@ def _drive(steps, prior_fn: Callable | None):
         request = next(steps)
         while True:
             try:
-                answer = prior_fn(*request)
+                if isinstance(request, LeafAsk):
+                    if leaf_fn is None:
+                        raise ValueError("a judge leaf was asked for, but the driver has no leaf_fn")
+                    answer = leaf_fn(request.handle)
+                else:
+                    answer = prior_fn(*request)
             except Exception as error:  # noqa: BLE001 -- raised where the search asked
                 request = steps.throw(error)
             else:
@@ -1000,14 +1029,27 @@ def _simulate(
             _step_into(world, node, move.action, move.target)
             if fresh:
                 break
-        _rollout(world, rng)
-        outcome = _outcome(world, policy.potion_value)
+        if policy.leaf == "judge" and not world.done:
+            outcome = _judged((yield LeafAsk(world.handle)), world, policy.potion_value)
+        else:
+            _rollout(world, rng)
+            outcome = _outcome(world, policy.potion_value)
         for visited in path:
             visited.visits += 1
             visited.value += outcome.value
         return outcome
     finally:
         world.close()
+
+
+def _judged(row, world: Combat, potion_value: float) -> _Outcome:
+    """The judge's row at a leaf as an outcome in the search's units (judge_client.estimate)."""
+    from judge_client import estimate  # noqa: PLC0415 -- numpy only
+
+    est = estimate(row, world.max_hp(), potion_value)
+    if not math.isfinite(est.value):
+        raise ValueError(f"the judge answered a value that is not finite: {est.value}")
+    return _Outcome(est.value, died=False, truncated=False, hp=est.hp_if_win, p_died=est.p_death)
 
 
 def _playout(
@@ -1252,6 +1294,7 @@ class _Search:
         lane: tuple[int, int],
         prior_min_visits: int = 0,
         clock: Callable[[], float] = time.perf_counter,
+        leaf: str = "rollout",
     ):
         # The search's clock: the wall clock, or (`gym_lockstep`) the time its own fight
         # has run, so that a search sharing a process with other fights gets its budget.
@@ -1270,12 +1313,15 @@ class _Search:
         self.root = Combat(handle)
         self.children, max_hp = _root_moves(self.root)
         scale = max(1, max_hp)  # UCT on V / max HP, the scale c was measured on
+        if leaf not in LEAVES:
+            raise ValueError(f"unknown leaf {leaf!r}; one of {', '.join(LEAVES)}")
         self.policy = _Policy(
             c * scale,
             prior_fn,
             c_puct * scale,
             potion_value,
             prior_min_visits,
+            leaf,
         )
         self.tree = _Node(-1, -1, "root")
         self.sims = self.uct_sims = self.attempts = 0
@@ -1287,8 +1333,8 @@ class _Search:
         self.playout_cost: float | None = None
         self.cost_read_at = 0  # how many playouts `playout_cost` was read over
 
-    def run(self) -> SearchResult:
-        return _drive(self.steps(), self.policy.prior_fn)
+    def run(self, leaf_fn: Callable | None = None) -> SearchResult:
+        return _drive(self.steps(), self.policy.prior_fn, leaf_fn)
 
     def steps(self):
         """The search as steps: a generator that yields `(handle, legal)` wherever it needs
@@ -1481,6 +1527,8 @@ def search_live(
     confirm_pairs: int = 50,
     prior_min_visits: int = 0,
     resample: bool = True,
+    leaf: str = "rollout",
+    leaf_fn: Callable[[int], Any] | None = None,
     _lane: tuple[int, int] = (0, 1),
 ) -> SearchResult:
     """Search the combat on `handle` and grade every root move.
@@ -1501,6 +1549,9 @@ def search_live(
     node asks it only once it has `prior_min_visits` visits, and reads the rollout's tempo
     weights until then (`combat_mcts`'s lazy prior); 0 asks at a node's first choice.
 
+    `leaf="judge"` values each simulation's leaf with the fight judge instead of a rollout:
+    `leaf_fn(handle)` returns the judge's raw row there (rl/judge_client.py).
+
     `_lane` is for `ParallelSearcher`: a search in lane (i, n) plays only seeds that are
     i modulo n, so searches in different lanes never share an imagined world.
 
@@ -1513,14 +1564,14 @@ def search_live(
     try:
         return _search_live(
             handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-            confirm_pairs, prior_min_visits, _lane,
+            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn,
         )
     finally:
         _ORACLE = saved
 
 
 def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-                 confirm_pairs, prior_min_visits, _lane) -> SearchResult:
+                 confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None) -> SearchResult:
     search = _Search(
         handle,
         time_budget_s=time_budget_s,
@@ -1534,10 +1585,13 @@ def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, m
         confirm_pairs=confirm_pairs,
         lane=_lane,
         prior_min_visits=prior_min_visits,
+        leaf=leaf,
     )
     if not search.children:
         raise ValueError("the position has no legal move to search")
-    return search.run()
+    if leaf == "judge" and leaf_fn is None:
+        raise ValueError('leaf="judge" needs a leaf_fn')
+    return search.run(leaf_fn)
 
 
 def search_steps(
@@ -1555,6 +1609,7 @@ def search_steps(
     prior_min_visits: int = 0,
     resample: bool = True,
     clock: Callable[[], float] | None = None,
+    leaf: str = "rollout",
 ):
     """`search_live` as steps, for a driver that plays many fights in one process.
 
@@ -1564,6 +1619,8 @@ def search_steps(
     Driven by `_drive(steps, prior_fn)` it is `search_live`, call for call. `clock` is the
     search's clock (the wall clock by default): a driver that interleaves fights gives
     each search the time of its own fight, so the budget means what it means alone.
+    With `leaf="judge"` it also yields `LeafAsk(handle)` at each simulation's leaf and
+    expects the judge's raw row back (`_drive`'s `leaf_fn`).
 
     Raises:
         ValueError: If the position has no legal move, or `resample` is False (the
@@ -1587,6 +1644,7 @@ def search_steps(
         lane=(0, 1),
         prior_min_visits=prior_min_visits,
         clock=clock or time.perf_counter,
+        leaf=leaf,
     )
     if not search.children:
         raise ValueError("the position has no legal move to search")
@@ -1599,6 +1657,8 @@ _SEARCH_SETTINGS = frozenset(inspect.signature(search_live).parameters) - {
     "time_budget_s",
     "_lane",
     "resample",
+    "leaf",
+    "leaf_fn",
 }
 
 
