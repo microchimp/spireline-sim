@@ -284,6 +284,9 @@ COUNTER_MAP: dict[str, tuple[str, object]] = {
     "VENERABLE_TEA_SET": ("GainEnergyInNextCombat", lambda v: 1 if v else 0),  # armed at a rest site, spent by the next fight
     "FAKE_VENERABLE_TEA_SET": ("GainEnergyInNextCombat", lambda v: 1 if v else 0),
     "SILKEN_TRESS": ("IsUsed", lambda v: None if v else 0),  # 1 (screen built) and 2 (answered) both read as used: not told apart
+    # Closed by the first merchant purchase with gold spent (AfterItemPurchased), and closed for good: the emulator's Counter 1.
+    # A suspended emulator does not see the purchase, and an open bank pays 12 at every later room entry the game does not.
+    "MAW_BANK": ("HasItemBeenBought", _same),
 }
 
 

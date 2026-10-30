@@ -153,6 +153,25 @@ public class ReplayDebugHookTests
         Assert.Equal(new[] { 0, 3, 0 }, engine.State.PotionSlots.Take(3));
     }
 
+    /// <summary>
+    /// The game has one gold total; the copy keeps a second one in an open fight, which the fight's
+    /// view reads. A gold write while a fight is open (the lockstep's fight-start re-anchor, which
+    /// puts the game's gold back after the walk into the room paid its own room-entry gold) lands on
+    /// both, and the run's total after the fight is the one written.
+    /// </summary>
+    [Fact]
+    public void SettingGoldInAFightSetsTheFightsGoldToo()
+    {
+        var engine = AtFirstCombat("QS2GYXRKWN");
+
+        engine.DebugSetPlayer(-1, -1, 77, null, null, null);
+
+        Assert.Equal(77, engine.State.Gold);
+        Assert.Equal(77, engine.State.ActiveCombat!.PlayerGold);
+        Assert.Equal(0, engine.DebugResolveCombat());
+        Assert.True(engine.State.Gold >= 77, $"gold after the fight: {engine.State.Gold}");
+    }
+
     /// <summary>A negative scalar or a negative-length list leaves that holding alone.</summary>
     [Fact]
     public void SettingThePlayerLeavesUnnamedHoldingsAlone()

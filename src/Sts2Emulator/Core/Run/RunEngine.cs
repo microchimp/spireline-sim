@@ -1896,6 +1896,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// relic and puts its <see cref="RelicInstance.Counter" /> on the run's copy and, while a
     /// fight is open, on the fight's copy too (the game has one relic object for both); a relic
     /// not held is skipped. It applies after the relic list, so it reaches a relic new to the run.
+    /// <paramref name="gold" /> is put on the open fight's copy as well.
     /// </remarks>
     public void DebugSetPlayer(
         int hp,
@@ -1922,6 +1923,13 @@ public sealed class RunEngine : Core2.ICombatEndHost
         if (gold >= 0)
         {
             State.Gold = gold;
+            // The game has one gold total; the copy keeps a second one in an open fight
+            // (`CombatState.PlayerGold`, what the fight's view and its gold effects read),
+            // so a write while a fight is open goes on both, as the relic counters do.
+            if (State.ActiveCombat is { } fightGold)
+            {
+                fightGold.PlayerGold = gold;
+            }
         }
 
         if (cards is not null)

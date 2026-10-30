@@ -1087,10 +1087,17 @@ class EmuLock:
         if self.anchored_with == "hidden":
             self._order_deck(obs)
         # The game's relic counters (its post-tick values) go in once the emulator is in the fight, whatever the anchor used:
-        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to.
+        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to. The game's
+        # gold goes in with them for the same reason: the observation's gold already holds this room's entry payment (Maw
+        # Bank's 12), and on the walk path the emulator paid its own on top of it as it entered the room (the night of
+        # 2026-10-29 failed 49 fight-start re-anchors on `.gold`). The native call sets the fight's copy of the gold too.
         counters = self._relic_counters()
+        extra = {"relic_counters": counters} if counters else {}
+        if obs.get("gold") is not None:
+            extra["gold"] = int(obs["gold"])
+        if extra:
+            self.native.run_debug_set_player(self.s.handle, self._obs(), **extra)
         if counters:
-            self.native.run_debug_set_player(self.s.handle, self._obs(), relic_counters=counters)
             self.relic_counters = len(counters)
         return True
 
