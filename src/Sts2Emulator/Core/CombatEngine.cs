@@ -4791,7 +4791,7 @@ public static class CombatEngine
         }
 
         BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        EnemyAI.Stun(enemy);
         // The readout changes the moment the ally dies: a live capture shows the
         // surviving slug announcing a Stun, not the attack it was going to make.
         // Leaving the old intent up told an agent to expect 12 damage from a
@@ -7927,7 +7927,7 @@ public static class CombatEngine
         };
         if (stunned)
         {
-            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+            EnemyAI.Stun(enemy);
         }
 
         return enemy;

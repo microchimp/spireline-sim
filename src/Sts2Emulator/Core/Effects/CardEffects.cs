@@ -5578,7 +5578,7 @@ public static class CardEffects
         BuffSystem.Apply(target.Buffs, BuffId.Flutter, -1);
         if (BuffSystem.Get(target.Buffs, BuffId.Flutter) <= 0)
         {
-            BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
+            EnemyAI.Stun(target);
         }
     }
 
@@ -5600,7 +5600,7 @@ public static class CardEffects
             && BuffSystem.Get(target.Buffs, BuffId.Slumber) <= 0
         )
         {
-            BuffSystem.Apply(target.Buffs, BuffId.Stunned, 1);
+            EnemyAI.Stun(target);
             // CreatureCmd.Stun changes the move immediately, so the readout is the stun.
             target.CurrentIntent = new Intent(IntentType.Unknown, 0);
         }
@@ -8569,11 +8569,21 @@ public static class CardEffects
                 // `ModifyDamageMultiplicative` is not -- Osty's attacks have Osty as the dealer
                 // and are multiplied (open: Osty's damage has no dealer in the emulator, see
                 // KnockdownTests). Knockdown used to apply Stunned here; Whistle genuinely
-                // calls `CreatureCmd.Stun`.
+                // calls `CreatureCmd.Stun`, which is a move and no power: it skips the power
+                // path (and stacks with no earlier stun) on a target the hit left alive.
+                if (def.Name == "Whistle")
+                {
+                    if (aimed.Hp > 0)
+                    {
+                        EnemyAI.Stun(aimed);
+                    }
+
+                    return true;
+                }
+
                 var (power, amount) = def.Name switch
                 {
                     "Squash" => (BuffId.Vulnerable, upgraded ? 3 : 2),
-                    "Whistle" => (BuffId.Stunned, 1),
                     "Knockdown" => (BuffId.Knockdown, upgraded ? 3 : 2),
                     _ => (BuffId.TagTeam, 1),
                 };
