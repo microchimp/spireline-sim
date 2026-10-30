@@ -1,6 +1,7 @@
 """The wire format between the self-play workers and the batched prior server, and the shared softmax.
 
-What it is: the frames of `docs/rl/GPU_INFERENCE.md` section 3 (HELLO, PRIOR, REPLY, BYE) as pack and
+What it is: the frames of `docs/rl/GPU_INFERENCE.md` section 3 (HELLO, PRIOR, REPLY, BYE, and PRIORS, many rows in one
+request, for the lockstep gym) as pack and
 unpack functions over `struct` and numpy, the `ProtocolError` every malformed frame raises, the hash of the card
 attribute table, and `legal_weights`, the float64 softmax over the legal actions that `combat_prior.PolicyNet.weights`
 used to hold inline (lifted out so the CPU prior and the remote prior turn logits into probabilities with the same
@@ -29,7 +30,7 @@ import numpy as np
 MAGIC = b"SPR1"
 PROTO = 1
 
-HELLO, PRIOR, BYE = 1, 2, 3
+HELLO, PRIOR, BYE, PRIORS = 1, 2, 3, 4
 
 STATUS_OK, STATUS_POLICY, STATUS_VOCAB, STATUS_PROTO, STATUS_CARD_TABLE = 0, 1, 2, 3, 4
 STATUS_NAMES = {
@@ -51,6 +52,9 @@ _FRAME = struct.Struct("<4sHH")  # magic, kind, proto (HELLO) or status (HELLO r
 _PRIOR_HEAD = struct.Struct("<4sHIHH")  # magic, kind, req_id, n_tokens, flags
 _REPLY_HEAD = struct.Struct("<4sHHI")  # magic, kind, status, req_id
 _KIND = struct.Struct("<4sH")
+_PRIORS_HEAD = struct.Struct("<4sHIHH")  # magic, kind, req_id, rows, flags; then u16[rows] token counts
+_PRIORS_REPLY_HEAD = struct.Struct("<4sHHIH")  # magic, kind, status, req_id, rows
+MAX_ROWS = 4096  # rows in one PRIORS frame
 _PER_TOKEN = 1 + 4 + 1 + 4 * N_FEATURES
 _HELLO_SIZE = _FRAME.size + 3 * _SHA_LEN
 _REPLY_SIZE = _REPLY_HEAD.size + 4 * MAX_ACTIONS
@@ -201,6 +205,92 @@ def unpack_reply(data: bytes) -> tuple[int, int, np.ndarray]:
         raise ProtocolError(f"REPLY of {len(data)} bytes, expected {_REPLY_SIZE}")
     _, _, status, req_id = _REPLY_HEAD.unpack_from(data)
     return status, req_id, np.frombuffer(data, "<f4", MAX_ACTIONS, _REPLY_HEAD.size)
+
+
+def pack_priors(req_id: int, rows, flags: int = 0) -> bytes:
+    """A PRIORS frame: many positions' tokens in one request (the lockstep gym's batch of its fights' pending calls).
+
+    The header gives the row count, then each row's token count (u16), then the rows' arrays one after the other, field by
+    field as a PRIOR frame lays out one row: types u8, ids i32, owners u8, feats f32[., 18]."""
+    count = len(rows)
+    if not 0 < count <= MAX_ROWS:
+        raise ProtocolError(f"{count} rows do not fit a PRIORS frame")
+    sizes = [len(t.types) for t in rows]
+    if not all(0 < n < 1 << 16 for n in sizes):
+        raise ProtocolError("a row's token count does not fit a frame")
+    feats = []
+    for t, n in zip(rows, sizes):
+        f = np.ascontiguousarray(t.feats, dtype="<f4")
+        if f.shape != (n, N_FEATURES) or len(t.ids) != n or len(t.owners) != n:
+            raise ProtocolError("token arrays differ in length or feats is not [T, N_FEATURES]")
+        feats.append(f)
+    return b"".join(
+        (
+            _PRIORS_HEAD.pack(MAGIC, PRIORS, req_id & 0xFFFFFFFF, count, flags),
+            np.asarray(sizes, dtype="<u2").tobytes(),
+            b"".join(np.ascontiguousarray(t.types, dtype="u1").tobytes() for t in rows),
+            b"".join(np.ascontiguousarray(t.ids, dtype="<i4").tobytes() for t in rows),
+            b"".join(np.ascontiguousarray(t.owners, dtype="u1").tobytes() for t in rows),
+            b"".join(f.tobytes() for f in feats),
+        )
+    )
+
+
+def unpack_priors(data: bytes) -> tuple[int, list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]], int]:
+    """(req_id, [(types, ids, owners, feats) per row], flags); read-only views on `data`."""
+    _check(data, PRIORS, "PRIORS")
+    if len(data) < _PRIORS_HEAD.size:
+        raise ProtocolError("PRIORS header cut short")
+    _, _, req_id, count, flags = _PRIORS_HEAD.unpack_from(data)
+    if not 0 < count <= MAX_ROWS:
+        raise ProtocolError(f"PRIORS with {count} rows")
+    at = _PRIORS_HEAD.size
+    if len(data) < at + 2 * count:
+        raise ProtocolError("PRIORS row sizes cut short")
+    sizes = np.frombuffer(data, "<u2", count, at).astype(np.int64)
+    at += 2 * count
+    total = int(sizes.sum())
+    if (sizes == 0).any():
+        raise ProtocolError("PRIORS row with no tokens")
+    expected = at + total * _PER_TOKEN
+    if len(data) != expected:
+        raise ProtocolError(f"PRIORS of {len(data)} bytes, expected {expected} for {total} tokens")
+    types = np.frombuffer(data, "u1", total, at)
+    at += total
+    ids = np.frombuffer(data, "<i4", total, at)
+    at += 4 * total
+    owners = np.frombuffer(data, "u1", total, at)
+    at += total
+    feats = np.frombuffer(data, "<f4", total * N_FEATURES, at).reshape(total, N_FEATURES)
+    ends = np.cumsum(sizes)
+    out = []
+    for end, n in zip(ends.tolist(), sizes.tolist()):
+        lo = end - n
+        out.append((types[lo:end], ids[lo:end], owners[lo:end], feats[lo:end]))
+    return req_id, out, flags
+
+
+def pack_priors_reply(status: int, req_id: int, rows: int, logits: np.ndarray | None = None) -> bytes:
+    """A PRIORS reply: `rows` logits rows (float32, [rows, MAX_ACTIONS]); zeros unless the status is ok."""
+    if status == REPLY_OK:
+        block = np.ascontiguousarray(logits, dtype="<f4")
+        if block.shape != (rows, MAX_ACTIONS):
+            raise ProtocolError(f"logits shape {block.shape}, expected ({rows}, {MAX_ACTIONS})")
+        body = block.tobytes()
+    else:
+        body = bytes(4 * MAX_ACTIONS * rows)
+    return _PRIORS_REPLY_HEAD.pack(MAGIC, PRIORS, status, req_id & 0xFFFFFFFF, rows) + body
+
+
+def unpack_priors_reply(data: bytes) -> tuple[int, int, np.ndarray]:
+    """(status, req_id, logits f32[rows, MAX_ACTIONS])."""
+    _check(data, PRIORS, "PRIORS reply")
+    if len(data) < _PRIORS_REPLY_HEAD.size:
+        raise ProtocolError("PRIORS reply cut short")
+    _, _, status, req_id, rows = _PRIORS_REPLY_HEAD.unpack_from(data)
+    if len(data) != _PRIORS_REPLY_HEAD.size + 4 * MAX_ACTIONS * rows:
+        raise ProtocolError(f"PRIORS reply of {len(data)} bytes for {rows} rows")
+    return status, req_id, np.frombuffer(data, "<f4", rows * MAX_ACTIONS, _PRIORS_REPLY_HEAD.size).reshape(rows, MAX_ACTIONS)
 
 
 def legal_weights(row: np.ndarray, legal: Sequence[int]) -> np.ndarray:

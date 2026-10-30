@@ -747,19 +747,38 @@ def _outcome(world: Combat, potion_value: float) -> _Outcome:
     )
 
 
-def _prior_weights(
-    prior_fn: Callable,
-    handle: int,
-    legal: list[int],
-) -> dict[int, float]:
-    """Ask `prior_fn` about the legal actions on `handle`; return its probabilities.
+def _drive(steps, prior_fn: Callable | None):
+    """Run a search's steps to the end, answering each prior request with `prior_fn`.
+
+    The steps are a generator that yields `(handle, legal)` wherever the search needs the
+    prior and is sent the answer, `prior_fn(handle, legal)`, there. Driven this way they
+    make the very calls, in the very order, that the search made when it called the prior
+    itself; an exception from the prior is raised inside the steps at the request, so
+    their cleanup runs as it did. `gym_lockstep` drives many fights' steps at once
+    instead, and answers their requests in one batch.
+    """
+    try:
+        request = next(steps)
+        while True:
+            try:
+                answer = prior_fn(*request)
+            except Exception as error:  # noqa: BLE001 -- raised where the search asked
+                request = steps.throw(error)
+            else:
+                request = steps.send(answer)
+    except StopIteration as done:
+        return done.value
+
+
+def _checked_weights(raw: object, legal: list[int]) -> dict[int, float]:
+    """A prior's answer for `legal` as probabilities by action.
 
     Raises:
         ValueError: If the answer is not one finite, non-negative weight per legal action,
             with a positive sum.
 
     """
-    raw = np.asarray(prior_fn(handle, legal), dtype=np.float64)
+    raw = np.asarray(raw, dtype=np.float64)
     if (
         raw.shape != (len(legal),)
         or not np.all(np.isfinite(raw))
@@ -773,15 +792,32 @@ def _prior_weights(
     return dict(zip(legal, (raw / raw.sum()).tolist()))
 
 
-def _node_prior(world: Combat, prior_fn: Callable) -> dict[tuple, float]:
-    """Read PUCT's prior at a node off the first world that needs it, by move key.
+def _prior_weights(
+    prior_fn: Callable,
+    handle: int,
+    legal: list[int],
+) -> dict[int, float]:
+    """Ask `prior_fn` about the legal actions on `handle`; return its probabilities.
 
-    A card aimed at several enemies splits its action's share evenly among them, and
-    identical cards, which share a key below the root, pool theirs.
+    Raises:
+        ValueError: If the answer is not one finite, non-negative weight per legal action,
+            with a positive sum.
+
     """
+    return _checked_weights(prior_fn(handle, legal), legal)
+
+
+def _ask_prior(handle: int, legal: list[int]):
+    """The steps of one prior call: request `(handle, legal)`, then check the answer."""
+    return _checked_weights((yield handle, legal), legal)
+
+
+def _node_legal(world: Combat) -> tuple[object, list[int]]:
     mask = native.valid_actions(world.handle, MAX_ACTIONS)
-    legal = [action for action in range(MAX_ACTIONS) if mask[action]]
-    weights = _prior_weights(prior_fn, world.handle, legal)
+    return mask, [action for action in range(MAX_ACTIONS) if mask[action]]
+
+
+def _prior_by_key(world: Combat, mask: object, weights: dict[int, float]) -> dict[tuple, float]:
     moves = _legal_moves(world.obs, mask)
     aims = Counter(move.action for move in moves)
     prior: dict[tuple, float] = {}
@@ -791,17 +827,35 @@ def _node_prior(world: Combat, prior_fn: Callable) -> dict[tuple, float]:
     return prior
 
 
-def _root_priors(root: Combat, children: list[_RootMove], prior_fn: Callable) -> None:
+def _node_prior(world: Combat, prior_fn: Callable) -> dict[tuple, float]:
+    """Read PUCT's prior at a node off the first world that needs it, by move key.
+
+    A card aimed at several enemies splits its action's share evenly among them, and
+    identical cards, which share a key below the root, pool theirs.
+    """
+    mask, legal = _node_legal(world)
+    return _prior_by_key(world, mask, _prior_weights(prior_fn, world.handle, legal))
+
+
+def _node_prior_steps(world: Combat):
+    """`_node_prior` as steps: the same calls, with the prior asked for by a request."""
+    mask, legal = _node_legal(world)
+    weights = yield from _ask_prior(world.handle, legal)
+    return _prior_by_key(world, mask, weights)
+
+
+def _root_priors(root: Combat, children: list[_RootMove]):
     """Give each root move its share of the prior: its action's and its merged copies'.
 
     The prior reads a resampled copy of the root, so it cannot see the true draw order,
     and it is asked about the root's own legal actions, which a copy can lose (the skip).
+    Steps: the prior is asked for by a request (see `_drive`).
     """
     mask = native.valid_actions(root.handle, MAX_ACTIONS)
     legal = [action for action in range(MAX_ACTIONS) if mask[action]]
     probe = root.fork(_PROBE_SEED)
     try:
-        weights = _prior_weights(prior_fn, probe.handle, legal)
+        weights = yield from _ask_prior(probe.handle, legal)
     finally:
         probe.close()
     aims = Counter(child.node.action for child in children)
@@ -876,6 +930,8 @@ def _tree_choice(
 
     A node asks the prior once, when it first has `prior_min_visits` visits, and keeps the
     answer. Before that it reads the tempo weights of the world it is in, uncached.
+    Steps: the prior is asked for by a request (see `_drive`); without one nothing is
+    yielded.
     """
     if policy.prior_fn is None:
         fresh = [move for move in moves if move.key not in node.children]
@@ -885,7 +941,7 @@ def _tree_choice(
     if node.prior is None:
         if node.visits < policy.prior_min_visits:
             return _puct_choice(node, moves, policy.c_puct, _heuristic_prior(world))
-        node.prior = _node_prior(world, policy.prior_fn)
+        node.prior = yield from _node_prior_steps(world)
     return _puct_choice(node, moves, policy.c_puct)
 
 
@@ -918,7 +974,8 @@ def _simulate(
     the move's statistics are backed up, its node in the tree.
 
     Returns None, touching no statistic, when the move is a draw-pile choice that this
-    world's candidates no longer show.
+    world's candidates no longer show. Steps: a generator whose prior calls are requests
+    (see `_drive`); its return value is the outcome.
     """
     rng = np.random.default_rng(seed)
     world = root.fork(None if _ORACLE else seed)
@@ -934,7 +991,7 @@ def _simulate(
             moves = _distinct(_world_moves(world))
             if not moves:
                 break
-            move = _tree_choice(world, node, moves, rng, policy)
+            move = yield from _tree_choice(world, node, moves, rng, policy)
             fresh = move.key not in node.children
             if fresh:
                 node.children[move.key] = _Node(move.action, move.target, move.kind)
@@ -1194,8 +1251,12 @@ class _Search:
         confirm_pairs: int,
         lane: tuple[int, int],
         prior_min_visits: int = 0,
+        clock: Callable[[], float] = time.perf_counter,
     ):
-        self.started = time.perf_counter()
+        # The search's clock: the wall clock, or (`gym_lockstep`) the time its own fight
+        # has run, so that a search sharing a process with other fights gets its budget.
+        self.clock = clock
+        self.started = clock()
         self.budget_s = time_budget_s
         self.deadline = self.started + time_budget_s
         self.min_child_sims = min_child_sims
@@ -1227,6 +1288,11 @@ class _Search:
         self.cost_read_at = 0  # how many playouts `playout_cost` was read over
 
     def run(self) -> SearchResult:
+        return _drive(self.steps(), self.policy.prior_fn)
+
+    def steps(self):
+        """The search as steps: a generator that yields `(handle, legal)` wherever it needs
+        the prior, is sent the prior's answer there, and returns the `SearchResult`."""
         if len(self.children) == 1:
             return self._result()
         playable = [child for child in self.children if child.simulable]
@@ -1234,10 +1300,10 @@ class _Search:
         self.playable_count = len(playable)
         self.confirm_moves = len(confirmed)
         if self.policy.prior_fn is not None:
-            _root_priors(self.root, self.children, self.policy.prior_fn)
-        self._sweep(playable)
+            yield from _root_priors(self.root, self.children)
+        yield from self._sweep(playable)
         if not self.exhausted:
-            self._uct(playable)
+            yield from self._uct(playable)
         self._confirm(confirmed)
         return self._result()
 
@@ -1258,7 +1324,7 @@ class _Search:
         """
         if self.max_sims is not None and self.attempts >= self.max_sims:
             return True
-        return time.perf_counter() >= self.deadline - self._reserve()
+        return self.clock() >= self.deadline - self._reserve()
 
     def _reserve(self) -> float:
         """Return the clock to leave the confirmation: its rounds at the playout cost.
@@ -1293,15 +1359,15 @@ class _Search:
             self.playout_cost = statistics.median(self.playout_times[-_RESERVE_WINDOW:])
             self.cost_read_at = count
 
-    def _attempt(self, child: _RootMove, seed: int, *, uct: bool) -> None:
-        started = time.perf_counter()
-        outcome = _simulate(self.root, child, child.node, seed, self.policy)
+    def _attempt(self, child: _RootMove, seed: int, *, uct: bool):
+        started = self.clock()
+        outcome = yield from _simulate(self.root, child, child.node, seed, self.policy)
         self.attempts += 1
         if outcome is None:
             child.unmapped += 1
             self.failures += 1
             return
-        self._note_playout(time.perf_counter() - started, uct=uct)
+        self._note_playout(self.clock() - started, uct=uct)
         child.record(outcome)
         self.tree.visits += 1
         self.tree.value += outcome.value
@@ -1309,16 +1375,16 @@ class _Search:
         self.uct_sims += uct
         self.truncated += outcome.truncated
 
-    def _sweep(self, playable: list[_RootMove]) -> None:
+    def _sweep(self, playable: list[_RootMove]):
         for _ in range(self.min_child_sims):
             seed = self._fresh_seed()
             for child in playable:
                 if self._search_spent():
                     self.exhausted = True
                     return
-                self._attempt(child, seed, uct=False)
+                yield from self._attempt(child, seed, uct=False)
 
-    def _uct(self, playable: list[_RootMove]) -> None:
+    def _uct(self, playable: list[_RootMove]):
         while not self._search_spent():
             # A draw-pile choice no world has shown yet has nothing for UCT to score.
             candidates = [
@@ -1330,7 +1396,7 @@ class _Search:
                 child = _uct_root(self.tree, candidates, self.policy.c)
             else:
                 child = _puct_root(self.tree, candidates, self.policy.c_puct)
-            self._attempt(child, self._fresh_seed(), uct=True)
+            yield from self._attempt(child, self._fresh_seed(), uct=True)
 
     def _confirm(self, confirmed: list[_RootMove]) -> None:
         """Play the best move and every other one in fresh worlds, round by round.
@@ -1344,13 +1410,13 @@ class _Search:
         order = sorted(confirmed, key=lambda child: child is not best)
         potion_value = self.policy.potion_value
         for _ in range(self.confirm_pairs):
-            if time.perf_counter() >= self.deadline:
+            if self.clock() >= self.deadline:
                 self.exhausted = True
                 return
             seed = self._fresh_seed()
             self.rounds += 1
             for index, child in enumerate(order):
-                if time.perf_counter() >= self.deadline:
+                if self.clock() >= self.deadline:
                     for unplayed in order[index:]:
                         unplayed.confirm(None)
                     self.exhausted = True
@@ -1388,7 +1454,7 @@ class _Search:
             children=_ordered(children),
             line=line,
             sims=self.sims,
-            elapsed_s=time.perf_counter() - self.started,
+            elapsed_s=self.clock() - self.started,
             budget_exhausted=self.exhausted,
             truncated_rollouts=self.truncated,
             sweep_values=sweep_values,
@@ -1472,6 +1538,59 @@ def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, m
     if not search.children:
         raise ValueError("the position has no legal move to search")
     return search.run()
+
+
+def search_steps(
+    handle: int,
+    *,
+    time_budget_s: float = 1.5,
+    min_child_sims: int = 200,
+    c: float = 0.1,
+    potion_value: float = 10.0,
+    seed: int = 0,
+    max_sims: int | None = None,
+    prior_fn: Callable[[int, list[int]], np.ndarray] | None = None,
+    c_puct: float = 0.2,
+    confirm_pairs: int = 50,
+    prior_min_visits: int = 0,
+    resample: bool = True,
+    clock: Callable[[], float] | None = None,
+):
+    """`search_live` as steps, for a driver that plays many fights in one process.
+
+    A generator: it yields `(handle, legal)` wherever the search would call `prior_fn`,
+    expects `prior_fn(handle, legal)`'s answer sent back there, and returns the
+    `SearchResult`. `prior_fn` only switches the tree to PUCT here; it is never called.
+    Driven by `_drive(steps, prior_fn)` it is `search_live`, call for call. `clock` is the
+    search's clock (the wall clock by default): a driver that interleaves fights gives
+    each search the time of its own fight, so the budget means what it means alone.
+
+    Raises:
+        ValueError: If the position has no legal move, or `resample` is False (the
+            oracle control is `search_live`'s alone: it is a module switch, which
+            interleaved searches cannot share).
+
+    """
+    if not resample:
+        raise ValueError("search_steps always resamples; the oracle control is search_live(resample=False)")
+    search = _Search(
+        handle,
+        time_budget_s=time_budget_s,
+        min_child_sims=min_child_sims,
+        c=c,
+        potion_value=potion_value,
+        seed=seed,
+        max_sims=max_sims,
+        prior_fn=prior_fn,
+        c_puct=c_puct,
+        confirm_pairs=confirm_pairs,
+        lane=(0, 1),
+        prior_min_visits=prior_min_visits,
+        clock=clock or time.perf_counter,
+    )
+    if not search.children:
+        raise ValueError("the position has no legal move to search")
+    return (yield from search.steps())
 
 
 # What `ParallelSearcher.search` may pass on to `search_live`.
