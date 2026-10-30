@@ -1074,6 +1074,19 @@ class EnemyProjectionTests(unittest.TestCase):
     def test_empty_slots_are_not_enemies(self):
         self.assertEqual(enemy_stub([(12, 40), (0, 0)]).view()["combat"]["enemy_hp"], [12])
 
+    def test_hp_above_the_agents_bound_compares_at_the_bound(self):
+        # The Waterfall Giant waits to blow at 999999999 HP in both engines; the emulator's agent view reads it at the
+        # observation bound, 2**15, and the referee's value is compared through the same bound (night 2026-10-29,
+        # group Gb25e996655: 74 records, 999999999 against 32768, the same HP on both sides).
+        self.assertEqual(self.enemy_diff([(32768, 32768)], 999999999), [])
+        self.assertEqual(self.enemy_diff([(32768, 32768)], 999999993), [])
+        self.assertEqual(lockstep.view_hash(lockstep.ref_view(ref_enemies(999999999))),
+                         lockstep.view_hash(enemy_stub([(32768, 32768)]).view()))
+
+    def test_hp_under_the_bound_still_differs(self):
+        d = self.enemy_diff([(32767, 32768), (31, 40)], 999999999, 29)
+        self.assertEqual([(x[1], x[2]) for x in d], [([32768, 29], [32767, 31])])
+
 
 class RecordContextTests(unittest.TestCase):
     """A divergence record says what the step before it was, and where in the run it happened."""

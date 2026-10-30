@@ -143,17 +143,29 @@ def emu_enemy_hp(obs, offset: int, slot: int, slots: int) -> list:
             if obs[offset + k * slot] > 0 or obs[offset + k * slot + 1] > 0]
 
 
+# The upper bound of the emulator's observation spaces (src/sts2_gym/env.py and run_env.py, `high=2**15`;
+# CombatObservation.ValueBound clamps every value it writes to it). The emulator side's enemy HP is read from that
+# observation, so a value above it (the Waterfall Giant's 999999999 while it waits to blow) reads as the bound.
+OBS_BOUND = 2 ** 15
+
+
+def _agent_hp(h):
+    """An enemy HP as the agent's observation holds it: at most OBS_BOUND. Applied to both sides, so the referee's
+    value is compared through the same bound as the emulator's."""
+    return min(h, OBS_BOUND) if isinstance(h, int) and not isinstance(h, bool) else h
+
+
 def project(view: dict) -> dict:
     """The agent-visible fields both sides share, canonical (multisets sorted). Run level, plus the hand and
-    the enemies' HP in a fight (every enemy the side holds, dead ones at 0). Nothing here is a seed, a counter or the
-    draw order."""
+    the enemies' HP in a fight (every enemy the side holds, dead ones at 0), each through the agent's observation
+    bound (`_agent_hp`). Nothing here is a seed, a counter or the draw order."""
     out = {k: view.get(k) for k in ("act", "floor", "hp", "max_hp", "gold")}
     for k in ("deck", "relics", "potions"):
         out[k] = sorted(json.dumps(x) for x in view.get(k, []) if x is not None)
     c = view.get("combat")
     if c:
         out["combat"] = {"hand": sorted(json.dumps(x) for x in c.get("hand", [])),
-                         "enemy_hp": [h for h in c.get("enemy_hp", [])]}
+                         "enemy_hp": [_agent_hp(h) for h in c.get("enemy_hp", [])]}
     return out
 
 
