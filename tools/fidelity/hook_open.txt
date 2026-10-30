@@ -66,7 +66,6 @@ missing Permafrost.AfterRoomEntered  # relic; RelicEffects.ApplyAfterCardPlayed
 missing RedSkull.AfterRoomEntered  # relic; RelicEffects.ApplyAfterPlayerHpChanged
 missing RegalPillow.AfterRoomEntered  # relic; RunEngine.RestHealAmount
 missing StoneCalendar.AfterRoomEntered  # relic; RelicEffects.ApplyEndOfPlayerTurn
-missing AsleepPower.AfterSideTurnEnd  # power; CombatFactory.CreateLagavulinMatriarch, EnemyAI.ExecuteIntent, EnemyAI.SelectIntent
 missing HatchPower.AfterSideTurnEnd  # power; CombatFactory.ApplyIntrinsicEnemyPowers, EnemyAI.ApplyBuffIntent, EnemyAI.CreateEnemy
 missing HellraiserPower.AfterSideTurnEnd  # power; CardEffects.ApplyCore, CardEffects.DrawCards
 missing JugglingPower.AfterSideTurnEnd  # power; CardEffects.ApplyCore, CombatEngine.ResolvePlay
