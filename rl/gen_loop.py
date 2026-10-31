@@ -1240,6 +1240,17 @@ def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str) ->
     return len({r.get("cand_sha", "") for r in rows if r.get("cand_gen") == str(cand_gen) and r.get("cand_sha", "") != cand_sha})
 
 
+def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = None) -> int | None:
+    """With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable) and `cand_gen` already judged at the
+    guard's cap (distinct candidate shas in `promotions.tsv`, `attempts_before` with no sha): that count, the number `promote` would
+    refuse a further candidate at. None otherwise (guard off, or attempts left). `train` asks before it trains, so a round that
+    could not be judged costs no training."""
+    if not review_guard_on(review_guard):
+        return None
+    n = attempts_before(read_promotions(tsv), cand_gen, "")
+    return n if n >= review_guard_module().ATTEMPT_CAP else None
+
+
 def previous_drift_flagged(rows: list[dict[str, str]]) -> bool:
     """Whether the last judged candidate's drift check flagged (the drift column; empty while the guard was off)."""
     return bool(rows) and rows[-1].get("drift", "") in ("flagged", "blocked")

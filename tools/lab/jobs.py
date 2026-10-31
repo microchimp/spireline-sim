@@ -247,15 +247,24 @@ def store_nightly(readiness: Path, result: dict[str, Any]) -> None:
     _atomic(readiness, json.dumps(doc, indent=1))
 
 
+def consume_marker(marker: Path | str) -> Path | None:
+    """`ready-<x>` becomes `done-<x>` (what a finished round leaves: `ready-9`, `ready-9-r1`, `ready-9-g11`); the new path, or None
+    when there is no such file. Used by `finish` and by `gen0.py train` when it stops a round the review guard could not judge."""
+    m = Path(marker)
+    if not m.exists():
+        return None
+    done = m.with_name("done-" + m.name.removeprefix("ready-"))
+    os.replace(m, done)
+    return done
+
+
 def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str | None:
     """After the command succeeded: consume the input marker, stamp the night, store the bench. A problem string or None."""
     lab = Path(lab)
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n"
     try:
         if kind == "train" and params.get("marker"):
-            m = lab / "train" / params["marker"]
-            if m.exists():
-                os.replace(m, m.with_name("done-" + params["marker"].removeprefix("ready-")))
+            consume_marker(lab / "train" / params["marker"])
         elif kind == "score-real":
             (lab / "score" / "pending").unlink(missing_ok=True)
             _atomic(lab / "score" / "last-ok", stamp)
