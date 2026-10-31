@@ -249,8 +249,18 @@ internal static class PunchingBag
         fight.EndTurn();
 
         Assert.True(bag.Escaped);
-        Assert.Equal(0, bag.Hp);
         Assert.True(fight.State.BattlewornDummyRanOutOfTime);
+        if (TestSwitches.On(Sts2Emulator.Core2.Switch.F08))
+        {
+            // game: CreatureCmd.Escape leaves the HP alone and takes the creature out of the roster; zeroing the HP is
+            // how the old engine took it out.
+            Assert.Equal(hp, bag.Hp);
+            Assert.Empty(fight.State.Enemies);
+        }
+        else
+        {
+            Assert.Equal(0, bag.Hp);
+        }
     }
 }
 
