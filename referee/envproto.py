@@ -701,7 +701,8 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
 
 RUN_DEADLINE_S = 1800.0  # --run-deadline-s default: a run that has not ended this long after its worker started it is given up
 WRAPUP_DEADLINE_S = 300.0  # --wrapup-deadline-s default: a worker that said `wrapup` and not `done` this long after is stopped
-DEADLINE_RESPAWN_CAP = 3  # --deadline-respawn-cap default: replacement workers one worker slot gets after run-deadline closes
+DEADLINE_RESPAWN_CAP = 3  # --deadline-respawn-cap default: replacement workers one worker slot gets after run-deadline closes and deaths
+POLL_S = 1.0  # the main loop's wait for the next event: also how soon a worker whose process is gone is seen when nothing else happens
 
 
 def remaining_after(seeds: list, run_ids: list, seed) -> tuple[list, list]:
@@ -727,7 +728,11 @@ class RunDeadline:
     The wrap-up has its own clock (`wrapup_s`, `--wrapup-deadline-s`; 0: off): a worker puts `wrapup` when its last run's result is
     put (and before the cleanup of a stale run), then `done`; `overdue_wrapup` names the workers whose `wrapup` is older than the
     limit with no `done` (a new `start` ends the clock: the worker went on to another run). `close_wrapup` closes such a worker
-    without a crash row: its runs all have rows."""
+    without a crash row: its runs all have rows.
+
+    A worker whose process is gone without `done` (the emulator's fail-fast kills the whole process and posts nothing) is found by the
+    play loop, which asks `close_dead` for the crash row (where: died) of the run it had in flight, if any, and where the rest of
+    its share begins. `finished` holds the workers whose `done` is in."""
 
     def __init__(self, deadline_s: float, agent_seed: int, run_index: dict[int, dict[str, int]], wrapup_s: float = 0.0):
         self.deadline_s = float(deadline_s or 0)
@@ -737,6 +742,8 @@ class RunDeadline:
         self.run_index = run_index  # worker -> {seed: its run index in the block}, for the agent seed of a deadline row
         self.current: dict[int, tuple[str, float]] = {}  # worker -> (seed, start time) of the run in flight
         self.last_event: dict[int, float] = {}
+        self.last_row: dict[int, str] = {}  # worker -> the seed of its last end or crash row
+        self.finished: set[int] = set()  # workers that said done
         self.closed: set[int] = set()
 
     def seen(self, e: dict, now: float) -> bool:
@@ -754,6 +761,9 @@ class RunDeadline:
             self.current.pop(w, None)
             if e["ev"] == "done":
                 self.wrapping.pop(w, None)
+                self.finished.add(w)
+            elif "seed" in e:
+                self.last_row[w] = e["seed"]
         return True
 
     def overdue(self, now: float) -> list[int]:
@@ -772,17 +782,39 @@ class RunDeadline:
         self.closed.add(w)
         return int(round(now - t))
 
-    def close(self, w: int, now: float) -> dict:
-        """The crash row of the overdue worker's seed; the worker is closed (its later events are ignored)."""
-        seed, t = self.current.pop(w)
-        self.closed.add(w)
-        n = int(round(now - t))
-        row = {"ev": "crash", "w": w, "seed": seed, "where": "deadline", "error": f"worker deadline: no result after {n} s",
+    def _crash_row(self, w: int, seed: str, n: int, now: float, where: str, error: str) -> dict:
+        """The crash row of a run the main loop gave up: `n` seconds since the worker began it."""
+        row = {"ev": "crash", "w": w, "seed": seed, "where": where, "error": error,
                "s": float(n), "t_end": round(now, 1), "divergences": []}
         ix = self.run_index.get(w, {}).get(seed)
         if ix is not None:
             row["agent_seed"] = [self.agent_seed, ix]  # as the worker writes it (a resume checks it)
         return row
+
+    def close(self, w: int, now: float) -> dict:
+        """The crash row of the overdue worker's seed; the worker is closed (its later events are ignored)."""
+        seed, t = self.current.pop(w)
+        self.closed.add(w)
+        n = int(round(now - t))
+        return self._crash_row(w, seed, n, now, "deadline", f"worker deadline: no result after {n} s")
+
+    def close_dead(self, w: int, now: float, exitcode: int | None) -> tuple[dict | None, str | None]:
+        """Close a worker whose process has exited without `done`: (the crash row of its run in flight, the seed its share goes on after).
+        The row (where: died, the exit code in the text and as `exitcode`) is None when no run was in flight (the worker died between
+        runs, or after its last row). The seed is the one in flight, else the worker's last row; None when it had none: its whole share
+        is left. The worker is closed (its later events are ignored)."""
+        self.closed.add(w)
+        self.wrapping.pop(w, None)
+        cur = self.current.pop(w, None)
+        if cur is None:
+            return None, self.last_row.get(w)
+        seed, t = cur
+        what = "worker process exited " + ("(exit code unknown)" if exitcode is None else str(exitcode))
+        if isinstance(exitcode, int) and exitcode > 255:
+            what += f" (0x{exitcode:x})"
+        row = self._crash_row(w, seed, int(round(now - t)), now, "died", what)
+        row["exitcode"] = exitcode
+        return row, seed
 
 
 STACK_LINES = 80  # the most lines of a hung worker's stack a deadline row keeps
@@ -903,7 +935,9 @@ def resume_block(out: Path, stamp: dict, ids: dict[str, int], agent_seed: int) -
 
     A kept row is the first `end` or `crash` row of a seed of this block (`ids`: seed -> its place in the block, the run index of the
     agent's RNG [agent seed, index]); a boot failure is no run and is played again, and so is a row whose recorded agent seed is not
-    [agent seed, that seed's index], so a kept row is always the row a fresh block would have played. `out/resume.json` holds the
+    [agent seed, that seed's index], so a kept row is always the row a fresh block would have played. A `deadline` or `died` row (the
+    run was given up: its worker was stopped, or its process was gone) is kept like any crash row, and its seed is not played again.
+    `out/resume.json` holds the
     block's identity (stamp: agent, sims or config, ascension, character, engine, agent seed). Rows written under another identity
     are not kept (a stderr line) and the block starts empty; a file with rows and no identity (written before this existed) is kept
     when every row's seed belongs to the block. A half-written last line is dropped. runs.jsonl and divergences.jsonl are rewritten
@@ -982,7 +1016,13 @@ def play(a) -> int:
     """`--agent play`: N runs on --procs game processes, the PLAY agent in lockstep with the emulator.
 
     With `a.resume` the block keeps the finished rows of an earlier session (`resume_block`) and plays only the seeds it has no
-    row for, each with the run id and agent seed it has in a fresh block; the summary counts all rows and sums the sessions' wall."""
+    row for, each with the run id and agent seed it has in a fresh block; the summary counts all rows and sums the sessions' wall.
+
+    A worker that goes silent is closed one of two ways, and its seeds go on to a replacement worker either way (a new id; at most
+    --deadline-respawn-cap per original slot, both ways together): its run clock runs out (where: deadline), or its process is gone
+    without `done` (where: died; the emulator's fail-fast kills the process and nothing is posted). The loop checks the processes on
+    every pass and drains the queue once more after it sees an exit, so a worker that posted its rows and `done` and then exited is
+    never read as dead; a process that exits after its last row or in its wrap-up is left alone (no row, no replacement)."""
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     select_engine(getattr(a, "engine", "old"))  # before the workers spawn: each loads the library on it
@@ -1030,10 +1070,12 @@ def play(a) -> int:
     share = {w: (seeds[w::a.procs], run_ids[w::a.procs]) for w in wids}  # worker -> (seeds, run ids) it was handed
     procs = [make_proc(w, *share[w]) for w in wids]
     proc_of = dict(zip(wids, procs))
-    # a worker closed for its run deadline gets a replacement for the rest of its share (a new worker id, so the closed one's late events
-    # stay ignored and its scratch folders p<NN>r<k> stay apart): slot_of names the original slot, respawns counts per slot
+    # a worker closed for its run deadline, or found dead (its process gone without `done`), gets a replacement for the rest of its share
+    # (a new worker id, so the closed one's late events stay ignored and its scratch folders p<NN>r<k> stay apart): slot_of names the
+    # original slot, respawns counts per slot (the one cap of both ways), respawned counts per way (the summary)
     slot_of = {w: w for w in wids}
     respawns: dict[int, int] = {}
+    respawned = {"deadline": 0, "died": 0}
     respawn_cap = getattr(a, "deadline_respawn_cap", DEADLINE_RESPAWN_CAP)
     next_wid = a.procs
     unplayed_after_cap = 0
@@ -1049,11 +1091,91 @@ def play(a) -> int:
         proc_of[w].terminate()
         proc_of[w].join(10)
 
+    def hand_on(w, rest_seeds, rest_ids, kind):
+        """Hand the rest of closed worker `w`'s share (`kind`: deadline or died) to a replacement worker: nothing when none is left or
+        the block's time limit has passed, nothing but a count (unplayed_after_cap) when the slot has had its replacements."""
+        nonlocal next_wid, unplayed_after_cap
+        if not rest_seeds or (stop_at and time.time() > stop_at):  # its share is over, or the block's time limit: nothing to hand on
+            return
+        slot = slot_of[w]
+        if respawns.get(slot, 0) >= respawn_cap:  # a bad seed must not loop: the rest of the slot stays unplayed and the summary says so
+            unplayed_after_cap += len(rest_seeds)
+            print(f"worker {w}: slot {slot} has had {respawn_cap} replacement workers; its {len(rest_seeds)} remaining seeds stay unplayed", flush=True)
+            return
+        respawns[slot] = respawns.get(slot, 0) + 1
+        respawned[kind] += 1
+        new_w, next_wid = next_wid, next_wid + 1  # the old process is gone (stopped or dead), so at most --procs workers live
+        share[new_w], slot_of[new_w] = (rest_seeds, rest_ids), slot
+        watch.run_index[new_w] = dict(zip(rest_seeds, rest_ids))
+        proc_of[new_w] = make_proc(new_w, rest_seeds, rest_ids)
+        procs.append(proc_of[new_w])
+        proc_of[new_w].start()
+        print(f"replacement worker {new_w} for worker {w} ({kind}; slot {slot}, {respawns[slot]} of {respawn_cap}): {len(rest_seeds)} remaining seeds", flush=True)
+
+    def handle(e):  # one event of the queue
+        nonlocal done
+        fresh = watch.seen(e, time.time())
+        if e["ev"] == "net":
+            nets.update(e["conns"])
+        elif not fresh or e["ev"] in ("start", "wrapup"):
+            return  # a closed worker's late row, or the run and wrap-up clocks' own events
+        elif e["ev"] == "done":
+            done += 1
+        else:
+            events.append(e)
+            live.write(json.dumps(e) + chr(10))
+            live.flush()
+            print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
+
+    def drain():  # every event already in the queue
+        while True:
+            try:
+                e = q.get(timeout=0.1)
+            except queue.Empty:
+                return
+            handle(e)
+
+    def reap_dead():
+        """Workers whose process has exited without `done` and that no clock closed: they died (an emulator fail-fast kills the process
+        and posts nothing). What a worker put before its exit may still be in the queue, so the queue is drained once more after the exit
+        is seen, and only a worker still without its `done` after that is read as dead. Its run in flight gets a crash row (where: died)
+        and the rest of its share goes to a replacement. A worker with no run in flight and nothing left to play (it exited after its last
+        row or in its wrap-up) is finished with no row; one that died between runs gets no row but its remaining seeds are handed on."""
+        nonlocal done
+        gone = [w for w, p in proc_of.items() if w not in watch.closed and w not in watch.finished and not p.is_alive()]
+        if not gone:
+            return
+        drain()
+        for w in gone:
+            if w in watch.finished:  # its done was in the queue: it ended by itself
+                continue
+            now = time.time()
+            code = getattr(proc_of[w], "exitcode", None)
+            proc_of[w].join(10)
+            row, after = watch.close_dead(w, now, code)
+            done += 1
+            if after is None:
+                rest_seeds, rest_ids = list(share[w][0]), list(share[w][1])  # it posted no result: its whole share is left
+            else:
+                rest_seeds, rest_ids = remaining_after(*share[w], after)
+            if row is None:
+                if not rest_seeds:
+                    print(f"worker {w}: process exited ({code}) without done after its last result; nothing is left to play", file=sys.stderr, flush=True)
+                    continue
+                print(f"worker {w}: process exited ({code}) without done between runs; its {len(rest_seeds)} remaining seeds go on", flush=True)
+            else:
+                events.append(row)
+                live.write(json.dumps(row) + chr(10))
+                live.flush()
+                print(f"worker {w}: {row['error']} (seed {row['seed']}); counted as done", flush=True)
+            hand_on(w, rest_seeds, rest_ids, "died")
+
     sampler = _start_sampler(a, out, events, resume)
     while done < len(procs):
         if resume and time.time() - beat >= 30:  # the seconds run so far, so a stop leaves the block's wall behind
             beat = time.time()
             write_wall(out, wall_before + beat - t0)
+        reap_dead()  # first: a worker that is gone is dead, whatever its clocks say
         for w in watch.overdue(time.time()):  # a run that outlived --run-deadline-s: its worker is stopped, its seed has a crash row
             row = watch.close(w, time.time())
             stop(w)
@@ -1065,22 +1187,7 @@ def play(a) -> int:
             live.flush()
             print(f"worker {w}: {row['error']} (seed {row['seed']}); worker terminated, counted as done", flush=True)
             done += 1
-            rest_seeds, rest_ids = remaining_after(*share[w], row["seed"])
-            if not rest_seeds or (stop_at and time.time() > stop_at):  # its share is over, or the block's time limit: nothing to hand on
-                continue
-            slot = slot_of[w]
-            if respawns.get(slot, 0) >= respawn_cap:  # a bad seed must not loop: the rest of the slot stays unplayed and the summary says so
-                unplayed_after_cap += len(rest_seeds)
-                print(f"worker {w}: slot {slot} has had {respawn_cap} replacement workers; its {len(rest_seeds)} remaining seeds stay unplayed", flush=True)
-                continue
-            respawns[slot] = respawns.get(slot, 0) + 1
-            new_w, next_wid = next_wid, next_wid + 1  # the old process is gone (stop above), so at most --procs workers live
-            share[new_w], slot_of[new_w] = (rest_seeds, rest_ids), slot
-            watch.run_index[new_w] = dict(zip(rest_seeds, rest_ids))
-            proc_of[new_w] = make_proc(new_w, rest_seeds, rest_ids)
-            procs.append(proc_of[new_w])
-            proc_of[new_w].start()
-            print(f"replacement worker {new_w} for worker {w} (slot {slot}, {respawns[slot]} of {respawn_cap}): {len(rest_seeds)} remaining seeds", flush=True)
+            hand_on(w, *remaining_after(*share[w], row["seed"]), "deadline")
         for w in watch.overdue_wrapup(time.time()):  # a worker in its wrap-up past --wrapup-deadline-s: stopped, no row (its runs have theirs)
             n = watch.close_wrapup(w, time.time())
             stop(w)
@@ -1090,23 +1197,10 @@ def play(a) -> int:
         if done >= len(procs):
             break
         try:
-            e = q.get(timeout=5)
+            e = q.get(timeout=POLL_S)
         except queue.Empty:
-            if not any(p.is_alive() for p in procs):
-                break
-            continue
-        fresh = watch.seen(e, time.time())
-        if e["ev"] == "net":
-            nets |= set(e["conns"])
-        elif not fresh or e["ev"] in ("start", "wrapup"):
-            continue  # a closed worker's late row, or the run and wrap-up clocks' own events
-        elif e["ev"] == "done":
-            done += 1
-        else:
-            events.append(e)
-            live.write(json.dumps(e) + chr(10))
-            live.flush()
-            print(json.dumps({k: v for k, v in e.items() if k != "divergences"})[:300], flush=True)
+            continue  # the next pass looks at the processes again
+        handle(e)
     for p in procs:
         p.join(30)
     if sampler is not None:
@@ -1123,7 +1217,7 @@ def play(a) -> int:
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
     summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wrapup_terminated": wrapup_terminated,
-               "deadline_respawns": sum(respawns.values()), "unplayed_after_cap": unplayed_after_cap, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+               "deadline_respawns": respawned["deadline"], "died_respawns": respawned["died"], "unplayed_after_cap": unplayed_after_cap, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / max(wall, 1e-9), 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -1200,8 +1294,10 @@ def parser() -> argparse.ArgumentParser:
                     help="play: a worker whose current run has no result this many seconds after it began is terminated and its seed gets a "
                          "crash row (where: deadline); the block closes with the other workers' rows (0: off)")
     ap.add_argument("--deadline-respawn-cap", type=int, default=DEADLINE_RESPAWN_CAP,
-                    help="play: a worker closed for its run deadline is replaced by a new worker (a new id) that plays the rest of its seeds; "
-                         "at most this many replacements per original worker slot, then the rest stays unplayed (summary: unplayed_after_cap; 0: none)")
+                    help="play: a worker closed for its run deadline, or found dead (its process gone without done: a crash row, where: died), "
+                         "is replaced by a new worker (a new id) that plays the rest of its seeds; at most this many replacements per original "
+                         "worker slot, deadline closes and deaths together, then the rest stays unplayed (summary: deadline_respawns, "
+                         "died_respawns, unplayed_after_cap; 0: none)")
     ap.add_argument("--wrapup-deadline-s", type=float, default=WRAPUP_DEADLINE_S,
                     help="play: a worker that has put its last result (event wrapup) and has not said done this many seconds later is "
                          "terminated: no crash row (its runs have theirs), one stderr line, counted as wrapup_terminated in the summary (0: off)")
