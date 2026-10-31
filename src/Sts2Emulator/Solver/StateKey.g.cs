@@ -10,7 +10,7 @@ namespace Sts2Emulator.Solver;
 
 internal static partial class StateKeyCodec
 {
-    internal const string FieldsSha256 = "46e6b81e6698f4a106479395e7070d2d0405119d806a8fd1ff9ca2f57969988a";
+    internal const string FieldsSha256 = "2b50688ec3a809b62df82cf916e30ade344a4c2a3d04c9c130170bd86d52a15f";
 
     internal static readonly string[] HandPositionCards = ["Acrobatics", "Anticipate", "CalculatedGamble", "DaggerThrow", "Eidolon", "FiendFire", "Prepared", "Reboot", "ShadowStep", "StormOfSteel", "Survivor"];
     internal static readonly string[] HandPositionRelics = ["WhisperingEarring"];

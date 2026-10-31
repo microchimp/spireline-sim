@@ -62,12 +62,7 @@ def _card_detail(c: dict, with_cost: bool = True) -> dict:
 def _powers(raw: list, side: str) -> list:
     if side == "game":
         return fc.game_powers(raw)
-    out = []
-    for name, amount in raw:
-        p = fc.power(name)
-        if p not in fc.NOT_POWERS:
-            out.append([fc.EMU_RENAME.get(p, p), amount])
-    return sorted(out)
+    return fc.emu_powers(raw)
 
 
 def flat(state: dict | None, side: str) -> dict:

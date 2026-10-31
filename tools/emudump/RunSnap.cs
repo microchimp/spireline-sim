@@ -147,6 +147,8 @@ static class RunSnap
         // 1: the first card screen after pickup was built (and Glam-enchanted); 2: answered.
         // The game's IsUsed is set as that screen is built (AfterModifyingCardRewardOptions).
         new("SILKEN_TRESS", "bools", "IsUsed", (s, r) => r.Counter >= 1 ? 1 : 0, (s, i, v) => SetC(s, i, v != 0 ? 2 : 0)),
+        // Closed by the first merchant purchase with gold spent (RunNonCombatEffects.CloseMawBank: Counter 1).
+        new("MAW_BANK", "bools", "HasItemBeenBought", (s, r) => r.Counter > 0 ? 1 : 0, SetC),
     ];
 
     /// <summary>The held relics' modelled saved properties: {RELIC: {Name: value}}.</summary>

@@ -119,6 +119,85 @@ public class ChargeTests
     }
 }
 
+/// <summary>
+/// Charge and Guards each make ONE selection of several cards and transform them once all are
+/// chosen; the copy asks one pick at a time and transforms each in place at once, so a later
+/// pick must offer the first screen's cards less the ones already picked. The copy's second
+/// Charge screen offered the Minion Dive Bomb its first pick had just become (nightly
+/// 2026-10-29, G48b11e5631, every record a Charge with a Dive Bomb among the copy's candidates),
+/// and its reopened Guards screen left out a Minion Sacrifice the hand held before Guards.
+/// </summary>
+public class MultiPickTransformCandidateTests
+{
+    private const int Charge = 83;
+    private const int Guards = 229;
+
+    [Fact]
+    public void ChargesSecondPickOffersThePileLessTheFirst()
+    {
+        var fight = RegentSelection.WithDrawPile(4);
+        fight.State.Hand.Add(new CardInstance(Charge, false));
+        fight.Play(0);
+
+        fight.Choose(2);
+
+        Assert.Equal(CardSelectionKind.TransformDrawToMinionDiveBomb, fight.Pending!.Kind);
+        Assert.Equal(new[] { 0, 1, 3 }, fight.Pending.Candidates);
+        Assert.DoesNotContain(fight.Pending.Candidates, i => fight.State.DrawPile[i].DefId == RegentSelection.MinionDiveBomb);
+    }
+
+    /// <summary>
+    /// Charge asks for exactly two, so a pile of two is taken whole without a screen, as the game takes
+    /// any pool no bigger than a selection's fixed count; the copy asked for the first of the two.
+    /// </summary>
+    [Fact]
+    public void ChargeOnATwoCardPileTakesBothWithoutAsking()
+    {
+        var fight = RegentSelection.WithDrawPile(2);
+        fight.State.Hand.Add(new CardInstance(Charge, false));
+
+        fight.Play(0);
+
+        Assert.Null(fight.Pending);
+        Assert.Equal(2, fight.State.DrawPile.Count);
+        Assert.All(fight.State.DrawPile, card => Assert.Equal(RegentSelection.MinionDiveBomb, card.DefId));
+    }
+
+    /// <summary>On a pile of three the screen is asked, and its second pick offers the two the first left.</summary>
+    [Fact]
+    public void ChargeOnAThreeCardPileAsksForTwo()
+    {
+        var fight = RegentSelection.WithDrawPile(3);
+        fight.State.Hand.Add(new CardInstance(Charge, false));
+        fight.Play(0);
+
+        fight.Choose(1);
+        Assert.Equal(new[] { 0, 2 }, fight.Pending!.Candidates);
+        fight.Choose(1);
+
+        Assert.Null(fight.Pending);
+        Assert.Equal(new[] { false, true, true }, fight.State.DrawPile.Select(c => c.DefId == RegentSelection.MinionDiveBomb));
+    }
+
+    [Fact]
+    public void GuardsOffersASacrificeTheHandAlreadyHeld()
+    {
+        var fight = RegentSelection.WithDrawPile(3);
+        fight.State.Hand.Add(new CardInstance(RegentSelection.MinionSacrifice, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(RegentSelection.DefendRegent, false));
+        fight.State.Hand.Add(new CardInstance(Guards, false));
+        fight.Play(3);
+        Assert.Equal(new[] { 0, 1, 2 }, fight.Pending!.Candidates);
+
+        fight.Choose(1); // hand index 1, a Defend
+
+        Assert.Equal(CardSelectionKind.TransformHandToMinionSacrifice, fight.Pending!.Kind);
+        Assert.Equal(new[] { 0, 2 }, fight.Pending.Candidates);
+        Assert.Equal(RegentSelection.MinionSacrifice, fight.State.Hand[1].DefId);
+    }
+}
+
 // MegaCrit.Sts2.Core.Models.Cards/Guards.cs: `CardSelectorPrefs(prompt, 0, 999999999)` — ANY
 // NUMBER of hand cards become MINION SACRIFICES, and keeping none is a legal answer.
 public class GuardsTests

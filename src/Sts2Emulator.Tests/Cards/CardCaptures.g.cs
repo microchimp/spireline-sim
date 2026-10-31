@@ -2638,10 +2638,10 @@ public class CardCaptureTests
         fight.ConfirmOpenSelection();
 
         // The game stopped and asked: 'Choose 2 cards to Transform.' (NCombatPileCardSelectScreen),
-        // offering 6 cards.
+        // offering 6 cards (1 already picked on this screen).
         Assert.NotNull(fight.Pending);
-        Assert.Equal(6, fight.Pending!.Candidates.Count);
-        fight.Choose(1); // DEFEND_IRONCLAD
+        Assert.Equal(5, fight.Pending!.Candidates.Count);
+        fight.Choose(0); // DEFEND_IRONCLAD
         fight.ConfirmOpenSelection();
 
         Assert.Equal(64, fight.State.PlayerHp);

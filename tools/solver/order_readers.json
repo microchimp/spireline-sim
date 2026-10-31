@@ -794,14 +794,6 @@
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
   },
-  "CombatEngine:ResolveCardSelection:for Hand#2": {
-   "class": "free",
-   "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
-  },
-  "CombatEngine:StepCore:Hand[action]": {
-   "class": "free",
-   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
-  },
   "CombatEngine:UsePotion:PotionSlots[slot]": {
    "class": "free",
    "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"

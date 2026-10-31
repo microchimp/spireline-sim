@@ -336,7 +336,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
         State.UnknownMapPointsVisited++;
         State.CurrentNodeType = resolvedNodeType;
         State.LastResolvedRoomType = resolvedNodeType;
-        RunNonCombatEffects.PayMawBank(State);
+        // Maw Bank is not paid here: the map step already paid it for this walk. The "?" is
+        // resolved to its room and that room is the one room entered, so the bank's
+        // `AfterRoomEntered` runs once; paying here as well gave 24 for every "?".
 
         // `Planisphere.AfterRoomEntered` asks about `CurrentMapPoint.PointType`, not about
         // the room -- so it pays out on whatever the "?" turned out to be, a fight
@@ -1437,10 +1439,10 @@ public sealed class RunEngine : Core2.ICombatEndHost
             }
 
             // `MawBank.AfterRoomEntered(RunState.BaseRoom == room)` -- the room the player
-            // just walked into, whatever kind it is. Fired here rather than inside the
-            // switch because every branch below either starts a combat or changes phase,
-            // and the bank does not care which. The unknown-node path pays through
-            // `EnterUnknownMapPoint`, which resolves to a room of its own.
+            // just walked into, whatever kind it is, a "?" included: the "?" resolves to the
+            // one room that is entered, so this is its only payment. Fired here rather than
+            // inside the switch because every branch below either starts a combat or
+            // changes phase, and the bank does not care which.
             RunNonCombatEffects.PayMawBank(State);
             // `LavaLamp.AfterRoomEntered` clears its flag on entering ANY room, not only a
             // fight's: a card reward outside combat (an event's, a shop's) is upgraded unless
@@ -1478,8 +1480,10 @@ public sealed class RunEngine : Core2.ICombatEndHost
                         isRestSite: true,
                         cameFromUnknown: false
                     );
+                    // Every rest site is a room of its own with its options built fresh, so
+                    // nothing of the last visit's screen comes along.
                     State.RestOptionsTaken = 0;
-                    State.RestOptionsTaken = 0;
+                    State.RestResultPending = false;
                     State.Phase = RunPhase.Rest;
                     break;
                 case RunConstants.NodeShop:
@@ -1894,6 +1898,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// relic and puts its <see cref="RelicInstance.Counter" /> on the run's copy and, while a
     /// fight is open, on the fight's copy too (the game has one relic object for both); a relic
     /// not held is skipped. It applies after the relic list, so it reaches a relic new to the run.
+    /// <paramref name="gold" /> is put on the open fight's copy as well.
     /// </remarks>
     public void DebugSetPlayer(
         int hp,
@@ -1920,6 +1925,13 @@ public sealed class RunEngine : Core2.ICombatEndHost
         if (gold >= 0)
         {
             State.Gold = gold;
+            // The game has one gold total; the copy keeps a second one in an open fight
+            // (`CombatState.PlayerGold`, what the fight's view and its gold effects read),
+            // so a write while a fight is open goes on both, as the relic counters do.
+            if (State.ActiveCombat is { } fightGold)
+            {
+                fightGold.PlayerGold = gold;
+            }
         }
 
         if (cards is not null)
@@ -3007,6 +3019,23 @@ public sealed class RunEngine : Core2.ICombatEndHost
     private int AdvanceAfterNode(out bool terminal)
     {
         terminal = false;
+        // A screen a rest-site option opened (the heal's rewards: Dream Catcher's card, Tiny
+        // Mailbox's potions; a dug relic's own screen) closes back onto the rest site, as the
+        // game's option awaits it and the room's screen comes back: its result page, or under
+        // Miniature Tent the options left. Only the rest site's own leave, from the Rest phase,
+        // walks on. Walking on from the reward screen left `RestResultPending` set, and the next
+        // rest site of the run then answered its first action as that stale result page and
+        // was left without a choice (nightly 2026-10-29, G1b02fc9e96).
+        if (
+            State.Phase != RunPhase.Rest
+            && State.CurrentNodeType == RunConstants.NodeRest
+            && State.RestOptionsTaken != 0
+        )
+        {
+            State.Phase = RunPhase.Rest;
+            return 0;
+        }
+
         // The BACKSTOP, not the real ending: a run finishes by beating the last act's boss,
         // which `AdvanceAfterRelicReward` handles. This only catches a run that has walked
         // past where any map could take it -- so it reads the boss row off the map the run
@@ -3082,9 +3111,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 QueuePotionRewards([0, 0]);
                 OfferNextRestPotion();
                 State.Phase = RunPhase.RelicReward;
-                return 0;
             }
 
+            // The heal is taken whether or not its rewards opened a screen: the game's heal
+            // option waits for its rewards screen to close and the rest site then shows again,
+            // which `AdvanceAfterNode` does once that screen closes.
             FinishRestOption(action);
             return 0;
         }
@@ -5401,8 +5432,16 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// Neow -- as the game's `RewardsSet` does. Landing on Neow early let the next action
     /// choose a SECOND blessing and left the curse unadded.
     /// </summary>
-    private RunPhase NeowReturnPhase() =>
-        RunRewardGenerator.HasPendingRewards(State) ? RunPhase.RelicReward : RunPhase.Ancient;
+    /// <remarks>
+    /// A relic claimed there that opened a screen of its own left the rest of the offer (the
+    /// relic still owed, or Neow's Bones' curse once none is) for that screen's close, which is
+    /// here: the game's obtain returns to the rewards screen only once its screen is answered.
+    /// </remarks>
+    private RunPhase NeowReturnPhase()
+    {
+        RunRewardGenerator.OfferNextBonusRelic(State);
+        return RunRewardGenerator.HasPendingRewards(State) ? RunPhase.RelicReward : RunPhase.Ancient;
+    }
 
     /// <summary>Shuts the offer grid and runs whatever was waiting behind it.</summary>
     private int CloseOfferGrid()
@@ -5504,6 +5543,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
         int bought = stall[action];
         stall[action] = 0;
         RunNonCombatEffects.ApplyRelicPickup(State, bought);
+        // The stall's entries are merchant entries: a purchase that succeeds raises
+        // `AfterItemPurchased` with the gold spent, and Maw Bank closes as at a shop.
+        RunNonCombatEffects.CloseMawBank(State, price);
         return 0;
     }
 
@@ -5689,10 +5731,12 @@ public sealed class RunEngine : Core2.ICombatEndHost
         State.BundleOffer = [];
         State.SelectedBundle = -1;
 
-        // A screen Neow opened returns to Neow, which stays up for one more Proceed.
+        // A screen Neow opened returns to Neow, which stays up for one more Proceed -- or, for
+        // Scroll Boxes claimed off Neow's Bones' screen, to that screen while it still owes a
+        // relic, as a grid or a selection does.
         if (State.NeowAwaitingProceed)
         {
-            State.Phase = RunPhase.Ancient;
+            State.Phase = NeowReturnPhase();
             return 0;
         }
 
@@ -5719,8 +5763,11 @@ public sealed class RunEngine : Core2.ICombatEndHost
 
             State.Deck[action] = State.Deck[action] with { Upgraded = true };
             State.PendingRestUpgrade = false;
-            State.RestResultPending = true;
-            State.RestOptionsTaken = 0;
+            // The smith's card screen closes back onto the rest site as every option's screen
+            // does: its result page, or under Miniature Tent the options left with the smith
+            // spent. It went to the result page whatever the relics said, so a Tent run that
+            // smithed was walked out of a rest site the game kept open.
+            FinishRestOption(RunConstants.RestUpgradeAction);
             State.Phase = RunPhase.Rest;
             return 0;
         }

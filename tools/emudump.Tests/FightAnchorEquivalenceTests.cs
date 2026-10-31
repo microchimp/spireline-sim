@@ -132,10 +132,12 @@ public class FightAnchorEquivalenceTests
         "royal_stamp_on_other_cards#2 c32a1ed8c7f69aa7",
         "royal_stamp_on_other_cards#3 498a9ff2c3e4be6d",
         "royal_stamp_on_other_cards#4 2fc87d692c3b4185",
-        "dollys_mirror_on_other_cards#1 a1842722f43581ca",
-        "dollys_mirror_on_other_cards#2 b0fb455659432151",
-        "dollys_mirror_on_other_cards#3 b05346853f360683",
-        "dollys_mirror_on_other_cards#4 13895f0ea66f0e95",
+        // Dolly's Mirror's record starts from Neow's Bones: a relic claimed off its screen opens its own selection since
+        // fix/f16-gold-screens, so the setup deck (and every state after it) is the game's now, not the loader's of ccb04363.
+        "dollys_mirror_on_other_cards#1 7d21b176f963bba0",
+        "dollys_mirror_on_other_cards#2 dcf5432a1e58b482",
+        "dollys_mirror_on_other_cards#3 69a58a1b6de29b32",
+        "dollys_mirror_on_other_cards#4 63fe7e6a9ae8b8b4",
         "gnarled_hammer_then_punch_dagger#1 cc799c4d4708182e",
         "gnarled_hammer_then_punch_dagger#2 17ba6d38dea5ce94",
         "gnarled_hammer_then_punch_dagger#3 7b34fba6076cfdb3",

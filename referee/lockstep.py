@@ -336,6 +336,12 @@ class Lockstep:
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
         self._track(kind, msg)
+        if self.emu is not None and self._after_the_end(msg):
+            # Both sides have ended the run at the same death: nothing is compared, ranked or added to an open span.
+            self.stats["after_end"] = self.stats.get("after_end", 0) + 1
+            self.stats["not_ranked"] += 1
+            self.prev_kind = kind
+            return self.fallback(msg)
         ranked = False
         if self.emu is not None:
             ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
@@ -450,6 +456,18 @@ class Lockstep:
             except Exception as e:  # noqa: BLE001 -- a probe never costs the record
                 out["emu_probe_error"] = type(e).__name__
         return out
+
+    def _after_the_end(self, msg: dict) -> bool:
+        """Whether the game asks after its player died outside a fight. The game ends the run at the kill (its game-over
+        screen opens), but an event that dealt the damage still sets its next page after it (Abyssal Baths' Linger, Slippery
+        Bridge's Hold On), so the driver goes on asking on a dead player. The emulator ended the run at that death. When the
+        game's player is at 0 HP and the emulator's run is over with its player dead too, both sides agree the run has ended:
+        the decision is neither compared nor ranked, and an open record's span does not grow. (2026-10-29: group Gfa785ae413,
+        674 weight, 22 records whose views were equal and whose spans ran to the run's end.) An emulator side without
+        `run_over` (the tests' fakes) never matches."""
+        hp = (msg.get("obs") or {}).get("hp")
+        over = getattr(self.emu, "run_over", None)
+        return isinstance(hp, (int, float)) and hp <= 0 and callable(over) and bool(over())
 
     def finish(self, outcome: dict) -> None:
         """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
@@ -702,6 +720,10 @@ class EmuLock:
         return [[self.slug["cards"].get(obs[ls._HAND + k * ls._CARD], "?"), int(obs[ls._HAND + k * ls._CARD + 1])]
                 for k in range(ls._hand_size(obs))]
 
+    def run_over(self) -> bool:
+        """Whether the emulator's run has ended with the player dead (`Lockstep._after_the_end`)."""
+        return self.s.phase == self.E.rc.PHASE_COMPLETE and self.s.view().hp <= 0
+
     def view(self) -> dict:
         v = self.s.view()
         out = {"act": self.s.act_index, "floor": v.floor, "hp": v.hp, "max_hp": v.max_hp, "gold": v.gold,
@@ -823,10 +845,28 @@ class EmuLock:
                 self._forced("map")
             return None
         self._forced(self.SCREEN[kind])
+        if kind == "map":
+            self._pass_lone_maps(msg)
         if kind == "event":
             return self._sync_event(msg)
         got = None if self.dec is None else self.dec.type
         return None if got == self.SCREEN[kind] else f"screen:{got}!={self.SCREEN[kind]}"
+
+    def _pass_lone_maps(self, msg: dict | None) -> None:
+        """Reach the map the referee asks about when it stands at a later floor. A map with one node is one the referee
+        passes without asking (Env.Decide asks only with two or more), and so is a room behind it that asks nothing (a shop
+        with only its leave, a chest the engine takes itself): the referee's next question is the map after that room, one
+        floor on. `_forced("map")` stopped at the emulator's first map, the lone one, so the emulator stood a floor behind
+        (2026-10-29: Gf45701a3de, 106 `.floor` records, game one floor ahead at a map, the room passed a shop or a chest).
+        Only a single-node map below the referee's floor is walked; a map the referee asks with one node and a potion to use
+        is at its own floor and stays."""
+        want = ((msg or {}).get("obs") or {}).get("floor")
+        for _ in range(4):
+            d = self.dec
+            if want is None or d is None or d.type != "map" or len(d.options) != 1 or self.s.floor >= want:
+                return
+            self.s.apply(d.options[0])
+            self._forced("map")
 
     def _sync_event(self, msg: dict | None) -> str | None:
         """Reach the event page the referee is asking about. The referee asks only with two or more enabled options, so
@@ -1087,10 +1127,17 @@ class EmuLock:
         if self.anchored_with == "hidden":
             self._order_deck(obs)
         # The game's relic counters (its post-tick values) go in once the emulator is in the fight, whatever the anchor used:
-        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to.
+        # the native call sets the fight's own relics too, so the emulator's turn-1 tick is replaced, not added to. The game's
+        # gold goes in with them for the same reason: the observation's gold already holds this room's entry payment (Maw
+        # Bank's 12), and on the walk path the emulator paid its own on top of it as it entered the room (the night of
+        # 2026-10-29 failed 49 fight-start re-anchors on `.gold`). The native call sets the fight's copy of the gold too.
         counters = self._relic_counters()
+        extra = {"relic_counters": counters} if counters else {}
+        if obs.get("gold") is not None:
+            extra["gold"] = int(obs["gold"])
+        if extra:
+            self.native.run_debug_set_player(self.s.handle, self._obs(), **extra)
         if counters:
-            self.native.run_debug_set_player(self.s.handle, self._obs(), relic_counters=counters)
             self.relic_counters = len(counters)
         return True
 

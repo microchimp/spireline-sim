@@ -165,7 +165,7 @@ def other_quiet(lines: list[str] | None = None, *, allow: tuple[str, ...] = ()) 
     """The tag of another live QUIET.lock line (not ours, not w3-blocks, not older than 2 h, not in `allow`), or None."""
     for x in _lines(fg.QUIET) if lines is None else lines:
         tag = x.split()[0]
-        if tag in MY_TAGS or tag.startswith(TAG + "-") or tag == "w3-blocks" or tag in allow:
+        if tag in MY_TAGS or tag == "w3-blocks" or tag in allow:  # our builds and gates (gym-loop-*) stop the daemon too
             continue
         if fg._age_h(x) < QUIET_STALE_H:  # noqa: SLF001
             return tag
@@ -581,9 +581,14 @@ def gen_game_steps(task: tuple, clock, game, ctx):
 # ---------------------------------------------------------------------------------------------------------- the buffer
 
 
-def compact(loop: Loop, segment: int) -> dict | None:
+def compact(loop: Loop, segment: int, value_labels: bool = True) -> dict | None:
     """Merge the incoming fight files into one shard (`buffer/shards/sNNNNNN.npz`) and index it; the fight files go. Run after a
-    segment and at start-up (a killed segment's finished fights are kept)."""
+    segment and at start-up (a killed segment's finished fights are kept).
+
+    `value_labels` False (a segment stopped before its end, or killed): its fights keep their policy targets but lose their value
+    labels. The fights still running at a stop are lost, and the long ones are the likelier to be running, so the fights a cut
+    segment did finish lean towards short ones (quick deaths); their outcomes would bias the value head. The visit targets do not
+    depend on how the fight ended."""
     import numpy as np  # noqa: PLC0415
 
     files = sorted(loop.incoming.glob("*.npz"))
@@ -610,14 +615,14 @@ def compact(loop: Loop, segment: int) -> dict | None:
     n = sum(rows_of)
     merged["fight"] = np.repeat(np.arange(len(parts), dtype=np.int32), rows_of)
     merged["label"] = np.repeat(np.array([m["label"] for m in metas], dtype=np.int16), rows_of)
-    merged["value_ok"] = np.repeat(np.array([bool(m["value_ok"]) for m in metas], dtype=np.int8), rows_of)
+    merged["value_ok"] = np.repeat(np.array([bool(m["value_ok"]) and value_labels for m in metas], dtype=np.int8), rows_of)
     merged["val"] = np.repeat(np.array([m.get("split") == "val" for m in metas], dtype=np.int8), rows_of)
     merged["fights_meta"] = np.array(json.dumps(metas))
     name = f"s{segment:06d}-{int(time.time())}.npz"
     save_npz(loop.shards / name, merged)
     entry = {"shard": name, "segment": segment, "rows": n, "fights": len(parts), "bytes": (loop.shards / name).stat().st_size,
              "players": dict(Counter(m["player"] for m in metas)), "cats": dict(Counter(m["cat"] for m in metas)),
-             "val_rows": int(merged["val"].sum()), "t": stamp()}
+             "val_rows": int(merged["val"].sum()), "value_rows": int(merged["value_ok"].sum()), "t": stamp()}
     with open(loop.root / "buffer" / "index.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
     for f in files:
@@ -757,8 +762,22 @@ def play_tasks(loop: Loop, tasks: list, target: Path, player_dir: Path, procs: i
     server = Server(loop, player_dir, what) if prior == "server" else None
     opts = {"prior": "server" if server is not None and server.opts else "cpu", "server": server.opts if server else None,
             "game_steps": steps, "worlds": "reload", "grade_wall_s": 0, "paths": [str(ROOT / "rl")], **(extra_opts or {})}
+    judge_server = None
+    if opts.get("judge"):  # the judge's leaves: on its own server on the card beside the prior's, as the judge's arm plays them
+        j = {"path": str(opts["judge"]["path"]), "sha256": sha256_file(Path(opts["judge"]["path"]))}
+        if server is not None and server.opts:
+            from prior_launch import start_prior_server  # noqa: PLC0415
+
+            judge_server = start_prior_server(GPU_PYTHON, j["path"], lib_path=ROOT / "out", kill_file=GPU_OFF,
+                                              stats_path=loop.games / f"judge-server-{what}.json", priority="below")
+            if judge_server is not None:
+                j.update(endpoint=judge_server.endpoint, authkey=judge_server.authkey)
+            else:
+                loop.log(f"{what}: the judge's server did not start; the judge plays on the CPU")
+        opts["judge"] = j
     if daemon is not None:
         daemon.server_pid = server.pid if server else None
+        daemon.judge_pid = judge_server.proc.pid if judge_server is not None and judge_server.proc is not None else None
     t0 = time.perf_counter()
     last = [time.time()]
 
@@ -774,9 +793,11 @@ def play_tasks(loop: Loop, tasks: list, target: Path, player_dir: Path, procs: i
                                                    log=lambda m: loop.log(f"{what}: {m}"))
     finally:
         hold_quiet(False)
+        if judge_server is not None:
+            judge_server.stop()
         sstats = server.stop() if server is not None else {}
         if daemon is not None:
-            daemon.server_pid = None
+            daemon.server_pid = daemon.judge_pid = None
     wall = time.perf_counter() - t0
     with open(loop.games / "steps.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"t": stamp(), "what": what, "tasks": len(tasks), "wall_s": round(wall, 1), "stopped": stopped,
@@ -961,7 +982,10 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
 BOARD_REPO = Path(os.environ.get("GYM_LOOP_BOARD_REPO", "D:/spireline/spireline"))
 BOARD_WT = Path(os.environ.get("GYM_LOOP_BOARD_WT", "D:/spireline/wt-board"))
 BOARD_PAGE = "docs/paper/fight-board.html"
-STANDING_ARMS = (("a3-v1", "Usual thinking"), ("x16", "Sixteen times the thinking"), ("x4", "Four times the thinking"))
+# Where each arm already on the board has its games: the page keeps no games, so a rebuild passes every arm's file again. An arm
+# on the page with no known file stops the step (a row is never dropped); `board/games.json` in the loop's folder adds arms.
+BOARD_GAMES = {"a3-v1": BOARD_DIR / "games.jsonl", "x16": BOARD_DIR / "games.jsonl", "x4": BOARD_DIR / "games.jsonl",
+               "judge-v0": REF / "lab" / "results" / "fight-gym" / "2026-10-30-judge" / "games.jsonl"}
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 
@@ -971,6 +995,29 @@ def _git(*args: str, cwd: Path) -> str:
     if r.returncode != 0:
         raise RuntimeError(clean(f"git {' '.join(args[:2])}: {r.stderr.strip()[-300:]}"))
     return r.stdout
+
+
+def page_arms(html: str) -> list[tuple[str, str]]:
+    """The arms already on the page, in order: (key, label)."""
+    out = []
+    for m in re.finditer(r'"key":\s*"([^"]+)",\s*"label":\s*"([^"]+)"', html):
+        if m.group(1) not in [k for k, _ in out]:
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
+def board_args(loop: Loop, arms: list[tuple[str, str]], vers: list[str]) -> tuple[list[str], list[str]]:
+    """(--games files, --arm entries): the page's arms with their games, then every promoted version not on it yet."""
+    known = {k: Path(v) for k, v in BOARD_GAMES.items()}
+    known.update({k: Path(v) for k, v in (read_json(loop.board / "games.json", {}) or {}).items()})
+    known.update({f"fp-{v}": loop.board / f"fp-{v}.jsonl" for v in vers})
+    keys = [k for k, _ in arms] + [f"fp-{v}" for v in vers if f"fp-{v}" not in [k for k, _ in arms]]
+    labels = dict(arms) | {f"fp-{v}": f"Fight player, version {v[1:]}" for v in vers}
+    missing = [k for k in keys if k not in known or not known[k].is_file()]
+    if missing:
+        raise RuntimeError(f"board: no games for the arms {missing}; nothing rebuilt (add them to board/games.json)")
+    files = list(dict.fromkeys(str(known[k]) for k in keys))
+    return files, [f"{k}={labels[k]}" for k in keys]
 
 
 def page_log(html: str) -> list[str]:
@@ -994,18 +1041,17 @@ def board_commit(loop: Loop, ver: str, verdict: dict, commit: bool = True) -> st
     _git("fetch", "-q", "origin", cwd=BOARD_WT)
     _git("checkout", "-q", "--detach", "origin/main", cwd=BOARD_WT)
     page = BOARD_WT / BOARD_PAGE
-    old = page_log(page.read_text(encoding="utf-8"))
+    html = page.read_text(encoding="utf-8")
+    old = page_log(html)
     vers = sorted((v for v in loop.state["versions"] if v != "v0"), key=lambda x: int(x[1:]))
     eng_commit = _git("rev-parse", "--short", "HEAD", cwd=ROOT).strip()
     line = board_line(ver, verdict, eng_commit)
-    cmd = [sys.executable, "tools/fight_board.py", "--out", BOARD_PAGE, "--starts", str(BOARD_DIR / "starts.jsonl"),
-           "--games", str(BOARD_DIR / "games.jsonl")]
-    for v in vers:
-        cmd += ["--games", str(loop.board / f"fp-{v}.jsonl")]
-    for key, label in STANDING_ARMS:
-        cmd += ["--arm", f"{key}={label}"]
-    for v in vers:
-        cmd += ["--arm", f"fp-{v}=Fight player, version {v[1:]}"]
+    files, arms = board_args(loop, page_arms(html), vers)
+    cmd = [sys.executable, "tools/fight_board.py", "--out", BOARD_PAGE, "--starts", str(BOARD_DIR / "starts.jsonl")]
+    for f in files:
+        cmd += ["--games", f]
+    for a in arms:
+        cmd += ["--arm", a]
     for x in [*old, line] if line not in old else old:
         cmd += ["--log", x]
     r = subprocess.run(cmd, cwd=str(BOARD_WT), capture_output=True, text=True, check=False,
@@ -1078,9 +1124,13 @@ class GpuWatch:
                 continue
             per[int(m.group(1))] = max(per[int(m.group(1))], x)
         names = _python_pids()
-        inf = per.get(self.daemon.server_pid or -1, 0.0)
-        tr = per.get(self.daemon.trainer_pid or -1, 0.0)
-        mine = {self.daemon.server_pid, self.daemon.trainer_pid}
+        parents = process_parents()
+        # a venv's python.exe is a launcher that starts the interpreter as its child: a process is ours with its descendants
+        srv = descendants(parents, self.daemon.server_pid) | descendants(parents, getattr(self.daemon, "judge_pid", None))
+        trn = descendants(parents, self.daemon.trainer_pid)
+        inf = sum(per.get(p, 0.0) for p in srv)
+        tr = sum(per.get(p, 0.0) for p in trn)
+        mine = srv | trn
         lab = sum(x for p, x in per.items() if p in names and p not in mine)
         other = sum(x for p, x in per.items() if p not in names and p not in mine)
         return {"t": stamp(), "inference": round(inf, 1), "training": round(tr, 1), "lab_python": round(lab, 1),
@@ -1093,6 +1143,54 @@ class GpuWatch:
                 if s is not None:
                     with open(self.loop.root / "gpu.jsonl", "a", encoding="utf-8") as fh:
                         fh.write(json.dumps(s) + "\n")
+
+
+def process_parents() -> dict[int, int]:
+    """{pid: parent pid} of every process (a Toolhelp snapshot); {} off Windows."""
+    if os.name != "nt":
+        return {}
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class PE(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_char * 260)]
+
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    out: dict[int, int] = {}
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return out
+    try:
+        e = PE()
+        e.dwSize = ctypes.sizeof(PE)
+        ok = k32.Process32First(snap, ctypes.byref(e))
+        while ok:
+            out[int(e.th32ProcessID)] = int(e.th32ParentProcessID)
+            ok = k32.Process32Next(snap, ctypes.byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def descendants(parents: dict[int, int], root: int | None) -> set[int]:
+    """`root` and every process below it."""
+    if not root:
+        return set()
+    kids: dict[int, list[int]] = defaultdict(list)
+    for c, p in parents.items():
+        if c != p:
+            kids[p].append(c)
+    out, stack = set(), [int(root)]
+    while stack:
+        x = stack.pop()
+        if x not in out:
+            out.add(x)
+            stack.extend(kids.get(x, []))
+    return out
 
 
 def _python_pids() -> set[int]:
@@ -1123,6 +1221,7 @@ class Daemon:
         self.loop = Loop(a.root)
         self.phase = "start"
         self.server_pid: int | None = None
+        self.judge_pid: int | None = None
         self.trainer_pid: int | None = None
         self.trainer = None
         self.job = None
@@ -1211,7 +1310,7 @@ class Daemon:
         stopped = play_tasks(loop, tasks, target, pdir, self.a.procs, self.a.k, self.a.prior, f"seg{seg}", daemon=self)
         rows = fg.read_jsonl(target)
         learn_seconds(loop, rows)
-        entry = compact(loop, seg)
+        entry = compact(loop, seg, value_labels=stopped is None)
         loop.save()
         with open(loop.games / "segments.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), "segment": seg, "player": player, "fights": len(rows), "tasks": len(tasks),
@@ -1251,7 +1350,7 @@ class Daemon:
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")
-        entry = compact(self.loop, self.loop.state["segment"])  # a killed segment's finished fights
+        entry = compact(self.loop, self.loop.state["segment"], value_labels=False)  # a killed segment's finished fights
         if entry:
             self.loop.log(f"buffer: {entry['fights']} fights of an interrupted segment kept")
         rc = 0
@@ -1346,16 +1445,18 @@ def main(argv=None) -> int:
         if name == "starts":
             p.add_argument("--runs-per-night", type=int, default=50)
         if name in ("run", "gate"):
-            p.add_argument("--player-config", default="a3-v1", help="the search config the gate scores (the judge's once it lands)")
+            p.add_argument("--player-config", default="judge-v0",
+                           help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
             p.add_argument("--gate-k", type=int, default=32)
-            p.add_argument("--judge", default="", help="the judge checkpoint a judge config's leaves read (once the judge lands)")
+            p.add_argument("--judge", default=str(REF / "agent" / "judge" / "v0" / "judge.pt"),
+                           help="the judge checkpoint a judge config's leaves read ('' for a config without one)")
         if name == "gate":
             p.add_argument("--candidate", required=True)
         if name == "stop":
             p.add_argument("--wait-s", type=float, default=300.0)
         if name == "run":
             p.add_argument("--teacher", default="x16", help="the generation's search: the stronger search grades the fights")
-            p.add_argument("--k", type=int, default=8, help="fights a lockstep process holds during generation")
+            p.add_argument("--k", type=int, default=2, help="fights a lockstep process holds during generation (few: a stop loses them)")
             p.add_argument("--segment-min", type=float, default=20.0)
             p.add_argument("--yield-s", type=float, default=150.0)
             p.add_argument("--exact-wall-s", type=float, default=0.25)

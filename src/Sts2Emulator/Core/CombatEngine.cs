@@ -457,16 +457,11 @@ public static class CombatEngine
         }
         else if (action < endTurnAction)
         {
-            // SurroundedPower.BeforeCardPlayed, and it fires BEFORE the card resolves.
-            TurnPlayerTowardTarget(state, state.Hand[action]);
             result = PlayCard(state, action, rng);
         }
         else
         {
             int potionSlot = action - endTurnAction - 1;
-            // SurroundedPower.BeforePotionUsed, the same rule for a targeted potion. The
-            // potion's own target is not tracked, so this uses the aimed-at enemy.
-            TurnPlayerTowardTarget(state, card: null);
             result = UsePotion(state, potionSlot, rng);
         }
 
@@ -517,6 +512,7 @@ public static class CombatEngine
                         or CardSelectionKind.ExhaustFromHandRepeated
                         or CardSelectionKind.DrawPileToHand
                         or CardSelectionKind.TransformInHand
+                        or CardSelectionKind.TransformDrawToMinionDiveBomb
                     ? Math.Max(1, screen.Amount)
                     : 1
             );
@@ -929,6 +925,10 @@ public static class CombatEngine
         {
             state.SkillPlayedWhileSmoggy = true;
         }
+
+        // `SurroundedPower.BeforeCardPlayed`: the player turns toward this play's target, for a
+        // chosen play, every auto-play and each repetition alike.
+        TurnPlayerTowardPlayTarget(state, card, def, autoPlay);
 
         // FreeAttackPower / FreeSkillPower: consume one stack before the card effect runs
         // (BeforeCardPlayed timing).
@@ -3413,6 +3413,9 @@ public static class CombatEngine
         // potion's own slot is already free while its effect runs -- Entropic Brew fills it.
         int potionId = state.PotionSlots[slot];
         state.PotionSlots[slot] = 0;
+        // `Hook.BeforePotionUsed`, between `RemoveBeforeUse` and `OnUse`: SurroundedPower turns the
+        // player toward the potion's target, which is an enemy only for an AnyEnemy potion.
+        TurnPlayerTowardPotionTarget(state, potionId);
         Effects.PotionEffects.Apply(potionId, state, rng);
         // The potion's kills -- Fire Potion, Explosive Ampoule, Potion-Shaped Rock, Foul
         // Potion, an orb Essence of Darkness evicts, a card Distilled Chaos plays -- are
@@ -4428,17 +4431,13 @@ public static class CombatEngine
                 }
 
                 // `CardSelectorPrefs(prompt, 0, 999999999)`: any number, so the screen comes
-                // back until the player declines or the hand is spent.
+                // back until the player declines or the hand is spent. It is ONE selection in
+                // the game, every pick made before any card is transformed, so a later pick
+                // offers the first screen's cards less the ones already picked -- a Minion
+                // Sacrifice that was in the hand before Guards included: the game filters nothing.
                 if (state.Hand.Count > 0)
                 {
-                    var rest = new List<int>();
-                    for (int i = 0; i < state.Hand.Count; i++)
-                    {
-                        if (state.Hand[i].DefId != 309)
-                        {
-                            rest.Add(i);
-                        }
-                    }
+                    var rest = selection.Candidates.Where(c => c != index && c < state.Hand.Count).ToList();
 
                     if (rest.Count > 0)
                     {
@@ -4464,18 +4463,17 @@ public static class CombatEngine
                     Effects.CardEffects.NoteGeneratedCard(state); // `CardCmd.Transform` in combat
                 }
 
-                if (selection.Amount > 1 && state.DrawPile.Count > 0)
+                // Charge chooses its two cards on ONE screen and transforms them only after both
+                // are chosen, so the second pick offers the pile less
+                // the first pick: never the Minion Dive Bomb it has become here, in place
+                // (nightly 2026-10-29, G48b11e5631: the copy's second screen held a Dive Bomb).
+                var chargeLeft = selection.Candidates.Where(c => c != index && c < state.DrawPile.Count).ToList();
+                if (selection.Amount > 1 && chargeLeft.Count > 0)
                 {
-                    var more = new List<int>();
-                    for (int i = 0; i < state.DrawPile.Count; i++)
-                    {
-                        more.Add(i);
-                    }
-
                     state.PendingSelection = new PendingCardSelection
                     {
                         Kind = CardSelectionKind.TransformDrawToMinionDiveBomb,
-                        Candidates = more,
+                        Candidates = chargeLeft,
                         SourceCardDefId = selection.SourceCardDefId,
                         Amount = selection.Amount - 1,
                         Skippable = selection.Skippable,
@@ -4793,7 +4791,7 @@ public static class CombatEngine
         }
 
         BuffSystem.Apply(enemy.Buffs, BuffId.Strength, ravenous);
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        EnemyAI.Stun(enemy);
         // The readout changes the moment the ally dies: a live capture shows the
         // surviving slug announcing a Stun, not the attack it was going to make.
         // Leaving the old intent up told an agent to expect 12 damage from a
@@ -5753,6 +5751,78 @@ public static class CombatEngine
         }
 
         FacePast(state, target, facing);
+    }
+
+    /// <summary>
+    /// <c>SurroundedPower.BeforeCardPlayed</c> for one play of <see cref="ResolvePlay" />: the
+    /// game raises the hook inside `CardModel.OnPlayWrapper`, once per repetition, for the chosen
+    /// play and for every `CardCmd.AutoPlay` alike, with the play's own target.
+    /// </summary>
+    /// <remarks>
+    /// The turn used to be taken at the step, before a chosen card was played, and nowhere
+    /// else: a card Havoc, Mayhem, Hellraiser, Stampede or Distilled Chaos plays at the
+    /// Crusher (the target `CardCmd.AutoPlay` rolls) turned the game's player and not the
+    /// copy's, and the enemy turn after it differed by the half's bonus.
+    ///
+    /// A chosen play has a target when the card is aimed (AnyEnemy), as before. An auto-play's
+    /// target is the one it was given or rolled, whatever the card's type (Knife Trap hands its
+    /// Shivs one): <see cref="AutoPlayCore" /> aims <see cref="CombatState.TargetEnemyIndex" /> at
+    /// it, and at nothing when there is none. A target that died in an earlier repetition
+    /// lost its powers with its life (`RemoveAllPowersAfterDeath`), so it turns no one.
+    /// </remarks>
+    private static void TurnPlayerTowardPlayTarget(
+        CombatState state,
+        CardInstance card,
+        CardDef def,
+        bool autoPlay
+    )
+    {
+        int facing = BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded);
+        if (facing == 0)
+        {
+            return;
+        }
+
+        if (!autoPlay)
+        {
+            TurnPlayerTowardTarget(state, card);
+            return;
+        }
+
+        int index = state.TargetEnemyIndex;
+        if (index < 0 || index >= state.Enemies.Count || state.Enemies[index].Hp <= 0)
+        {
+            return;
+        }
+
+        FacePast(state, state.Enemies[index], facing);
+    }
+
+    /// <summary>
+    /// <c>SurroundedPower.BeforePotionUsed</c>: a potion used in combat turns the player toward
+    /// its target. `UsePotionAction` hands `OnUseWrapper` the creature the potion is aimed at,
+    /// which is an enemy only for an AnyEnemy potion: a Self or AnyPlayer potion (Block,
+    /// Strength, Energy, Stable Serum, Skill, Colorless ...) is aimed at the player, who has no
+    /// Back Attack, and an AllEnemies one (Explosive Ampoule) at nobody. Neither turns anyone.
+    /// </summary>
+    /// <remarks>
+    /// This was the card rule with no card: every potion turned the player toward the
+    /// aimed-at enemy or, with none aimed, the first living one -- the Crusher. A Block
+    /// Potion drunk after a Strike at the Rocket left the copy facing the Crusher, and the
+    /// enemy turn after it hit the copy's player 5 less than the game's (the Rocket's 4 from
+    /// behind as 6, the Crusher's 14 from the front, against 21 and 4).
+    /// </remarks>
+    private static void TurnPlayerTowardPotionTarget(CombatState state, int potionId)
+    {
+        if (
+            BuffSystem.Get(state.PlayerBuffs, BuffId.Surrounded) == 0
+            || !Effects.PotionEffects.NeedsEnemyTarget(potionId)
+        )
+        {
+            return;
+        }
+
+        TurnPlayerTowardTarget(state, card: null);
     }
 
     /// <summary>
@@ -7857,7 +7927,7 @@ public static class CombatEngine
         };
         if (stunned)
         {
-            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+            EnemyAI.Stun(enemy);
         }
 
         return enemy;

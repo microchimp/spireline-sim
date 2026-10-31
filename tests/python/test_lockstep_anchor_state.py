@@ -637,15 +637,18 @@ class GameCardAndRelicStateTests(unittest.TestCase):
         the fight, then the anchor. Entering the fight ticks the emulator's Pendulum, as the game's own turn-1 tick already
         did in the counter the driver carries (2)."""
         e, calls = self.emu([self.c("A")], hidden)
-        state = {"counter": None}
+        state = {"counter": None, "gold": None}
 
         def set_player(handle, buf, **kw):
             calls.append(kw)
             for _relic, value in kw.get("relic_counters", []):
                 state["counter"] = value
+            if kw.get("gold", -1) >= 0:
+                state["gold"] = kw["gold"]
 
         def enter_fight(option):
             state["counter"] = (state["counter"] or 0) + 1  # the emulator's own fight-start tick
+            state["gold"] += 12  # the emulator's own room-entry gold (an open Maw Bank), already in the game's 120
             e.s.phase = 7
 
         e.native.run_debug_set_player = set_player
@@ -665,8 +668,24 @@ class GameCardAndRelicStateTests(unittest.TestCase):
             state, calls, e = self.walk(hidden)
             self.assertEqual(state["counter"], 2, name)  # written once, after the fight was entered (not 3)
             self.assertEqual([("relic_counters" in kw) for kw in calls], [False, True], name)  # the player write carries none
-            self.assertEqual(calls[-1], {"relic_counters": [(10, 2)]}, name)
+            self.assertEqual(calls[-1], {"relic_counters": [(10, 2)], "gold": 120}, name)
             self.assertEqual(e.relic_counters, 1, name)
+
+    def test_the_walk_path_ends_with_the_games_gold_not_the_room_paid_twice(self):
+        # The observation is taken in the fight, after the game's room-entry gold; the walk enters the room on the emulator,
+        # which pays its own on top. The anchor writes the game's gold once the emulator is in the fight (2026-10-29: 49
+        # fight-start re-anchors failed on `.gold`, every one a Maw Bank run).
+        for name, hidden in (("none", None), ("observation", {"relics": []}), ("hidden", dict(EmuLockAnchorTests.GAME))):
+            state, calls, e = self.walk(hidden)
+            self.assertEqual(state["gold"], 120, name)
+            self.assertEqual(calls[-1], {"gold": 120}, name)  # no counters to write: the gold alone
+            self.assertIsNone(e.relic_counters, name)
+
+    def test_the_maw_banks_used_flag_is_a_counter_the_reanchors_carry(self):
+        refset = _import_refset()
+        self.assertEqual(refset.relic_counter_writes([{"id": "MAW_BANK", "bools": {"HasItemBeenBought": True}}]), [("MAW_BANK", 1)])
+        self.assertEqual(refset.relic_counter_writes([{"id": "MAW_BANK", "bools": {"HasItemBeenBought": False}}]), [("MAW_BANK", 0)])
+        self.assertEqual(refset.relic_counter_writes([{"id": "MAW_BANK"}]), [("MAW_BANK", 0)])  # the default: open
 
     def test_the_mapping_of_the_games_relic_properties(self):
         refset = _import_refset()

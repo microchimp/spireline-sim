@@ -59,6 +59,13 @@ NOT_POWERS = {
     "SKITTISH_SPENT",
 }
 
+# Powers the game stacks as Single, so their Amount is always 1, whose emulator buff keeps a state of its own in the
+# amount. SurroundedPower (the Kaiser Crab's, on the player) keeps its Facing in a field; the emulator's SURROUNDED
+# buff holds the facing as its amount (1 right, 2 left), so a player facing left differed at every step from the
+# first left turn on, and every Kaiser Crab fight's verdict ended there. The facing shows where it acts: in the
+# player's HP after the enemy turn.
+SINGLE_AMOUNT = {"SURROUNDED"}
+
 # Emulator buff -> the game power with the same rules and amount.
 # The tables live in power_aliases.json, which tools/emudump/Reanchor.cs reads too, so writing the
 # game's powers back into the emulator and comparing them use one mapping. CrimsonMantlePower.Amount
@@ -138,6 +145,18 @@ def game_powers(raw: list) -> list:
     return sorted(out)
 
 
+def emu_powers(pairs) -> list:
+    """The emulator's buffs ((name, amount) pairs) as the game's power list: internal counters dropped, buffs renamed
+    to the game's power, a Single power's amount 1. The one projection every comparer of emulator powers uses."""
+    out = []
+    for n, a in pairs:
+        p = power(n)
+        if p in NOT_POWERS:
+            continue
+        out.append([EMU_RENAME.get(p, p), 1 if p in SINGLE_AMOUNT and a else a])
+    return sorted(out)
+
+
 def emu_view(st: dict, nm: dict) -> dict:
     if not st["in_combat"]:
         return _emu_end_view(st, nm)
@@ -145,8 +164,7 @@ def emu_view(st: dict, nm: dict) -> dict:
         return {"in_combat": False}
     s = st["snapshot"]
     card = lambda c: [nm["cards"].get(c["def_id"], c["def_id"]), bool(c["upgraded"])]  # noqa: E731
-    powers = lambda bs: sorted([EMU_RENAME.get(power(b["name"]), power(b["name"])), b["amount"]]  # noqa: E731
-                               for b in bs if power(b["name"]) not in NOT_POWERS)
+    powers = lambda bs: emu_powers((b["name"], b["amount"]) for b in bs)  # noqa: E731
     p = s["player"]
     return {
         "in_combat": st["in_combat"],

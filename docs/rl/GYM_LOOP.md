@@ -53,7 +53,7 @@ and the gate's games on disk are kept.
   it), the loss from 50 training starts per kind x 2 games at a3-v1 with the incumbent (`weights.json`). A segment draws kinds by
   these weights, then a start uniformly in the kind, then the start's next unplayed game j (seed namespace `L`, so no generation
   game is a board game).
-- **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 8 a process,
+- **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 2 a process,
   six processes, the prior on the card through P1's server when allowed). The x16 rate is P1's: about 55 s of a process's own time
   per Act-1 boss game.
 - **Labels** (`gen_game_steps`, `Recorder`). Per decision: the tokens the root prior reads (the probe copy, `encode_position`),
@@ -62,6 +62,7 @@ and the gate's games on disk are kept.
   fight's outcome is the value label (end HP; 0 for a death); a fight a guard stopped has none. The recorder reads the search's
   result through a wrapper around `live_search.search_steps` installed in the generation's own processes only; it never changes a
   move (a test plays the same fights recorded, unrecorded and in the sequential gym: same moves).
+- **Cut segments** (measured on the first evening: other workers' short QUIET.lock holds stopped four segments in 40 minutes). A stop loses the fights in flight, and the long ones are the likelier to be in flight, so the fights a cut segment finished lean towards quick deaths: their value labels are dropped (the policy targets stay), and K is 2 so a stop loses few fights (at 8, an x16 boss fight took about ten minutes of wall time).
 - **Buffer.** Shards are kept newest first while within 3,000,000 rows, 21 days and 20 GB (`retain`); older ones are deleted.
 
 ## 4. Training
@@ -77,13 +78,13 @@ on the same rows.
 ## 5. The gate and the board (decided before the first checkpoint)
 
 `PROMOTION_RULE` (`gym-loop-promote-v1`): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
-player config (`--player-config`, a3-v1 now; the judge-equipped config when it lands: the incumbent's games are kept per config),
+player (`--player-config judge-v0 --judge D:/spireline/referee/agent/judge/v0/judge.pt`, the defaults since the judge landed (D41): JUDGE_V0's search with the judge v0 at its leaves, the judge on its own server on the card beside the prior's; the incumbent's games are kept per config and judge; measured: the gate's judge-v0 games of version 0 are the board's judge-v0 games move for move),
 the candidate and the incumbent on the same games. A capped game is lost. Stage 1, j = 0..1 (400 pairs): go on only if the candidate
 wins at least 1.0 point more. Stage 2, j = 0..9 (2,000 pairs, the board's games): promote only if the exact one-sided McNemar test
 on the discordant pairs gives p < 0.05 and the paired mean L0 difference is not negative. Only the newest ungated checkpoint is
 scored; older ones are marked superseded. A promoted checkpoint becomes `players/vN`, the incumbent, and its board row "Fight player,
 version N": `board_commit` rebuilds `docs/paper/fight-board.html` in its own Spireline worktree (`D:/spireline/wt-board`) with the
-standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main.
+standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main. The page's own arms are kept in its order (`page_arms`), each with its games file (`BOARD_GAMES`, or `board/games.json` in the loop's folder for an arm added later); an arm with no known games stops the step, so a rebuild never drops a row.
 
 The power, estimated: with about a quarter of pairs discordant, a +3-point candidate passes stage 1 four times in five and stage 2
 (SE about 1.1 points on 2,000 pairs) about 85% of the time; a candidate with no gain reaches stage 2 a third of the time and is

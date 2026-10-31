@@ -171,6 +171,48 @@ class DivergenceTests(unittest.TestCase):
         self.assertIsNone(lockstep.reanchor_plan("rest", "map"))
 
 
+class AfterTheEndTests(unittest.TestCase):
+    """The game asks on after its player died in an event (the page the killing option set stays up); the emulator has
+    ended the run at that death. 2026-10-29, Gfa785ae413: 22 records, equal views, spans to the run's end."""
+
+    class DeadEmu(FakeEmu):
+        def __init__(self, views, over):
+            super().__init__(views)
+            self.over = over
+
+        def run_over(self):
+            return self.over
+
+    def test_a_decision_on_a_dead_player_the_emulator_also_ended_is_not_a_divergence(self):
+        dead = obs(hp=0)
+        ls = lockstep.Lockstep(self.DeadEmu([view_of(dead)], over=True), lambda m: 0)
+        for _ in range(3):
+            ls.decide(msg("event", dead))
+        self.assertEqual(ls.log.records, [])
+        self.assertEqual((ls.stats["after_end"], ls.stats["not_ranked"], ls.stats["ranked"]), (3, 3, 0))
+        self.assertIsNone(ls.lost)
+
+    def test_an_open_span_does_not_grow_after_the_end(self):
+        a, b = obs(hp=30), obs(hp=20)
+        emu = self.DeadEmu([view_of(a), view_of(b)], over=False)
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        ls.decide(msg("event", a))
+        ls.decide(msg("event", obs(hp=30)))  # the views differ: a record opens, its span starts
+        emu.over = True
+        for _ in range(4):
+            ls.decide(msg("event", obs(hp=0)))
+        self.assertEqual(len(ls.log.records), 1)
+        self.assertEqual(ls.log.records[0]["not_ranked_span"]["count"], 1)
+
+    def test_a_living_player_or_an_emulator_still_playing_is_compared_as_before(self):
+        for o, over in ((obs(hp=5), True), (obs(hp=0), False)):
+            emu = self.DeadEmu([view_of(obs(hp=40))], over=over)
+            ls = lockstep.Lockstep(emu, lambda m: 0)
+            ls.decide(msg("event", o))
+            self.assertEqual(len(ls.log.records), 1, (o["hp"], over))
+            self.assertNotIn("after_end", ls.stats)
+
+
 class ProvEmu(FakeEmu):
     """A fake emulator side that reports how its last re-anchor was done, as EmuLock does."""
 
@@ -435,6 +477,42 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(e.apply("reward", ["take", "skip"], 1))
         self.assertIsNone(e.sync("combat", [["end"], ["play", 0, "BASH", 0]], {}))
         self.assertEqual(run.taken, ["reward.proceed", "map.node"])
+
+    class FloorsRun(FakeRun):
+        FLOORS = {"items": 9, "map1": 9, "shop": 10, "map2": 10, "rest": 10}
+
+        @property
+        def floor(self):
+            return self.FLOORS[self.cur]
+
+    def lone_path_run(self, room):
+        screens = {"items": ("rewards", (_opt("reward.proceed", 9),)),
+                   "map1": ("map", (_opt("map.node", 0, node=(3, 9)),)),
+                   "shop": ("shop", (_opt("shop.leave", 9),)),
+                   "rest": ("rest", (_opt("rest.heal", 0), _opt("rest.smith", 1))),
+                   "map2": ("map", (_opt("map.node", 0, node=(2, 10)), _opt("map.node", 1, node=(4, 10))))}
+        return self.FloorsRun("items", screens, {("items", "reward.proceed"): "map1", ("map1", "map.node"): room,
+                                                 ("shop", "shop.leave"): "map2"})
+
+    def test_a_lone_path_into_a_room_that_asks_nothing_is_walked_to_the_referees_map(self):
+        # Gf45701a3de: the referee's next question after a card reward was the map one floor on; it had walked a lone node
+        # into a shop with only its leave (or a chest) without asking. The emulator stood at the lone map, a floor behind.
+        run = self.lone_path_run("shop")
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("map", [[2, 10], [4, 10]], {"obs": {"floor": 10}}))
+        self.assertEqual(run.cur, "map2")
+        self.assertEqual(run.taken, ["reward.proceed", "map.node", "shop.leave"])
+
+    def test_a_map_at_the_referees_own_floor_is_not_walked(self):
+        # The referee asks a one-node map when a potion can be used there: the emulator's lone map at the same floor stays.
+        run = self.lone_path_run("shop")
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("map", [[3, 9], ["use_potion", 0, "FIRE_POTION"]], {"obs": {"floor": 9}}))
+        self.assertEqual(run.cur, "map1")
+        # and a lone path into a room that asks something is not walked past: that room is the next question
+        run = self.lone_path_run("rest")
+        e = stub_emu(run)
+        self.assertEqual(e.sync("map", [[2, 10], [4, 10]], {"obs": {"floor": 10}}), "screen:rest!=map")
 
     @staticmethod
     def _neow_pick(e):

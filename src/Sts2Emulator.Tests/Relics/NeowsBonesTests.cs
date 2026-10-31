@@ -188,3 +188,93 @@ public class NeowsBonesNestedGridTests
         Assert.Equal(deckBefore + 1, engine.State.Deck.Count);
     }
 }
+
+/// <summary>
+/// A relic claimed on Neow's Bones' rewards screen whose pickup opens a screen of its own (a
+/// deck selection, Scroll Boxes' bundles) is answered there first; only then is the rewards
+/// screen back with the relic still owed, and Neow's Bones' curse comes once none is. The copy
+/// dropped the selection and the bundle and walked on (nightly 2026-10-29: Gbc74665482 and
+/// Gb64bb714fe, the game on a card selection or a bundle right after Neow's Bones, the copy on
+/// the map). Swept over seeds for an offer holding such a relic.
+/// </summary>
+public class NeowsBonesClaimScreenTests
+{
+    private static RunEngine AtTheBonesScreen(string seed)
+    {
+        var engine = new RunEngine();
+        engine.Reset(seed, 10);
+        engine.State.Phase = RunPhase.Ancient;
+        engine.State.NeowOptions[0] = RunConstants.RelicNeowsBones;
+        Assert.Equal(0, engine.Step(0, -1, out _, out _, out _));
+        Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+        return engine;
+    }
+
+    private static bool OnAClaimScreen(RunEngine engine) =>
+        engine.State.Phase is RunPhase.TransformSelect or RunPhase.BundleSelect;
+
+    /// <summary>A deck selection or the bundles: the screens the copy dropped (a pre-rolled grid it already opened).</summary>
+    private static bool OnADroppedKindOfScreen(RunEngine engine) =>
+        engine.State.Phase == RunPhase.BundleSelect
+        || (engine.State.Phase == RunPhase.TransformSelect && engine.State.PendingOfferCards.Length == 0);
+
+    /// <summary>Answers the selection or the bundle with its first legal choice.</summary>
+    private static void Answer(RunEngine engine)
+    {
+        var mask = new int[RunConstants.MaxActions];
+        for (int i = 0; i < 40 && OnAClaimScreen(engine); i++)
+        {
+            if (engine.State.Phase == RunPhase.BundleSelect && engine.State.SelectedBundle >= 0)
+            {
+                Assert.Equal(0, engine.Step(RunConstants.BundleConfirmAction, -1, out _, out _, out _));
+                continue;
+            }
+
+            engine.WriteActionMask(mask);
+            int action = Array.FindIndex(mask, legal => legal != 0);
+            Assert.True(action >= 0 && action < RunConstants.UsePotionAction, $"no screen action in {engine.State.Phase}");
+            Assert.Equal(0, engine.Step(action, -1, out _, out _, out _));
+        }
+
+        Assert.False(OnAClaimScreen(engine));
+    }
+
+    [Fact]
+    public void AClaimsOwnScreenComesFirstThenTheRestOfTheOffer()
+    {
+        int found = 0;
+        for (int n = 0; n < 400 && found < 6; n++)
+        {
+            var engine = AtTheBonesScreen($"BONES{n}");
+            int second = engine.State.PendingBonusRelicRewards[0];
+            int deckBefore = engine.State.Deck.Count;
+
+            Assert.Equal(0, engine.Step(0, -1, out _, out _, out _)); // the first relic
+            if (OnAClaimScreen(engine))
+            {
+                found += OnADroppedKindOfScreen(engine) ? 1 : 0;
+                Assert.True(engine.State.PendingNeowsBonesCurse);
+                Answer(engine);
+                Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+                Assert.Equal(second, engine.State.RelicReward);
+                Assert.True(engine.State.PendingNeowsBonesCurse);
+                continue;
+            }
+
+            Assert.Equal(RunPhase.RelicReward, engine.State.Phase);
+            int deckAfterFirst = engine.State.Deck.Count;
+            Assert.Equal(0, engine.Step(0, -1, out _, out _, out _)); // the second relic
+            if (OnAClaimScreen(engine))
+            {
+                found += OnADroppedKindOfScreen(engine) ? 1 : 0;
+                // The curse waits for the screen: the selection never offers it.
+                Assert.True(engine.State.PendingNeowsBonesCurse);
+                Answer(engine);
+                Assert.Equal(RunPhase.Ancient, engine.State.Phase);
+                Assert.False(engine.State.PendingNeowsBonesCurse);
+            }
+        }
+
+        Assert.True(found >= 3, $"only {found} offers held a relic whose pickup opens a selection or the bundles");
+    }
+}

@@ -301,19 +301,31 @@ def selection_lines(fixture: dict[str, Any]) -> list[str]:
     action the emulator takes.
     """
     lines: list[str] = []
+    screen_key, picked = None, []
     for step in fixture.get("selections") or []:
         cards = step.get("cards") or []
         chosen = step["chosen"]
         taken = next((c.get("id") for c in cards if c.get("index") == chosen), None)
         prompt = step.get("prompt")
         screen = step.get("screen_type")
+        # A pile grid (NCombatPileCardSelectScreen) keeps a picked card on screen, marked, until the selection is
+        # confirmed, so a capture's later step of the same screen lists every card again. The emulator asks one pick
+        # at a time over the cards not yet picked (as the referee's driver does), so the step is asserted over those,
+        # and its choice is that card's place among them. A hand screen moves a picked card off and needs nothing.
+        key = (screen, prompt)
+        picked = picked if key == screen_key and screen == "NCombatPileCardSelectScreen" else []
+        screen_key = key
+        offered = [c for c in cards if c.get("index") not in picked]
+        action = next((k for k, c in enumerate(offered) if c.get("index") == chosen), chosen)
+        picked = picked + [chosen]
+        note = "" if len(offered) == len(cards) else f" ({len(cards) - len(offered)} already picked on this screen)"
         lines += [
             "",
             f"        // The game stopped and asked: {prompt!r} ({screen}),",
-            f"        // offering {len(cards)} cards.",
+            f"        // offering {len(cards)} cards{note}.",
             "        Assert.NotNull(fight.Pending);",
-            f"        Assert.Equal({len(cards)}, fight.Pending!.Candidates.Count);",
-            f"        fight.Choose({chosen}); // {taken}",
+            f"        Assert.Equal({len(offered)}, fight.Pending!.Candidates.Count);",
+            f"        fight.Choose({action}); // {taken}",
             # The game's screen is one multi-select that the capture confirmed after its
             # pick; the emulator reopens such a screen per pick (Purity), so confirm the rest.
             "        fight.ConfirmOpenSelection();",

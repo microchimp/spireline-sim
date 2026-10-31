@@ -81,6 +81,15 @@ class PureTests(unittest.TestCase):
         self.assertTrue(0.08 < share < 0.12, share)
         self.assertEqual([gl.is_val_seed(s) for s in seeds[:50]], [gl.is_val_seed(s) for s in seeds[:50]])
 
+    def test_a_launcher_and_the_interpreter_it_starts_count_as_one_of_ours(self):
+        parents = {10: 1, 11: 10, 12: 11, 20: 1, 21: 20, 30: 30}
+        self.assertEqual(gl.descendants(parents, 10), {10, 11, 12})
+        self.assertEqual(gl.descendants(parents, None), set())
+        self.assertEqual(gl.descendants(parents, 30), {30})
+        here = gl.process_parents()
+        if here:
+            self.assertIn(os.getpid(), gl.descendants(here, os.getppid()))
+
     def test_the_loop_reads_the_expected_solve_only(self):
         # The owner's solver rule: labels and grades never read the hindsight export (gym_lockstep.Grader, which the loop uses for
         # its exact grades, is under test_solver_hindsight_pins; this pins the loop's own sources with that test's names).
@@ -124,8 +133,12 @@ class LockTests(unittest.TestCase):
         self.assertIsNone(b(starting=False))  # a running step carries on through a landing
         (self.t / "backlog" / "main.lock").unlink()
         now = gl.stamp()
-        fg.QUIET.write_text(f"w3-blocks {now} pid=1\ngym-loop {now} pid=2\ngym-loop-build {now} pid=3\nold-gate 2026-01-01T00:00:00Z pid=4\n")
+        base = f"w3-blocks {now} pid=1\ngym-loop {now} pid=2\ngym-loop-train {now} pid=3\nold-gate 2026-01-01T00:00:00Z pid=4\n"
+        fg.QUIET.write_text(base)
         self.assertIsNone(b())  # w3-blocks, our own lines and a line over 2 h old do not block
+        fg.QUIET.write_text(base + f"gym-loop-gate {now} pid=6\n")
+        self.assertEqual(b(), "quiet:gym-loop-gate")  # the loop's own gate or build is another heavy step: it stops the daemon
+        fg.QUIET.write_text(base)
         fg.QUIET.write_text(fg.QUIET.read_text() + f"f16-gate {now} pid=5\n")
         self.assertEqual(b(), "quiet:f16-gate")
         self.assertEqual(b(starting=False), "quiet:f16-gate")  # another worker's heavy step stops ours at once
@@ -202,6 +215,28 @@ def _fake_fight(rows: int, player: str, start: str, split: str, won: bool, rng) 
             "played": np.zeros(rows, np.int16), "meta": np.array(json.dumps(meta))}
 
 
+class BoardTests(unittest.TestCase):
+    def test_a_rebuild_keeps_every_row_on_the_page_and_adds_the_versions(self):
+        html = ('const ARMS = [{"key":"a3-v1","label":"Usual thinking"},{"key":"x16","label":"Sixteen"},'
+                '{"key":"judge-v0","label":"The judge"}]; const LOG = ["a", "b"];')
+        self.assertEqual(gl.page_arms(html), [("a3-v1", "Usual thinking"), ("x16", "Sixteen"), ("judge-v0", "The judge")])
+        self.assertEqual(gl.page_log(html), ["a", "b"])
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            loop = gl.Loop(t / "loop")
+            m2, jg = t / "m2.jsonl", t / "judge.jsonl"
+            m2.write_text("{}\n")
+            jg.write_text("{}\n")
+            (loop.board / "fp-v1.jsonl").write_text("{}\n")
+            with mock.patch.object(gl, "BOARD_GAMES", {"a3-v1": m2, "x16": m2}):
+                with self.assertRaisesRegex(RuntimeError, "judge-v0"):  # a row whose games are unknown is never dropped
+                    gl.board_args(loop, gl.page_arms(html), ["v1"])
+                gl.write_json(loop.board / "games.json", {"judge-v0": str(jg)})
+                files, arms = gl.board_args(loop, gl.page_arms(html), ["v1"])
+        self.assertEqual(files, [str(m2), str(jg), str(loop.board / "fp-v1.jsonl")])
+        self.assertEqual(arms, ["a3-v1=Usual thinking", "x16=Sixteen", "judge-v0=The judge", "fp-v1=Fight player, version 1"])
+
+
 class BufferTests(unittest.TestCase):
     def test_compaction_retention_and_the_disk_cap(self):
         rng = np.random.default_rng(0)
@@ -218,6 +253,10 @@ class BufferTests(unittest.TestCase):
                 self.assertEqual(z["label"].tolist()[:5], [30, 30, 30, 30, 0])
                 self.assertEqual(int(z["lengths"].sum()), z["types"].size)
             self.assertIsNone(gl.compact(loop, 2))
+            gl.save_npz(loop.incoming / "cut.npz", _fake_fight(3, "v0", "S7", "train", True, rng))
+            cut = gl.compact(loop, 9, value_labels=False)  # a segment stopped early: policy targets kept, value labels off
+            self.assertEqual((cut["rows"], cut["value_rows"]), (3, 0))
+            (loop.shards / cut["shard"]).unlink()
             for seg in (2, 3):
                 gl.save_npz(loop.incoming / "g.npz", _fake_fight(10, "c0001", "S9", "train", True, rng))
                 gl.compact(loop, seg)

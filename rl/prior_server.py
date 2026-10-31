@@ -16,6 +16,11 @@ only); survive a thread failure (any exception in any thread is one stderr line,
 a half-alive server); idle out while its parent lives (it exits when its parent is gone, its stdin is closed, or the
 kill file appears); or be killed by image name (use the kill file or close its stdin).
 
+Judge mode: given a judge checkpoint (`rl/judge.py`, `"kind": "judge"`) instead of a policy, the server serves the fight
+judge the same way: the same frames, buckets and graphs, and each reply row carries the judge's three numbers (win logit,
+end-HP-fraction logit, potions held at the end) in its first three slots and zeros after them (`rl/judge_client.py` reads them).
+The HELLO's sha256 is then the judge file's.
+
 `--device cpu` exists for the tests alone. It runs the same bucketing and padding code without graphs, leaves the
 fused attention path as the CPU prior has it, and runs a batch of one at its own length, so one request is bit-exact
 with `combat_prior.LivePrior`.
@@ -218,6 +223,7 @@ class PriorServer:
         self.authkey = b""
         self.stop_stdin = threading.Event()
         self.stage = None
+        self.judge_mode = False
 
     # ------------------------------------------------------------------ startup
 
@@ -229,14 +235,20 @@ class PriorServer:
             # keeps it so that it plays exactly as the CPU prior does
             torch.backends.mha.set_fastpath_enabled(False)
         blob = torch.load(self.policy, map_location="cpu", weights_only=True)
-        model = CombatNet(
-            VOCAB,
-            blob["n_buckets"],
-            d_model=blob.get("d_model", 128),
-            layers=blob.get("layers", 4),
-            heads=blob.get("heads", 4),
-        )
-        model.load_state_dict(blob["model"])
+        self.judge_mode = blob.get("kind") == "judge"  # a fight judge (rl/judge.py): its three numbers in each row's first slots
+        if self.judge_mode:
+            from judge import JudgeNet  # noqa: PLC0415
+
+            model = JudgeNet.from_blob(blob)
+        else:
+            model = CombatNet(
+                VOCAB,
+                blob["n_buckets"],
+                d_model=blob.get("d_model", 128),
+                layers=blob.get("layers", 4),
+                heads=blob.get("heads", 4),
+            )
+            model.load_state_dict(blob["model"])
         self.model = model.eval().to(self.device)
         self.policy_sha = hashlib.sha256(Path(self.policy).read_bytes()).hexdigest()
         self.vocab_sha = combat_prior.vocab_sha256()
@@ -266,6 +278,9 @@ class PriorServer:
         ids = packed[..., C_ID].long()
         owners = packed[..., C_OWNER].long()
         feats = packed[..., :N_FEATURES].contiguous()
+        if self.judge_mode:
+            out = self.model.judge_out(types, ids, owners, feats, types == TYPE_PAD)
+            return torch.nn.functional.pad(out, (0, MAX_ACTIONS - out.shape[1]))
         return self.model.policy_logits(types, ids, owners, feats, types == TYPE_PAD)
 
     def capture(self) -> None:

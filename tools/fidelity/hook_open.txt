@@ -95,7 +95,6 @@ missing Rocket.BeforeDeath  # monster; CombatFactory.CreateKaiserCrab, EnemyAI.A
 missing SlumberingEssence.BeforeFlush  # enchantment; named nowhere in Core
 missing Bolas.BeforeHandDraw  # card; CardEffects.ApplyCore, CombatEngine.QueueAttackPlayLifecycleEffects
 missing ThrummingHatchet.BeforeHandDraw  # card; CardEffects.ApplyCore
-missing SurroundedPower.BeforePotionUsed  # power; BuffSystem.IncomingDamage, CombatEngine.FacePast, CombatEngine.TurnPlayerToFaceSurvivor
 missing VoidFormPower.BeforePowerAmountChanged  # power; CardEffects.ApplyGeneratedCardApproximation, CombatEngine.IsFreeUnderVoidForm, CombatEngine.ResolvePlay
 missing ChainsOfBindingPower.BeforeSideTurnEnd  # power; CardEffects.BindOnDraw, EnemyAI.ApplyDebuffIntent
 missing FakeOrichalcum.BeforeSideTurnStart  # relic; RelicEffects.ApplyEndOfPlayerTurn, RunNonCombatEffects.RollFakeMerchantStock

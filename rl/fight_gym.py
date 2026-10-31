@@ -56,13 +56,17 @@ REF = Path(os.environ.get("FIGHT_GYM_REFEREE", "D:/spireline/referee"))
 QUIET = REF / "QUIET.lock"
 MAIN_LOCK = REF / "backlog" / "main.lock"
 ACTIVE = REF / "LAB" / "nightly" / "active"
-TAG = "gym-m2-play"
+TAG = os.environ.get("FIGHT_GYM_TAG", "gym-m2-play")  # this job's QUIET.lock tag: its own line never blocks it
 NIGHT_WINDOW = (dt.time(3, 10), dt.time(3, 45))  # the night is due 03:23Z: never compute across its start
 MAX_PROCS = 6
-NODE_ELITE, NODE_BOSS = 2, 6  # run_train.vocab
+NODE_MONSTER, NODE_ELITE, NODE_BOSS = 1, 2, 6  # run_train.vocab
+NODE_OF_KIND = {"hall": NODE_MONSTER, "elite": NODE_ELITE, "boss": NODE_BOSS}
 ACT1_BOSS_INDEX = 15  # the run row's `nodes` string: index i is floor i + 2; the Act-1 boss is floor 17
 ACT2_INDICES = range(16, 32)  # floors 18..33; the Act-2 boss is floor 33
-ARMS = {"a3-v1": 1, "x4": 4, "x16": 16}
+ARMS = {"a3-v1": 1, "x4": 4, "x16": 16, "judge-v0": 1}
+# Arms whose search is a named config of search_configs rather than a3-v1 times a factor: the judge's leaf (rl/judge.py)
+# in place of play-outs, at a3-v1's wall time per decision. They need a judge (`play --lockstep K --judge PATH`).
+CONFIG_ARMS = {"judge-v0": "judge-v0"}
 POTION_VALUE = 10.0  # live_search's and L0's potion value
 DECISION_CAP = 400  # a game still going after this many decisions is counted as capped (and not won)
 M3_PLAYOUTS = 30
@@ -70,7 +74,8 @@ MEM_LIMIT_GB = 3.0  # a worker over this private memory is killed: six of them s
 # Mean seconds per game: the full run's a3-v1 and x16 Act-1 boss games (2,000 each); the others from the 5-game cost
 # measurement times 1.5 (the full run's x16 and a3-v1 means came out 1.7 and 1.3 times their measurement's).
 MEAN_S = {("act1-boss", "a3-v1"): 6.4, ("act1-boss", "x4"): 19.0, ("act1-boss", "x16"): 74.2,
-          ("act2", "a3-v1"): 11.0, ("act2", "x4"): 35.0, ("act2", "x16"): 95.0}
+          ("act2", "a3-v1"): 11.0, ("act2", "x4"): 35.0, ("act2", "x16"): 95.0,
+          ("act1-boss", "judge-v0"): 6.4, ("act2", "judge-v0"): 11.0}  # the judge's arm: a3-v1's wall time by design
 DEADLINE_X = 10  # a game past ten times its arm's mean is capped and lost, never a hang
 HARD_GRACE = 1.5  # the parent kills a worker 1.5x past the deadline plus a minute (a search or a step that never returns)
 PRED_DEADLINE_S = 300.0
@@ -135,6 +140,8 @@ def arm_settings(name: str) -> dict:
     """The arm as numbers: a3-v1's simulation counts (base, `high`, `hi`) and safety clock times the arm's factor."""
     import search_configs  # noqa: PLC0415 -- pure
 
+    if name in CONFIG_ARMS:
+        return {"cfg": search_configs.get(CONFIG_ARMS[name]), "mult": 1}
     base = search_configs.get("a3-v1")
     m = ARMS[name]
     if m == 1:
@@ -596,7 +603,7 @@ def _replay_task(task: tuple) -> dict:
         g = got.get(f)
         if g is None:
             continue
-        want_type = NODE_BOSS if w["kind"] == "boss" else NODE_ELITE
+        want_type = NODE_OF_KIND.get(w["kind"], NODE_ELITE)
         starts.append({**w, **g, "kind_same": g["node_type"] == want_type and g["act"] == w["act"]})
     same = path_same and cards_same and rests_same and len(got) == len(floors) and all(s["kind_same"] for s in starts)
     return {"_task": [task[0], run_seed, ix], "seed": run_seed, "ix": ix, "wanted": len(floors), "captured": len(got),
@@ -635,12 +642,13 @@ def moves_sha(moves: list) -> str:
 
 
 def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool = False, deadline: float | None = None, *,
-               clock=time.perf_counter, progress=None, grader=None):
+               clock=time.perf_counter, progress=None, grader=None, record: bool = False):
     """`_play` as steps (a generator): every prior call of every search is a request `(handle, legal)` yielded to the driver
     and answered by what it sends back (`live_search.search_steps`); the return value is the game's row. `clock` is the game's
     clock (`gym_lockstep` gives each game the time it ran itself, so the deadline and the searches' budgets mean what they mean
     alone). `grader(world, k, best)`, when given, grades each decision before its move is stepped and never changes it; its
-    answers go in the row's `grades`."""
+    answers go in the row's `grades`. `record` keeps every decision position's tokens and the search's estimates in the row's
+    `_pos` (`judge_data.pack_positions`, the judge's training data); it reads the position only."""
     import live_search  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
     from sts2_gym import native  # noqa: PLC0415
@@ -652,6 +660,7 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
     max_search = 0.0
     moves: list = []
     grades: list = []
+    positions: list = []
     while not world.done and k < DECISION_CAP and (deadline is None or clock() - t0 < deadline):
         info = {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
         pos = search_configs.position_of(world, info)
@@ -669,6 +678,10 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
                      "root_p_death": dead / vis if vis else None, "root_best_value": None if math.isnan(res.best.value_mean) else res.best.value_mean,
                      "root_sims": res.sims, "first_move": [res.best.action, res.best.target, res.best.kind]}
         best = res.best
+        if record:
+            import judge_data  # noqa: PLC0415
+
+            positions.append(judge_data.position_record(world, k, end_turns + 1, res))
         if grader is not None:
             grades.append(grader(world, k, best))
         moves.append((best.action, best.target, best.kind))
@@ -697,6 +710,10 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
         row["grades"] = grades
     if capture:
         row["_leaf"] = leaf
+    if record:
+        import judge_data  # noqa: PLC0415
+
+        row["_pos"] = judge_data.pack_positions(positions)
     return row
 
 
@@ -830,7 +847,7 @@ def cmd_starts(a) -> int:
 def _cat_starts(out: Path, cat: str, limit: int, same_only: bool = False) -> list[dict]:
     """A category's starts in selection order. A start whose replay left the night's run before it (a later engine took another
     macro choice) is still a position the same agent reached on this engine: it is played, and counted in meta.json."""
-    starts = [s for s in read_jsonl(out / "starts.jsonl") if (s["cat"] == cat or s["cat"].startswith(cat + "-"))]
+    starts = [s for s in read_jsonl(out / "starts.jsonl") if cat == "all" or s["cat"] == cat or s["cat"].startswith(cat + "-")]
     if same_only:
         starts = [s for s in starts if s.get("replay_same")]
     return starts[:limit] if limit else starts
@@ -1052,6 +1069,10 @@ def add_lockstep_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--gpu-python", default=None, help="lockstep server: the GPU venv's python")
     ap.add_argument("--hang-s", type=float, default=180.0, help="lockstep: a process with no step this long is killed")
     ap.add_argument("--mem-gb", type=float, default=MEM_LIMIT_GB, help="lockstep: a process over this private memory is killed")
+    ap.add_argument("--hold", action="store_true", help="lockstep: hold this job's QUIET.lock line while computing (more than two processes)")
+    ap.add_argument("--record", action="store_true", help="lockstep: keep every decision position in the row (the judge's data)")
+    ap.add_argument("--judge", default=None, help="lockstep: the judge checkpoint a judge arm's leaves read (rl/judge.py)")
+    ap.add_argument("--judge-path", choices=("cpu", "server"), default="server", help="lockstep: who answers the judge's batch")
 
 
 def main(argv=None) -> int:

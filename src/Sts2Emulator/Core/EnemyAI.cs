@@ -5,6 +5,29 @@ using Rng;
 
 public static class EnemyAI
 {
+    /// <summary>
+    /// `CreatureCmd.Stun`: the creature's next move becomes a STUNNED move, set there and then
+    /// (`Creature.StunInternal`, `SetMoveImmediate`), whose follow-up is the move it had rolled
+    /// (`StateLog.Last()`, a stun is never logged) unless the caller names one. A stun is a move,
+    /// not a power: a second stun before the creature acts replaces the first with the same
+    /// follow-up, so it sits out ONE turn however many stuns landed, and nothing like Artifact
+    /// stands in its way. The emulator keeps the pending stun as the Stunned buff at 1.
+    /// </summary>
+    /// <remarks>
+    /// Every site added a Stunned point, so two stuns before the creature's turn bought two
+    /// stunned turns. The Corpse Slugs show it: the player kills two slugs in one turn, the
+    /// survivor's Ravenous stuns it twice, and the copy's survivor sat out two turns where the
+    /// game's sits out one and then hits with the Strength both deaths gave it (the night's
+    /// player-HP records, the copy 13 to 26 HP higher).
+    /// </remarks>
+    internal static void Stun(EnemyState enemy)
+    {
+        if (BuffSystem.Get(enemy.Buffs, BuffId.Stunned) <= 0)
+        {
+            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        }
+    }
+
     public static void ChooseIntents(
         List<EnemyState> enemies,
         int turn,
@@ -4929,7 +4952,7 @@ public static class EnemyAI
 
         BuffSystem.Remove(enemy.Buffs, BuffId.Shriek);
         BuffSystem.Apply(enemy.Buffs, BuffId.TerrorQueued, 1);
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        Stun(enemy);
         // CreatureCmd.Stun changes the move immediately, so the intent the player is
         // looking at becomes the stun rather than whatever was announced.
         enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
@@ -4960,7 +4983,7 @@ public static class EnemyAI
         BuffSystem.Remove(enemy.Buffs, BuffId.Plow);
         BuffSystem.Remove(enemy.Buffs, BuffId.Strength);
         BuffSystem.Remove(enemy.Buffs, BuffId.TemporaryStrength);
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        Stun(enemy);
 
         // `CreatureCmd.Stun(owner, StunnedMove, BeastCryState)`: the stun is a TURN, and the
         // Beast comes out of it into the cry loop rather than back to plowing. Parking the
@@ -5002,7 +5025,7 @@ public static class EnemyAI
 
         BuffSystem.Remove(enemy.Buffs, BuffId.Asleep);
         BuffSystem.Remove(enemy.Buffs, BuffId.Plating);
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        Stun(enemy);
         enemy.MoveIndex = 0;
         enemy.CurrentIntent = new Intent(IntentType.Unknown, 0);
     }
@@ -5484,7 +5507,7 @@ public static class EnemyAI
 
         BuffSystem.Remove(enemy.Buffs, BuffId.Burrowed);
         enemy.Block = 0;
-        BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+        Stun(enemy);
         // The stunned turn increments MoveIndex on its way past, so -1 lands on BITE.
         enemy.MoveIndex = -1;
     }
@@ -5874,7 +5897,7 @@ public static class EnemyAI
         };
         if (stunned)
         {
-            BuffSystem.Apply(enemy.Buffs, BuffId.Stunned, 1);
+            Stun(enemy);
         }
 
         if (defId == KE.ToughEgg)

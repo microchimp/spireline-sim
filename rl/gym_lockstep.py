@@ -33,6 +33,12 @@ The guards of the M2 gym, carried over to K fights a process:
 - A process holds at most `K_MAX` fights: the emulator's pool holds 256 combats, and a suspended fight holds two (its world and a
   simulation's fork or the root's probe).
 
+A judge arm (`--arm judge-v0`, search_configs.JUDGE_V0) values its searches' leaves with the fight judge (rl/judge.py) instead of
+play-outs: its searches also yield `LeafAsk(handle)` requests, which a process gathers across its K fights like the prior's and
+answers in one batch from the judge (`--judge PATH`): on the card through a second prior server serving the judge checkpoint
+(`--judge-path server`, the default) or on the CPU (`--judge-path cpu`). The two kinds of request are answered separately, each
+batch's time charged to the fights in it.
+
 `--worlds memory` loads each start once per process and makes each seed's world a resampled fork of it in memory. It is not the
 default: the load seed survives the fork (the fork reshuffles the draw pile from the order the load dealt), so seeds j >= 1 would be
 other worlds than the M2 gym's, which reloads the document per seed, and the board's squares would no longer pair. A reload costs
@@ -299,7 +305,8 @@ def _game_steps(task: tuple, clock: OwnClock, game, ctx):
     try:
         row = yield from fg.play_steps(world, start, j, fg.arm_settings(arm)["cfg"], ctx.extra, "g",
                                        capture=arm == "a3-v1" and j == 0 and start["cat"] == "act1-boss",
-                                       deadline=fg.task_deadline(task), clock=clock, progress=game.note, grader=ctx.grader)
+                                       deadline=fg.task_deadline(task), clock=clock, progress=game.note, grader=ctx.grader,
+                                       record=ctx.record)
     finally:
         world.close()
     if "grades" in row:
@@ -327,9 +334,27 @@ class _Context:
         self.extra = agent.search_extra() if agent is not None else {}
         self.starts = fg._starts_by_id() if self.game_steps is _game_steps else {}  # noqa: SLF001
         self.grader = Grader(opts["grade_wall_s"]) if opts.get("grade_wall_s") else None
+        self.record = bool(opts.get("record"))
+        self.judge = None
+        if opts.get("judge"):
+            import judge_client  # noqa: PLC0415 -- numpy only; torch only on the CPU path or a fallback
+
+            j = opts["judge"]
+            self.judge = (judge_client.RemoteJudge(j["path"], j["endpoint"], j["authkey"], j["sha256"]) if j.get("endpoint")
+                          else judge_client.CpuJudge(j["path"]))
         self.evaluator = make_evaluator(opts["prior"], self.extra.get("prior_fn"), opts.get("server"))
         self.label = {"lockstep": self.k, "prior_path": self.evaluator.name, "worlds": self.worlds}
+        if self.judge is not None:
+            self.label["judge_path"] = "server" if opts["judge"].get("endpoint") else "cpu"
         self.evaluator.warm()  # the network loaded (or the server's connection open) now: the first game's deadline is its own
+        if self.judge is not None:
+            self.judge.warm()
+
+    def judge_rows(self, requests: list) -> list:
+        """The judge's rows for a batch of `LeafAsk` requests."""
+        if self.judge is None:
+            raise ValueError("a judge leaf was asked for, but this job has no judge (--judge PATH)")
+        return list(self.judge.rows([r.handle for r in requests]))
 
 
 class _Game:
@@ -393,12 +418,15 @@ def _child_main(conn, shared, init_args: tuple, opts: dict) -> None:
     except Exception as error:  # noqa: BLE001 -- the parent stops the job: a process that cannot start never will
         conn.send(("fatal", f"{type(error).__name__}: {error}"[:300]))
         return
+    from live_search import LeafAsk  # noqa: PLC0415 -- after the engine is chosen
+
     games: list[_Game] = []
     queue: collections.deque = collections.deque()
     closing = False
     hist: collections.Counter = collections.Counter()
-    t_net = t_games = t_idle = 0.0
-    rounds = requests = done = 0
+    leaf_hist: collections.Counter = collections.Counter()
+    t_net = t_games = t_idle = t_judge = 0.0
+    rounds = requests = done = leaf_rounds = leaves = 0
     t_start = time.perf_counter()
     shared[0] = -1
     while True:
@@ -437,7 +465,9 @@ def _child_main(conn, shared, init_args: tuple, opts: dict) -> None:
         shared[0] = -1
         t_games += time.perf_counter() - t0
         games = [g for g in games if g.row is None]
-        pending = [g for g in games if g.request is not None]
+        waiting = [g for g in games if g.request is not None]
+        pending = [g for g in waiting if not isinstance(g.request, LeafAsk)]
+        judged = [g for g in waiting if isinstance(g.request, LeafAsk)]
         if pending:
             t0 = time.perf_counter()
             try:
@@ -452,11 +482,28 @@ def _child_main(conn, shared, init_args: tuple, opts: dict) -> None:
             hist[len(pending)] += 1
             rounds += 1
             requests += len(pending)
+        if judged:
+            t0 = time.perf_counter()
+            try:
+                answers = ctx.judge_rows([g.request for g in judged])
+            except Exception as error:  # noqa: BLE001 -- raised inside every waiting search
+                answers = [error] * len(judged)
+            dt = time.perf_counter() - t0
+            t_judge += dt
+            for g, answer in zip(judged, answers):
+                g.request, g.answer = None, answer
+                g.clock.acc += dt / len(judged)
+            leaf_hist[len(judged)] += 1
+            leaf_rounds += 1
+            leaves += len(judged)
     total = time.perf_counter() - t_start
     conn.send(("stats", {"games": done, "rounds": rounds, "requests": requests, "batch_hist": {str(k): v for k, v in sorted(hist.items())},
                          "wall_s": round(total, 3), "net_s": round(t_net, 3), "games_s": round(t_games, 3), "idle_s": round(t_idle, 3),
                          "grade_s": round(ctx.grader.seconds, 3) if ctx.grader else 0.0, "cpu_s": round(time.process_time(), 3),
-                         "evaluator": ctx.evaluator.name, "evaluator_stats": ctx.evaluator.stats(), "engine": engine.split(":")[0]}))
+                         "evaluator": ctx.evaluator.name, "evaluator_stats": ctx.evaluator.stats(), "engine": engine.split(":")[0],
+                         **({"leaf_rounds": leaf_rounds, "leaves": leaves, "judge_s": round(t_judge, 3),
+                             "leaf_batch_mean": round(leaves / leaf_rounds, 1) if leaf_rounds else None,
+                             "judge_stats": __import__("judge_client").stats()} if ctx.judge is not None else {})}))
 
 
 # ---------------------------------------------------------------------------------------------------------- the parent
@@ -695,7 +742,8 @@ def _champion(out: Path):
 
 def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: int, prior: str, *, grade_wall_s: float = 0.0,
          worlds: str = "reload", games_name: str = "games.jsonl", gpu_python: str | None = None, hang_s: float = HANG_S,
-         mem_gb: float = MEM_LIMIT_GB) -> dict:
+         mem_gb: float = MEM_LIMIT_GB, record: bool = False, hold: bool = False, judge: str | None = None,
+         judge_path: str = "server") -> dict:
     """Play an arm's games of a category in lockstep (resumable: done games are skipped), then write `<games>.stats.json`."""
     from tools.solver import coverage  # noqa: PLC0415
 
@@ -706,9 +754,12 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
     done = fg.done_keys(fg.read_jsonl(target), fg.game_key)
     cats = {s["id"]: s["cat"] for s in starts}
     tasks = [(arm, sid, j, cats[sid]) for sid, j in fg.todo_games(starts, arm, seeds, done)]
-    opts = {"prior": prior, "grade_wall_s": grade_wall_s, "worlds": worlds}
+    opts = {"prior": prior, "grade_wall_s": grade_wall_s, "worlds": worlds, "record": record}
     what = f"lockstep {arm} {cat} K={k} {prior}{' graded' if grade_wall_s else ''} -> {games_name}"
-    server = sampler = None
+    cfg = fg.arm_settings(arm)["cfg"]
+    if getattr(cfg, "leaf", "rollout") == "judge" and not judge:
+        raise ValueError(f"the arm {arm} values its leaves with the judge: give --judge PATH")
+    server = sampler = judge_server = None
     took_gpu = False
     stats: list = []
     computing = 0.0
@@ -728,6 +779,26 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
                 raise RuntimeError("the prior server did not start")
             opts["server"] = {"endpoint": server.endpoint, "authkey": server.authkey, "policy_sha256": champion.policy_sha256}
             sampler = GpuSampler()
+        if judge and tasks:
+            import hashlib  # noqa: PLC0415
+
+            sha = hashlib.sha256(Path(judge).read_bytes()).hexdigest()
+            opts["judge"] = {"path": str(judge), "sha256": sha}
+            if judge_path == "server":
+                from prior_launch import start_prior_server  # noqa: PLC0415
+
+                if not took_gpu:
+                    while not take_gpu():
+                        fg._say(out, f"{what}: waiting for GPU_OK ({_gpu_lines()[:1]})")  # noqa: SLF001
+                        time.sleep(60)
+                    took_gpu = True
+                judge_server = start_prior_server(gpu_python or GPU_PYTHON, judge, lib_path=ROOT / "out", kill_file=GPU_OFF,
+                                                  stats_path=out / (games_name + ".judge-server.json"))
+                if judge_server is None:
+                    raise RuntimeError("the judge server did not start")
+                opts["judge"].update(endpoint=judge_server.endpoint, authkey=judge_server.authkey)
+                if sampler is None:
+                    sampler = GpuSampler()
         left = tasks
         while left:
             why = fg.blocked()
@@ -737,8 +808,14 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
                     time.sleep(60)
             fg._say(out, f"{what}: computing; {len(left)} left")  # noqa: SLF001
             t0 = time.perf_counter()
-            stopped, got = run_lockstep(left, target, procs, k, fg._init_args(out), opts, hang_s=hang_s,  # noqa: SLF001
-                                        mem_limit=mem_gb * 2**30, stop=fg.blocked, log=lambda m: fg._say(out, f"{what}: {m}"))  # noqa: SLF001
+            if hold:
+                fg.hold(True)  # the job's own line (fight_gym.TAG): a lockstep job of more than two processes is not a quiet one
+            try:
+                stopped, got = run_lockstep(left, target, procs, k, fg._init_args(out), opts, hang_s=hang_s,  # noqa: SLF001
+                                            mem_limit=mem_gb * 2**30, stop=fg.blocked, log=lambda m: fg._say(out, f"{what}: {m}"))  # noqa: SLF001
+            finally:
+                if hold:
+                    fg.hold(False)
             computing += time.perf_counter() - t0
             stats += got
             gone = {json.dumps(r.get("_task")) for r in fg.read_jsonl(target)}
@@ -751,6 +828,8 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
         gpu = sampler.stop() if sampler is not None else None
         if server is not None:
             server.stop()
+        if judge_server is not None:
+            judge_server.stop()
         if took_gpu:
             drop_gpu()
     summary = {"arm": arm, "cat": cat, "k": k, "prior": prior, "procs": procs, "worlds": worlds, "grade_wall_s": grade_wall_s,
@@ -759,6 +838,10 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
                "processes": stats, "gpu": gpu}
     if server is not None:
         summary["server"] = server.read_stats()
+    if judge_server is not None:
+        summary["judge_server"] = judge_server.read_stats()
+    if judge:
+        summary["judge"] = {"file": Path(judge).name, "sha256": opts.get("judge", {}).get("sha256"), "path": judge_path}
     capped = sum(1 for r in fg.read_jsonl(target) if r.get("cap_reason") and r.get("arm") == arm)
     fg._say(out, f"{what}: done, {played} games in {computing:.0f} s ({capped} rows capped)")  # noqa: SLF001
     (out / (games_name + ".stats.json")).write_text(json.dumps(summary, indent=1), encoding="utf-8")
@@ -767,7 +850,9 @@ def play(out: Path, arm: str, cat: str, seeds: int, limit: int, procs: int, k: i
 
 def cmd_play(a) -> int:
     summary = play(Path(a.out), a.arm, a.cat, a.seeds, a.limit, a.procs, a.lockstep, a.prior, grade_wall_s=a.grade_wall_s,
-                   worlds=a.worlds, games_name=a.games_name, gpu_python=a.gpu_python, hang_s=a.hang_s, mem_gb=a.mem_gb)
+                   worlds=a.worlds, games_name=a.games_name, gpu_python=a.gpu_python, hang_s=a.hang_s, mem_gb=a.mem_gb,
+                   record=getattr(a, "record", False), hold=getattr(a, "hold", False), judge=getattr(a, "judge", None),
+                   judge_path=getattr(a, "judge_path", "server"))
     print(json.dumps({k: v for k, v in summary.items() if k not in ("processes", "server")}, indent=1))
     return 0
 
