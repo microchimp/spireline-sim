@@ -2414,7 +2414,12 @@ public static class CombatEngine
             // `BattlewornDummyTimeLimitPower.AfterSideTurnEnd`: the dummy's counter ticks at
             // the end of its OWN side turn, and at 1 it flags the encounter and escapes rather
             // than decrementing to nothing. Three turns to kill it.
-            foreach (var enemy in state.Enemies)
+            //
+            // A copy of the roster is walked: the escape takes the creature out of it (F08), and the
+            // game walks a list it copied before any hook ran (`CombatState.IterateHookListeners`),
+            // so a creature that leaves changes nothing about the pass. The live walk threw
+            // "Collection was modified" here, which in a native build is a fail-fast.
+            foreach (var enemy in state.Enemies.ToArray())
             {
                 int limit = BuffSystem.Get(enemy.Buffs, BuffId.BattlewornDummyTimeLimit);
                 if (limit <= 0 || enemy.Hp <= 0)
