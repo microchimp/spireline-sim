@@ -32,6 +32,8 @@ ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 AGENT_SEED = 20261023  # the base agent seed of generation 0's blocks (an agent seed, never a game seed)
 RUN_WALL_CAP_S = 1800.0
 RUN_TIMEOUT_S = RUN_WALL_CAP_S + 300.0  # the dispatcher's wall limit per run: the in-run cap, then 5 minutes for its last decision to end
+REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
+                     "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
 WORKER_RECYCLE = 20  # a worker process is replaced after this many finished runs (between runs only)
 Z = 1.959964
 
@@ -712,6 +714,16 @@ def train_cmd(a: argparse.Namespace) -> int:
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
+    cand_gen = gen + 1 if target is None else target
+    spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None)
+    if spent is not None:  # the review guard's cap: `promote` would refuse this candidate, so nothing is trained (rc 0: a finished round)
+        from tools.lab import jobs  # noqa: PLC0415
+
+        done = jobs.consume_marker(marks[0][1]) if a.marker_dir else None
+        print(f"nothing trained: generation {cand_gen} already had {spent} judged candidates (the review guard caps promotion attempts at "
+              f"{gen_loop.review_guard_module().ATTEMPT_CAP}), so a further candidate could not be judged"
+              + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
+        return 0
     cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
                                      max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
                                      retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
@@ -968,6 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--lab", help="the lab folder: write LAB/train/ready-<gen> once the generation's self-play budget is spent")
     e.add_argument("--shards-root", help="where the lab's job directories (with shards) are, to count the budget")
     e.add_argument("--budget-runs", type=int, default=2000)
+    e.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)  # the cap on the ready- markers it writes (mark_ready)
     add_prior_server_flags(e)
     t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards. Since D33 (2026-10-25) a "
                        "candidate whose V_run is kept plays the value-head macro (agent.json macro vrun, no environment variable); "
@@ -999,9 +1012,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--procs", type=int, default=16)
     t.add_argument("--lib")
     t.add_argument("--lab")
-    t.add_argument("--review-guard", action="store_true",
-                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
-                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
+    t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
     pr.add_argument("--cand", required=True)
     pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
@@ -1014,9 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     pr.add_argument("--lab-runs", action="append", help="a folder of self-play job directories (the lab's runs folder): "
                     "the E-block must not contain their seeds; repeatable")
-    pr.add_argument("--review-guard", action="store_true",
-                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
-                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
+    pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     add_prior_server_flags(pr)
     rj = sub.add_parser("rejudge", help="apply the current promotion rule to a candidate's finished arms on its own block")
     rj.add_argument("--cand", required=True)
@@ -1026,9 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--config", default="a3-v1")
     rj.add_argument("--note", required=True, help="why the block is judged again (the decision that changed the rule)")
     rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
-    rj.add_argument("--review-guard", action="store_true",
-                    help="decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
-                         "default: the SPIRELINE_REVIEW_GUARD variable, off")
+    rj.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
@@ -1126,7 +1133,8 @@ def main(argv: list[str] | None = None) -> int:
                                     run_timeout_s=a.run_timeout_s)
         if a.record and a.lab and a.shards_root:
             gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs,
-                                tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None)
+                                tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None,
+                                review_guard=True if a.review_guard else None)  # the train job's reading of the cap, not only the variable
         print(json.dumps(summ))
         return 0
     real = real_runs(Path(a.real) / "runs.jsonl")
