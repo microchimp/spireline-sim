@@ -386,6 +386,22 @@ class KindRunTest(Base):
                 self.assertEqual("NA", rows[0]["fights"])
                 self.assertGreater(r.state["strategy_cpu"].get(kind, 0) + 1, 0)
 
+    def test_consume_marker_renames_each_marker_form_and_a_job_that_renamed_its_own_marker_finishes_clean(self):
+        for name in ("ready-7", "ready-7-r2", "ready-7-g9"):
+            m = self.marker("train/" + name)
+            done = jb.consume_marker(m)
+            self.assertEqual((done, m.exists(), done.is_file()), (m.with_name("done-" + name.removeprefix("ready-")), False, True))
+            self.assertIsNone(jb.consume_marker(m))  # nothing left to rename
+        # `gen0.py train` stops a round the review guard could not judge: it renames the marker and exits 0 (a finished job)
+        self.config(train={"cmd": ["{python}", "-c", "import os, sys; os.replace(sys.argv[1], sys.argv[2])",
+                                   str(self.lab_dir / "train" / "ready-8-r2"), str(self.lab_dir / "train" / "done-8-r2")]})
+        self.marker("train/ready-8-r2")
+        r = self.runner()
+        run = r.new_run("train", "abc")
+        self.assertIsNone(r.execute(run))
+        self.assertEqual("0", (run.dir / "done.rc").read_text().strip())
+        self.assertEqual(sorted(p.name for p in (self.lab_dir / "train").iterdir() if p.name.endswith("-8-r2")), ["done-8-r2"])
+
     def test_markers_are_consumed_on_success_and_kept_on_failure(self):
         self.config()
         self.marker("train/ready-7")

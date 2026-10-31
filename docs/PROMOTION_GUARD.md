@@ -129,8 +129,11 @@ either of two ways, and it is **off** unless set to `1`, `on`, `true` or `yes`:
   scheduled task that starts `tools/lab/runner.py`). The runner passes its environment to every job, the `train` job's
   promote subprocess inherits it, and the self-play job that writes the `ready-<gen>` markers sees it too, so one
   variable switches the decision, the tsv columns and the retry cap together.
-- **`--review-guard`** on `python rl/gen0.py train --promote ...`, `promote` and `rejudge` (the `train` job's command in
-  `LAB/jobs.json` can carry it). The explicit switch wins over the variable; without it the variable decides.
+- **`--review-guard`** on `python rl/gen0.py train --promote ...`, `promote`, `rejudge` and `emu` (the `train` and `selfplay`
+  jobs' commands in `LAB/jobs.json` carry it). The explicit switch wins over the variable; without it the variable decides.
+  Both halves of the retry cap must read it the same way: `emu` (through `mark_ready`) issues no `ready-<gen>-r<n>` marker
+  past the cap, and `train` stops before it trains (rc 0, marker renamed `done-...`, one line) when the candidate generation
+  already had `ATTEMPT_CAP` judged candidates in `promotions.tsv`, since `promote` would refuse the round after the training.
 
 Flip it between generations, never while a block is being judged (the review: rule changes apply from the next block).
 Flip it back by unsetting the variable and dropping the switch; nothing else changes, and the tsv rows written while it

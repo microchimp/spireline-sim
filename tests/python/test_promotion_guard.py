@@ -553,5 +553,143 @@ class FlagOnTests(PromoteBase):
             self.assertTrue(ap.parse_args([*cmd, "--review-guard"]).review_guard)
 
 
+class CappedRoundTests(unittest.TestCase):
+    """No training round past the review guard's cap: the issuing half (`emu` -> `mark_ready`) and the training half (`train`)
+    read the same flag, and a stale marker costs seconds, not a training run that `promote` then refuses to judge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.train_dir = self.root / "train"
+        self.train_dir.mkdir()
+        self.agents = self.root / "agent"
+        self.agents.mkdir()
+        self.env = mock.patch.dict(os.environ)
+        self.env.start()
+        os.environ.pop(pg.FLAG, None)
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def judged(self, cand_gen: int, *shas: str) -> None:
+        for sha in shas:
+            gen_loop.append_promotion(self.agents / "promotions.tsv", {"cand_gen": cand_gen, "decision": "rejected", "seed_block": f"E-{sha}", "cand_sha": sha})
+
+    def train(self, *extra: str, marker: str | None = "ready-9-r2", gen: int = 9):
+        """`gen0.main(["train", ...])` with the training entry replaced by a stub that records its call; (rc, calls, stdout)."""
+        import contextlib
+        import io
+
+        if marker:
+            (self.train_dir / marker).write_text("x")
+        calls: list[tuple] = []
+
+        def fake_train(g, shards_root, agent_root, **kw):
+            calls.append((g, kw))
+            return Path(agent_root) / f"gen{kw.get('candidate_generation') or g + 1}" / "candidate"
+
+        args = ["train", "--shards-root", str(self.root), "--agent-root", str(self.agents)]
+        args += ["--marker-dir", str(self.train_dir)] if marker else ["--gen", str(gen)]
+        out = io.StringIO()
+        with mock.patch.object(gen_loop, "train_generation", fake_train), contextlib.redirect_stdout(out):
+            rc = gen0.main([*args, *extra])
+        return rc, calls, out.getvalue()
+
+    def markers(self) -> list[str]:
+        return sorted(p.name for p in self.train_dir.iterdir())
+
+    # (a) the issuing half: the old behaviour is only the default
+    def test_mark_ready_writes_nothing_past_the_cap_with_the_flag_and_still_writes_without_it(self):
+        lab, runs, tsv = self.root / "lab", self.root / "runs", self.agents / "promotions.tsv"
+        (lab / "train").mkdir(parents=True)
+        for name in ("done-1", "done-1-r1"):
+            (lab / "train" / name).write_text("x")
+        self.judged(2, "a", "b")
+        with mock.patch.object(gen_loop, "runs_in_generation", return_value=15):  # three budgets of 5 spent: no shards written here
+            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv, review_guard=True))
+            self.assertEqual(sorted(p.name for p in (lab / "train").iterdir()), ["done-1", "done-1-r1"])
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r2")  # variable unset: the old default
+        self.assertTrue((lab / "train" / "ready-1-r2").is_file())
+
+    # (b) the issuing half's command line
+    def test_emu_takes_the_flag_and_hands_it_to_mark_ready(self):
+        import contextlib
+        import io
+
+        ap = gen0.build_parser()
+        base = ["emu", "--out", "o"]
+        self.assertFalse(ap.parse_args(base).review_guard)
+        self.assertTrue(ap.parse_args([*base, "--review-guard"]).review_guard)
+        helps = {name: next(a.help for a in sp._actions if a.dest == "review_guard")
+                 for name, sp in ap._subparsers._group_actions[0].choices.items() if any(a.dest == "review_guard" for a in sp._actions)}
+        self.assertEqual(set(helps), {"emu", "train", "promote", "rejudge"})
+        self.assertEqual(len(set(helps.values())), 1, "the same help text on all four")
+        for flag, want in ((None, None), ("--review-guard", True)):
+            argv = ["emu", "--seeds-file", "s.json", "--record", "--lab", str(self.root / "lab"), "--shards-root", str(self.root / "runs"),
+                    "--agent-root", str(self.agents), "--out", str(self.root / "out")] + ([flag] if flag else [])
+            with mock.patch.object(gen0, "load_seeds", return_value=["S1"]), mock.patch.object(gen0, "run_block", return_value={}), \
+                    mock.patch.object(gen_loop, "load_agent", return_value=mock.Mock(generation=9)), \
+                    mock.patch.object(gen_loop, "mark_ready") as mr, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(gen0.main(argv), 0)
+            self.assertEqual(mr.call_count, 1)
+            self.assertIs(mr.call_args.kwargs.get("review_guard"), want)  # None keeps the variable as the default
+            self.assertEqual(mr.call_args.args[:2], (self.root / "lab", 9))
+
+    # (c) the training half refuses a round that could not be judged
+    def test_train_with_the_flag_stops_at_once_when_the_cap_is_reached_and_renames_the_marker(self):
+        self.judged(10, "a5801c02", "e9d89ea6")
+        rc, calls, out = self.train("--review-guard")
+        self.assertEqual((rc, calls), (0, []))
+        self.assertEqual(self.markers(), ["done-9-r2"])
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("generation 10", lines[0])
+        self.assertIn("2 ", lines[0])
+
+    def test_the_variable_stands_in_for_the_flag(self):
+        self.judged(10, "a", "b")
+        os.environ[pg.FLAG] = "1"
+        rc, calls, _ = self.train()
+        self.assertEqual((rc, calls, self.markers()), (0, [], ["done-9-r2"]))
+
+    def test_a_marker_naming_its_candidate_generation_counts_that_generation(self):
+        self.judged(5, "a", "b")  # generation 5 is spent; generation 10 (= 9 + 1) is not
+        rc, calls, _ = self.train("--review-guard", marker="ready-9-g5")
+        self.assertEqual((rc, calls, self.markers()), (0, [], ["done-9-g5"]))
+        (self.train_dir / "done-9-g5").unlink()
+        rc, calls, _ = self.train("--review-guard", marker="ready-9-g6")  # generation 6 had no attempt
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-g6"]))
+
+    def test_a_manual_gen_run_stops_too_and_has_no_marker_to_rename(self):
+        self.judged(10, "a", "b")
+        rc, calls, _ = self.train("--review-guard", marker=None)
+        self.assertEqual((rc, calls, self.markers()), (0, [], []))
+
+    # (d) below the cap the round runs as before
+    def test_one_judged_candidate_trains_as_before_and_leaves_the_marker_to_the_lab(self):
+        self.judged(10, "a5801c02")
+        rc, calls, out = self.train("--review-guard", marker="ready-9-r1")
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-r1"]))
+        self.assertEqual((calls[0][0], calls[0][1]["retrain"]), (9, 1))
+        self.assertIn('"candidate"', out)
+
+    def test_the_same_sha_judged_twice_and_other_generations_do_not_count_as_two(self):
+        self.judged(10, "a", "a")
+        self.judged(11, "x", "y", "z")
+        self.judged(9, "p", "q")
+        rc, calls, _ = self.train("--review-guard", marker="ready-9-r1")
+        self.assertEqual((rc, len(calls)), (0, 1))
+
+    # (e) the guard off: nothing changes
+    def test_without_the_guard_the_round_trains_whatever_promotions_holds(self):
+        self.judged(10, "a", "b", "c")
+        rc, calls, _ = self.train()
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-r2"]))
+        with mock.patch.object(gen_loop, "review_guard_module", side_effect=AssertionError("the guard is off: nothing to import")):
+            rc, calls, _ = self.train()
+        self.assertEqual((rc, len(calls)), (0, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
