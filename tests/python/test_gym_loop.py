@@ -1,7 +1,8 @@
 """The always-on fight-gym loop (rl/gym_loop.py, rl/gym_loop_train.py; D40, gym build item L1).
 
-The pinned facts: the promotion rule decides as written (stage 1's futility stop, stage 2's exact one-sided McNemar test and the L0
-guard; a capped game is lost); the daemon's guards read the lab's locks as the lab's jobs do (the night, main.lock only before a
+The pinned facts: the promotion rule decides as written (stage 1's futility stop on a pair of seed indices the incumbent was not
+picked on, rotating one pair per promotion with the incumbent's games on it taken from its own promotion gate; stage 2's exact
+one-sided McNemar test and the L0 guard; a capped game is lost); the daemon's guards read the lab's locks as the lab's jobs do (the night, main.lock only before a
 step, PAUSE, HALT, another live QUIET.lock line; its own lines kept with its PID; GPU_OK taken only when absent or ours); the
 buffer's compaction, retention window and disk cap; a generation fight recorded through `gen_game_steps` is the gym's game move for
 move (recording changes nothing) and leaves one training sample per decision; the trainer spends its freshness budget and then idles,
@@ -102,6 +103,135 @@ class PureTests(unittest.TestCase):
         home = "C:" + "\\" + "Us" + "ers" + "\\" + "someone"  # built here, so the source holds no home folder
         self.assertEqual(gl.clean("open " + home + "\\AppData\\x.py"), "open ~\\AppData\\x.py")
         self.assertEqual(gl.clean("D:/spireline/referee/gym-loop"), "D:/spireline/referee/gym-loop")
+
+
+class GatePairTests(unittest.TestCase):
+    """Stage 1's rotating pair (PROMOTION_RULE v2, D43): no games, the pure parts and the gate with its games faked."""
+
+    RULE = {**gl.PROMOTION_RULE, "starts": 4, "stage1_seeds": 2, "seeds": 6, "futility_points": 1.0}  # three pairs of j
+
+    def _rows(self, who, js, win, starts=("S0", "S1", "S2", "S3")):
+        return [{**_row(s, j, win(i, j)), "arm": who, "player": who} for i, s in enumerate(starts) for j in js]
+
+    def test_the_rule_is_v2_and_the_pairs_rotate_one_per_promotion_and_wrap(self):
+        rule = gl.PROMOTION_RULE
+        self.assertEqual(rule["name"], "gym-loop-promote-v2")
+        self.assertEqual([gl.stage1_js(rule, p) for p in range(6)],
+                         [(0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (0, 1)])
+        self.assertEqual(gl.stage1_pairs(rule), 5)
+        walk = [0]
+        for _ in range(6):
+            walk.append(gl.next_gate_pair(rule, walk[-1]))
+        self.assertEqual(walk, [0, 1, 2, 3, 4, 0, 1])
+        self.assertEqual(gl.stage1_js(self.RULE, 2), (4, 5))  # a rule with other widths rotates the same way
+        self.assertEqual(gl.next_gate_pair(self.RULE, 2), 0)
+
+    def test_stage_one_counts_only_its_pair_and_an_incumbent_lucky_on_its_own_pair_no_longer_blocks_an_equal_candidate(self):
+        # the incumbent was picked on pair 0 and won every game there; elsewhere it wins half. The candidate is as good as the
+        # incumbent really is (half), plus two more wins than it on pair 1.
+        inc = self._rows("v2", range(6), lambda i, j: True if j < 2 else i % 2 == 0)
+        cand = self._rows("c", range(6), lambda i, j: i % 2 == 0 or (j in (2, 3) and i == 1))
+        old = gl.decide(cand, inc, 1, self.RULE, pair=0)  # the v1 behaviour: the lucky pair
+        self.assertEqual((old["verdict"], old["pairs"], old["inc_wins"], old["cand_wins"]), ("reject", 8, 8, 4))
+        new = gl.decide(cand, inc, 1, self.RULE, pair=1)
+        self.assertEqual((new["verdict"], new["pairs"], new["inc_wins"], new["cand_wins"]), ("continue", 8, 4, 6))
+        same = gl.decide(inc, inc, 1, self.RULE, pair=1)
+        self.assertEqual((same["verdict"], same["win_diff"]), ("reject", 0.0))  # an equal candidate is still stopped at +0.0
+        self.assertEqual(gl.decide(cand[:5], inc, 1, self.RULE, pair=1)["verdict"], "incomplete")
+        self.assertEqual(gl.paired(cand, inc, 6, (4, 5))["pairs"], 8)
+        self.assertEqual(gl.paired(cand, inc, 6)["pairs"], 24)  # no pair given: every j below `seeds`, stage 2's way
+        self.assertEqual(gl.decide(cand, inc, 1, self.RULE)["verdict"], old["verdict"])  # the default pair is pair 0
+
+    def test_the_incumbents_reference_comes_from_its_promotion_gate_once_and_only_for_the_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = gl.Loop(Path(tmp) / "loop")
+            loop.state["promotions"].append({"version": "v2", "checkpoint": "c0019", "over": "v1", "t": "x"})
+            src = loop.gates / "c0019-cfg-eng.jsonl"
+            inc_file = loop.gates / "inc-v2-cfg-eng.jsonl"
+            rows = self._rows("c0019", range(6), lambda i, j: (i + j) % 2 == 0)
+            src.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            # the incumbent's own replays of pair 0 are there already (the last line cut by a stop: no newline at its end)
+            mine = self._rows("v2", (0, 1), lambda i, j: True)
+            inc_file.write_text("".join(json.dumps(r) + "\n" for r in mine) + '{"start": "S0", "j"', encoding="utf-8")
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v2", inc_file, (0, 1), "cfg", "eng"), 0)  # pair 0 is there
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v2", inc_file, (2, 3), "cfg", "eng"), 8)
+            got = fg.read_jsonl(inc_file)
+            self.assertEqual(len(got), 16)  # the cut line is dropped, nothing swallowed
+            taken = [r for r in got if r.get("reused_from")]
+            self.assertEqual({(r["j"], r["arm"], r["player"], r["reused_from"]) for r in taken},
+                             {(2, "v2", "v2", "c0019"), (3, "v2", "v2", "c0019")})
+            want = {(r["start"], r["j"]): r["won"] for r in rows if r["j"] in (2, 3)}
+            self.assertEqual({(r["start"], r["j"]): r["won"] for r in taken}, want)  # the promotion gate's games, as played
+            self.assertEqual({r["j"] for r in got}, {0, 1, 2, 3})  # nothing of the other pairs
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v2", inc_file, (2, 3), "cfg", "eng"), 0)  # once
+            self.assertEqual(len(fg.read_jsonl(inc_file)), 16)
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v2", loop.gates / "inc-v2-cfg-new.jsonl", (2, 3), "cfg", "new"), 0)
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v0", loop.gates / "inc-v0-cfg-eng.jsonl", (2, 3), "cfg", "eng"), 0)
+            fresh = loop.gates / "inc-v2-other-eng.jsonl"  # another config: no promotion gate file to take from
+            self.assertEqual(gl.reuse_incumbent_games(loop, "v2", fresh, (2, 3), "other", "eng"), 0)
+            self.assertFalse(fresh.exists())
+
+    def test_a_promotion_moves_stage_one_to_the_next_pair_and_the_state_keeps_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "loop"
+            loop = gl.Loop(root)
+            self.assertEqual((loop.gate_pair(), loop.state["gate_pair"]), (0, 0))  # a new loop starts on j = 0..1
+            ck = Path(tmp) / "ckpt"
+            ck.mkdir()
+            (ck / "model.json").write_text("{}", encoding="utf-8")
+            (loop.gates / "cand.jsonl").write_text(json.dumps(_row("S0", 0, True)) + "\n", encoding="utf-8")
+            for n, (before, after) in enumerate([(0, 1), (1, 2), (4, 0)], start=1):
+                loop.state["gate_pair"] = before
+                gl.promote(loop, f"c{n:04d}", ck, {"cand_file": "cand.jsonl", "cand_wins": 1, "inc_wins": 0, "pairs": 1}, "off")
+                self.assertEqual(loop.state["incumbent"], f"v{n}")
+                self.assertEqual(gl.Loop(root).gate_pair(), after)  # on disk
+            self.assertIn("stage 1 now plays j [0, 1]", (root / "loop.log").read_text(encoding="utf-8"))
+
+    def test_a_state_from_before_the_rotation_starts_on_the_second_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "loop"
+            root.mkdir()
+            old = {"segment": 3, "incumbent": "v2", "promotions": [{"version": "v1"}, {"version": "v2"}],
+                   "versions": {"v0": {"dir": "x", "n": 0}, "v2": {"dir": "y", "n": 2}}}
+            (root / "state.json").write_text(json.dumps(old), encoding="utf-8")
+            loop = gl.Loop(root)
+            self.assertEqual(gl.stage1_js(gl.PROMOTION_RULE, loop.gate_pair()), (2, 3))  # v2 was picked on j = 0..1
+            self.assertEqual(loop.state["segment"], 3)
+
+    def test_the_gate_plays_the_candidate_on_the_pair_and_the_incumbent_not_at_all_when_its_games_are_kept(self):
+        starts = ("S0", "S1", "S2", "S3")
+        played: list[tuple[str, int]] = []
+
+        def fake_play(loop, tasks, target, player_dir, procs, k, prior, what, **kw):
+            with open(target, "a", encoding="utf-8") as fh:
+                for _kind, sid, j, _cat, info in tasks:
+                    played.append((info["label"], j))
+                    won = starts.index(sid) % 2 == 0  # every player wins the even starts: no difference
+                    fh.write(json.dumps({**_row(sid, j, won), "arm": info["label"]}) + "\n")
+            return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop = gl.Loop(Path(tmp) / "loop")
+            d = Path(tmp) / "agent"
+            d.mkdir()
+            loop.state["versions"]["v2"] = {"dir": str(d), "n": 2}
+            loop.state["incumbent"] = "v2"
+            loop.state["promotions"].append({"version": "v2", "checkpoint": "c0019", "over": "v1", "t": "x"})
+            loop.state["gate_pair"] = 1
+            rows = [{**_row(s, j, i % 2 == 0), "arm": "c0019", "player": "c0019"} for i, s in enumerate(starts) for j in range(6)]
+            (loop.gates / "c0019-cfg-eng.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            mine = [{**r, "arm": "v2"} for r in rows if r["j"] < 2]  # the incumbent's own replays of the first pair
+            (loop.gates / "inc-v2-cfg-eng.jsonl").write_text("".join(json.dumps(r) + "\n" for r in mine), encoding="utf-8")
+            board = [{"id": s, "cat": "act1-boss"} for s in starts]
+            with mock.patch.object(gl, "PROMOTION_RULE", self.RULE), mock.patch.object(gl, "play_tasks", fake_play), \
+                    mock.patch.object(gl, "engine_tag", lambda: "eng"), mock.patch.object(gl, "board_starts", lambda: board):
+                v = gl.run_gate(loop, "c0020", d, "cfg", 1, 4, "cpu")
+            # stage 1: the candidate plays j 2..3 only; the incumbent's 8 games on them are the promotion gate's
+            self.assertEqual(sorted(played), sorted([("c0020", j) for j in (2, 3)] * 4))
+            self.assertEqual((v["verdict"], v["stage"], v["pairs"], v["rule"]), ("reject", 1, 8, "gym-loop-promote-v2"))
+            self.assertEqual((v["stage1_pair"], v["stage1_js"], v["win_diff"]), (1, [2, 3], 0.0))
+            self.assertEqual(sorted({r["j"] for r in fg.read_jsonl(loop.gates / "inc-v2-cfg-eng.jsonl")}), [0, 1, 2, 3])
+            self.assertIn("stage 1 (j [2, 3]) reject", (loop.root / "loop.log").read_text(encoding="utf-8"))
 
 
 class LockTests(unittest.TestCase):
@@ -427,6 +557,7 @@ class LoopGameTests(unittest.TestCase):
         self.assertEqual(len(fg.read_jsonl(self.loop.gates / v["inc_file"])), 4)  # played once, kept
         self.assertEqual(v["pairs"], 4)
         self.assertEqual(v["verdict"], "reject")  # the same network: no candidate-only win, McNemar p = 1
+        self.assertEqual((v["rule"], v["stage1_js"]), ("gym-loop-promote-v2", [0]))  # a new loop's stage 1 plays the first pair
         self.assertEqual(v2["verdict"], v["verdict"])
         self.assertEqual({r["arm"] for r in inc_games}, {"v0"})
 

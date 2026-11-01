@@ -23,9 +23,11 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
    idles and logs the idle time).
 3. **The gate.** A checkpoint not yet scored is played on the fight board's 200 Act-1 boss starts with the board's seeds, under the
    player config (`--player-config`: a3-v1, or the judge-equipped config once it lands), paired with the incumbent on the same games
-   (the incumbent's games are played once per incumbent, engine and config, and kept). The rule (`PROMOTION_RULE`) was fixed here
-   before the first checkpoint; `decide` applies it. A promoted checkpoint becomes "Fight player, version N": its games get a
-   fight-board row, committed to Spireline main (`board_commit`).
+   (the incumbent's games are played once per incumbent, engine and config, and kept). Stage 1 uses a pair of seed indices the
+   incumbent was not picked on, one pair per promotion, with the incumbent's games on it taken from its own promotion gate (D43).
+   The rule (`PROMOTION_RULE`) was fixed here before the first checkpoint and amended once (v2, 2026-11-01); `decide` applies it.
+   A promoted checkpoint becomes "Fight player, version N": its games get a fight-board row, committed to Spireline main
+   (`board_commit`).
 
 Between steps the daemon drops its QUIET.lock line and waits `--yield-s` so a waiting gate can take the lock; it never holds the
 line through the night (03:10-03:45Z and while LAB/nightly/active exists), and starts nothing while main.lock, LAB/PAUSE or LAB/HALT
@@ -94,15 +96,20 @@ NIGHT_WINDOW = fg.NIGHT_WINDOW
 MEAN_X16_S = {"act1-hallway": 12.0, "act1-elite": 25.0, "act1-boss": 74.0, "act2-hallway": 14.0, "act2-elite": 16.0,
               "act2-boss": 95.0}
 
-# The promotion rule, fixed before the first checkpoint (2026-10-30). Both arms play the same games: the board's 200 Act-1 boss
-# starts, game j of each with the gym's seeds (namespace "g"), the same search config; only the network differs. A capped game is
-# lost. Stage 1 plays j = 0..stage1_seeds-1 and stops (no promotion) unless the candidate's win rate is at least `futility_points`
-# above the incumbent's. Stage 2 plays j = 0..seeds-1 (the board's 2,000 games) and promotes only when the exact one-sided McNemar
-# test on the discordant pairs (candidate-only wins against incumbent-only wins) gives p < alpha and the paired mean L0 difference
-# is not negative. Nothing tunes on these games: the trainer never sees the board's starts or their runs.
-PROMOTION_RULE = {"name": "gym-loop-promote-v1", "fixed": "2026-10-30, before the first checkpoint", "starts": 200,
-                  "cat": "act1-boss", "stage1_seeds": 2, "futility_points": 1.0, "seeds": 10, "alpha": 0.05,
-                  "l0_not_worse": True, "capped": "lost", "ns": "g"}
+# The promotion rule (v1 fixed 2026-10-30 before the first checkpoint; v2 2026-11-01, D43). Both arms play the same games: the
+# board's 200 Act-1 boss starts, game j of each with the gym's seeds (namespace "g"), the same search config; only the network
+# differs. A capped game is lost. Stage 1 plays one pair of seed indices (`stage1_seeds` of them, 400 games) and stops (no
+# promotion) unless the candidate's win rate is at least `futility_points` above the incumbent's. v1 always played j = 0..1, the
+# pair the incumbent itself had been picked on, so its wins there were a lucky overcount (v2: 196 of 400 there, 746 of its other
+# 1,600) and an equal candidate needed a true +3.4 points to pass. v2 plays the pair after the one the incumbent was picked on:
+# one pair per promotion, wrapping (0-1, 2-3, 4-5, 6-7, 8-9, 0-1, ...; `stage1_js`, `next_gate_pair`), the incumbent's games on
+# it coming from its own promotion gate's games when they are there (`reuse_incumbent_games`). Stage 2 plays j = 0..seeds-1 (the
+# board's 2,000 games) and promotes only when the exact one-sided McNemar test on the discordant pairs (candidate-only wins
+# against incumbent-only wins) gives p < alpha and the paired mean L0 difference is not negative; it is unchanged from v1.
+# Nothing tunes on these games: the trainer never sees the board's starts or their runs.
+PROMOTION_RULE = {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
+                  "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
+                  "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"}
 
 _HOME = re.compile(r"(?i)[a-z]:[\\/]+users[\\/]+[^\\/\s'\"]+")
 
@@ -270,6 +277,9 @@ class Loop:
         self.state.setdefault("versions", {"v0": {"dir": str(INCUMBENT0), "source": "agent gen7/candidate-r1 (M2's)", "n": 0}})
         self.state.setdefault("incumbent", "v0")
         self.state.setdefault("promotions", [])
+        # Which pair of seed indices stage 1 plays (see PROMOTION_RULE): 0 is j = 0..1. A state from before the rotation had
+        # promoted only on pair 0, so its incumbent starts on the next one.
+        self.state.setdefault("gate_pair", 1 if self.state["promotions"] else 0)
         self._lock = threading.Lock()
 
     def save(self) -> None:
@@ -287,6 +297,10 @@ class Loop:
     def incumbent(self) -> tuple[str, Path]:
         v = self.state["incumbent"]
         return v, self.player_dir(v)
+
+    def gate_pair(self) -> int:
+        """Stage 1's pair (an index, 0 up), kept inside the rule's pairs."""
+        return int(self.state["gate_pair"]) % stage1_pairs(PROMOTION_RULE)
 
     def newest_checkpoint(self) -> tuple[str, Path] | None:
         done = sorted(p for p in self.checkpoints.glob("c[0-9][0-9][0-9][0-9]") if (p / "model.json").is_file()
@@ -861,10 +875,30 @@ def mcnemar_one_sided(b: int, c: int) -> float:
     return min(1.0, sum(math.comb(n, i) for i in range(b, n + 1)) / 2**n)
 
 
-def paired(cand: list[dict], inc: list[dict], seeds: int) -> dict:
-    """The pairs (start, j < seeds) both arms played: wins (a capped game is lost), discordant counts, L0 difference."""
-    a = {(r["start"], int(r["j"])): r for r in cand if int(r["j"]) < seeds}
-    b = {(r["start"], int(r["j"])): r for r in inc if int(r["j"]) < seeds}
+def stage1_pairs(rule: dict) -> int:
+    """How many stage-1 pairs of seed indices the rule's stage 2 covers (five: 10 seed indices, two to a pair)."""
+    return max(1, rule["seeds"] // rule["stage1_seeds"])
+
+
+def stage1_js(rule: dict, pair: int) -> tuple[int, ...]:
+    """The seed indices of stage 1's pair number `pair` (wrapped): pair 0 is (0, 1), pair 1 is (2, 3), ..."""
+    w = rule["stage1_seeds"]
+    p = int(pair) % stage1_pairs(rule)
+    return tuple(range(p * w, p * w + w))
+
+
+def next_gate_pair(rule: dict, pair: int) -> int:
+    """The pair after a promotion: the next one, wrapping. The promoted checkpoint was picked on `pair`; the next candidate
+    meets it on a pair it was not picked on."""
+    return (int(pair) + 1) % stage1_pairs(rule)
+
+
+def paired(cand: list[dict], inc: list[dict], seeds: int, js: tuple[int, ...] | None = None) -> dict:
+    """The pairs (start, j) both arms played, j < seeds or, given `js`, j in js: wins (a capped game is lost), discordant counts,
+    L0 difference."""
+    want = (lambda j: j in js) if js is not None else (lambda j: j < seeds)  # noqa: E731
+    a = {(r["start"], int(r["j"])): r for r in cand if want(int(r["j"]))}
+    b = {(r["start"], int(r["j"])): r for r in inc if want(int(r["j"]))}
     keys = sorted(set(a) & set(b))
     wa = [bool(a[x].get("won")) and not a[x].get("capped") for x in keys]
     wb = [bool(b[x].get("won")) and not b[x].get("capped") for x in keys]
@@ -881,12 +915,14 @@ def paired(cand: list[dict], inc: list[dict], seeds: int) -> dict:
             "capped": sum(1 for x in keys if a[x].get("capped")) + sum(1 for x in keys if b[x].get("capped"))}
 
 
-def decide(cand: list[dict], inc: list[dict], stage: int, rule: dict | None = None) -> dict:
-    """The fixed rule on the games so far. Stage 1: 'continue' or 'reject' (futility). Stage 2: 'promote' or 'reject'."""
+def decide(cand: list[dict], inc: list[dict], stage: int, rule: dict | None = None, pair: int = 0) -> dict:
+    """The fixed rule on the games so far. Stage 1 (on stage-1 pair number `pair`): 'continue' or 'reject' (futility). Stage 2:
+    'promote' or 'reject'."""
     rule = rule or PROMOTION_RULE
     if stage == 1:
-        p = paired(cand, inc, rule["stage1_seeds"])
-        need = rule["starts"] * rule["stage1_seeds"]
+        js = stage1_js(rule, pair)
+        p = paired(cand, inc, rule["stage1_seeds"], js)
+        need = rule["starts"] * len(js)
         if p["pairs"] < need:
             return {"verdict": "incomplete", "stage": 1, **p}
         go = p["win_diff"] is not None and 100 * p["win_diff"] >= rule["futility_points"]
@@ -916,6 +952,26 @@ def engine_tag() -> str:
     return sha256_file(ROOT / "out" / "Sts2Emulator.dll")[:12]
 
 
+def reuse_incumbent_games(loop: Loop, inc: str, inc_file: Path, js: tuple[int, ...], ctag: str, eng: str) -> int:
+    """The incumbent's stage-1 reference: its games on seed indices `js` are taken from the gate file of the checkpoint it was
+    promoted from (the same weights, config, judge and engine; the file name says so) into its own kept games, for the pairs not
+    already there. Returns how many rows were added. A version with no such file (version 0, another engine or config) gets none,
+    and the gate plays the missing games itself, once."""
+    ckpt = next((x["checkpoint"] for x in loop.state["promotions"] if x["version"] == inc), None)
+    src = loop.gates / f"{ckpt}-{ctag}-{eng}.jsonl" if ckpt else None
+    if src is None or not src.is_file():
+        return 0
+    have = {(r["start"], int(r["j"])) for r in fg.read_jsonl(inc_file)}
+    take = [{**r, "arm": inc, "player": inc, "reused_from": ckpt} for r in fg.read_jsonl(src)
+            if int(r["j"]) in js and (r["start"], int(r["j"])) not in have]
+    if take:
+        end = inc_file.read_bytes()[-1:] if inc_file.is_file() else b"\n"
+        with open(inc_file, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("" if end in (b"\n", b"") else "\n")  # a line cut by a stop must not swallow the first copied row
+            fh.writelines(json.dumps(r) + "\n" for r in take)
+    return len(take)
+
+
 def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: int, prior: str, daemon=None,
              judge: str | None = None) -> dict:
     """Score a checkpoint against the incumbent with the fixed rule (resumable: the games on disk are kept)."""
@@ -928,8 +984,15 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
     inc_file = loop.gates / f"inc-{inc}-{ctag}-{eng}.jsonl"
     cand_file = loop.gates / f"{cand}-{ctag}-{eng}.jsonl"
     rule = PROMOTION_RULE
-    out: dict = {"candidate": cand, "incumbent": inc, "config": config, "engine": eng, "rule": rule["name"]}
-    for stage, seeds in ((1, range(rule["stage1_seeds"])), (2, range(rule["seeds"]))):
+    pair = loop.gate_pair()
+    js = stage1_js(rule, pair)
+    out: dict = {"candidate": cand, "incumbent": inc, "config": config, "engine": eng, "rule": rule["name"], "stage1_pair": pair,
+                 "stage1_js": list(js)}
+    for stage, seeds in ((1, js), (2, range(rule["seeds"]))):
+        if stage == 1:
+            n = reuse_incumbent_games(loop, inc, inc_file, js, ctag, eng)
+            if n:
+                loop.log(f"gate {cand}: stage 1, {n} of {inc}'s games on j {list(js)} taken from its promotion gate's games")
         for who, d, f in ((inc, inc_dir, inc_file), (cand, cand_dir, cand_file)):
             done = {(r["start"], int(r["j"])) for r in fg.read_jsonl(f)}
             tasks = gate_tasks(who, config, seeds, done, label=who)
@@ -938,9 +1001,10 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
                 stopped = play_tasks(loop, tasks, f, d, procs, k, prior, f"gate-{who}", daemon=daemon, extra_opts=xo)
                 if stopped:
                     return {**out, "verdict": "stopped", "why": stopped}
-        v = decide(fg.read_jsonl(cand_file), fg.read_jsonl(inc_file), stage)
+        v = decide(fg.read_jsonl(cand_file), fg.read_jsonl(inc_file), stage, pair=pair)
         out.update(v)
-        loop.log(f"gate {cand}: stage {stage} {v['verdict']}: cand {v.get('cand_wins')} inc {v.get('inc_wins')} of {v.get('pairs')}"
+        loop.log(f"gate {cand}: stage {stage}{f' (j {list(js)})' if stage == 1 else ''} {v['verdict']}: cand {v.get('cand_wins')} "
+                 f"inc {v.get('inc_wins')} of {v.get('pairs')}"
                  f" ({100 * (v.get('win_diff') or 0):+.1f} points, SE {100 * (v.get('win_se') or 0):.1f})"
                  + (f" p {v['p']:.3f}" if "p" in v else ""))
         if v["verdict"] != "continue":
@@ -962,13 +1026,14 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
     prev = loop.state["incumbent"]
     loop.state["incumbent"] = ver
     loop.state["promotions"].append({"version": ver, "checkpoint": cand, "over": prev, "t": stamp()})
+    loop.state["gate_pair"] = next_gate_pair(PROMOTION_RULE, loop.gate_pair())  # the next candidate meets it on a fresh pair
     loop.save()
     rows = fg.read_jsonl(loop.gates / verdict["cand_file"])
     with open(loop.board / f"fp-{ver}.jsonl", "w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps({**{k: v for k, v in r.items() if not k.startswith("_")}, "arm": f"fp-{ver}"}) + "\n")
     loop.log(f"promoted {cand} as {ver} over {prev}: {verdict.get('cand_wins')} against {verdict.get('inc_wins')} wins of "
-             f"{verdict.get('pairs')}")
+             f"{verdict.get('pairs')}; stage 1 now plays j {list(stage1_js(PROMOTION_RULE, loop.gate_pair()))}")
     if board != "off":
         try:
             board_commit(loop, ver, verdict, commit=board == "commit")
@@ -1289,7 +1354,8 @@ class Daemon:
         for old in older:  # superseded while untested: the newest is always the one scored
             self.loop.state["gated"].setdefault(old, {"verdict": "superseded", "by": cand})
         self.loop.state["gated"][cand] = {k: v.get(k) for k in ("verdict", "stage", "why", "pairs", "cand_wins", "inc_wins",
-                                                                "win_diff", "win_se", "l0_diff", "p", "incumbent", "config")}
+                                                                "win_diff", "win_se", "l0_diff", "p", "incumbent", "config",
+                                                                "stage1_js")}
         self.loop.save()
         with open(self.loop.gates / "verdicts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), **{k: v.get(k) for k in v if k not in ("cand_file", "inc_file")}}) + "\n")
@@ -1347,6 +1413,9 @@ class Daemon:
         (self.loop.root / "STOP").unlink(missing_ok=True)
         self.loop.log(f"daemon: start pid {os.getpid()} at {self.commit} player config {self.a.player_config}, teacher "
                       f"{self.a.teacher}, {self.a.procs} processes K={self.a.k}")
+        self.loop.log(f"daemon: state reloaded: incumbent {self.loop.state['incumbent']}, {len(self.loop.state['gated'])} checkpoints "
+                      f"with a verdict, segment {self.loop.state['segment']}; {PROMOTION_RULE['name']}: stage 1 plays j "
+                      f"{list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}")
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")

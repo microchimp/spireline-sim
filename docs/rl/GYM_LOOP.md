@@ -77,10 +77,15 @@ on the same rows.
 
 ## 5. The gate and the board (decided before the first checkpoint)
 
-`PROMOTION_RULE` (`gym-loop-promote-v1`): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
+`PROMOTION_RULE` (`gym-loop-promote-v2`: v1 was fixed before the first checkpoint, v2 on 2026-11-01, D43): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
 player (`--player-config judge-v0 --judge D:/spireline/referee/agent/judge/v0/judge.pt`, the defaults since the judge landed (D41): JUDGE_V0's search with the judge v0 at its leaves, the judge on its own server on the card beside the prior's; the incumbent's games are kept per config and judge; measured: the gate's judge-v0 games of version 0 are the board's judge-v0 games move for move),
-the candidate and the incumbent on the same games. A capped game is lost. Stage 1, j = 0..1 (400 pairs): go on only if the candidate
-wins at least 1.0 point more. Stage 2, j = 0..9 (2,000 pairs, the board's games): promote only if the exact one-sided McNemar test
+the candidate and the incumbent on the same games. A capped game is lost. Stage 1, one pair of seed indices (400 pairs): go on only if the candidate
+wins at least 1.0 point more. v1 always played j = 0..1, the pair each incumbent had been picked on, so the incumbent's wins there
+were a lucky overcount (version 2: 196 of 400 there, 746 of its other 1,600) and an equal candidate needed a true +3.4 points. v2
+plays a pair the incumbent was not picked on: `state.json`'s `gate_pair` (0 is j = 0..1, 1 is j = 2..3, up to 4), moved on by one
+(wrapping) at each promotion. The incumbent's games on it are copied from its promotion gate's file (`gate/cNNNN-...jsonl`, rows
+marked `reused_from`) into its kept `inc-vN-...` file, or played once when that file lacks them. A state from before the change
+starts on pair 1. Verdict lines carry `rule`, `stage1_pair` and `stage1_js`. Stage 2 (unchanged), j = 0..9 (2,000 pairs, the board's games): promote only if the exact one-sided McNemar test
 on the discordant pairs gives p < 0.05 and the paired mean L0 difference is not negative. Only the newest ungated checkpoint is
 scored; older ones are marked superseded. A promoted checkpoint becomes `players/vN`, the incumbent, and its board row "Fight player,
 version N": `board_commit` rebuilds `docs/paper/fight-board.html` in its own Spireline worktree (`D:/spireline/wt-board`) with the
