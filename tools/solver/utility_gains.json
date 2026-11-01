@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_utility_gains.py; do not edit. Every site that can raise the solver's utility within a combat (heal, HP, max HP, potion, generation), classed in utility_gain_classes.json; the holders turn the tight bound off while present (FIGHT_SOLVER.md section 19).",
- "sources_sha256": "75aa6fd34669189edd771932aef1bf36dd41ed54d3808e239d9cf56a36ea0665",
+ "sources_sha256": "eb024e521c14bd32c242c4d87485d1a5f769f079f7730122b3ada116d8b15281",
  "holders": [
   "buff:CalamityPower",
   "buff:CallOfTheVoid",
@@ -95,7 +95,7 @@
     "card:CallOfTheVoid"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2787"
+    "CombatEngine:2792"
    ]
   },
   "applies:buff:HelloWorld": {
@@ -105,7 +105,7 @@
     "card:HelloWorld"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2733"
+    "CombatEngine:2738"
    ]
   },
   "applies:buff:PaperCuts": {
@@ -131,7 +131,7 @@
     "card:SpectrumShift"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2777"
+    "CombatEngine:2782"
    ]
   }
  },
@@ -1877,7 +1877,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "?",
    "kind": "hp",
-   "line": 5131,
+   "line": 5136,
    "holders": [
     "engine"
    ],
@@ -1889,7 +1889,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ApplyAfterCardPlayedPowers",
    "kind": "generate",
-   "line": 6816,
+   "line": 6821,
    "holders": [
     "engine"
    ],
@@ -1904,7 +1904,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "DoomThePlayerAtTurnEnd",
    "kind": "hp",
-   "line": 5428,
+   "line": 5433,
    "holders": [
     "buff:Doom"
    ],
@@ -3260,7 +3260,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "heal",
-   "line": 3451,
+   "line": 3456,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3272,7 +3272,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "hp",
-   "line": 3455,
+   "line": 3460,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3284,7 +3284,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "potion",
-   "line": 3447,
+   "line": 3452,
    "holders": [
     "buff:Poison",
     "card:Havoc",
@@ -3300,7 +3300,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4145,
+   "line": 4150,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -3963,7 +3963,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4420,
+   "line": 4425,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -4626,7 +4626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4429,
+   "line": 4434,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -5289,7 +5289,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4462,
+   "line": 4467,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -6614,7 +6614,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 6021,
+   "line": 6026,
    "holders": [
     "engine"
    ],
@@ -6626,7 +6626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 6038,
+   "line": 6043,
    "holders": [
     "engine"
    ],
@@ -6638,7 +6638,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "TryRespawnAxebot",
    "kind": "hp",
-   "line": 5902,
+   "line": 5907,
    "holders": [
     "engine"
    ],
@@ -6650,7 +6650,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "UsePotion",
    "kind": "potion",
-   "line": 3415,
+   "line": 3420,
    "holders": [
     "engine"
    ],
