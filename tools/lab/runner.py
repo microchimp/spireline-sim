@@ -943,9 +943,9 @@ class Runner:
             rep.run.save()
 
     def end_report(self) -> None:
-        self.report_cpu_done += rep_cpu(self.report)
         rep, self.report = self.report, None
         assert rep is not None
+        self.report_cpu_done += rep_cpu(rep)
         rep.sj.close()
         rep.run.save()
         for run, rc in rep.covers:
@@ -957,12 +957,12 @@ class Runner:
         """Stop the running report; its covered jobs wait for the next one."""
         if self.report is None:
             return
-        self.report_cpu_done += rep_cpu(self.report)
         rep, self.report = self.report, None
         try:
             rec = rep.run.rec(rep.running.cmd.name) if rep.running else {"cmds": {}}
             self.kill_group(rep.ctx, rep.sj, [rep.running] if rep.running else [], rec)
         finally:
+            self.report_cpu_done += rep_cpu(rep)  # what it used up to its end stays out of the jobs' accounts
             rep.sj.close()
         for rname in ("groups", "kits"):  # a stopped command is neither done nor failed: it runs in the next report
             r = next((x for x in rep.run.data["steps"] if x["name"] == rname and x.get("status") == "running"), None)
