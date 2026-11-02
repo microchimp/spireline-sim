@@ -3,6 +3,8 @@
     python rl/gen0.py emu --stream JOB --config a3-v1 --record --agent-root AGENT --out JOBDIR   # self-play with samples
     python rl/gen0.py train --gen N --shards-root RUNS --agent-root AGENT                         # -> AGENT/gen<N+1>/candidate
     python rl/gen0.py promote --cand AGENT/gen<N+1>/candidate --base AGENT/gen<N>/...             # E1 block, both arms
+    python rl/gen0.py build --prior DIR --agent-root AGENT --candidate-generation K --why TEXT --marker-dir LAB/train
+                                      # -> AGENT/gen<K>/candidate built, not trained; the lab's train job then judges it as it is
 
 A *generation* is the agent that plays: generation 0 is the search with no network and the rules policy outside fights;
 generation N+1 is generation N's candidate once `promote` accepts it. A self-play block records, per run,
@@ -1061,6 +1063,97 @@ def shutil_rmtree(p: Path) -> None:
     import shutil  # noqa: PLC0415
 
     shutil.rmtree(p, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ a candidate assembled from parts (D44 step A)
+
+BUILT_KEY = "built"  # agent.json and train.json of a candidate `build_candidate` assembled: nothing was trained, `train` judges it as it is
+BUILT_PRIOR_FILES = ("combat_policy.pt", "combat_net.pt")  # the prior export's files a built candidate copies (model.json is written anew)
+BUILT_BASE_FILES = ("run_value.npz", "run_value.pt")  # the base generation's V_run fit, copied unchanged
+
+
+def built_candidate(agent_root: Path | str, target: int, retrain: int = 0) -> Path | None:
+    """AGENT/gen<target>/candidate (candidate-r<n> for a retrain index) when `build_candidate` wrote it (agent.json has `built`),
+    else None: `gen0.py train` judges such a candidate as it is and never trains over it."""
+    cand = Path(agent_root) / f"gen{int(target)}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
+    meta = cand / "agent.json"
+    return cand if meta.is_file() and BUILT_KEY in read_json(meta) else None
+
+
+def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
+                    export: bool = True) -> Path:
+    """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
+    (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
+    generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
+
+    Written as AGENT/gen<target>/candidate in a trained candidate's layout (model.json by `write_prior_model_json`, the ONNX files by
+    `export_all`, agent.json, train.json), both json files with `built` naming the two sources and their sha256, and a `lineage`
+    note when `target` skips numbers. The prior must be one this build plays (`combat_prior.find`: the same token vocabulary, the
+    sha its model.json names) and search with the settings every candidate's model.json gives (`PRIOR_SEARCH`, probe off), so the
+    candidate plays exactly that network; an existing candidate directory is never written over. `gen0.py train` with a
+    `ready-<base generation>-g<target>` marker judges it on the promotion path (`promote`), as a trained candidate is judged."""
+    import shutil  # noqa: PLC0415
+
+    import combat_prior  # noqa: PLC0415
+
+    prior_dir, agent_root, target = Path(prior_dir), Path(agent_root), int(target)
+    base_agent = load_agent(base)
+    if base_agent.path is None:
+        raise ValueError("the base must be a generation directory or a current.json, not generation 0's empty agent")
+    base_dir = Path(base_agent.path)
+    if target <= base_agent.generation:
+        raise ValueError(f"a candidate built on generation {base_agent.generation} cannot be generation {target}")
+    champ = combat_prior.find(prior_dir)  # PriorError when this build cannot play it
+    if champ is None:
+        raise FileNotFoundError(f"no combat prior (model.json and combat_policy.pt) in {prior_dir.name}")
+    settings = {"c_puct": champ.c_puct, "prior_min_visits": champ.prior_min_visits}
+    if champ.probe or settings != PRIOR_SEARCH:
+        raise ValueError(f"{prior_dir.name} searches with probe {champ.probe} and {settings}; every candidate's model.json says "
+                         f"probe off and {PRIOR_SEARCH}, so the built candidate would not play the prior as it was measured")
+    missing = [n for n in BUILT_PRIOR_FILES if not (prior_dir / n).is_file()]
+    if missing:
+        raise FileNotFoundError(f"{prior_dir.name} has no {', '.join(missing)}")
+    cand = agent_root / f"gen{target}" / "candidate"
+    if cand.exists() and any(cand.iterdir()):
+        raise FileExistsError(f"gen{target}/candidate exists; a built candidate never writes over one")
+    cand.mkdir(parents=True, exist_ok=True)
+    for name in BUILT_PRIOR_FILES:
+        shutil.copyfile(prior_dir / name, cand / name)
+    model = write_prior_model_json(cand, target)
+    for name in BUILT_BASE_FILES:
+        if (base_dir / name).is_file():
+            shutil.copyfile(base_dir / name, cand / name)
+    npz = cand / "run_value.npz"
+    fit = {"source": "base", "sha256": file_sha256(npz)} if npz.is_file() else {"source": "none", "sha256": None}
+    base_meta = read_json(base_dir / "agent.json") if (base_dir / "agent.json").is_file() else {}
+    source_train = read_json(prior_dir / "train.json") if (prior_dir / "train.json").is_file() else None
+    prior = {"dir": prior_dir.as_posix(), "policy_sha256": model["policy_sha256"], "net_sha256": file_sha256(cand / "combat_net.pt")}
+    built = {"why": why, "written": utc_now(), "trained": False,
+             "rule": "the prior's files and the base's V_run fit are copied unchanged; `gen0.py train` judges the candidate as it is",
+             "prior": {**prior, "model_json": read_json(prior_dir / "model.json")},
+             "base": {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro,
+                      "policy_sha256": base_agent.describe()["prior_sha256"], "run_value_sha256": fit["sha256"]}}
+    lineage = None if target == base_agent.generation + 1 else {
+        "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
+        "difference": (f"the combat prior of {prior_dir.parent.name}/{prior_dir.name} (built, not trained) with generation "
+                       f"{base_agent.generation}'s macro {base_agent.macro} and its V_run fit"),
+        "decision": why}
+    doc: dict[str, Any] = {"candidate_generation": target, BUILT_KEY: built, **({"lineage": lineage} if lineage else {}),
+                           "prior_train": source_train}
+    if export:
+        doc["onnx"] = export_all(cand)
+    meta = {"generation": target, "macro": base_agent.macro, "built_on": base_agent.generation, "written": utc_now(),
+            **({"lineage": lineage} if lineage else {}), "mask_version": base_agent.mask_version,
+            **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
+            "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"]},
+            "note": (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                     f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone")}
+    write_json(cand / "train.json", doc)
+    write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
+    got = load_agent(cand)
+    if (got.generation, got.macro, got.describe()["prior_sha256"]) != (target, base_agent.macro, champ.policy_sha256):
+        raise ValueError(f"gen{target}/candidate does not load as built: {got.describe()}")
+    return cand
 
 
 # ------------------------------------------------------------------ lab markers

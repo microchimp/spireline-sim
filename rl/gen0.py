@@ -724,12 +724,24 @@ def train_cmd(a: argparse.Namespace) -> int:
               f"{gen_loop.review_guard_module().ATTEMPT_CAP}), so a further candidate could not be judged"
               + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
         return 0
-    cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
-                                     max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
-                                     retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
-                                     exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
-                                     seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [],  # the lab's generated E-blocks too
-                                     vrun_seed=getattr(a, "vrun_seed", None), candidate_generation=target)
+    built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain)  # `gen0.py build` assembled it: judged as it is, never trained over
+    if built is not None and (built / "promotion.json").is_file():
+        from tools.lab import jobs  # noqa: PLC0415
+
+        done = jobs.consume_marker(marks[0][1]) if a.marker_dir else None
+        print(f"nothing trained or judged: gen{cand_gen}/{built.name} was built (not trained) and its promotion.json says it was "
+              "judged already" + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
+        return 0
+    if built is not None:
+        cand = built
+        print(f"gen{cand_gen}/{built.name} was built, not trained (agent.json `{gen_loop.BUILT_KEY}`): it is judged as it is", flush=True)
+    else:
+        cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
+                                         max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
+                                         retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
+                                         exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
+                                         seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [],  # the lab's generated E-blocks too
+                                         vrun_seed=getattr(a, "vrun_seed", None), candidate_generation=target)
     target = gen + 1 if target is None else target
     print(json.dumps({"candidate": str(cand.parent.name) + "/" + cand.name, "generation": target}))
     if a.promote:
@@ -744,6 +756,35 @@ def train_cmd(a: argparse.Namespace) -> int:
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
                                                Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
                                                prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()))  # off unless the train flags say
+    return 0
+
+
+def build_cmd(a: argparse.Namespace) -> int:
+    """`build`: generation N's candidate assembled from a combat prior export and a generation's V_run fit and macro, nothing trained
+    (`gen_loop.build_candidate`); with --marker-dir it then writes `ready-<base generation>-g<N>`, so the lab's train job judges it
+    on the promotion path (`train` sees the `built` candidate and skips training)."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    base = a.base or str(Path(a.agent_root) / "current.json")
+    marker = None
+    if a.marker_dir:  # checked before anything is written: a marker that already exists (or was consumed) is not written again
+        base_gen = gen_loop.load_agent(base).generation
+        name = f"ready-{base_gen}-g{a.candidate_generation}"
+        taken = [p.name for p in (Path(a.marker_dir) / name, Path(a.marker_dir) / ("done-" + name.removeprefix("ready-"))) if p.exists()]
+        if taken:
+            print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
+            return 2
+        marker = Path(a.marker_dir) / name
+    cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export)
+    meta = gen_loop.read_json(cand / "agent.json")
+    out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
+           "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
+    if marker is not None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(gen_loop.utc_now() + "\n", encoding="utf-8")
+        out["marker"] = marker.name
+    print(json.dumps(out))
     return 0
 
 
@@ -1013,6 +1054,17 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--lib")
     t.add_argument("--lab")
     t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
+    bd = sub.add_parser("build", help="assemble generation N's candidate from a combat prior export and a generation's V_run fit and "
+                        "macro, nothing trained (D44 step A); with --marker-dir the lab's train job then judges it as it is")
+    bd.add_argument("--prior", required=True, help="a combat prior export: model.json, combat_policy.pt, combat_net.pt (the fight "
+                    "loop's players/v<N>)")
+    bd.add_argument("--base", help="the generation whose V_run fit, macro and settings the candidate keeps (a generation directory or "
+                    "a current.json; default: --agent-root's current.json)")
+    bd.add_argument("--agent-root", required=True)
+    bd.add_argument("--candidate-generation", type=int, required=True, help="the candidate's generation number (gen<N>/candidate)")
+    bd.add_argument("--why", required=True, help="the decision the candidate is built for (agent.json and train.json record it)")
+    bd.add_argument("--marker-dir", help="LAB/train: write ready-<base generation>-g<N> once the candidate is complete")
+    bd.add_argument("--no-export", action="store_true", help="no ONNX files (they need torch's exporter and the onnx package)")
     pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
     pr.add_argument("--cand", required=True)
     pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
@@ -1104,6 +1156,8 @@ def main(argv: list[str] | None = None) -> int:
         return score_real(a)
     if a.cmd == "train":
         return train_cmd(a)
+    if a.cmd == "build":
+        return build_cmd(a)
     if a.cmd == "promote":
         return promote_cmd(a)
     if a.cmd == "rejudge":

@@ -594,6 +594,114 @@ class LabMarkerTests(unittest.TestCase):
             self.assertTrue((marker_dir / "ready-7").exists())  # the lab consumes it when the command succeeds
 
 
+class BuiltCandidateTests(unittest.TestCase):
+    """`build_candidate` and `gen0.py build` (D44 step A): another prior export with a generation's V_run fit and macro, nothing
+    trained; `train` with the `ready-<base>-g<N>` marker judges it as it is and never trains over it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        _, _, trained = trained_candidate()
+        self.agents = self.root / "agent"
+        self.base = self.agents / "gen5" / "candidate"  # a vrun generation: its fit and settings are what the candidate keeps
+        self.base.mkdir(parents=True)
+        for name in ("combat_policy.pt", "combat_net.pt", "model.json"):
+            (self.base / name).write_bytes((trained / name).read_bytes())
+        (self.base / "run_value.npz").write_bytes(b"the base fit")
+        (self.base / "run_value.pt").write_bytes(b"the base fit, torch")
+        (self.base / "agent.json").write_text(json.dumps({"generation": 5, "macro": "vrun", "mask_version": 4, "tau": 0.25}))
+        (self.agents / "current.json").write_text(json.dumps({"generation": 5, "dir": str(self.base)}))
+        self.prior = self.root / "players" / "v2"  # the fight loop's player layout
+        self.prior.mkdir(parents=True)
+        for name in ("combat_policy.pt", "combat_net.pt", "model.json"):
+            (self.prior / name).write_bytes((trained / name).read_bytes())
+        meta = json.loads((self.prior / "model.json").read_text())
+        (self.prior / "model.json").write_text(json.dumps({**meta, "iteration": 7, "gym_loop": {"checkpoint": "c0019"}}))
+        (self.prior / "train.json").write_text(json.dumps({"checkpoint": "c0019", "steps": 921}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build(self, target=7, **kw):
+        return gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, target, why="test", export=False, **kw)
+
+    def test_the_candidate_plays_the_prior_with_the_base_generations_fit_and_macro(self):
+        cand = self.build()
+        self.assertEqual(self.agents / "gen7" / "candidate", cand)
+        agent = gen_loop.load_agent(cand)
+        self.assertEqual((agent.generation, agent.macro, agent.tau, agent.mask_version), (7, "vrun", 0.25, 4))
+        self.assertEqual(gen_loop.file_sha256(self.prior / "combat_policy.pt"), agent.describe()["prior_sha256"])
+        self.assertEqual(gen_loop.file_sha256(self.base / "run_value.npz"), gen_loop.file_sha256(agent.macro_npz))
+        self.assertEqual((self.base / "run_value.pt").read_bytes(), (cand / "run_value.pt").read_bytes())
+        model = json.loads((cand / "model.json").read_text())
+        self.assertEqual((model["iteration"], model["search"], model["probe"]), (7, gen_loop.PRIOR_SEARCH, False))
+        self.assertNotIn("gym_loop", model)  # a candidate's model.json, as `write_prior_model_json` writes every one
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertEqual((meta["built_on"], meta["lineage"]["skips"], meta["vrun_fit"]["source"]), (5, [6], "base"))
+        self.assertFalse(meta["built"]["trained"])
+        self.assertEqual("c0019", json.loads((cand / "train.json").read_text())["prior_train"]["checkpoint"])
+        self.assertEqual(cand, gen_loop.built_candidate(self.agents, 7))
+        self.assertIsNone(gen_loop.built_candidate(self.agents, 5))  # a candidate the train job trained is not a built one
+
+    def test_nothing_is_written_over_and_a_prior_played_otherwise_is_refused(self):
+        self.build()
+        with self.assertRaises(FileExistsError):
+            self.build()
+        with self.assertRaises(ValueError):
+            self.build(target=5)  # not after the base
+        meta = json.loads((self.prior / "model.json").read_text())
+        (self.prior / "model.json").write_text(json.dumps({**meta, "probe": True}))
+        with self.assertRaises(ValueError):
+            self.build(target=8)
+        self.assertFalse((self.agents / "gen8" / "candidate").exists())
+        import combat_prior
+
+        (self.prior / "model.json").write_text(json.dumps({**meta, "vocab_sha256": "0" * 64}))
+        with self.assertRaises(combat_prior.PriorError):
+            self.build(target=8)
+
+    def train_args(self, marker_dir: Path) -> list[str]:
+        return ["train", "--marker-dir", str(marker_dir), "--shards-root", str(self.root), "--agent-root", str(self.agents),
+                "--promote", "--emu-python", "python", "--seeds-file", str(self.root / "E7-test.json"), "--review-guard"]
+
+    def test_the_train_job_judges_a_built_candidate_and_trains_nothing(self):
+        marker_dir = self.root / "train"
+        rc = gen0.main(["build", "--prior", str(self.prior), "--agent-root", str(self.agents), "--candidate-generation", "7",
+                        "--why", "test", "--no-export", "--marker-dir", str(marker_dir)])
+        self.assertEqual(0, rc)
+        self.assertEqual(["ready-5-g7"], [p.name for p in marker_dir.iterdir()])
+        with mock.patch.object(gen_loop, "train_generation") as tg, \
+                mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp:
+            rc = gen0.main(self.train_args(marker_dir))
+        self.assertEqual(0, rc)
+        tg.assert_not_called()
+        self.assertEqual(self.agents / "gen7" / "candidate", rp.call_args[0][1])
+        self.assertTrue(rp.call_args[1]["review_guard"])
+        self.assertTrue((marker_dir / "ready-5-g7").exists())  # the lab consumes it when the command succeeds
+
+    def test_a_judged_built_candidate_is_not_judged_again_or_trained_over(self):
+        cand = self.build()
+        (cand / "promotion.json").write_text("{}")
+        marker_dir = self.root / "train"
+        marker_dir.mkdir()
+        (marker_dir / "ready-5-g7").write_text("x")
+        with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess") as rp:
+            rc = gen0.main(self.train_args(marker_dir))
+        self.assertEqual(0, rc)
+        tg.assert_not_called()
+        rp.assert_not_called()
+        self.assertEqual(["done-5-g7"], [p.name for p in marker_dir.iterdir()])
+
+    def test_the_build_command_refuses_a_marker_that_was_written_before(self):
+        marker_dir = self.root / "train"
+        marker_dir.mkdir()
+        (marker_dir / "done-5-g7").write_text("x")
+        rc = gen0.main(["build", "--prior", str(self.prior), "--agent-root", str(self.agents), "--candidate-generation", "7",
+                        "--why", "test", "--no-export", "--marker-dir", str(marker_dir)])
+        self.assertEqual(2, rc)
+        self.assertFalse((self.agents / "gen7").exists())
+
+
 class StaleEnvironmentTests(unittest.TestCase):
     def test_generation_0_search_kwargs_are_the_base_ones_with_the_variable_unset(self):
         import search_configs
