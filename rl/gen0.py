@@ -31,7 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 AGENT_SEED = 20261023  # the base agent seed of generation 0's blocks (an agent seed, never a game seed)
 RUN_WALL_CAP_S = 1800.0
-RUN_TIMEOUT_S = RUN_WALL_CAP_S + 300.0  # the dispatcher's wall limit per run: the in-run cap, then 5 minutes for its last decision to end
+RUN_TIMEOUT_S = 600.0  # the dispatcher's wall limit per emulator run (was the in-run cap plus 5 minutes, 2,100 s): the slowest of 3,999 finished
+# runs took 123 s, and a hung run was killed, run again and killed again while the other workers idled (2026-11-02 sweep, tails 1,290 to 2,808 s)
 REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
                      "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
 WORKER_RECYCLE = 20  # a worker process is replaced after this many finished runs (between runs only)
@@ -428,9 +429,11 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     starting runs after that many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended
     to runs.jsonl.
 
-    No seed is lost with its worker. A run that is still going after `run_timeout_s` (None: no limit) has its worker killed; a
-    worker that exits mid-run is replaced; either way the seed is run again once, then written as a row with `end: "lost"`,
-    `lost: true`, floor 0 and no win, so the block always ends with one row per seed. A worker is replaced after `recycle`
+    No seed is lost with its worker. A run that is still going after `run_timeout_s` (None: no limit) has its worker killed and
+    is written at once as a row with `end: "lost"`, `lost: true`, floor 0 and no win, and not run again (a hang replays, so a second
+    attempt only doubles the wait while the other workers idle); summary.json then has `timed_out`, one entry per such seed (seed,
+    index, the arm's folder name, the limit, the seconds it ran, floor 0, no win). A worker that exits mid-run is replaced and its
+    seed is run again once, then written the same way, so the block always ends with one row per seed. A worker is replaced after `recycle`
     runs, only between runs. With `resume`, runs.jsonl is kept (see `resume_rows`) and its seeds are not played again; the
     summary then has `resumed_rows`. `resume_key` adds to the identity a resumed file must match (the engine). `task` and
     `initializer` are what a worker runs and starts with (tests replace them; both must be importable in the worker).
@@ -490,6 +493,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     attempts: dict[int, int] = {}  # run index -> failed attempts so far (a died or timed-out worker)
     retry: collections.deque = collections.deque()  # (index, seed) to run again, before any new seed
     counts = {"retried": 0, "lost": 0, "fails_in_a_row": 0}
+    timed_out: list[dict] = []  # the seeds whose run outlived `run_timeout_s`: one entry each, in the summary
     fail_limit = max(8, 2 * nprocs)  # this many failed attempts with no success between: the pool itself is broken, not the seeds
     new_decisions = 0
     pools_stats: list[dict] = []
@@ -512,7 +516,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                 fh.flush()
 
             def settle(d: spawn_pool.Done) -> None:
-                """One task's end: the row of a finished run; a died or timed-out one is run again once, then written as `lost`."""
+                """One task's end: the row of a finished run; a died one is run again once, then written as `lost`; a timed-out
+                one is written as `lost` at once (and listed in `timed_out`), never run again."""
                 ix, seed = d.key
                 if d.status == "ok":
                     counts["fails_in_a_row"] = 0
@@ -520,7 +525,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     return
                 counts["fails_in_a_row"] += 1
                 attempts[ix] = attempts.get(ix, 0) + 1
-                again = attempts[ix] < 2
+                again = attempts[ix] < 2 and d.status != "timeout"
                 print(f"run {seed} (index {ix}): {d.status} after {d.wall_s:g} s ({d.value}); "
                       + ("run again" if again else "written as lost"), file=sys.stderr, flush=True)
                 if again:
@@ -528,6 +533,9 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     retry.append((ix, seed))
                 else:
                     counts["lost"] += 1
+                    if d.status == "timeout":
+                        timed_out.append({"seed": seed, "ix": ix, "arm": out.name, "limit_s": run_timeout_s, "wall_s": d.wall_s,
+                                          "floor": 0, "win": False, "attempts": attempts[ix]})
                     write_row(lost_row(seed, ix, d.status, str(d.value), attempts[ix], d.wall_s))
                 if counts["fails_in_a_row"] >= fail_limit:
                     raise RuntimeError(f"the pool failed {fail_limit} attempts in a row with no run finishing between: last {d.status}: "
@@ -579,6 +587,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                **engine_block(rows), "decisions_per_s": round(new_decisions / wall, 2) if wall else None}
     summary["run_timeout_s"] = run_timeout_s
     summary["pool"] = {**pool_stats, "retried": counts["retried"], "lost": counts["lost"]}
+    if timed_out:
+        summary["timed_out"] = timed_out
     if held:
         summary["resumed_rows"] = len(held)
     if shard_doc is not None:
@@ -885,7 +895,7 @@ def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
     select_engine(engine)  # the arm's spawn workers load the library on this engine
     seeds = load_seeds(a.seeds_file)[: a.runs]
     # resume: a stopped arm is rerun into the same folder and keeps its finished seeds (the identity file guards the agent, the
-    # config and the engine); run_timeout_s None (not given) is the dispatcher's default, the run cap plus 5 minutes
+    # config and the engine); run_timeout_s None (not given) is the dispatcher's default, RUN_TIMEOUT_S
     timeout = getattr(a, "run_timeout_s", None)
     summ = run_block(seeds, a.config or a.sims, a.procs, out, ascension=a.ascension, character=a.character, agent=agent, resume=True,
                      resume_key={"engine": engine}, **({"run_timeout_s": timeout} if timeout else {}))
@@ -929,7 +939,43 @@ def gpu_ok_remove(path: str | Path, tag: str) -> None:
         print(f"gpu ok: {p.name} not cleaned ({type(e).__name__})", file=sys.stderr, flush=True)
 
 
+QUIET_TAG = "lab-score"  # the QUIET.lock line of the daytime real-game score (`score --quiet-lock`); the night's is lab-nightly
+QUIET_SKIPPED_RC = 75  # `score --quiet-lock` when the lock stayed taken for the whole wait: nothing was played (EX_TEMPFAIL)
+
+
 def score_real(a: argparse.Namespace) -> int:
+    """`play_score`, under the shared QUIET.lock when `--quiet-lock FILE` is given (the lab's score-real job; the nightly driver holds
+    its own line and does not pass it, so the two never wait on each other).
+
+    The line `<tag> <UTC> pid=<n>` (default tag lab-score) is taken before the first process of either arm, rewritten every 15
+    minutes while the block plays and removed at the end, however it ends; the fight loop yields to it (rl/gym_loop.py why_blocked),
+    so it no longer generates beside the games and the lab's load guard no longer stops them. While another's line is under 2 h old
+    the score waits (`--quiet-wait-h`, default 2; rl/quiet_lock.py). When the lock stays taken that long, nothing is played:
+    result.json gets {"skipped": ...} and the exit code is QUIET_SKIPPED_RC, so the lab job fails and keeps its LAB/score/pending
+    marker instead of consuming it (the nightly driver's skip does the same through its own marker)."""
+    path = getattr(a, "quiet_lock", None)
+    if not path:
+        return play_score(a)
+    import quiet_lock  # noqa: PLC0415
+
+    wait_h = getattr(a, "quiet_wait_h", None)
+    wait_h = 2.0 if wait_h is None else float(wait_h)
+    lock = quiet_lock.QuietLock(Path(path), getattr(a, "quiet_tag", None) or QUIET_TAG, wait_h=wait_h)
+    if not lock.acquire():
+        why = f"QUIET.lock stayed taken by {lock.blocked_by()} for {wait_h:g} h"
+        print(f"score: skipped: {why}", file=sys.stderr, flush=True)
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "result.json").write_text(json.dumps({"skipped": why}), encoding="utf-8")
+        return QUIET_SKIPPED_RC
+    lock.start_heartbeat()
+    try:
+        return play_score(a)
+    finally:
+        lock.release()
+
+
+def play_score(a: argparse.Namespace) -> int:
     """The real-game block: envproto `play` (lockstep on) over the seed block, then result.json with the yield keys.
 
     The block is paired with an emulator arm of the same agent (`--gen-dir`): `--emu-dir` is used as given when its summary.json
@@ -1036,7 +1082,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     e.add_argument("--block-min", type=float, default=None)
     e.add_argument("--run-timeout-s", type=float, default=RUN_TIMEOUT_S,
-                   help="a run still going after this many seconds has its worker killed and is run once more, then written as lost")
+                   help="a run still going after this many seconds has its worker killed and is written as lost (floor 0, no win); "
+                   "it is not run again, and the block's summary lists it under timed_out")
     e.add_argument("--out", required=True)
     e.add_argument("--lib", help="directory of the native library (STS2_LIB_PATH)")
     e.add_argument("--gen-dir", help="a generation directory (or a current.json) whose combat prior and macro policy play")
@@ -1142,8 +1189,15 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     sc.add_argument("--stop-after-h", type=float, default=3.5)
     sc.add_argument("--run-timeout-s", type=float, default=None,
-                    help="the emulator arm's wall limit per run (default: the run cap plus 5 minutes); past it the worker is killed, "
-                    "the seed run once more, then written as lost")
+                    help="the emulator arm's wall limit per run (default: RUN_TIMEOUT_S, 600 s); past it the worker is killed and "
+                    "the seed written as lost (floor 0, no win), not run again")
+    sc.add_argument("--quiet-lock", default=None, metavar="FILE",
+                    help="hold a line in this shared QUIET.lock file from before the first process until the end, so the fight loop "
+                    "yields (the lab's score-real job; the nightly driver holds its own line and passes nothing)")
+    sc.add_argument("--quiet-tag", default=QUIET_TAG, help="the line's tag with --quiet-lock (default: %(default)s)")
+    sc.add_argument("--quiet-wait-h", type=float, default=2.0,
+                    help="with --quiet-lock: wait this long for another's line under 2 h old, then play nothing (exit code 75, "
+                    "result.json {skipped})")
     sc.add_argument("--lib")
     sc.add_argument("--emu-dir", help="an emulator arm to pair with, used only when its summary.json names the agent scored (--gen-dir); otherwise the arm is played first into OUT-emu")
     sc.add_argument("--only", help="play only these seeds of the file (comma-separated), each keeping its place in the full file as its "

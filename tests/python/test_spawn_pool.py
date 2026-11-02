@@ -106,25 +106,56 @@ class RunBlockTest(Tmp):
         rows = [json.loads(x) for x in (out / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
         return summ, rows
 
-    def test_a_worker_that_dies_or_hangs_once_costs_a_rerun_not_the_block(self):
-        seeds = ["A1", "DIEONCE1", "HANGONCE1", "A2", "A3"]
+    def test_a_worker_that_dies_once_costs_a_rerun_not_the_block(self):
+        seeds = ["A1", "DIEONCE1", "A2", "A3"]
         summ, rows = self.block(seeds, run_timeout_s=3.0)
         self.assertEqual(sorted(seeds), sorted(r["seed"] for r in rows))
         self.assertFalse(any(r.get("lost") for r in rows))
-        self.assertEqual(2, summ["pool"]["retried"])
-        self.assertEqual((1, 1, 0), (summ["pool"]["died"], summ["pool"]["timed_out"], summ["pool"]["lost"]))
+        self.assertNotIn("timed_out", summ)
+        self.assertEqual(1, summ["pool"]["retried"])
+        self.assertEqual((1, 0, 0), (summ["pool"]["died"], summ["pool"]["timed_out"], summ["pool"]["lost"]))
 
-    def test_a_seed_that_fails_twice_is_a_lost_row_and_the_block_ends_with_a_row_per_seed(self):
+    def test_a_run_past_the_limit_is_recorded_once_as_lost_and_not_run_again(self):
+        seeds = ["A1", "HANGONCE1", "A2", "A3"]  # HANGONCE would finish on a second attempt: it must not get one
+        summ, rows = self.block(seeds, run_timeout_s=2.0)
+        self.assertEqual(sorted(seeds), sorted(r["seed"] for r in rows))  # one row per seed, the hung one once
+        row = next(r for r in rows if r["seed"] == "HANGONCE1")
+        self.assertEqual(("lost", "timeout", 0, False, 1), (row["end"], row["lost_status"], row["floor"], row["win"], row["attempts"]))
+        self.assertEqual((0, 1, 1), (summ["pool"]["retried"], summ["pool"]["timed_out"], summ["pool"]["lost"]))
+        (entry,) = summ["timed_out"]  # recorded once, in the block's summary
+        self.assertEqual(("HANGONCE1", "arm", 2.0, 0, False), (entry["seed"], entry["arm"], entry["limit_s"], entry["floor"], entry["win"]))
+        self.assertGreaterEqual(entry["wall_s"], 2.0)
+
+    def test_the_default_limit_of_an_emulator_run_is_600_seconds(self):
+        self.assertEqual(600.0, gen0.RUN_TIMEOUT_S)
+        self.assertEqual(600.0, gen0.build_parser().parse_args(["emu", "--seeds-file", "s", "--out", "o"]).run_timeout_s)
+        import inspect
+
+        self.assertEqual(gen0.RUN_TIMEOUT_S, inspect.signature(gen0.run_block).parameters["run_timeout_s"].default)
+
+    def test_a_timed_out_seed_counts_as_floor_0_and_no_win_in_the_blocks_numbers(self):
+        seeds = ["A1", "A2", "HANGALWAYS1"]  # the fake runs end at floor 5, no win; the hung one counts as a crash row would
+        summ, rows = self.block(seeds, run_timeout_s=2.0)
+        self.assertEqual((3, 0, 1), (summ["runs"], summ["wins"], summ["lost"]))
+        self.assertAlmostEqual(10 / 3, summ["floor"]["mean"])
+        self.assertEqual(summ["floor"]["mean"], gen0.engine_block(rows)["floor"]["mean"])
+        crash = {"seed": "C", "win": False, "floor": 0, "decisions": 0, "wall": 1.0, "crash": True}  # gen0.real_runs' row of a crash
+        self.assertEqual(gen0.engine_block(rows[:2] + [crash])["floor"]["mean"], summ["floor"]["mean"])
+
+    def test_a_seed_that_dies_twice_or_hangs_is_a_lost_row_and_the_block_ends_with_a_row_per_seed(self):
         seeds = ["A1", "DIEALWAYS1", "A2", "HANGALWAYS1", "A3"]
         summ, rows = self.block(seeds, run_timeout_s=2.0)
         self.assertEqual(sorted(seeds), sorted(r["seed"] for r in rows))
         lost = {r["seed"]: r for r in rows if r.get("lost")}
         self.assertEqual({"DIEALWAYS1", "HANGALWAYS1"}, set(lost))
         for r in lost.values():
-            self.assertEqual(("lost", 0, False, 2), (r["end"], r["floor"], r["win"], r["attempts"]))
+            self.assertEqual(("lost", 0, False), (r["end"], r["floor"], r["win"]))
+        self.assertEqual(2, lost["DIEALWAYS1"]["attempts"])  # a death is run once more
+        self.assertEqual(1, lost["HANGALWAYS1"]["attempts"])  # a timeout is not
         self.assertEqual("died", lost["DIEALWAYS1"]["lost_status"])
         self.assertEqual("timeout", lost["HANGALWAYS1"]["lost_status"])
         self.assertEqual(2, summ["lost"])  # engine_block's count
+        self.assertEqual(["HANGALWAYS1"], [e["seed"] for e in summ["timed_out"]])
         self.assertEqual(5, summ["runs"])
         self.assertEqual(0, summ["wins"])
 
@@ -192,11 +223,12 @@ class NightlyTest(Tmp):
             seen["emu_rows"] = (date_dir / "g7-emu" / "runs.jsonl").is_file()
             seen["real_old"] = (date_dir / "g7" / "old.txt").exists()
             seen["resume"] = "--resume" in cmd  # N3: the real block is resumed in its folder, not cleared and replayed
+            seen["no_score_lock"] = "--quiet-lock" not in cmd  # the driver holds lab-nightly itself: the score under it takes no line
             return types.SimpleNamespace(returncode=0)
 
         with unittest.mock.patch.object(nr.subprocess, "run", side_effect=fake_run):
             nr.play_agent(a, ag, "2026-10-27", date_dir)
-        self.assertEqual({"emu_rows": True, "real_old": True, "resume": True}, seen)
+        self.assertEqual({"emu_rows": True, "real_old": True, "resume": True, "no_score_lock": True}, seen)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ no win, and gen_loop.boss_kill never as a boss kill.
 The job takes LAB's neighbour QUIET.lock with the line `lab-nightly <UTC>` before the first game process, rewrites the line while it
 runs (so another's 2 h staleness rule never reads a live block as stale), removes it after the last process, and waits up to 2 h while
 another's line is under 2 h old; after that it writes {"skipped": ...} to result.json and stops (the lab tries again later).
+The lock code is rl/quiet_lock.py, shared with `gen0.py score --quiet-lock` (tag `lab-score`, the daytime real-game score).
 The lab's PAUSE is never touched here. Nothing here starts a game directly: `gen0.py score` does, through referee/envproto.py.
 """
 
@@ -33,13 +34,10 @@ import argparse
 import contextlib
 import datetime as dt
 import json
-import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -49,84 +47,17 @@ for _p in (str(ROOT), str(ROOT / "rl")):
         sys.path.insert(0, _p)
 
 TAG = "lab-nightly"
-STALE_H = 2.0  # another's lock line under this old is live
 RESUME_NIGHT_H = 36.0  # an unfinished night whose newest row is under this old is resumed under its own date
-UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+import quiet_lock  # noqa: E402 -- rl/ is on sys.path (above)
+from quiet_lock import STALE_H, UTC_FORMAT, parse_utc, utc_now  # noqa: E402,F401 -- the QUIET.lock protocol moved to rl/quiet_lock.py (shared with `gen0.py score`)
 
 
-def utc_now(t: float | None = None) -> str:
-    return dt.datetime.fromtimestamp(time.time() if t is None else t, dt.UTC).strftime(UTC_FORMAT)
+class QuietLock(quiet_lock.QuietLock):
+    """rl/quiet_lock.QuietLock with this driver's tag as the default."""
 
-
-def parse_utc(s: str) -> float | None:
-    try:
-        return dt.datetime.strptime(s, UTC_FORMAT).replace(tzinfo=dt.UTC).timestamp()
-    except ValueError:
-        return None
-
-
-# ---------------------------------------------------------------- the QUIET.lock protocol
-
-class QuietLock:
-    """`<tag> <UTC>` in one file. Taken when absent, ours (same tag: a resumed job), or its line is older than `stale_h`; otherwise
-    waited for, up to `wait_h`. While held, `heartbeat` rewrites the line so the holder never reads as stale."""
-
-    def __init__(self, path: Path, tag: str = TAG, stale_h: float = STALE_H, wait_h: float = 2.0, poll_s: float = 60.0,
-                 clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
-        self.path, self.tag, self.stale_h, self.wait_h, self.poll_s = Path(path), tag, stale_h, wait_h, poll_s
-        self.clock, self.sleep = clock, sleep
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def holder(self) -> tuple[str, float] | None:
-        """(tag, age in hours) of the line in the file; None when there is none. The age is the line's UTC, else the file's mtime."""
-        try:
-            line = self.path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[0]
-        except (OSError, IndexError):
-            return None
-        parts = line.split()
-        t = parse_utc(parts[1]) if len(parts) > 1 else None
-        if t is None:
-            with contextlib.suppress(OSError):
-                t = self.path.stat().st_mtime
-        return (parts[0] if parts else "", (self.clock() - t) / 3600 if t is not None else 0.0)
-
-    def blocked_by(self) -> str | None:
-        h = self.holder()
-        if h is None or h[0] == self.tag or h[1] >= self.stale_h:
-            return None
-        return f"{h[0] or 'a lock'} ({h[1]:.1f} h old)"
-
-    def _write(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{self.tag} {utc_now(self.clock())} pid={os.getpid()}\n", encoding="utf-8")  # the runner clears a line whose pid is gone
-
-    def acquire(self) -> bool:
-        deadline = self.clock() + self.wait_h * 3600
-        while True:
-            if self.blocked_by() is None:
-                self._write()
-                return True
-            if self.clock() >= deadline:
-                return False
-            self.sleep(self.poll_s)
-
-    def start_heartbeat(self, every_s: float = 900.0) -> None:
-        def beat() -> None:
-            while not self._stop.wait(every_s):
-                h = self.holder()
-                if h is not None and h[0] == self.tag:
-                    with contextlib.suppress(OSError):
-                        self._write()
-
-        self._thread = threading.Thread(target=beat, daemon=True)
-        self._thread.start()
-
-    def release(self) -> None:
-        self._stop.set()
-        h = self.holder()
-        if h is not None and h[0] == self.tag:  # never remove another's line
-            self.path.unlink(missing_ok=True)
+    def __init__(self, path: Path, tag: str = TAG, **kw: Any):
+        super().__init__(path, tag, **kw)
 
 
 # ---------------------------------------------------------------- who is scored
