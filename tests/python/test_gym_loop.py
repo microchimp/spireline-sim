@@ -345,6 +345,188 @@ def _fake_fight(rows: int, player: str, start: str, split: str, won: bool, rng) 
             "played": np.zeros(rows, np.int16), "meta": np.array(json.dumps(meta))}
 
 
+# A run row of a night's emulator arm: 12 Act-1 hallway fights, an Act-1 elite and boss, two Act-2 hallway fights and an Act-2 elite.
+_RUN_NODES, _RUN_FLOOR, _RUN_STARTS = "M?ME" + "RMMMMMMMMMM" + "B" + "MMEMB", 20, 17
+
+
+def _night_runs(tag: str, n: int) -> list[dict]:
+    return [{"seed": f"{tag}{i:03d}", "ix": i, "nodes": _RUN_NODES, "floor": _RUN_FLOOR, "end": "death"} for i in range(n)]
+
+
+class StartSetTests(unittest.TestCase):
+    """The start set follows the nights (D44 step E): every finished night's emulator arm, a window of the newest, each night's own
+    draw of runs, only new runs replayed, only the picked runs assembled (streamed, with a byte index that reads every start back);
+    the kind weights follow the set and the incumbent, keeping the incumbent's games."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.lab = t / "LAB"
+        (self.lab / "nightly").mkdir(parents=True)
+        self.arms = {"2026-10-26/g5-emu": _night_runs("A", 8), "2026-11-03/g11-emu": _night_runs("B", 8),
+                     "2026-11-04/g11-emu": _night_runs("C", 8)}
+        self.replayed: list[str] = []
+        self.patches = [mock.patch.object(gl, "LAB", self.lab), mock.patch.object(fg, "QUIET", t / "QUIET.lock"),
+                        mock.patch.object(gl, "board_run_seeds", lambda: {"A007"}),
+                        mock.patch.object(fg, "run_tasks", self._fake_replays)]
+        for p in self.patches:
+            p.start()
+        from tools.solver import coverage  # noqa: PLC0415
+
+        self.patches.append(mock.patch.object(coverage, "_arm", self._fake_arm))
+        self.patches[-1].start()
+        self.loop = gl.Loop(t / "loop")
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def _fake_arm(self, source):
+        night = "/".join(Path(source).parts[-2:])
+        if night not in self.arms:
+            raise FileNotFoundError(source)
+        return {"config": "a3-v1"}, self.arms[night], "gen11/candidate", "core2"
+
+    def _fake_replays(self, tasks, fn, target, procs, **kw):
+        with open(target, "a", encoding="utf-8") as fh:
+            for _, seed, ix, _config, wanted, _row in tasks:
+                self.replayed.append(seed)
+                starts = [{**w, "node_type": gl.NODE_TYPE[w["kind"]], "hp": 40, "max_hp": 80, "doc": {"start": w["id"]},
+                           "replay_same": True} for w in wanted]
+                fh.write(json.dumps({"_task": ["replay", seed, ix], "seed": seed, "ix": ix, "starts": starts}) + "\n")
+        return None
+
+    def _finish(self, night):
+        d = self.lab / "nightly" / night
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in self.arms[night]), encoding="utf-8")
+        (d / "summary.json").write_text("{}", encoding="utf-8")
+
+    def test_every_finished_nights_emulator_arm_is_found_oldest_first_and_the_window_keeps_the_newest(self):
+        self._finish("2026-11-03/g11-emu")
+        self._finish("2026-10-26/g5-emu")
+        (self.lab / "nightly" / "2026-11-04" / "g11-emu").mkdir(parents=True)  # the night still running: no summary yet
+        (self.lab / "nightly" / "2026-11-03" / "g11").mkdir()  # the real arm
+        (self.lab / "nightly" / "last-ok").write_text("2026-11-03T23:58:55Z\n", encoding="utf-8")
+        self.assertEqual(gl.nights_available(), ("2026-10-26/g5-emu", "2026-11-03/g11-emu"))
+        self.assertEqual(gl.nights_available(max_nights=1), ("2026-11-03/g11-emu",))
+        self.assertEqual(gl.nights_available(max_nights=0), ("2026-10-26/g5-emu", "2026-11-03/g11-emu"))
+        runs = _night_runs("X", 40)
+        one = gl.pick_runs(runs, 5, gl.night_seed(1, "2026-11-03/g11"), set())
+        self.assertEqual(one, gl.pick_runs(runs, 5, gl.night_seed(1, "2026-11-03/g11"), set()))  # by its own label only
+        self.assertNotEqual(one, gl.pick_runs(runs, 5, gl.night_seed(1, "2026-11-04/g11"), set()))
+
+    def test_a_new_night_replays_only_its_own_runs_and_the_set_holds_only_the_picked_runs(self):
+        first = ("2026-10-26/g5-emu",)
+        self.assertEqual(gl.starts_stale(self.loop, first, 3), "no start set")
+        meta = gl.build_starts(self.loop, first, runs_per_night=3)
+        self.assertEqual(len(self.replayed), 3)
+        self.assertNotIn("A007", self.replayed)  # a board run is never a training start
+        self.assertEqual(meta["starts"], 3 * _RUN_STARTS)
+        self.assertEqual(meta["by_cat"]["act1-boss"], 3)
+        self.assertEqual(meta["spec"], {"nights": ["2026-10-26/g5"], "runs_per_night": 3})
+        self.assertIsNone(gl.starts_stale(self.loop, first, 3))
+        self.assertEqual(gl.starts_stale(self.loop, first, 4), "runs per night 3 to 4")
+        both = ("2026-10-26/g5-emu", "2026-11-03/g11-emu")
+        self.assertEqual(gl.starts_stale(self.loop, both, 3), "nights: 1 new, 0 gone")
+        # a replay file keeps what it ever replayed: a run no longer picked, and a picked run replayed twice
+        target = self.loop.starts / "replays-2026-10-26-g5.jsonl"
+        lines = target.read_text(encoding="utf-8").splitlines()
+        stray = json.loads(lines[0])
+        stray["seed"] = stray["_task"][1] = "A_OLD"
+        for s in stray["starts"]:
+            s["id"] = s["id"].replace(json.loads(lines[0])["seed"], "A_OLD")
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(stray) + "\n" + lines[1] + "\n" + '{"_task": ["replay", "A_CUT", 9], "capped": true}\n')
+        meta = gl.build_starts(self.loop, both, runs_per_night=3)
+        self.assertEqual(len(self.replayed), 6)
+        self.assertTrue(all(s.startswith("B") for s in self.replayed[3:]))  # the first night's runs are not replayed again
+        self.assertEqual(meta["starts"], 6 * _RUN_STARTS)
+        lite = json.loads((self.loop.starts / "starts.lite.json").read_text(encoding="utf-8"))
+        ids = [s["id"] for s in lite]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertFalse(any("A_OLD" in i for i in ids))
+        self.assertEqual({s["split"] for s in lite} <= {"train", "val"}, True)
+        gl._START_CACHE.clear()  # noqa: SLF001
+        for sid in ids:  # the byte index reads every start back, document and all
+            self.assertEqual(gl.load_start(str(self.loop.starts / "starts.jsonl"), sid)["doc"], {"start": sid})
+        self.assertIsNone(gl.starts_stale(self.loop, both, 3))
+        # the window moves on: the oldest night leaves, the others keep their picks and nothing is replayed for them
+        self.arms["2026-11-04/g11-emu"] = _night_runs("C", 8)
+        newest = ("2026-11-03/g11-emu", "2026-11-04/g11-emu")
+        b_ids = {i for i in ids if i.startswith("2026-11-03/")}
+        self.assertEqual(gl.starts_stale(self.loop, newest, 3), "nights: 1 new, 1 gone")
+        gl.build_starts(self.loop, newest, runs_per_night=3)
+        self.assertTrue(all(s.startswith("C") for s in self.replayed[6:]) and len(self.replayed) == 9)
+        lite = json.loads((self.loop.starts / "starts.lite.json").read_text(encoding="utf-8"))
+        self.assertEqual({s["id"] for s in lite if s["id"].startswith("2026-11-03/")}, b_ids)
+        self.assertFalse(any(s["id"].startswith("2026-10-26/") for s in lite))
+
+    def test_a_set_from_before_the_night_window_is_read_by_its_nights_and_runs(self):
+        (self.loop.starts / "starts.jsonl").write_text("", encoding="utf-8")
+        gl.write_json(self.loop.starts / "meta.json", {"nights": {"2026-10-26/g5": {"runs": 50}, "2026-10-27/g7": {"runs": 50}},
+                                                       "runs_per_night": 50, "written": "2026-10-30T16:34:23Z"})
+        old = ("2026-10-26/g5-emu", "2026-10-27/g7-emu")
+        self.assertIsNone(gl.starts_stale(self.loop, old, 50))
+        self.assertEqual(gl.starts_stale(self.loop, old, 250), "runs per night 50 to 250")
+        self.assertEqual(gl.starts_stale(self.loop, old + ("2026-11-02/g9-emu",), 50), "nights: 1 new, 0 gone")
+
+    def test_an_unreadable_night_is_skipped_and_recorded(self):
+        self._finish("2026-10-26/g5-emu")
+        meta = gl.build_starts(self.loop, ("2026-10-26/g5-emu", "2026-10-28/g7-emu"), runs_per_night=2)
+        self.assertEqual(meta["nights"]["2026-10-28/g7"], {"skipped": "unreadable: FileNotFoundError"})
+        self.assertEqual(meta["starts"], 2 * _RUN_STARTS)
+        self.assertIsNone(gl.starts_stale(self.loop, ("2026-10-26/g5-emu", "2026-10-28/g7-emu"), 2))
+
+    def test_the_weights_follow_the_set_and_the_incumbent_and_keep_the_incumbents_games(self):
+        cats = ("act1-hallway", "act1-boss", "act2-elite")
+        starts = [{"id": f"N:{c}:{i}", "cat": c, "split": "val" if i == 0 else "train", "doc": {}} for c in cats for i in range(5)]
+        gl.write_start_set(self.loop.starts, starts)
+        gl.write_json(self.loop.starts / "meta.json", {"written": "T1", "fights_per_run": {c: 1.0 for c in cats}})
+        self.loop.state["versions"]["v2"] = {"dir": str(self.loop.root / "players" / "v2")}
+        self.loop.state["incumbent"] = "v2"
+        with open(self.loop.starts / "weights_games.jsonl", "w", encoding="utf-8") as fh:  # the old incumbent's games do not count
+            fh.write(json.dumps({"start": "N:act1-boss:1", "j": 0, "cat": "act1-boss", "player": "v0", "config": "a3-v1",
+                                 "won": False, "L0": 0.0, "start_hp": 40, "start_potions": 0, "start_max_hp": 80}) + "\n")
+        played: list[tuple] = []
+
+        def fake_play(loop, tasks, target, pdir, procs, k, prior, label):
+            with open(target, "a", encoding="utf-8") as fh:
+                for _, sid, j, c, info in tasks:
+                    played.append((info["player"], sid, j))
+                    lost = {"act1-hallway": 0.1, "act1-boss": 0.5, "act2-elite": 0.3}[c]
+                    fh.write(json.dumps({"start": sid, "j": j, "cat": c, "player": info["player"], "config": info["config"],
+                                         "won": True, "L0": 1.0 - lost, "start_hp": 80, "start_potions": 0, "start_max_hp": 80}) + "\n")
+            return None
+
+        with mock.patch.object(gl, "play_tasks", fake_play):
+            self.assertEqual(gl.weights_stale(self.loop), "no weights")
+            w = gl.kind_weights(self.loop, per_kind=2, seeds=2)
+            self.assertEqual(len(played), 12)
+            self.assertTrue(all(p == "v2" and not sid.endswith(":0") for p, sid, _ in played))  # training starts only
+            self.assertEqual(w["games"], {c: 4 for c in cats})
+            self.assertAlmostEqual(w["weights"]["act1-boss"], 0.5 / 0.9)
+            self.assertEqual((w["player"], w["starts_written"]), ("v2", "T1"))
+            self.assertIsNone(gl.weights_stale(self.loop))
+            gl.write_json(self.loop.starts / "meta.json", {"written": "T2", "fights_per_run": {c: 2.0 if c == "act1-hallway" else 1.0
+                                                                                               for c in cats}})
+            self.assertEqual(gl.weights_stale(self.loop), "start set rebuilt")
+            w = gl.kind_weights(self.loop, per_kind=2, seeds=2)
+            self.assertEqual(len(played), 12)  # a rebuilt set plays nothing: the incumbent's games are kept
+            self.assertAlmostEqual(w["weights"]["act1-hallway"], 0.2 / 1.0)
+            self.assertIsNone(gl.weights_stale(self.loop))
+            self.loop.state["versions"]["v3"] = {"dir": str(self.loop.root / "players" / "v3")}
+            self.loop.state["incumbent"] = "v3"
+            self.assertEqual(gl.weights_stale(self.loop), "incumbent v2 to v3")
+            gl.kind_weights(self.loop, per_kind=3, seeds=2)
+            self.assertEqual([p for p, _, _ in played[12:]], ["v3"] * 18)
+            gl.kind_weights(self.loop, per_kind=4, seeds=2)  # topped up: the new games only
+            self.assertEqual(len(played), 30 + 6)
+            self.assertEqual(len({(p, s, j) for p, s, j in played}), len(played))
+
+
 class BoardTests(unittest.TestCase):
     def test_a_rebuild_keeps_every_row_on_the_page_and_adds_the_versions(self):
         html = ('const ARMS = [{"key":"a3-v1","label":"Usual thinking"},{"key":"x16","label":"Sixteen"},'

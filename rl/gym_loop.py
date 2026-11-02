@@ -1,6 +1,6 @@
 """The always-on fight-gym loop (D40, gym build item L1): generation, a trainer on the card, a promotion gate, the board.
 
-    python rl/gym_loop.py starts  --root ROOT [--runs-per-night 50] [--procs 6]     the training start set (resumable)
+    python rl/gym_loop.py starts  --root ROOT [--runs-per-night 250] [--procs 6]    the training start set (resumable)
     python rl/gym_loop.py weights --root ROOT [--procs 6]                           the start mix's kind weights (a3-v1 pass)
     python rl/gym_loop.py run     --root ROOT [--player-config a3-v1] [--procs 6]   the daemon (detached: see GYM_LOOP.md)
     python rl/gym_loop.py gate    --root ROOT --candidate DIR                      one promotion gate, by hand
@@ -10,14 +10,18 @@
 The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
 
 1. **Generation.** A segment of fights (about `--segment-min` minutes of six processes) from the start mix: every fight kind of
-   Acts 1 and 2 from every night's emulator arm, sampled by kind in proportion to where the runs lose HP (`kind_weights`), then
-   uniformly within the kind. The player is the newest checkpoint (the incumbent before the first one) under the teacher search
-   (`--teacher`, x16), played by P1's lockstep processes (`gym_lockstep.run_lockstep`) with the prior on the card when GPU_OK allows,
-   else on the CPU. Every decision is recorded (`gen_game_steps`): the position's tokens as the prior reads them, the root's visit
-   distribution and mean values (`gen_loop.root_targets`, the self-play layout), the legal mask, and the exact solver's grade where
-   it finishes (`gym_lockstep.Grader`, expected solve only). Each fight's samples go to one file; after the segment they are
-   compacted into one shard of the replay buffer, with the fight's outcome as the value label (end HP, 0 for a death; a capped fight
-   has no value label), the player version that made it, its kind, its L0 and its split (by run seed).
+   Acts 1 and 2 from every finished night's emulator arm (`nights_available`: the newest `--max-nights`, `--runs-per-night` runs of
+   each), sampled by kind in proportion to where the runs lose HP (`kind_weights`), then uniformly within the kind. The mix follows
+   the nights: between steps the daemon rebuilds the start set when a night has finished since it was built (`starts_stale`; only the
+   new night's runs are replayed), and recomputes the kind weights when the set or the incumbent has changed (`weights_stale`; the
+   incumbent's weight games are kept and only topped up). The player is the newest checkpoint (the incumbent before the first
+   one) under the teacher search (`--teacher`, x16), played by P1's lockstep processes (`gym_lockstep.run_lockstep`) with the
+   prior on the card when GPU_OK allows, else on the CPU. Every decision is recorded (`gen_game_steps`): the position's tokens as
+   the prior reads them, the root's visit distribution and mean values (`gen_loop.root_targets`, the self-play layout), the legal
+   mask, and the exact solver's grade where it finishes (`gym_lockstep.Grader`, expected solve only). Each fight's samples go to
+   one file; after the segment they are compacted into one shard of the replay buffer, with the fight's outcome as the value label
+   (end HP, 0 for a death; a capped fight has no value label), the player version that made it, its kind, its L0 and its split (by
+   run seed).
 2. **Training** runs beside it in its own process on the card (`rl/gym_loop_train.py`, the GPU venv): over the buffer's newest
    window, from the incumbent's weights, a checkpoint every 30 minutes, at most `--max-epochs` epochs over unchanged data (then it
    idles and logs the idle time).
@@ -81,7 +85,11 @@ DEFAULT_ROOT = REF / "gym-loop"
 STATUS_DIR = Path(os.environ.get("GYM_LOOP_STATUS_DIR", "D:/spireline/logs/gym-loop"))
 BOARD_DIR = REF / "lab" / "results" / "fight-gym" / "2026-10-29-m2"  # the fight board's starts and its three standing arms
 INCUMBENT0 = REF / "agent" / "gen7" / "candidate-r1"  # M2's agent: version 0, the board's "Usual thinking"
-NIGHTS = ("2026-10-26/g5-emu", "2026-10-27/g7-emu", "2026-10-29/g7-emu", "2026-10-30/g9-emu")
+# The start set: every finished night's emulator arm (`nights_available`; until 2026-11-02 the four nights 10-26 to 10-30 at 50 runs
+# each, 1,478 starts). D44 step E: the trainer waited for fresh practice on a thin set, so the set takes each night as it comes.
+RUNS_PER_NIGHT = 250  # runs of each night's arm replayed into the set (a night holds 500 or 2,000)
+MAX_NIGHTS = 14  # the newest nights the set takes: a window, so it stays bounded (about 2,100 starts and 28 MB a night)
+_NIGHT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ENGINE = "core2"
 NS_GEN, NS_WEIGHTS = "L", "W"  # generation's and the weights pass's seed namespaces; the gym's (and the gate's) is "g"
 KINDS = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")
@@ -346,27 +354,88 @@ def pick_runs(runs: list[dict], n: int, seed: int, exclude: set[str]) -> list[di
     return random.Random(seed).sample(ok, min(n, len(ok)))
 
 
-def build_starts(loop: Loop, nights: tuple[str, ...] = NIGHTS, runs_per_night: int = 50, procs: int = 6, seed: int = 20261030,
-                 agent_root: Path = REF / "agent") -> dict:
+def nights_available(lab: Path | None = None, max_nights: int = MAX_NIGHTS) -> tuple[str, ...]:
+    """Every finished night's emulator arm, oldest first: `LAB/nightly/<date>/<agent>-emu` with its summary.json (written at the
+    arm's end) and runs.jsonl; the newest `max_nights` of them (0: all)."""
+    base = (LAB if lab is None else Path(lab)) / "nightly"
+    found = sorted(f"{d.name}/{a.name}" for d in base.glob("*") if d.is_dir() and _NIGHT_DATE.match(d.name)
+                   for a in d.glob("*-emu") if (a / "summary.json").is_file() and (a / "runs.jsonl").is_file())
+    return tuple(found[-max_nights:]) if max_nights > 0 else tuple(found)
+
+
+def night_seed(seed: int, label: str) -> int:
+    """A night's own draw of runs, fixed by its label: adding or dropping other nights never changes a night's picks."""
+    return seed + int(hashlib.sha256(label.encode()).hexdigest()[:8], 16)
+
+
+def start_spec(nights: tuple[str, ...], runs_per_night: int) -> dict:
+    return {"nights": [n.replace("-emu", "") for n in nights], "runs_per_night": int(runs_per_night)}
+
+
+def starts_stale(loop: Loop, nights: tuple[str, ...], runs_per_night: int) -> str | None:
+    """Why the start set must be built again for these nights and runs a night (None: it is current). A set written before the
+    nights were found by `nights_available` is read by its meta's nights and runs a night."""
+    meta = read_json(loop.starts / "meta.json", None)
+    if not meta or not (loop.starts / "starts.jsonl").is_file():
+        return "no start set"
+    have = meta.get("spec") or {"nights": sorted(meta.get("nights") or {}), "runs_per_night": meta.get("runs_per_night")}
+    want = start_spec(nights, runs_per_night)
+    if have.get("runs_per_night") != want["runs_per_night"]:
+        return f"runs per night {have.get('runs_per_night')} to {want['runs_per_night']}"
+    old = list(have.get("nights") or [])
+    if old != want["nights"]:
+        new, gone = [n for n in want["nights"] if n not in old], [n for n in old if n not in want["nights"]]
+        return f"nights: {len(new)} new, {len(gone)} gone"
+    return None
+
+
+def iter_jsonl(p: Path):
+    """`fight_gym.read_jsonl` one line at a time (a replay file holds every start's document: never all of it in memory)."""
+    if not p.is_file():
+        return
+    with open(p, encoding="utf-8") as fh:
+        for x in fh:
+            if x.strip():
+                try:
+                    yield json.loads(x)
+                except ValueError:
+                    pass  # a line cut by a stop: its run is replayed again
+
+
+def build_starts(loop: Loop, nights: tuple[str, ...] | None = None, runs_per_night: int = RUNS_PER_NIGHT, procs: int = 6,
+                 seed: int = 20261030, agent_root: Path = REF / "agent", max_nights: int = MAX_NIGHTS) -> dict:
     """Replay `runs_per_night` runs of each night's emulator arm exactly (the M2 gym's `_replay_task`, the night's own agent) and keep
-    every Act 1-2 fight they entered as a start. Resumable. Writes starts/starts.jsonl, its byte index and meta.json."""
+    every Act 1-2 fight they entered as a start. `nights` defaults to every finished night's arm, the newest `max_nights`
+    (`nights_available`). Each night's runs are its own seeded draw (`night_seed`) and a run once replayed is kept, so a new night
+    replays only its own runs. Resumable. Writes starts/starts.jsonl, its byte index, the list without documents, and meta.json last
+    (with the spec `starts_stale` compares)."""
     sys.path.insert(0, str(ROOT))
     from tools.solver import coverage  # noqa: PLC0415
 
+    nights = nights_available(max_nights=max_nights) if nights is None else tuple(nights)
     exclude = board_run_seeds()
-    meta = {"nights": {}, "exclude_runs": len(exclude), "seed": seed, "runs_per_night": runs_per_night}
+    meta = {"nights": {}, "exclude_runs": len(exclude), "seed": seed, "runs_per_night": runs_per_night,
+            "spec": start_spec(nights, runs_per_night)}
     all_runs: list[dict] = []
+    sources: list[tuple[Path, set[str]]] = []
     for night in nights:
         src = LAB / "nightly" / night
-        summ, runs, agent_dir, engine = coverage._arm(str(src))  # noqa: SLF001
+        label = night.replace("-emu", "")
+        try:
+            summ, runs, agent_dir, engine = coverage._arm(str(src))  # noqa: SLF001
+        except (OSError, ValueError, KeyError, TypeError) as error:  # skipped and recorded, so not retried at every step
+            loop.log(f"starts: {night} unreadable ({type(error).__name__}); skipped")
+            meta["nights"][label] = {"skipped": f"unreadable: {type(error).__name__}"}
+            continue
         if engine != ENGINE:
             loop.log(f"starts: {night} played on {engine}, not {ENGINE}; skipped")
+            meta["nights"][label] = {"agent": agent_dir, "skipped": f"engine {engine}"}
             continue
         all_runs += fg._eligible(runs)  # noqa: SLF001
-        picks = pick_runs(runs, runs_per_night, seed + len(meta["nights"]), exclude)
-        label = night.replace("-emu", "")
+        picks = pick_runs(runs, runs_per_night, night_seed(seed, label), exclude)
         target = loop.starts / f"replays-{label.replace('/', '-')}.jsonl"
-        done = {r["seed"] for r in fg.read_jsonl(target)}
+        sources.append((target, {r["seed"] for r in picks}))
+        done = {r.get("seed") or (r.get("_task") or [None, None])[1] for r in iter_jsonl(target)}  # a capped replay's row: its task
         tasks = []
         for r in picks:
             if r["seed"] in done:
@@ -383,23 +452,55 @@ def build_starts(loop: Loop, nights: tuple[str, ...] = NIGHTS, runs_per_night: i
                 mem_limit=fg.MEM_LIMIT_GB * 2**30, stop=lambda: why_blocked(loop.root, starting=False)))
             if stopped:
                 return {"stopped": stopped}
-    # assemble: one line per start (the document included), and a byte index so a process reads only the starts it plays
-    starts = []
-    for target in sorted(loop.starts.glob("replays-*.jsonl")):
-        for r in fg.read_jsonl(target):
-            for s in r.get("starts") or []:
-                # the replay's own kind check knows elites and bosses only: a hallway fight is a monster room of its act
-                s["kind_same"] = s.get("node_type") == NODE_TYPE[s["kind"]] and int(s.get("act", 0)) == int(s["cat"][3])
-                if s.get("doc") and s["kind_same"]:
-                    s["split"] = "val" if is_val_seed(s["seed"]) else "train"
-                    starts.append(s)
-    write_start_set(loop.starts, starts)
+    # assemble: one line per start (the document included), and a byte index so a process reads only the starts it plays; only the
+    # picked runs of the nights taken (a replay file keeps every run it ever replayed)
+    starts = assemble_starts(loop.starts, sources)
     meta.update({"starts": len(starts), "by_cat": dict(Counter(s["cat"] for s in starts)),
                  "by_split": dict(Counter(s["split"] for s in starts)), "fights_per_run": fights_per_run(all_runs),
-                 "runs_counted": len(all_runs), "written": stamp()})
+                 "runs_counted": len(all_runs), "replay_same": sum(1 for s in starts if s.get("replay_same")),
+                 "written": stamp()})
     write_json(loop.starts / "meta.json", meta)
     loop.log(f"starts: {len(starts)} starts {meta['by_cat']}")
     return meta
+
+
+def _start_ok(s: dict) -> bool:
+    """A replayed start the set keeps: it has its document and the replay's room is the kind wanted (the replay's own kind check
+    knows elites and bosses only: a hallway fight is a monster room of its act); sets its split."""
+    s["kind_same"] = s.get("node_type") == NODE_TYPE[s["kind"]] and int(s.get("act", 0)) == int(s["cat"][3])
+    if s.get("doc") and s["kind_same"]:
+        s["split"] = "val" if is_val_seed(s["seed"]) else "train"
+        return True
+    return False
+
+
+def assemble_starts(d: Path, sources: list[tuple[Path, set[str]]]) -> list[dict]:
+    """The start set from the replay files, streamed: every kept start (`_start_ok`) of the given runs of each file. starts.jsonl
+    holds them file by file, each file's by id (a file's lines are held as text, never the whole set); its byte index and
+    starts.lite.json (by id) are written after it. Returns the lite list."""
+    out = Path(d) / "starts.jsonl"
+    tmp = out.with_suffix(".tmp")
+    index: dict[str, int] = {}
+    lite: list[dict] = []
+    with open(tmp, "wb") as fh:
+        for path, seeds in sources:
+            chunk: dict[str, tuple[bytes, dict]] = {}  # a run replayed twice (a line cut by a stop) counts once: its last replay
+            for r in iter_jsonl(path):
+                if r.get("seed") not in seeds:
+                    continue
+                for s in r.get("starts") or []:
+                    if _start_ok(s):
+                        chunk[s["id"]] = ((json.dumps(s) + "\n").encode("utf-8"), {k: v for k, v in s.items() if k != "doc"})
+            for sid in sorted(chunk):
+                if sid not in index:
+                    index[sid] = fh.tell()
+                    fh.write(chunk[sid][0])
+                    lite.append(chunk[sid][1])
+    os.replace(tmp, out)
+    lite.sort(key=lambda s: s["id"])
+    write_json(Path(d) / "starts.index.json", index)
+    write_json(Path(d) / "starts.lite.json", lite)
+    return lite
 
 
 def write_start_set(d: Path, starts: list[dict]) -> None:
@@ -678,28 +779,56 @@ def prune_checkpoints(loop: Loop, keep: int = 48) -> None:
 # ---------------------------------------------------------------------------------------------------------- the weights
 
 
+def weights_stale(loop: Loop) -> str | None:
+    """Why the kind weights must be computed again (None: they are current): none yet, a start set written since, or another
+    incumbent (the loss is the incumbent's)."""
+    w = read_json(loop.starts / "weights.json", None)
+    if not w:
+        return "no weights"
+    meta = read_json(loop.starts / "meta.json", {}) or {}
+    if w.get("starts_written") != meta.get("written"):
+        return "start set rebuilt"
+    if w.get("player") != loop.state["incumbent"]:
+        return f"incumbent {w.get('player')} to {loop.state['incumbent']}"
+    return None
+
+
 def kind_weights(loop: Loop, procs: int = 6, per_kind: int = 50, seeds: int = 2, k: int = 16, prior: str = "cpu") -> dict:
     """The start mix (gym-build P2): per kind, the fights a run enters times the mean L0 a fight loses (a death loses all of it),
-    the loss measured on `per_kind` training starts x `seeds` games at a3-v1 with the incumbent. Resumable; writes weights.json."""
+    the loss measured on `per_kind` training starts x `seeds` games at a3-v1 with the incumbent. The incumbent's games are kept
+    across start sets: a kind is topped up to `per_kind` x `seeds` games from its starts in a fixed order, so a new night or window
+    plays nothing and a new incumbent plays its own. Resumable; writes weights.json."""
     meta = read_json(loop.starts / "meta.json", {})
     lite = read_json(loop.starts / "starts.lite.json", [])
-    by: dict[str, list[dict]] = defaultdict(list)
+    by: dict[str, list[str]] = defaultdict(list)
     for s in lite:
         if s["split"] == "train":
-            by[s["cat"]].append(s)
-    rnd = random.Random(7)
-    pick = {c: rnd.sample(v, min(per_kind, len(v))) for c, v in sorted(by.items())}
+            by[s["cat"]].append(s["id"])
     target = loop.starts / "weights_games.jsonl"
-    done = {(r["start"], int(r["j"])) for r in fg.read_jsonl(target)}
     inc, inc_dir = loop.incumbent()
+    mine = [r for r in fg.read_jsonl(target) if r.get("player") == inc and r.get("config") == "a3-v1"]
+    played = {(r["start"], int(r["j"])) for r in mine}
+    have = Counter(r["cat"] for r in mine)
     info = {"starts": str(loop.starts / "starts.jsonl"), "incoming": str(loop.incoming), "player": inc, "config": "a3-v1",
             "record": False, "ns": NS_WEIGHTS}
-    tasks = [("a3-v1", s["id"], j, s["cat"], info) for c in pick.values() for s in c for j in range(seeds) if (s["id"], j) not in done]
+    tasks = []
+    for c, ids in sorted(by.items()):
+        need = per_kind * seeds - have[c]
+        order = sorted(ids)
+        random.Random(f"weights:{c}").shuffle(order)
+        for sid in order:
+            for j in range(seeds):
+                if need > 0 and (sid, j) not in played:
+                    tasks.append(("a3-v1", sid, j, c, info))
+                    need -= 1
+            if need <= 0:
+                break
     if tasks:
+        loop.log(f"weights: {inc} plays {len(tasks)} games " + str(dict(Counter(t[3] for t in tasks))))
         stopped = play_tasks(loop, tasks, target, inc_dir, procs, k, prior, "weights")
         if stopped:
             return {"stopped": stopped}
-    rows = fg.read_jsonl(target)
+    rows = [r for r in fg.read_jsonl(target) if r.get("player") == inc and r.get("config") == "a3-v1"]
     loss: dict[str, list[float]] = defaultdict(list)
     for r in rows:
         start_l0 = fg.l0(True, int(r.get("start_hp") or 0), int(r.get("start_potions") or 0), int(r.get("start_max_hp") or 1))
@@ -710,7 +839,7 @@ def kind_weights(loop: Loop, procs: int = 6, per_kind: int = 50, seeds: int = 2,
     w = {"weights": {c: raw[c] / tot for c in sorted(raw)}, "fights_per_run": fpr,
          "mean_l0_lost": {c: sum(v) / len(v) for c, v in sorted(loss.items())}, "games": {c: len(v) for c, v in sorted(loss.items())},
          "win": {c: sum(1 for r in rows if r["cat"] == c and r.get("won")) / max(1, len(loss[c])) for c in sorted(loss)},
-         "player": inc, "config": "a3-v1", "written": stamp()}
+         "player": inc, "config": "a3-v1", "starts_written": meta.get("written"), "written": stamp()}
     write_json(loop.starts / "weights.json", w)
     loop.log("weights: " + ", ".join(f"{c} {x:.3f}" for c, x in w["weights"].items()))
     return w
@@ -1434,15 +1563,18 @@ class Daemon:
                     self.start_trainer()  # the night is training time: the trainer keeps its own rules (low CPU, GPU_OK)
                     time.sleep(30)
                     continue
-                if not (self.loop.starts / "starts.jsonl").is_file() or not (self.loop.starts / "meta.json").is_file():
-                    self.status("starts")
-                    r = build_starts(self.loop, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
+                nights = nights_available(max_nights=self.a.max_nights)
+                stale = starts_stale(self.loop, nights, self.a.runs_per_night)
+                if stale:  # the set follows the nights: a finished night's runs join it (only theirs are replayed)
+                    self.status("starts", why=stale)
+                    self.loop.log(f"starts: rebuilding ({stale})")
+                    build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
                     self.wait_free()
-                    if r.get("stopped"):
-                        continue
                     continue
-                if not (self.loop.starts / "weights.json").is_file():
-                    self.status("weights")
+                stale = weights_stale(self.loop)
+                if stale:
+                    self.status("weights", why=stale)
+                    self.loop.log(f"weights: computing ({stale})")
                     kind_weights(self.loop, procs=self.a.procs, prior=self.a.prior)
                     self.wait_free()
                     continue
@@ -1511,8 +1643,9 @@ def main(argv=None) -> int:
         p.add_argument("--root", default=str(DEFAULT_ROOT))
         p.add_argument("--procs", type=int, default=6)
         p.add_argument("--prior", choices=("server", "cpu"), default="server")
-        if name == "starts":
-            p.add_argument("--runs-per-night", type=int, default=50)
+        if name in ("starts", "run"):
+            p.add_argument("--runs-per-night", type=int, default=RUNS_PER_NIGHT)
+            p.add_argument("--max-nights", type=int, default=MAX_NIGHTS, help="the newest finished nights the set takes (0: all)")
         if name in ("run", "gate"):
             p.add_argument("--player-config", default="judge-v0",
                            help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
@@ -1535,7 +1668,6 @@ def main(argv=None) -> int:
             p.add_argument("--buffer-rows", type=int, default=3_000_000)
             p.add_argument("--buffer-days", type=float, default=21.0)
             p.add_argument("--buffer-gb", type=float, default=20.0)
-            p.add_argument("--runs-per-night", type=int, default=50)
             p.add_argument("--board", choices=("commit", "dry", "off"), default="commit")
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
@@ -1543,7 +1675,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "starts":
         loop = Loop(a.root)
-        print(json.dumps(build_starts(loop, runs_per_night=a.runs_per_night, procs=a.procs), indent=1)[:2000])
+        meta = build_starts(loop, runs_per_night=a.runs_per_night, procs=a.procs, max_nights=a.max_nights)
+        print(json.dumps(meta, indent=1)[:2000])
         return 0
     if a.cmd == "weights":
         print(json.dumps(kind_weights(Loop(a.root), procs=a.procs, prior=a.prior), indent=1))

@@ -26,6 +26,12 @@ Its PID and phase are in `D:/spireline/logs/gym-loop/status`. Stop it with `gym_
 own PID). It is resumable: a restart compacts a killed segment's finished fights, reloads the state, the trainer reloads `state.pt`,
 and the gate's games on disk are kept.
 
+**Moving it to a newer engine** (first done 2026-11-02, D44 step E: tag 438479d64595 to aaa0d2e4a460): stop it at a verdict line,
+check out the new fork main in its worktree, publish the worktree's own `out/` and Release EmuDump (restore, NativeAOT publish,
+EmuDump build), check `gym_loop.engine_tag()` changed, start it again. No code change: the gate's files are per engine tag, so
+the incumbent's games are played once more on the new engine at the next gate (stage 1's 400, then stage 2's 1,600 when a
+candidate reaches it).
+
 ## 2. The locks (decided)
 
 - **Start a step** (a generation segment, a gate, the start set, the weights pass) only when none of these holds: the loop's STOP
@@ -45,12 +51,22 @@ and the gate's games on disk are kept.
 
 ## 3. Generation
 
-- **Start mix** (gym-build P2, step 1). Every Act 1 and Act 2 fight (hallway, elite, boss; not events) that 50 runs of each night's
-  emulator arm entered (2026-10-26 g5, 10-27 g7, 10-29 g7, 10-30 g9), replayed exactly with the night's agent
-  (`fight_gym._replay_task`), at the fight's first decision. Runs behind M2's starts (the board's 200 Act-1 bosses and their runs)
-  are excluded, so no board deck is trained on. A tenth of run seeds is the trainer's held-out set.
+- **Start mix** (gym-build P2, step 1). Every Act 1 and Act 2 fight (hallway, elite, boss; not events) that `--runs-per-night`
+  runs (250) of each finished night's emulator arm entered, replayed exactly with the night's agent (`fight_gym._replay_task`), at
+  the fight's first decision. The nights are found, not listed (`nights_available`: every `LAB/nightly/<date>/<agent>-emu` with its
+  summary.json, the newest `--max-nights`, 14); each night's runs are its own seeded draw (`night_seed`, by the night's label), a
+  run once replayed is kept in `replays-<date>-<agent>.jsonl`, and only the picked runs of the nights taken are assembled (streamed;
+  `assemble_starts`). Until 2026-11-02 the set was 50 runs of four nights (10-26 g5, 10-27 g7, 10-29 g7, 10-30 g9), 1,478 starts.
+  Runs behind M2's starts (the board's 200 Act-1 bosses and their runs) are excluded, so no board deck is trained on. A tenth of
+  run seeds is the trainer's held-out set.
+- **The set follows the nights.** Between steps the daemon compares `meta.json`'s `spec` (the nights and runs a night it was built
+  from) with the nights there are now (`starts_stale`): a night finished since, the window moving on, or another `--runs-per-night`
+  rebuilds the set, which replays only the new runs (a new night: about 250 runs, ten minutes of six processes). The buffer, the
+  checkpoints, the gate's games and the promotion state are not touched. An unreadable night is skipped and recorded in the meta.
 - **Weights.** Per kind, the fights a run enters (from every night's runs) times the mean L0 a fight loses (a death loses all of
-  it), the loss from 50 training starts per kind x 2 games at a3-v1 with the incumbent (`weights.json`). A segment draws kinds by
+  it), the loss from 50 training starts per kind x 2 games at a3-v1 with the incumbent (`weights.json`). They are computed again
+  when the set is rebuilt or the incumbent changes (`weights_stale`); the incumbent's games are kept across sets, so a rebuilt set
+  plays no new game and a new incumbent plays its own (a kind is topped up from its starts in a fixed order). A segment draws kinds by
   these weights, then a start uniformly in the kind, then the start's next unplayed game j (seed namespace `L`, so no generation
   game is a board game).
 - **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 2 a process,
