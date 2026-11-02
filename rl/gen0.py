@@ -776,7 +776,8 @@ def build_cmd(a: argparse.Namespace) -> int:
             print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
             return 2
         marker = Path(a.marker_dir) / name
-    cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export)
+    cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export,
+                                    vrun_fit=getattr(a, "vrun_fit", None) or None)
     meta = gen_loop.read_json(cand / "agent.json")
     out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
            "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
@@ -786,6 +787,28 @@ def build_cmd(a: argparse.Namespace) -> int:
         out["marker"] = marker.name
     print(json.dumps(out))
     return 0
+
+
+def vrun_fit_cmd(a: argparse.Namespace) -> int:
+    """`vrun-fit`: V_run fit on the runs one combat prior played (`gen_loop.fit_run_value_matched`), at BelowNormal priority;
+    prints the window and the keep verdict. Nothing is promoted or written into the agent folder: `build --vrun-fit OUT` does that."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    from sts2_gym import procutil  # noqa: PLC0415
+
+    procutil.lower_priority()  # BelowNormal on Windows: the fit yields to the lab
+    sha = a.prior_sha or gen_loop.load_agent(a.gen_dir).describe()["prior_sha256"]
+    if not sha:
+        raise SystemExit(f"{a.gen_dir} plays no combat prior")
+    gens = [int(x) for x in a.gens.split(",")] if a.gens else None
+    doc = gen_loop.fit_run_value_matched(Path(a.shards_root), sha, Path(a.out), gens=gens,
+                                         beta=gen_loop.MATCHED_BETA if a.beta is None else a.beta, threads=a.threads,
+                                         device=a.device, seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else ())
+    head = ((doc["keep"].get("heads") or {}).get("act1_boss_kill") or {}).get("brier_skill_vs_base_rate") or {}
+    print(json.dumps({"out": Path(a.out).name, "window": doc["window"]["runs_by_generation"], "beta": doc["beta"], "kept": doc["kept"],
+                      "brier_skill": head.get("value"), "ci": head.get("ci"), "wall_min": doc["run_value"].get("wall_min")}))
+    return 0 if doc["kept"] else 3
 
 
 def promote_cmd(a: argparse.Namespace) -> int:
@@ -1018,6 +1041,10 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--gen-dir", help="a generation directory (or a current.json) whose combat prior and macro policy play")
     e.add_argument("--agent-root", help="the agent folder: its current.json names the promoted generation when --gen-dir is absent")
     e.add_argument("--record", action="store_true", help="write the run records and combat samples to OUT/shards, tagged with the generation")
+    e.add_argument("--explore-tau", type=float, default=None,
+                   help="self-play only (needs --record): sample the vrun macro's choices at this softmax temperature in floors "
+                   "(DESIGN.md 5.5); evaluation always plays the argmax agent")
+    e.add_argument("--explore-eps", type=float, default=0.0, help="with --explore-tau: the uniform share of the macro's sampling")
     e.add_argument("--lab", help="the lab folder: write LAB/train/ready-<gen> once the generation's self-play budget is spent")
     e.add_argument("--shards-root", help="where the lab's job directories (with shards) are, to count the budget")
     e.add_argument("--budget-runs", type=int, default=2000)
@@ -1065,6 +1092,20 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--why", required=True, help="the decision the candidate is built for (agent.json and train.json record it)")
     bd.add_argument("--marker-dir", help="LAB/train: write ready-<base generation>-g<N> once the candidate is complete")
     bd.add_argument("--no-export", action="store_true", help="no ONNX files (they need torch's exporter and the onnx package)")
+    bd.add_argument("--vrun-fit", help="a fighter-matched V_run fit (`vrun-fit`'s OUT) to carry instead of the base's; it must "
+                    "have passed the keep test")
+    vf = sub.add_parser("vrun-fit", help="fit V_run on the runs one combat prior played (the fighter-matched recipe, reset order "
+                        "step C): FightNet, the value head and the D33 keep record into OUT; nothing else is trained")
+    vf.add_argument("--shards-root", required=True, help="the lab's job directories (LAB/runs)")
+    who = vf.add_mutually_exclusive_group(required=True)
+    who.add_argument("--prior-sha", help="the combat prior's policy sha256 whose runs make the window")
+    who.add_argument("--gen-dir", help="a generation directory (or a current.json): its prior's runs make the window")
+    vf.add_argument("--gens", help="comma list: only these generations' blocks of that prior")
+    vf.add_argument("--beta", type=float, default=None, help="the bootstrap blend (default: 0, pure Monte Carlo)")
+    vf.add_argument("--out", required=True)
+    vf.add_argument("--lab", help="the lab folder: its generated E-blocks (LAB/seeds) are checked against the window too")
+    vf.add_argument("--device", default=None)
+    vf.add_argument("--threads", type=int, default=4)
     pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
     pr.add_argument("--cand", required=True)
     pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
@@ -1158,6 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
         return train_cmd(a)
     if a.cmd == "build":
         return build_cmd(a)
+    if a.cmd == "vrun-fit":
+        return vrun_fit_cmd(a)
     if a.cmd == "promote":
         return promote_cmd(a)
     if a.cmd == "rejudge":
@@ -1175,6 +1218,10 @@ def main(argv: list[str] | None = None) -> int:
         import gen_loop  # noqa: PLC0415
 
         agent = gen_loop.load_agent(a.gen_dir, a.agent_root) if (a.gen_dir or a.agent_root) else None
+        if a.explore_tau is not None or a.explore_eps:
+            if not a.record:
+                raise SystemExit("--explore-tau/--explore-eps are for recorded self-play (--record) only")
+            agent = gen_loop.exploring_agent(agent, a.explore_tau or 0.0, a.explore_eps)
         import prior_launch  # noqa: PLC0415
 
         opts = prior_launch.ServerOpts.from_args(a)

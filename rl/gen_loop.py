@@ -159,8 +159,11 @@ class Agent:
             with contextlib.suppress(OSError, ValueError):
                 sha = read_json(Path(self.prior_dir) / "model.json").get("policy_sha256")
         tail = "/".join(Path(self.path).parts[-2:]) if self.path else None
+        # an exploring self-play agent (`gen0.py emu --explore-tau/--explore-eps`) names its sampling; the argmax agent every
+        # evaluation plays keeps the description it always had
+        explore = {k: v for k, v in (("tau", self.tau), ("eps", self.eps)) if v}
         return {"generation": self.generation, "dir": tail, "prior": bool(self.prior_dir), "prior_sha256": sha,
-                "macro": self.macro}
+                "macro": self.macro, **explore}
 
 
 @lru_cache(maxsize=8)
@@ -176,6 +179,18 @@ def _champion(prior_dir: str):
 @lru_cache(maxsize=8)
 def _champion_settings(prior_dir: str) -> tuple[tuple[str, Any], ...]:
     return tuple(_champion(prior_dir).live_settings().items())
+
+
+def exploring_agent(agent: Agent | None, tau: float, eps: float) -> Agent:
+    """The agent self-play records with: the same agent, its run-level choices sampled (DESIGN.md 5.5,
+    `run_train.policy.LookaheadPolicy`: softmax over V_W at temperature `tau` floors, plus `eps` uniform) from each run's own
+    exploration stream, so a run replays exactly. Only a vrun macro samples; evaluation (E-blocks, nights, scores) plays the
+    argmax agent `load_agent` returns, never this one."""
+    if agent is None or agent.macro != "vrun":
+        raise ValueError("only a vrun macro explores: give the agent of a generation that plays V_run")
+    if tau < 0 or not 0.0 <= eps <= 1.0:
+        raise ValueError(f"tau must be >= 0 and eps in [0, 1], not {tau}, {eps}")
+    return dataclasses.replace(agent, tau=float(tau), eps=float(eps))
 
 
 def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None = None, macro: str | None = None) -> Agent:
@@ -717,9 +732,11 @@ def write_prior_model_json(out: Path, generation: int, probe: bool = False) -> d
 
 
 def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base_sims: int, ascension: int, threads: int = 6,
-                    device: str | None = None) -> dict:
+                    device: str | None = None, value_generations: int = GEN_WINDOW, beta: float | None = None) -> dict:
     """Fit FightNet and V_run (DMC target, `run_train.train.fit`) on the window's run records, then the 5-fold out-of-fold fits
-    the keep verdict rests on (D33, `keep.cross_fit_keep`). `device` (the train job's) puts the fits there; none: the CPU."""
+    the keep verdict rests on (D33, `keep.cross_fit_keep`). `device` (the train job's) puts the fits there; none: the CPU.
+    `value_generations` is V's buffer in generations (the train job's: GEN_WINDOW); `beta` the bootstrap blend (None:
+    TrainConfig's 0.3; the fighter-matched fit of `fit_run_value_matched` passes 0, pure Monte Carlo)."""
     import torch  # noqa: PLC0415
     from run_train import keep  # noqa: PLC0415
     from run_train import train as rt  # noqa: PLC0415
@@ -728,12 +745,80 @@ def train_run_value(shard_paths: list[Path], out: Path, *, generation: int, base
     t0, c0 = time.perf_counter(), time.process_time()
     pt = Path(out) / "run_value.pt"
     rt.fit(shard_paths, None, pt, generation=generation, combat_budget=CombatBudget(base_sims, base_sims), ascension=ascension,
-           config=rt.TrainConfig(value_generations=GEN_WINDOW, threads=threads, **({"device": device} if device else {})),
+           config=rt.TrainConfig(value_generations=value_generations, threads=threads, **({"device": device} if device else {}),
+                                 **({"beta": float(beta)} if beta is not None else {})),
            evaluate=keep.evaluate_value_net, cross_fit=keep.cross_fit_keep)
     meta = torch.load(pt, map_location="cpu", weights_only=True)["meta"]
     value = dict(meta.get("value") or {})
     return {"wall_min": (time.perf_counter() - t0) / 60, "cpu_min": (time.process_time() - c0) / 60,
             "fight": meta.get("fight"), "value": value, "config": meta.get("config")}
+
+
+# ------------------------------------------------------------------ the fighter-matched V_run fit (reset order step C)
+
+VRUN_FIT_JSON = "vrun_fit.json"  # what `fit_run_value_matched` writes beside run_value.pt / .npz: the window, the recipe, the keep record
+MATCHED_BETA = 0.0  # pure Monte Carlo: no part of the target is read off the net that played (its p_floor is another fighter's)
+MATCHED_RECIPE = ("V_run fit only on the runs played by one combat prior (the candidate's), pure Monte Carlo floor target "
+                  "(docs/diagnostics/2026-11-02-recipe.md in the Spireline repo)")
+
+
+def fighter_manifests(root: Path, prior_sha256: str, gens: Sequence[int] | None = None) -> list[tuple[Path, dict]]:
+    """The self-play shard manifests under `root` whose runs were played by the combat prior `prior_sha256` (the manifest's
+    agent block names it), optionally only of the generations `gens`. A manifest without a prior sha is never matched."""
+    if not prior_sha256:
+        return []
+    want = None if gens is None else {int(g) for g in gens}
+    return [(d, m) for d, m in find_manifests(root)
+            if ((m.get("agent") or {}).get("prior_sha256") or None) == prior_sha256
+            and (want is None or int(m["generation"]) in want)]
+
+
+def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, gens: Sequence[int] | None = None,
+                          beta: float = MATCHED_BETA, threads: int = 4, device: str | None = None,
+                          seed_dirs: Sequence[Path | str] = (), seed_dir: Path | None = None) -> dict[str, Any]:
+    """A V_run fit (FightNet, the value head and the D33 keep record) on the runs one combat prior played, into `out`
+    (run_value.pt, run_value.npz, vrun_fit.json): the fighter-matched recipe of the reset order's step C. The window is every
+    self-play block of that prior (`fighter_manifests`), all of its generations in V's buffer; no E-block seed may be among its
+    runs (the train job's rule). `build_candidate(vrun_fit=out)` puts the fit into a candidate when its keep record passes."""
+    mans = fighter_manifests(shards_root, prior_sha256, gens)
+    if not mans:
+        raise ValueError(f"no self-play shards of prior {prior_sha256[:12]} under {Path(shards_root).name}")
+    window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
+    check_disjoint(window_seeds, known_seed_sets(seed_dir or COMMITTED_SEEDS, None, "", seed_dirs))
+    configs = {(str(m.get("config")), int(m["base_sims"]), int(m["ascension"])) for _, m in mans}
+    if len(configs) != 1:
+        raise ValueError(f"the window mixes search configs, budgets or ascensions: {sorted(configs)}")
+    generations = sorted({int(m["generation"]) for _, m in mans})
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = [d / n for d, m in mans for n in m.get("run_shards", [])]
+    rv = train_run_value(paths, out, generation=generations[-1], base_sims=int(mans[0][1]["base_sims"]),
+                         ascension=int(mans[0][1]["ascension"]), threads=threads, device=device,
+                         value_generations=generations[-1] - generations[0] + 1, beta=beta)
+    value = dict(rv.get("value") or {})
+    keep_doc = value.pop("keep", None) or {"status": "not_run", "all_computable_pass": False}
+    doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta,
+           "window": {"blocks": len(mans), "generations": generations,
+                      "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
+                                             for g in generations},
+                      "jobs": sorted(d.parent.name for d, _ in mans)},
+           "run_value": {**rv, "value": value}, "keep": keep_doc,
+           "kept": bool(keep_doc.get("all_computable_pass")) and (out / "run_value.npz").is_file(),
+           "sha256": file_sha256(out / "run_value.npz") if (out / "run_value.npz").is_file() else None}
+    write_json(out / VRUN_FIT_JSON, doc)
+    return doc
+
+
+def read_vrun_fit(fit_dir: Path | str) -> dict[str, Any]:
+    """A fighter-matched fit's record, checked: its keep record passed (D33) and run_value.npz is the file it names."""
+    fit_dir = Path(fit_dir)
+    doc = read_json(fit_dir / VRUN_FIT_JSON)
+    npz = fit_dir / "run_value.npz"
+    if not doc.get("kept"):
+        raise ValueError(f"the V_run fit in {fit_dir.name} did not pass the keep test (D33); a candidate never carries it")
+    if not npz.is_file() or file_sha256(npz) != doc.get("sha256"):
+        raise ValueError(f"{fit_dir.name}/run_value.npz is not the fit {VRUN_FIT_JSON} records")
+    return doc
 
 
 # ------------------------------------------------------------------ ONNX
@@ -1081,7 +1166,7 @@ def built_candidate(agent_root: Path | str, target: int, retrain: int = 0) -> Pa
 
 
 def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
-                    export: bool = True) -> Path:
+                    export: bool = True, vrun_fit: Path | str | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1091,7 +1176,11 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     note when `target` skips numbers. The prior must be one this build plays (`combat_prior.find`: the same token vocabulary, the
     sha its model.json names) and search with the settings every candidate's model.json gives (`PRIOR_SEARCH`, probe off), so the
     candidate plays exactly that network; an existing candidate directory is never written over. `gen0.py train` with a
-    `ready-<base generation>-g<target>` marker judges it on the promotion path (`promote`), as a trained candidate is judged."""
+    `ready-<base generation>-g<target>` marker judges it on the promotion path (`promote`), as a trained candidate is judged.
+
+    `vrun_fit` (a folder `fit_run_value_matched` wrote) replaces the base's V_run fit with that one, which must have passed the
+    keep test (`read_vrun_fit`); the base must play the vrun macro. agent.json's `vrun_fit` then names source "fit", the folder,
+    its recipe and whether its runs were played by this candidate's prior (`matched`)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1100,6 +1189,9 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     base_agent = load_agent(base)
     if base_agent.path is None:
         raise ValueError("the base must be a generation directory or a current.json, not generation 0's empty agent")
+    fit_doc = read_vrun_fit(vrun_fit) if vrun_fit is not None else None
+    if fit_doc is not None and base_agent.macro != "vrun":
+        raise ValueError(f"a V_run fit drives the vrun macro; the base plays {base_agent.macro}")
     base_dir = Path(base_agent.path)
     if target <= base_agent.generation:
         raise ValueError(f"a candidate built on generation {base_agent.generation} cannot be generation {target}")
@@ -1123,8 +1215,17 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     for name in BUILT_BASE_FILES:
         if (base_dir / name).is_file():
             shutil.copyfile(base_dir / name, cand / name)
+    if fit_doc is not None:
+        for name in BUILT_BASE_FILES:
+            (cand / name).unlink(missing_ok=True)
+            if (Path(vrun_fit) / name).is_file():
+                shutil.copyfile(Path(vrun_fit) / name, cand / name)
     npz = cand / "run_value.npz"
     fit = {"source": "base", "sha256": file_sha256(npz)} if npz.is_file() else {"source": "none", "sha256": None}
+    if fit_doc is not None:
+        fit = {"source": "fit", "sha256": file_sha256(npz), "dir": Path(vrun_fit).as_posix(), "recipe": fit_doc.get("recipe"),
+               "prior_sha256": fit_doc.get("prior_sha256"), "matched": fit_doc.get("prior_sha256") == champ.policy_sha256,
+               "window": fit_doc.get("window"), "beta": fit_doc.get("beta")}
     base_meta = read_json(base_dir / "agent.json") if (base_dir / "agent.json").is_file() else {}
     source_train = read_json(prior_dir / "train.json") if (prior_dir / "train.json").is_file() else None
     prior = {"dir": prior_dir.as_posix(), "policy_sha256": model["policy_sha256"], "net_sha256": file_sha256(cand / "combat_net.pt")}
@@ -1133,10 +1234,14 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
              "prior": {**prior, "model_json": read_json(prior_dir / "model.json")},
              "base": {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro,
                       "policy_sha256": base_agent.describe()["prior_sha256"], "run_value_sha256": fit["sha256"]}}
+    fit_text = (f"the V_run fit of {Path(vrun_fit).name} ({'matched to this prior' if fit['matched'] else 'played by another prior'})"
+                if fit_doc is not None else "its V_run fit")
+    if fit_doc is not None:
+        built["vrun_fit"] = fit
     lineage = None if target == base_agent.generation + 1 else {
         "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
         "difference": (f"the combat prior of {prior_dir.parent.name}/{prior_dir.name} (built, not trained) with generation "
-                       f"{base_agent.generation}'s macro {base_agent.macro} and its V_run fit"),
+                       f"{base_agent.generation}'s macro {base_agent.macro} and {fit_text}"),
         "decision": why}
     doc: dict[str, Any] = {"candidate_generation": target, BUILT_KEY: built, **({"lineage": lineage} if lineage else {}),
                            "prior_train": source_train}
@@ -1147,7 +1252,9 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
             **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
             "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"]},
             "note": (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
-                     f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone")}
+                     f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone" if fit_doc is None else
+                     f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                     f"({base_agent.macro}) and {fit_text}; its E-block judges the prior and the fit together")}
     write_json(cand / "train.json", doc)
     write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
     got = load_agent(cand)
