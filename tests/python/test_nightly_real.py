@@ -89,6 +89,38 @@ class AgentsTest(Tmp):
         self.assertEqual("N-2026-10-25", nr.seed_block_name("2026-10-25", got[0]))
         self.assertEqual("N-2026-10-25-g4", nr.seed_block_name("2026-10-25", got[1]))
 
+    def rows_as_promote_writes_them(self, rows: list[tuple[str, int, str, str]]) -> Path:
+        """promotions.tsv as gen_loop.promote writes it: cand_dir is the candidate folder's name, not a path."""
+        r = self.root([])
+        head = "written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+        (r / "promotions.tsv").write_text(head + "".join(f"{w}\t{g}\t{g - 1}\tE\t2000\t{dec}\tsha\t{d}\n" for w, g, dec, d in rows))
+        return r
+
+    def test_a_folder_name_in_cand_dir_is_the_folder_under_its_generation(self):
+        r = self.rows_as_promote_writes_them([("2026-10-25T02:00:00Z", 4, "promoted", "candidate-r1")])
+        got = nr.agents_to_score(r, nr.parse_utc("2026-10-24T12:00:00Z"))
+        self.assertEqual([("g3", "incumbent"), ("g4", "promoted")], [(a["label"], a["role"]) for a in got])
+        self.assertEqual((r / "gen4" / "candidate-r1").resolve(), Path(got[1]["dir"]).resolve())
+        self.assertEqual(2000, nr.night_runs(got, 500, 2000))
+
+    def test_an_incumbent_promoted_since_the_last_nightly_makes_a_promotion_night(self):
+        # the usual promotion day: the promoted generation is the incumbent, so it is scored once, with the promotion night's runs
+        r = self.rows_as_promote_writes_them([("2026-10-25T03:00:00Z", 3, "promoted", "candidate-r1")])
+        got = nr.agents_to_score(r, nr.parse_utc("2026-10-24T12:00:00Z"))
+        self.assertEqual([("g3", "incumbent")], [(a["label"], a["role"]) for a in got])
+        self.assertTrue(got[0].get("promoted_since"))
+        self.assertEqual(["g3"], nr.promoted_labels(got))
+        self.assertEqual(2000, nr.night_runs(got, 500, 2000))
+        self.assertEqual("N-2026-10-25", nr.seed_block_name("2026-10-25", got[0]))  # the incumbent's block name is unchanged
+
+    def test_an_incumbent_promoted_before_the_last_nightly_is_an_ordinary_night(self):
+        r = self.rows_as_promote_writes_them([("2026-10-24T03:00:00Z", 3, "promoted", "candidate-r1"),
+                                              ("2026-10-25T03:00:00Z", 4, "rejected", "candidate")])
+        got = nr.agents_to_score(r, nr.parse_utc("2026-10-24T12:00:00Z"))
+        self.assertFalse(got[0].get("promoted_since"))
+        self.assertEqual([], nr.promoted_labels(got))
+        self.assertEqual(500, nr.night_runs(got, 500, 2000))
+
     def test_the_full_night_only_when_a_generation_was_promoted(self):
         inc, prom = {"label": "g3", "role": "incumbent"}, {"label": "g4", "role": "promoted"}
         self.assertEqual(500, nr.night_runs([inc], 500, 2000))

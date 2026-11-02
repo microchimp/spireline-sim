@@ -131,9 +131,25 @@ class QuietLock:
 
 # ---------------------------------------------------------------- who is scored
 
+def promoted_dir(agent_root: Path, row: dict[str, str]) -> Path | None:
+    """The directory a promotions.tsv row names, or None when there is none. `gen_loop.promote` writes the candidate folder's
+    name (`candidate`, `candidate-r1`) in `cand_dir`, which lives under AGENT/gen<cand_gen>/; a full path is taken as it is."""
+    d = row.get("cand_dir") or ""
+    if not d:
+        return None
+    p = Path(d)
+    if not p.is_absolute():
+        try:
+            p = Path(agent_root) / f"gen{int(row['cand_gen'])}" / d
+        except (KeyError, ValueError):
+            return None
+    return p if p.is_dir() else None
+
+
 def agents_to_score(agent_root: Path, since: float | None) -> list[dict[str, Any]]:
     """The incumbent first, then each generation promoted since `since` (epoch seconds; None: only the incumbent), once per directory.
-    Each: label (the folder name), generation, dir, role."""
+    Each: label (the folder name), generation, dir, role. An incumbent that was itself promoted since `since` (the usual promotion
+    day: the new generation is the incumbent) keeps the role `incumbent` and gets `promoted_since` True."""
     import gen_loop  # noqa: PLC0415
 
     cur = gen_loop.read_json(Path(agent_root) / "current.json")
@@ -143,20 +159,30 @@ def agents_to_score(agent_root: Path, since: float | None) -> list[dict[str, Any
         if row.get("decision") != "promoted":
             continue
         t = parse_utc(row.get("written", ""))
-        d = row.get("cand_dir") or ""
-        if t is None or t <= since or not d or not Path(d).is_dir() or Path(d).resolve() in seen:
+        d = promoted_dir(agent_root, row)
+        if t is None or t <= since or d is None:
             continue
-        seen.add(Path(d).resolve())
+        if d.resolve() == Path(out[0]["dir"]).resolve():
+            out[0]["promoted_since"] = True
+        if d.resolve() in seen:
+            continue
+        seen.add(d.resolve())
         label = f"g{int(row['cand_gen'])}"
         if any(x["label"] == label for x in out):  # a retrain of the same generation: its directory name tells them apart
-            label += "-" + Path(d).name
-        out.append({"label": label, "generation": int(row["cand_gen"]), "dir": d, "role": "promoted"})
+            label += "-" + d.name
+        out.append({"label": label, "generation": int(row["cand_gen"]), "dir": str(d), "role": "promoted"})
     return out
 
 
+def promoted_labels(agents: list[dict[str, Any]]) -> list[str]:
+    """The agents tonight that were promoted since the last nightly: the `promoted` ones and an incumbent promoted since."""
+    return [ag["label"] for ag in agents if ag.get("role") == "promoted" or ag.get("promoted_since")]
+
+
 def night_runs(agents: list[dict[str, Any]], runs: int, runs_promoted: int | None) -> int:
-    """Runs per agent tonight: `runs_promoted` when `agents` holds a generation promoted since the last nightly, else `runs`."""
-    if runs_promoted and any(ag.get("role") == "promoted" for ag in agents):
+    """Runs per agent tonight: `runs_promoted` when `agents` holds a generation promoted since the last nightly (`promoted_labels`:
+    the incumbent itself counts when it was promoted since), else `runs`."""
+    if runs_promoted and promoted_labels(agents):
         return runs_promoted
     return runs
 
@@ -340,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         agents: dict[str, Any] = {}
         todo = agents_to_score(Path(a.agent_root), since)
         a.runs = night_runs(todo, a.runs, a.runs_promoted)
-        promoted = [ag["label"] for ag in todo if ag.get("role") == "promoted"]
+        promoted = promoted_labels(todo)
         print(f"[{utc_now()}] {a.runs} runs per agent ({'promoted since the last nightly: ' + ', '.join(promoted) if promoted else 'no promotion since the last nightly'})", flush=True)
         for ag in todo:
             try:
