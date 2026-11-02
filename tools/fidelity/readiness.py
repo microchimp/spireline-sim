@@ -365,6 +365,19 @@ def lab_utilisation(root: Path, now: float | None = None, cores: int | None = No
             "source": "lab/yield.tsv, lab/runner.log, lab/state.json"}, None
 
 
+def lab_clock(root: Path, now: float | None = None, days: int = UTIL_DAYS):
+    """The flagged steps of the lab's clock (tools/lab/clock_report.py over LAB/runner.log, last `days` days): a step whose wall is more
+    than three times its CPU, whose output was the same five runs running, or whose mean wall is over 20 minutes. None without a log."""
+    from tools.lab import clock_report as cr
+    rep = cr.report_for(root / "lab", now, days)
+    if rep is None:
+        return None
+    keep = ("work_runs", "wall_mean_s", "wall_total_h", "wall_over_cpu", "last_outputs", "flags", "by_design", "alarm")
+    return {"window_days": rep["window_days"], "from_utc": rep["from_utc"], "to_utc": rep["to_utc"], "runs": rep["runs"], "steps": rep["steps"],
+            "steps_with_cpu": rep["steps_with_cpu"], "wall_total_h": rep["wall_total_h"], "alarms": rep["alarms"],
+            "flagged": {k: {f: rep["by_step"][k][f] for f in keep} for k in rep["flagged"]}, "source": "lab/runner.log"}
+
+
 def data_score(root: Path):
     best = None
     for p in (root / "audit" / "data-checks").glob("*.txt"):
@@ -436,8 +449,15 @@ def build(root: Path, top: int = 5, now: float | None = None, cores: int | None 
     if n:
         notes["lab"] = n["note"]
     util, un = lab_utilisation(root, now, cores, days)
+    clock = None
+    try:
+        clock = lab_clock(root, now, days)
+    except Exception as e:  # noqa: BLE001  (the clock is a note on the lab, not a reason to lose the score)
+        notes["lab_clock"] = f"the lab clock could not be read ({type(e).__name__})"
     if lab is not None:
         lab["utilisation"] = util
+        if clock is not None:
+            lab["clock"] = clock
     elif util is not None:
         out["lab_utilisation"] = util  # no groups.json to hang it on
     if un and lab is not None:  # without a lab folder the "lab" note already says so
@@ -516,6 +536,13 @@ def render(r: dict) -> str:
             idle = f"; idle with weight: {', '.join(u['idle_with_weight'])}" if u["idle_with_weight"] else ""
             rows.append(("lab utilisation", f"{u['pct']}% of {u['cores']} cores over {u['window_days']} days, owner time ({u['owner_min']:.0f} min) "
                          f"left out (target {u['target_pct']:.0f}%); CPU min by strategy: {top_s}{idle}", u["source"], u["to_utc"][:10]))
+        ck = b.get("clock")
+        if ck:
+            bad = [f"{k} {' '.join(v['flags'])}" for k, v in ck["flagged"].items() if v["alarm"]]
+            rows.append(("lab clock", f"{ck['alarms']} of {ck['steps']} steps flagged over {ck['window_days']} days ({ck['wall_total_h']} h of wall)"
+                         + (": " + "; ".join(bad[:6]) if bad else "")
+                         + ("" if ck["steps_with_cpu"] else "; no CPU figures yet (the runner writes them since its restart)"),
+                         ck["source"], ck["to_utc"][:10]))
     d = r["data"]
     if d:
         rows.append(("data-check mismatches", f"{d['mismatches']}" + (" (" + ", ".join(f"{a} {n}" for a, n in d["by_check"].items()) + ")" if d["by_check"] else ""),

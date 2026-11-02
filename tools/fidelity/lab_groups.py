@@ -4,6 +4,7 @@
     python tools/fidelity/lab_groups.py --lab LAB [--backlog <newest backlog-*.json>] --out LAB/groups.json
         --summary LAB/summary.md [--batch <jobs dir>/<name>]... [--corpus-results FILE] [--codex-walk DIR]
         [--refset-score FILE] [--invariants FILE] [--mutation FILE] [--decompiled DIR] [--host-gaps FILE]
+        [--force] [--no-cache] [--cache-dir DIR]
 
 Reads every finished job under LAB/runs (a folder with done.rc): aimed and setup batches (<name>.verdicts.json
 with their specs, <name>.shrink.json or the summary's shrink lines, <name>.packs/minimal and traces), and the
@@ -11,6 +12,11 @@ presort outputs it finds there by shape (a corpus check's results.json, codex wa
 score, an invariants report, a mutation report) or that its job.json names under "outputs" (for those kept
 elsewhere, such as the corpus check's own run folder). --batch and the other flags add sources from outside.
 No game, no emulator, no network: only files already written.
+
+A finished job's files are never written again, so each is read once in its life: the sources a job holds and the symptoms the
+readers made of each source are kept under LAB/cache/groups (tools/lab/groupcache.py), keyed by the job's directory listing (names,
+sizes, times), the code the readers run and the maps they use. A changed file or changed code reads again; nothing newer than two
+seconds is trusted; a damaged cache file is deleted and rebuilt. --no-cache neither reads nor writes it, --force clears it.
 
 One symptom = one fight (or run) with its first wrong step. Its signature: the phase of that step (start,
 play, end_turn, potion), the field group that differs, the first differing event from its trace (what one
@@ -58,6 +64,7 @@ for p in (ROOT, ROOT / "referee"):
         sys.path.insert(0, str(p))
 
 from tools.lab import stepcache as sc  # noqa: E402
+from tools.lab.groupcache import GroupCache, Listing  # noqa: E402
 from tools.fidelity.lab_targets import (  # noqa: E402
     BASIC_CARDS,
     REFEREE,
@@ -630,42 +637,60 @@ def pool_size(kind: str, path: Path, found: int) -> int:
     if kind == "refset":
         return len((read_json(path, {}) or {}).get("verdicts") or []) or found
     if kind == "codex":
-        return sum(1 for f in path.glob("*.jsonl") for _ in f.open(encoding="utf-8")) or found
+        n = 0
+        for f in path.glob("*.jsonl"):
+            with f.open(encoding="utf-8") as fh:
+                n += sum(1 for _ in fh)
+        return n or found
     return found
 
 
-def lab_sources(lab: Path, jobs: tuple[Path, ...] = ()) -> list[tuple[str, Path, str]]:
+def job_sources(job: Path, when: str) -> list[tuple[str, Path, str]]:
+    """(kind, path, when) for every output of one job folder, recognised by its shape (the sniffing: it opens the head of every
+    json file that is not a batch's own record). The order is the order the grouping reads them in."""
+    out = []
+    for v in sorted(job.rglob("*.verdicts.json")):
+        out.append(("batch", v.with_name(v.name.removesuffix(".verdicts.json")), when))
+    for r in sorted(job.rglob("*.reanchor.json")):  # a batch.py batch has records but no verdicts: they are derived
+        base = r.with_name(r.name.removesuffix(".reanchor.json"))
+        if not any(x.endswith(".packs") for x in r.parts) and not base.with_name(base.name + ".verdicts.json").exists()                 and all(base.with_name(base.name + e).exists() for e in (".json", ".out.json", ".emu.json")):
+            out.append(("batch", base, when))
+    for p in sorted(job.rglob("*.json")):
+        if p.name.endswith(".runs.json") and not any(x.endswith(".packs") for x in p.parts):
+            out.append(("run", p, when))
+            continue
+        if p.name.endswith((".verdicts.json", ".out.json", ".emu.json", ".reanchor.json", ".trace.json")) or any(
+                x.endswith(".packs") for x in p.parts):
+            continue
+        kind = source_kind(p)
+        if kind:
+            out.append((kind, p, when))
+    walks = {f.parent for f in job.rglob("*.jsonl")}
+    for w in sorted(walks):
+        with contextlib.suppress(OSError):
+            with next(iter(sorted(w.glob("*.jsonl")))).open(encoding="utf-8") as fh:
+                first = fh.readline()
+            if '"checks"' in first and '"status"' in first:
+                out.append(("codex", w, when))
+    out += job_outputs(job, when, {str(p) for _, p, _ in out})
+    return out
+
+
+def lab_sources(lab: Path, jobs: tuple[Path, ...] = (), cache=None) -> list[tuple[str, Path, str]]:
     """(kind, path, when) for every output of a finished job under LAB/runs, recognised by its shape, and of each
-    job in `jobs` though unfinished (the runner's own job, whose groups step runs before its done.rc is written)."""
+    job in `jobs` though unfinished (the runner's own job, whose groups step runs before its done.rc is written).
+    With a `cache` (tools/lab/groupcache.py) a finished job whose json files are as they were is not sniffed again."""
     out = []
     runs = Path(lab) / "runs"
     done = [j for j in (sorted(runs.iterdir()) if runs.is_dir() else []) if j.is_dir() and (j / "done.rc").exists()]
     seen = {j.resolve() for j in done}
+    finished = set(done)
     for job in done + [j for j in jobs if j.is_dir() and j.resolve() not in seen]:
         when = stamp_utc(job)
-        for v in sorted(job.rglob("*.verdicts.json")):
-            out.append(("batch", v.with_name(v.name.removesuffix(".verdicts.json")), when))
-        for r in sorted(job.rglob("*.reanchor.json")):  # a batch.py batch has records but no verdicts: they are derived
-            base = r.with_name(r.name.removesuffix(".reanchor.json"))
-            if not any(x.endswith(".packs") for x in r.parts) and not base.with_name(base.name + ".verdicts.json").exists()                     and all(base.with_name(base.name + e).exists() for e in (".json", ".out.json", ".emu.json")):
-                out.append(("batch", base, when))
-        for p in sorted(job.rglob("*.json")):
-            if p.name.endswith(".runs.json") and not any(x.endswith(".packs") for x in p.parts):
-                out.append(("run", p, when))
-                continue
-            if p.name.endswith((".verdicts.json", ".out.json", ".emu.json", ".reanchor.json", ".trace.json")) or any(
-                    x.endswith(".packs") for x in p.parts):
-                continue
-            kind = source_kind(p)
-            if kind:
-                out.append((kind, p, when))
-        walks = {f.parent for f in job.rglob("*.jsonl")}
-        for w in sorted(walks):
-            with contextlib.suppress(OSError):
-                first = next(iter(sorted(w.glob("*.jsonl")))).open(encoding="utf-8").readline()
-                if '"checks"' in first and '"status"' in first:
-                    out.append(("codex", w, when))
-        out += job_outputs(job, when, {str(p) for _, p, _ in out})
+        if cache is not None and job in finished:
+            out += cache.job_sources(job, when, lambda job=job, when=when: job_sources(job, when))
+        else:
+            out += job_sources(job, when)
     return out
 
 
@@ -703,8 +728,12 @@ GROUPS_CODE = ("tools/fidelity/lab_groups.py", "tools/fidelity/lab_targets.py", 
 def source_files(kind: str, path: Path, listing: dict, referee: Path) -> list[Path]:
     """The files the reader of one source looks at: a batch's <name>.* files and its .packs folder, a runs.json and the
     <name>-repro.* files beside it, a codex walk's *.jsonl, a reference-set score and its manifest, else the file itself.
-    `listing` caches folder listings."""
+    `listing` caches folder listings (a dict, or a groupcache.Listing)."""
+    names = getattr(listing, "names", None)  # a groupcache.Listing: the folders are listed once for the whole run
+
     def ls(d: Path) -> list[str]:
+        if names is not None:
+            return names(d)
         if d not in listing:
             try:
                 listing[d] = sorted(os.listdir(d))
@@ -717,7 +746,7 @@ def source_files(kind: str, path: Path, listing: dict, referee: Path) -> list[Pa
         files = [path.parent / n for n in ls(path.parent) if n.startswith(path.name + ".") and not n.endswith(".packs")]
         packs = path.parent / (path.name + ".packs")
         if packs.is_dir():
-            files += sc.walk_files(packs)
+            files += listing.walk_files(packs) if names is not None else sc.walk_files(packs)
         return files
     if kind == "run":
         stem = path.name.removesuffix(".runs.json")
@@ -729,16 +758,18 @@ def source_files(kind: str, path: Path, listing: dict, referee: Path) -> list[Pa
     return [path]
 
 
-def inputs_parts(lab: Path, sources: list, backlog_path: Path | None, host_gaps: Path, decompiled: Path, referee: Path) -> dict:
+def inputs_parts(lab: Path, sources: list, backlog_path: Path | None, host_gaps: Path, decompiled: Path, referee: Path,
+                 listing=None, rows_of=None) -> dict:
     """The named inputs of the grouping, each a short digest: every file a source is read from (size and time: a finished job's
     recordings are written once), the fix list and the other small files by content, the Codex profile, the decompile's model
     files, and the code that does the grouping. The tree's sha is not one of them: only the code is."""
-    listing: dict = {}
-    files: list[Path] = []
+    listing = listing if listing is not None else Listing()  # the folders are listed once, not each file asked for
+    rows_of = rows_of or (lambda kind, path: listing.stat_files(source_files(kind, Path(path), listing, referee)))  # (name, sig, time)
+    rows: list = []
     for kind, path, _when in sources:
-        files += source_files(kind, Path(path), listing, referee)
+        rows += rows_of(kind, path)
     models = sorted(Path(decompiled).glob("MegaCrit.Sts2.Core.Models*/*.cs")) if Path(decompiled).is_dir() else []
-    return {"sources": sc.stats_hash(files, lab), "n_sources": len(sources),
+    return {"sources": listing.rows_hash(rows, lab), "n_sources": len(sources),
             "backlog": sc.file_hash(backlog_path) if backlog_path else sc.MISSING,
             "small": sc.files_hash([ROOT / "data" / "id_map.json", ROOT / "data" / "sweep_map.json", ROOT / "referee" / "FINDINGS.md",
                                     Path(host_gaps), Path(lab) / "retests.json"], None),
@@ -1307,12 +1338,20 @@ def main(argv=None) -> int:
     ap.add_argument("--decompiled", type=Path, default=DECOMPILED)
     ap.add_argument("--host-gaps", type=Path, default=HOST_GAPS)
     ap.add_argument("--referee", type=Path, default=REFEREE)
-    ap.add_argument("--force", action="store_true", help="group again even when no input changed since the last run (LAB/stamps/groups.json)")
+    ap.add_argument("--force", action="store_true",
+                    help="group again even when no input changed since the last run (LAB/stamps/groups.json), and read every source "
+                         "again (clears LAB/cache/groups)")
+    ap.add_argument("--no-cache", action="store_true", help="read every source, and neither use nor write LAB/cache/groups")
+    ap.add_argument("--cache-dir", type=Path, help="default: LAB/cache/groups (tools/lab/groupcache.py)")
     a = ap.parse_args(argv)
 
     lab = a.lab.resolve()
     symptoms = []
-    sources = lab_sources(lab, tuple(a.job))
+    cache = GroupCache(lab, ROOT, directory=a.cache_dir, enabled=not a.no_cache)
+    cache.files_of = lambda kind, path: source_files(kind, path, cache.listing, a.referee)
+    if a.force:
+        cache.clear()
+    sources = lab_sources(lab, tuple(a.job), cache)
     sources += [("batch", p, stamp_utc(p.with_name(p.name + ".verdicts.json"))) for p in a.batch]
     sources += [("corpus", p, stamp_utc(p)) for p in a.corpus_results]
     sources += [("codex", p, stamp_utc(next(iter(p.glob("*.jsonl")), p))) for p in a.codex_walk]
@@ -1325,22 +1364,30 @@ def main(argv=None) -> int:
     read = {"batch": batch_symptoms, "run": run_symptoms, "corpus": corpus_symptoms, "refset": refset_symptoms, "codex": walk_symptoms,
             "invariants": invariant_symptoms, "mutation": mutation_symptoms}
     backlog_path = a.backlog or newest_backlog(a.referee)
-    parts = inputs_parts(lab, sources, backlog_path, a.host_gaps, a.decompiled, a.referee)
+    parts = inputs_parts(lab, sources, backlog_path, a.host_gaps, a.decompiled, a.referee, cache.listing, cache.rows_of)
     want = sc.digest(parts)
     outputs = sc.outputs_of(lab, [a.out, a.summary])
     why = None if a.force else sc.skip_reason(lab, "groups", want, outputs)
     if why:  # nothing the grouping reads has changed: the file it wrote stands
         print(f"step skipped: groups: {why}")
+        cache.finish(complete=False)
         return 0
     per_source, pools = collections.Counter(), {}
     for kind, path, when in sources:
-        got = read[kind](Path(path), lab, when)
-        label = f"{kind}:{rel(path, lab)}"
+        tok = cache.lookup(kind, Path(path), when)
+        if tok.hit:  # read once in its life: the symptoms of this source's files as they are now, by the code as it is now
+            got, pool, label = tok.symptoms, tok.pool, tok.label
+        else:
+            got = read[kind](Path(path), lab, when)
+            label = f"{kind}:{rel(path, lab)}"
+            pool = pool_size(kind, Path(path), len(got))
+            cache.store(tok, got, pool, label)
         per_source[label] = len(got)
-        pools[label] = pool_size(kind, Path(path), len(got))
+        pools[label] = pool
         for s in got:
             s["pool"] = label
         symptoms += got
+    cache.finish()
     id_map = read_json(ROOT / "data" / "id_map.json", {}) or {}
     prof = Profile(read_json(profile_path(lab)))
     feats = Features(model_features(a.decompiled, lab / "cache" / "model_features.json"),
@@ -1360,10 +1407,14 @@ def main(argv=None) -> int:
     text = summary_md(doc, symptoms)
     a.summary.parent.mkdir(parents=True, exist_ok=True)
     a.summary.write_text(text, encoding="utf-8")
-    sc.write_stamp(lab, "groups", want, outputs, job=a.job[0].name if a.job else "", parts={k: str(v)[:16] for k, v in parts.items()})
+    # what the output says is its groups; its time, sha and the summary's header are new every run
+    sc.write_stamp(lab, "groups", want, outputs, job=a.job[0].name if a.job else "", parts={k: str(v)[:16] for k, v in parts.items()},
+                   content={sc.label_of(lab, a.out): sc.digest({"groups": groups}), sc.label_of(lab, a.summary): "-"})
     rel_ = collections.Counter(g["relation"] for g in groups)
     print(f"groups: {len(groups)} from {len(symptoms)} symptoms; {dict(rel_)}; host-suspect {sum(g['host_suspect'] for g in groups)}; stale {sum(bool(g.get('stale')) for g in groups)}"
           + (f"; stale host-gap entries {hosts.stale_entries}" if hosts.stale_entries else ""))
+    if cache.enabled:
+        print(cache.stats.line(cache.listing))
     return 0
 
 

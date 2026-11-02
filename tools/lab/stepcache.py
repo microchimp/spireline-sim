@@ -6,12 +6,18 @@ written, the step is skipped and the earlier output stands; any other case runs 
 only: no timer, no counter.
 
     stamp = LAB/stamps/<step>.json
-        {"step", "digest", "parts": {name: short digest}, "outputs": {label: [size, mtime_ns]}, "job", "utc", "rc"}
+        {"step", "digest", "parts": {name: short digest}, "outputs": {label: [size, mtime_ns]}, "job", "utc", "rc",
+         "content": {label: digest of what the output holds}, "changed": whether that differs from the previous stamp's}
 
 An output is named by a label: its path under the lab folder by default, so a stamp holds no absolute path. A file the
 step reads is hashed by content when it is small or can change without changing its size (code, the fix list, the
 retest file), and by (size, mtime_ns) when it is big and written once (a finished job's recordings, the Codex
 dataset). Nothing here writes except `write_stamp`; the checks are pure, so a dry run can ask them.
+
+`content` and `changed` are for the lab's clock (tools/lab/clock_report.py): a step that runs and leaves the same output as the
+time before it has told nobody anything. They play no part in the skip decision. `changed` is True for a first stamp and for an
+output that differs, False when every output is as it was, None when that cannot be told (a stamp from before this field, an
+output too big to hash).
 """
 
 from __future__ import annotations
@@ -154,18 +160,56 @@ def skip_reason(lab: Path | str, step: str, want: str, outputs: Iterable[Path | 
     return f"inputs unchanged since {stamp.get('utc', '?')} (digest {want[:12]}); the earlier output{where} stands"
 
 
+CONTENT_CAP = 512 << 20  # an output bigger than this is not read to tell whether it changed
+
+
+def content_hash(path: Path | str) -> str | None:
+    """A short content digest of a file, None for a folder, a file over CONTENT_CAP, or one that cannot be read."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > CONTENT_CAP:
+            return None
+        return file_hash(path)[:24]
+    except OSError:
+        return None
+
+
+def changed_since(previous: Mapping[str, Any] | None, now: Mapping[str, str | None]) -> bool | None:
+    """Whether the outputs' content differs from the previous stamp's: True when there was no stamp or an output differs, False when
+    all are as they were, None when that cannot be told."""
+    if previous is None:
+        return True
+    old = previous.get("content")
+    if not isinstance(old, dict):
+        return None
+    if set(old) != set(now):
+        return True
+    unknown = False
+    for k, v in now.items():
+        if v is None or old.get(k) is None:
+            unknown = True
+        elif v != old[k]:
+            return True
+    return None if unknown else False
+
+
 def write_stamp(lab: Path | str, step: str, want: str, outputs: Iterable[Path | str] | Mapping[str, Path | str], job: str = "",
-                parts: Mapping[str, str] | None = None, rc: int | None = None) -> None:
+                parts: Mapping[str, str] | None = None, rc: int | None = None, content: Mapping[str, str] | None = None) -> None:
     """Record that `outputs` (written just now) came from inputs with this digest. An output that is missing is recorded as
-    such by leaving the stamp out: nothing is skipped on a step that wrote nothing."""
+    such by leaving the stamp out: nothing is skipped on a step that wrote nothing. `content` gives the digest of what an output
+    holds, by label, where the file itself carries something that changes every run (a time, a sha): the others are hashed."""
     sigs: dict[str, list[int]] = {}
-    for k, p in outputs_of(lab, outputs).items():
+    held: dict[str, str | None] = {}
+    outs = outputs_of(lab, outputs)
+    for k, p in outs.items():
         s = _sig(p)
         if s is None:
             remove_stamp(lab, step)
             return
         sigs[k] = s
+    for k, p in outs.items():
+        held[k] = (content or {}).get(k) or content_hash(p)
     doc = {"step": step, "digest": want, "parts": dict(parts or {}), "outputs": sigs, "job": job, "rc": rc,
+           "content": held, "changed": changed_since(read_stamp(lab, step), held),
            "utc": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
     path = stamp_path(lab, step)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +229,7 @@ def refresh_outputs(lab: Path | str, step: str, outputs: Iterable[Path | str] | 
     """Re-record the outputs' size and time in an existing stamp (a skipped step that touched its output)."""
     stamp = read_stamp(lab, step)
     if stamp is not None:
-        write_stamp(lab, step, stamp["digest"], outputs, stamp.get("job", ""), stamp.get("parts"), stamp.get("rc"))
+        write_stamp(lab, step, stamp["digest"], outputs, stamp.get("job", ""), stamp.get("parts"), stamp.get("rc"), stamp.get("content"))
 
 
 # ---------------------------------------------------------------- the engine

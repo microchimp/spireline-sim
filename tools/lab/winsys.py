@@ -6,7 +6,8 @@ import on any platform. Nothing here reads another process's memory.
 - ``user_idle_seconds``      GetLastInputInfo: seconds since the last keyboard or mouse input in this session.
 - ``set_below_normal``       BELOW_NORMAL_PRIORITY_CLASS for this process (children inherit it).
 - ``JobObject``              a Job Object: KILL_ON_JOB_CLOSE (members die with the last handle), TerminateJobObject,
-                             the CPU time of every process that ever ran in it, the pids still in it.
+                             the CPU time and the I/O counters (read and write operations and bytes) of every process that ever ran
+                             in it, children included, the pids still in it.
 - ``suspended_popen``        Popen that starts the child suspended, puts it in a job, then resumes it (no grandchild
                              can escape the job in the gap).
 - ``system_times``           GetSystemTimes (idle, kernel, user), for the busy share of the machine.
@@ -28,6 +29,7 @@ CREATE_NO_WINDOW = 0x08000000
 NO_WINDOW = CREATE_NO_WINDOW if os.name == "nt" else 0  # creationflags for helper calls: no console flashes under pythonw
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JobObjectBasicAccountingInformation = 1
+JobObjectBasicAndIoAccountingInformation = 8
 JobObjectBasicProcessIdList = 3
 JobObjectExtendedLimitInformation = 9
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -64,6 +66,9 @@ if IS_WIN:
                     ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
                     ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
                     ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+    class _BASIC_AND_IO(ctypes.Structure):
+        _fields_ = [("Basic", _ACCOUNTING), ("Io", _IO_COUNTERS)]
 
     class _FILETIME(ctypes.Structure):
         _fields_ = [("lo", wintypes.DWORD), ("hi", wintypes.DWORD)]
@@ -194,6 +199,20 @@ class JobObject:
                                               ctypes.sizeof(acc), None):
             return 0
         return int(acc.TotalUserTime) + int(acc.TotalKernelTime)
+
+    def accounting(self) -> dict[str, float] | None:
+        """What every process that has run in the job (finished ones and their children included) used: {cpu_secs, read_ops,
+        read_bytes, write_ops, write_bytes}. None where the job cannot be asked (off Windows, a closed job). The operation counts
+        are the system's I/O counters for ReadFile/WriteFile-style calls (a file opened and read costs one or two reads), not a count
+        of files opened: Windows keeps none."""
+        if not self.h:
+            return None
+        info = _BASIC_AND_IO()
+        if not _k32.QueryInformationJobObject(self.h, JobObjectBasicAndIoAccountingInformation, ctypes.byref(info), ctypes.sizeof(info), None):
+            return None
+        return {"cpu_secs": (int(info.Basic.TotalUserTime) + int(info.Basic.TotalKernelTime)) / 1e7,
+                "read_ops": int(info.Io.ReadOps), "read_bytes": int(info.Io.ReadBytes),
+                "write_ops": int(info.Io.WriteOps), "write_bytes": int(info.Io.WriteBytes)}
 
     def pids(self) -> list[int]:
         """Process ids still in the job."""

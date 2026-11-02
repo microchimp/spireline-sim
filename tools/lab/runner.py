@@ -49,7 +49,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import guards, jobs, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import clock_report, guards, jobs, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import stepcache as sc  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
 ROTATION = ("fights", "fights", "probes", "fights", "mutation", "fights", "invariants")  # after presort, by value
@@ -63,6 +64,7 @@ DEFAULTS = {
 }
 FORBIDDEN = ("D:/spireline/src",)  # the reviewed upstream checkout: never a lab, tree or game path
 RESUME_HOURS = 24.0
+CLOCK_EVERY_S = 24 * 3600.0  # LAB/clock.md (tools/lab/clock_report.py over runner.log) is written again after this long
 CHILD_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "PYTHONIOENCODING": "utf-8"}
 STALE_LOCK_S = 3 * 900.0  # a `lab-*` QUIET.lock line is refreshed every 15 minutes; three missed refreshes make it stale
 CREATE_NO_WINDOW = 0x08000000
@@ -266,8 +268,11 @@ class Halted(Exception):
 
 
 class Running:
-    def __init__(self, cmd: plans.Cmd, proc: subprocess.Popen, files: list[Any], t0: float, in_job: bool):
+    def __init__(self, cmd: plans.Cmd, proc: subprocess.Popen, files: list[Any], t0: float, in_job: bool,
+                 acct: winsys.JobObject | None = None, stamp0: tuple | None = None):
         self.cmd, self.proc, self.files, self.t0, self.in_job = cmd, proc, files, t0, in_job
+        self.acct = acct  # a Job Object of this command alone, inside the step's: its CPU and I/O, children included (clock accounting)
+        self.stamp0 = stamp0  # the command's skip stamp as it was at the start
 
 
 def rep_cpu(rep: Report | None) -> float:
@@ -1125,6 +1130,7 @@ class Runner:
         if winsys.IS_WIN:
             kw.update(hidden_console_kw())
         in_job = True
+        stamp0 = self.stamp_key(cmd.name)
         try:
             proc = winsys.suspended_popen(argv, sj, **kw)
         except OSError as e:
@@ -1135,7 +1141,61 @@ class Runner:
             in_job = False  # could not nest in a job: a plain start, killed by process tree instead
             kw["creationflags"] = kw.get("creationflags", 0) & ~winsys.CREATE_SUSPENDED
             proc = subprocess.Popen(argv, **kw)
-        return Running(cmd, proc, files, self.clock(), in_job)
+        return Running(cmd, proc, files, self.clock(), in_job, self.account_job(proc) if in_job else None, stamp0)
+
+    @staticmethod
+    def account_job(proc: subprocess.Popen) -> winsys.JobObject | None:
+        """A Job Object for this command alone, nested in the step's, so its CPU seconds and I/O are its own (children included)
+        even when the step runs several commands at once. A command already gone, or a job that cannot nest, costs only the figures."""
+        j = None
+        try:
+            j = winsys.JobObject(kill_on_close=False)
+            if not j.h:
+                return None
+            j.assign_handle(int(proc._handle))  # type: ignore[attr-defined]
+            return j
+        except Exception:  # noqa: BLE001  (accounting never stops a job)
+            if j is not None:
+                j.close()
+            return None
+
+    def stamp_key(self, name: str) -> tuple | None:
+        """What the command's skip stamp says before and after it runs (LAB/stamps/<name>.json), None where it has none."""
+        try:
+            st = sc.read_stamp(self.lab.root, name)
+            return (st["digest"], st.get("utc"), json.dumps(st["outputs"], sort_keys=True), st.get("changed")) if st else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def output_verdict(self, r: Running, ok: bool) -> str:
+        """Whether the command's output changed, from its skip stamp: `changed` or `same` (the stamp was written again and the output
+        differs or does not), `skipped` (the stamp stands: the command found its inputs unchanged), `?` (no stamp, a failure, or a
+        stamp that cannot say)."""
+        if not ok:
+            return "?"
+        after = self.stamp_key(r.cmd.name)
+        if after is None:
+            return "?"
+        if after[:3] == (r.stamp0 or (None,) * 3)[:3]:
+            return "skipped"
+        return {True: "changed", False: "same", None: "?"}[after[3]]
+
+    @staticmethod
+    def accounting_fields(r: Running) -> dict[str, Any]:
+        """The figures of a finished command: CPU seconds, read operations and MB read, MB written; empty where unknown."""
+        acc = None
+        try:
+            acc = r.acct.accounting() if r.acct else None
+        except Exception:  # noqa: BLE001
+            acc = None
+        finally:
+            if r.acct:
+                r.acct.close()
+                r.acct = None
+        if not acc:
+            return {}
+        return {"cpu_secs": round(acc["cpu_secs"], 1), "reads": int(acc["read_ops"]), "read_mb": round(acc["read_bytes"] / 1e6, 1),
+                "write_mb": round(acc["write_bytes"] / 1e6, 1)}
 
     def finish_cmd(self, run: Run, ctx: plans.Ctx, r: Running, rc: int, rec: dict[str, Any], now: float) -> bool:
         for f in r.files:
@@ -1145,6 +1205,7 @@ class Runner:
         ok = rc in cmd.ok_rcs
         entry = rec["cmds"].setdefault(cmd.name, {})
         entry.update({"status": "done" if ok else "failed", "rc": rc, "secs": round(now - r.t0, 1)})
+        acct = self.accounting_fields(r)
         for g in cmd.after_cleanup:
             self.rm_glob(ctx, g)
         if ok and cmd.post:
@@ -1160,8 +1221,17 @@ class Runner:
             counters = self.state["counters"]
             for k, n in cmd.counts.items():
                 counters[k] = counters.get(k, 0) + n
-        self.log(f"{rec['name']}/{cmd.name}: rc={rc} in {entry['secs']}s" + ("" if ok else " (FAILED)"))
+        out = self.output_verdict(r, ok)
+        entry.update({**acct, "out": out})  # the clock's figures stay in job.json beside the seconds
+        self.log(f"{rec['name']}/{cmd.name}: rc={rc} in {entry['secs']}s " + self.clock_fields(acct, out) + ("" if ok else " (FAILED)"))
         return not ok
+
+    @staticmethod
+    def clock_fields(acct: dict[str, Any], out: str) -> str:
+        """The accounting part of a step's log line, key=value for tools/lab/clock_report.py: wall is the `in ...s` before it."""
+        if acct:
+            return (f"cpu={acct['cpu_secs']}s reads={acct['reads']} read_mb={acct['read_mb']} write_mb={acct['write_mb']} out={out}")
+        return f"cpu=? reads=? read_mb=? write_mb=? out={out}"
 
     def kill_group(self, ctx: plans.Ctx, sj: winsys.JobObject, running: list[Running], rec: dict[str, Any]) -> None:
         sj.terminate()
@@ -1178,6 +1248,9 @@ class Runner:
                 winsys.kill_tree_by_pid(r.proc.pid)
             for f in r.files:
                 f.close()
+            if r.acct:
+                r.acct.close()
+                r.acct = None
             for g in [*r.cmd.cleanup, *r.cmd.after_cleanup]:
                 self.rm_glob(ctx, g)  # a partial output is worse than none
             rec["cmds"].pop(r.cmd.name, None)
@@ -1302,6 +1375,26 @@ class Runner:
                  + (f"process {pid} is gone" if pid is not None else "no process named, none of this lab's jobs is running") + ")")
         return True
 
+    def daily_clock(self) -> None:
+        """Write LAB/clock.md, the flagged steps of the last week of this log (tools/lab/clock_report.py), at most once a day and only for a
+        runner that stays (not --once, --trial or --dry-run), and say so in the log when a step is flagged. A fault here is a log line."""
+        if self.a.once or self.a.trial or self.a.dry_run:
+            return
+        p = self.lab.root / "clock.md"
+        try:
+            if p.exists() and time.time() - p.stat().st_mtime < CLOCK_EVERY_S:
+                return
+            rep = clock_report.report_for(self.lab.root)
+            if rep is None:
+                return
+            atomic_write(p, clock_report.render(rep) + "\n")
+            if rep["alarms"]:
+                alarmed = [k for k in rep["flagged"] if rep["by_step"][k]["alarm"]]
+                self.log(f"clock: {rep['alarms']} step(s) flagged over the last {rep['window_days']} days (clock.md): " + ", ".join(
+                    f"{k} {' '.join(rep['by_step'][k]['flags'])}" for k in alarmed[:5]))
+        except Exception as e:  # noqa: BLE001  (a report must not stop the lab)
+            self.log(f"clock: report not written ({type(e).__name__})")
+
     def one_pass(self) -> int | None:
         """Wait out any pause, pick a job, run it. An exit code when the runner should end, else None."""
         a = self.a
@@ -1309,6 +1402,7 @@ class Runner:
         if v:
             return self.leave(v)
         self.clear_stale_quiet_lock()
+        self.daily_clock()
         self.service_report()
         sha = self.main_sha()
         job, run, why = self.choose(sha)

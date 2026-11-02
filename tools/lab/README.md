@@ -200,6 +200,9 @@ sequential, so a job never runs beside another; `train` therefore does not overl
 ```
 LAB/state.json status.txt runner.log targets.json groups.json summary.md coverage-setup.json coverage-random.json
     mix.json yield.tsv   PAUSE HALT (when present)
+LAB/stamps/<step>.json   what a step that skips on unchanged inputs last ran with (tools/lab/stepcache.py)
+LAB/cache/groups/jobs/<job>.json, sym/<aa>/<key>.json.gz   the grouping step's cache (tools/lab/groupcache.py): per finished job its
+    sources, per source its symptoms; deleting the folder restores the old behaviour (one slow run), lab_groups.py --force clears it
 LAB/runs/<UTC>-<job>/job.json done.rc logs/<command>.log|.rc pruned.json
     presort:  codex/s0..3.jsonl|.err   (logs/refset.log, logs/corpus.log)
     fights:   fights/<name>.{json,out.json,emu.json,reanchor.json,verdicts.json,summary.txt}, <name>.packs/{index.md,minimal/,traces/}, shrink files
@@ -215,6 +218,22 @@ corpus run's results), `fights` (verdicts), `runs` (`runs.json`), `probes`, `mut
 `done.rc`: 0 ok, 1 required step failed or every core command failed, 3 superseded.
 
 `PAUSE` and `HALT` are read whoever wrote them: PowerShell's `echo now > PAUSE` writes UTF-16 with a BOM. A tag in it (its first word after an optional `now`, e.g. `echo "w4-macro 2026-10-25T07:01:00Z" > PAUSE`) is logged on the `paused:` line, `paused: pause (LAB/PAUSE) (w4-macro)`, so pause time can be split by session.
+
+## The lab's clock
+
+Every finished command adds a line to `LAB/runner.log` (and its figures to `job.json`): `groups/groups: rc=0 in 1727.2s cpu=412.3s
+reads=88420 read_mb=2104.5 write_mb=3.1 out=same`. `in` is wall seconds; `cpu` the CPU seconds of the command and everything it
+started (a Job Object of its own inside the step's); `reads`, `read_mb`, `write_mb` the system's I/O counters for it (read operations,
+megabytes read and written; Windows keeps no count of files opened, a small file costs one or two reads); `out` whether the output
+differs from the last run's, from the step's skip stamp (`changed`, `same`, `skipped` when the command found its inputs unchanged and
+ended at once, `?` for a command that keeps no stamp or failed). `cpu=?` marks a command the Job Object could not be attached to.
+
+`python tools/lab/clock_report.py [--lab LAB] [--days 7] [--all] [--json FILE]` reads a week of that log and lists the steps whose wall
+is more than three times their CPU (IDLE: they wait), whose output was the same five runs running (SAME5), or whose mean wall is above
+20 minutes (LONG); the lab's own long work (training, the nightly block, self-play, scoring, the benches) is marked and not counted.
+The runner writes `LAB/clock.md` (the table) between jobs once a day, and a `clock:` line in runner.log when a step is flagged;
+tools/fidelity/readiness.py puts the flagged steps in readiness.json under `lab.clock`. Lines from before the runner wrote the figures
+carry only the wall, so only LONG can fire on them.
 
 ## The Windows task
 
