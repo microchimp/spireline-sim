@@ -736,8 +736,9 @@ def train_cmd(a: argparse.Namespace) -> int:
         cand = built
         print(f"gen{cand_gen}/{built.name} was built, not trained (agent.json `{gen_loop.BUILT_KEY}`): it is judged as it is", flush=True)
     else:
+        cap = a.max_fights or gen_loop.MAX_FIGHTS
         cand = gen_loop.train_generation(gen, Path(a.shards_root), Path(a.agent_root), device=a.device, epochs=a.epochs,
-                                         max_fights=a.max_fights * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
+                                         max_fights=cap * (retrain + 1), threads=a.threads, vrun=not a.no_vrun,
                                          retrain=retrain, policy_target=a.policy_target,  # a retrain draws on the larger window
                                          exclude_prior_paths=exclude_prior_paths(getattr(a, "exclude_prior_paths", None)),
                                          seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else [],  # the lab's generated E-blocks too
@@ -1064,7 +1065,8 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--agent-root", required=True)
     t.add_argument("--device", default=None, help="cuda or cpu (default: cuda when torch sees one)")
     t.add_argument("--epochs", type=int, default=16)
-    t.add_argument("--max-fights", type=int, default=6400)
+    t.add_argument("--max-fights", type=int, default=None, help="fights for the combat net at the first try (default "
+                   "gen_loop.MAX_FIGHTS; x2 and x3 at the retrains)")
     t.add_argument("--threads", type=int, default=6)
     t.add_argument("--no-vrun", action="store_true")
     t.add_argument("--vrun-seed", help="a V_run fit (run_value.npz) the candidate carries unless its own new fit passes the keep test "

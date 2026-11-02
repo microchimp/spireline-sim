@@ -48,7 +48,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AGENT_ROOT = ROOT.parents[1] / "referee" / "agent"
 GEN_WINDOW = 3  # DESIGN 5.4: train on the last 3 generations
 BUDGET_RUNS = 2000  # self-play runs per generation before its train marker
-MAX_FIGHTS = 6400  # DESIGN 5.4: fights sampled for the combat net
+# DESIGN 5.4: fights sampled for the combat net at a candidate's first try (x2, x3 at its retrains). 6,400 until 2026-11-02, when it
+# drew 5 to 13% of the 75,000 to 120,000 fights a candidate has (D44 finding 4). The train job's slot (LAB/jobs.json train
+# timeout_min 330) bounds it: about 32 ms of GPU a fight over 16 epochs (train.json combat.wall_min, gen 9 and 10), so the third
+# try's 96,000 fights take about 51 min, and the slowest train job seen (11,365 s, plus 13 min more V_run fit at the third try)
+# ends near 248 min, 82 min inside the slot.
+MAX_FIGHTS = 32000
 PART_RUNS = 50
 ACT1_LAST_FLOOR = 17  # the Act 1 boss is floor 17; a run past it killed the boss
 ALPHA = 0.01

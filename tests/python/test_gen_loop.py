@@ -985,7 +985,12 @@ class RetrainAfterRejectionTests(unittest.TestCase):
                 rc = gen0.main(["train", "--marker-dir", str(marker_dir), "--shards-root", d, "--agent-root", d])
             self.assertEqual(rc, 0)
             self.assertEqual(tg.call_args[0][0], 7)
-            self.assertEqual((tg.call_args[1]["retrain"], tg.call_args[1]["max_fights"]), (1, 12800))
+            self.assertEqual((tg.call_args[1]["retrain"], tg.call_args[1]["max_fights"]), (1, 2 * gen_loop.MAX_FIGHTS))
+            self.assertEqual(gen_loop.MAX_FIGHTS, 32000)  # the train job passes no --max-fights: this is its cap (D44 step E)
+            (marker_dir / "ready-7-r1").write_text("x")
+            with mock.patch.object(gen_loop, "train_generation", return_value=Path(d) / "gen8" / "candidate-r1") as tg:
+                gen0.main(["train", "--marker-dir", str(marker_dir), "--shards-root", d, "--agent-root", d, "--max-fights", "100"])
+            self.assertEqual(tg.call_args[1]["max_fights"], 200)  # an explicit cap still wins
 
     def test_a_retrain_keeps_the_rejected_candidate(self):
         runs, agents, first = trained_candidate()
