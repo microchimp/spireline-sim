@@ -16,6 +16,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
 | `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |
 | `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects, GetSystemTimes, mutex |
+| `stepcache.py` | the skip-by-inputs stamps (`LAB/stamps/<step>.json`): digests of a step's inputs, the engine digest, `skip_reason` / `write_stamp` |
 | `register_task.ps1` | registers "Spireline fix lab" (`-Trigger Idle` or `Logon`, `-WhatIf`, `-Unregister`) |
 
 ## CLI
@@ -27,7 +28,7 @@ python tools/lab/runner.py [--lab D:/spireline/referee/lab] [--tree D:/spireline
     [--fights 300] [--batch 50] [--servers 8] [--procs 8] [--mutants 150]
     [--shrink 1000] [--shrink-cap 160] [--shrink-budget 6000] [--shrink-minutes 45] [--trace 1000] [--trace-minutes 20]
     [--runs 40] [--run-batch 10] [--run-procs 4] [--run-stop-act 3]
-    [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
+    [--report-beside auto|on|off] [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
     [--fork <main checkout>] [--branch main] [--game-src D:/spireline/referee/game] [--backlog-dir ...] [--backlog FILE]
     [--codex DATASET] [--decompiled DIR] [--records DIR] [--poll 2] [--wait-poll 10] [--idle-poll 300]
 ```
@@ -109,6 +110,39 @@ backlog for aimed-bugs, ...) is passed over with the reason, and one that fails 
   missing a rule. Otherwise skipped (probes.py takes a list of ids, not a queue).
 - `mutation`: `mutate prepare/schemata/report` on the biggest raw batch of the newest fights job; `mutation.json` is the reach data.
 - `invariants`: `invariants meta` (chooser seeds grow by 4 each pass) and `invariants run` over the recorded fights.
+
+## Skip by inputs, and the report beside the next job
+
+A step that is a function of files records a digest of those files beside its output (`LAB/stamps/<step>.json`, written when the
+step succeeds); the next time the step runs it first digests its inputs, and when the digest is the one in the stamp **and every
+output the stamp names is still there with the size and time it was written**, the step is skipped, its earlier output stands, and one
+line says so (`step skipped: ...` in the step's log; the runner's own `skipped (inputs unchanged ...)` for the presort checks). A
+missing, pruned or rewritten output, a changed input, a changed digest of the code, `--force` (groups and kits) all run the step. No
+timer: a step that changes rarely but not never (the groups file) reruns the day an input changes.
+
+| step | where it skips | inputs (digest of) |
+|---|---|---|
+| `codex-s0..3` | the runner (`plans.check_parts`) | the engine (`stepcache.engine_digest`: `src/Sts2Emulator`, `tools/emudump`, the invariant checks EmuDump compiles in, the data files and build settings it copies), the Codex dataset (size, time), the decompile folder, the shard |
+| `corpus` | the runner | the engine, `corpus.py` with the fidelity comparators and data files, the corpus index (the fights) |
+| `refset` | the runner | the engine, `refset_score.py` with the comparators and `referee/refset.py`, the reference set's manifest and records |
+| `groups` | the tool (`lab_groups.py`, `--force` to rerun) | every file a source is read from (the batches' `<name>.*` files and packs, runs, corpus / refset / codex / invariants / mutation outputs of every finished job: size and time), the newest backlog, `id_map.json`, `sweep_map.json`, `FINDINGS.md`, the host gaps, `retests.json`, the Codex profile, the decompile's model files, and the grouping code |
+| `kits` | the tool (`packet.py --groups`, `--force` to rerun) | the top items, the groups those items would take (the first three matches, whole, and how many more: a group no item matches does not count), the engine and the xunit tests, the Python tools, the evidence files by content (ledger, findings, attempts, `id_map`, `sweep_map`, corpus index) and the evidence folders by their entries (probes, traces, minimal packs, reference set, Codex walk, corpus runs) |
+
+The tree's sha is not an input: a landing that changes none of the above (lab code, `rl/`, docs, the xunit tests) leaves every digest
+as it was, so only the steps whose inputs moved run. The groups and kits skip inside the tools, so they take effect when the tree is
+at a commit that has them (the next presort); the three presort checks skip in `plans.py`, which the runner process loads when it
+starts. Not tracked: the corpus check's nearest-ancestor baseline (the lab reads its `results.json`, which does not depend on it);
+raw recordings a group's examples point to (a kit built before their pruning stands); folders searched deeper than one level for kits.
+
+**The report beside the next job.** With `--always-on` (or `--report-beside on`) a job that ends well hands its groups and kits to the
+runner's *report*: the job is finished at once (done.rc, state), the next job starts, and one chain per time (groups, then kits; a
+failed groups stops the chain) runs in a Job Object of its own beside it, at the runner's BelowNormal priority. The chain covers every
+job that finished since the last one started; each gets its `yield.tsv` row when the chain ends (group columns NA when groups did not
+finish). It stops at once on any guard except a held `main.lock` (user, pause, load, disk, halt: the covered jobs wait for the next
+chain), waits for the tree: a presort first lets it end (the tools run from the tree), is never started while a nightly window is open
+(`LAB/nightly/active`) and is stopped when a nightly-real job starts. The report's CPU is kept out of the jobs' CPU accounts (the
+mix schedules on them). A fault in the machinery turns it off for the process and the groups and kits are steps of each job again.
+Off for `--once`, `--trial` and `--dry-run`. `corpus-import` stays a step of the fights job (prune checks the groups file's time).
 
 ## Yield
 

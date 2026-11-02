@@ -84,6 +84,7 @@ from tools.fidelity.corpus import (  # noqa: E402
     judge_reanchor,
 )
 from tools.fidelity.rng_diff import LABELLED_FLAGS, NO_INLINING  # noqa: E402
+from tools.lab import stepcache as sc  # noqa: E402
 
 DEFAULT_REFEREE = Path(os.environ.get("SPIRELINE_REFEREE", r"D:\spireline\referee"))
 BELOW_NORMAL = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
@@ -2814,6 +2815,49 @@ def write_packets(items: list, cx: Context, out: Path, forced: dict | None = Non
     return results
 
 
+# ================================================================== skip the kits when their inputs have not changed
+
+def shallow_sig(path: Path | None) -> str:
+    """A folder as its entries' names, sizes and times (one level): it moves when a file is added, removed or written in it."""
+    if path is None or not Path(path).is_dir():
+        return sc.MISSING
+    try:
+        return sc.digest({"e": [[e.name, e.is_dir(), *(lambda st: (st.st_size, st.st_mtime_ns))(e.stat())] for e in sorted(os.scandir(path), key=lambda e: e.name)]})
+    except OSError:
+        return sc.MISSING
+
+
+def kit_inputs(src: Sources, items: list, groups_doc: dict, a: argparse.Namespace) -> dict:
+    """The named inputs of a run of `--groups` kits, each a short digest: the items; for each item the groups the kit would take
+    (the first MAX_GROUPS matches, whole, and how many more there are: the groups no item matches do not matter); the engine
+    and the Python tools the packet runs; the evidence files by content and the evidence folders by their entries."""
+    names = Names(read_json(src.id_map, {}) or {})
+    slices = []
+    for it in items:
+        matches = kt.matching_groups(it, set(entities_in(item_text(it), names)), groups_doc)
+        slices.append([it["id"], [g for g, _ in matches[: kt.MAX_GROUPS]], len(matches)])
+    ref = Path(src.referee)
+    folders = [src.probes, *src.probes_more, *src.trace_dirs, *src.minimal_dirs, src.refset, src.codex_walk,
+               Path(src.corpus) / "runs" if src.corpus else None]
+    newest = sorted((d for d in Path(src.codex_walk).iterdir() if d.is_dir()), key=lambda d: d.name)[-1:] if src.codex_walk and Path(src.codex_walk).is_dir() else []
+    return {"items": sc.digest({"items": items}), "groups": sc.digest({"slices": slices}),
+            "engine": sc.engine_digest(ROOT), "tests": sc.tree_hash(src.tests, (".cs",)) if Path(src.tests).is_dir() else sc.MISSING,
+            "tools": sc.tools_digest(ROOT),
+            "files": sc.files_hash([p for p in (src.ledger, src.findings, src.attempts, src.id_map, src.sweep_map, src.walker,
+                                                Path(src.corpus) / "index.json" if src.corpus else None) if p], None),
+            "stats": sc.digest({"run": sc.stat_sig(src.run) if src.run else "", "emudump": sc.stat_sig(src.emudump) if src.emudump else "",
+                                "codex": sc.stat_sig(src.codex_data) if src.codex_data else "", "decompiled": sc.decompiled_sig(src.decompiled) if src.decompiled else ""}),
+            "folders": sc.digest({"d": [shallow_sig(f) for f in folders] + [shallow_sig(d) for d in newest]}),
+            "flags": sc.digest({"kit_test": not a.no_kit_test, "emudump": not a.no_emudump, "sweep": not a.no_sweep, "probes": a.refresh_probes}),
+            "refs": str(ref.name)}
+
+
+def kit_outputs(items: list, out: Path) -> dict:
+    """What a kits run leaves in the packets folder: its index files and one packet per item."""
+    names = ["grades.json", "completeness.json", "index.md"] + [f"{it['id']}.md" for it in items]
+    return {n: Path(out) / n for n in names}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("ids", nargs="*", help="backlog item ids (as --item)")
@@ -2835,6 +2879,7 @@ def main(argv=None) -> int:
     ap.add_argument("--groups", type=Path, help="the fix lab's groups.json: add a fix kit to each packet and write grades.json (tools/fidelity/kit.py)")
     ap.add_argument("--lab", type=Path, help="the lab the groups' refs are relative to (default: the folder of --groups)")
     ap.add_argument("--no-kit-test", action="store_true", help="with --groups: do not generate, compile or run the kits' failing tests")
+    ap.add_argument("--force", action="store_true", help="with --groups: build the kits again even when no input changed since the last run (LAB/stamps/kits.json)")
     a = ap.parse_args(argv)
     a.item = list(a.ids) + [i for i in a.item if i not in a.ids]
 
@@ -2872,11 +2917,23 @@ def main(argv=None) -> int:
         forced[fid] = [ref]
     if not items:
         ap.error("give --item, --top, --fight or --item-file")
+    kit_doc = kt.load_groups(a.groups) if a.groups else None
+    stamp_lab, want, parts, outs = None, None, None, None
+    if kit_doc is not None:  # the kits are a function of the files below: when none changed, the folder's last run stands
+        stamp_lab = a.lab or a.groups.resolve().parent
+        parts = kit_inputs(src, items, kit_doc, a)
+        want, outs = sc.digest(parts), kit_outputs(items, out)
+        why = None if a.force else sc.skip_reason(stamp_lab, "kits", want, outs)
+        if why:
+            print(f"step skipped: kits: {why}")
+            return 0
     with tempfile.TemporaryDirectory(prefix="packet-") as tmp:
         cx = Context.build(src, Path(tmp), out / "sweeps", do_sweep=not a.no_sweep, refresh=a.refresh_probes)
         if a.groups:
-            cx.kit_cfg = {"groups": kt.load_groups(a.groups), "lab": a.lab or a.groups.resolve().parent, "verify": not a.no_kit_test}
+            cx.kit_cfg = {"groups": kit_doc, "lab": a.lab or a.groups.resolve().parent, "verify": not a.no_kit_test}
         results = write_packets(items, cx, out, forced, a.jobs)
+    if want is not None:
+        sc.write_stamp(stamp_lab, "kits", want, outs, parts={k: str(v)[:16] for k, v in parts.items()})
     for pk_ in results:  # what the loop hands to each fixer: the path of its packet
         print(f"packet {pk_['item']['id']}: {(out / (pk_['item']['id'] + '.md')).resolve().as_posix()}"
               + (f" (kit grade {pk_['kit']['grade']})" if "kit" in pk_ else ""))

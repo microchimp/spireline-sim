@@ -111,6 +111,12 @@ def score_active(lab: Path) -> bool:
     return a is not None and a < ACTIVE_STALE_H
 
 
+def nightly_active(lab: Path) -> bool:
+    """A nightly-real window is open (its marker is fresh): nothing of the lab may run beside the real-game arms."""
+    a = _age_h(Path(lab) / "nightly" / "active")
+    return a is not None and a < ACTIVE_STALE_H
+
+
 GPU_OK_FILE = "D:/spireline/referee/GPU_OK"  # rl/gen0.py GPU_OK_FILE: the lines of the lanes that allow a GPU fit beside the real-game arm
 CONSENT_TAG = "lab-nightly"  # rl/nightly_real.py TAG: the line a nightly-real job keeps first in GPU_OK while its real-game arm plays
 

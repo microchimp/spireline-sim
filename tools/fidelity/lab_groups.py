@@ -47,6 +47,7 @@ import datetime
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -56,6 +57,7 @@ for p in (ROOT, ROOT / "referee"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+from tools.lab import stepcache as sc  # noqa: E402
 from tools.fidelity.lab_targets import (  # noqa: E402
     BASIC_CARDS,
     REFEREE,
@@ -693,6 +695,58 @@ def job_outputs(job: Path, when: str, have: set) -> list[tuple[str, Path, str]]:
     return out
 
 
+# ================================================================== skip the step when its inputs have not changed
+
+GROUPS_CODE = ("tools/fidelity/lab_groups.py", "tools/fidelity/lab_targets.py", "tools/fidelity/hook_table.py", "tools/lab/stepcache.py")
+
+
+def source_files(kind: str, path: Path, listing: dict, referee: Path) -> list[Path]:
+    """The files the reader of one source looks at: a batch's <name>.* files and its .packs folder, a runs.json and the
+    <name>-repro.* files beside it, a codex walk's *.jsonl, a reference-set score and its manifest, else the file itself.
+    `listing` caches folder listings."""
+    def ls(d: Path) -> list[str]:
+        if d not in listing:
+            try:
+                listing[d] = sorted(os.listdir(d))
+            except OSError:
+                listing[d] = []
+        return listing[d]
+
+    path = Path(path)
+    if kind == "batch":
+        files = [path.parent / n for n in ls(path.parent) if n.startswith(path.name + ".") and not n.endswith(".packs")]
+        packs = path.parent / (path.name + ".packs")
+        if packs.is_dir():
+            files += sc.walk_files(packs)
+        return files
+    if kind == "run":
+        stem = path.name.removesuffix(".runs.json")
+        return [path] + [path.parent / n for n in ls(path.parent) if n.startswith(stem + "-repro.")]
+    if kind == "codex":
+        return [path / n for n in ls(path) if n.endswith(".jsonl")]
+    if kind == "refset":
+        return [path, referee / "refset" / "v2" / "manifest.json"]
+    return [path]
+
+
+def inputs_parts(lab: Path, sources: list, backlog_path: Path | None, host_gaps: Path, decompiled: Path, referee: Path) -> dict:
+    """The named inputs of the grouping, each a short digest: every file a source is read from (size and time: a finished job's
+    recordings are written once), the fix list and the other small files by content, the Codex profile, the decompile's model
+    files, and the code that does the grouping. The tree's sha is not one of them: only the code is."""
+    listing: dict = {}
+    files: list[Path] = []
+    for kind, path, _when in sources:
+        files += source_files(kind, Path(path), listing, referee)
+    models = sorted(Path(decompiled).glob("MegaCrit.Sts2.Core.Models*/*.cs")) if Path(decompiled).is_dir() else []
+    return {"sources": sc.stats_hash(files, lab), "n_sources": len(sources),
+            "backlog": sc.file_hash(backlog_path) if backlog_path else sc.MISSING,
+            "small": sc.files_hash([ROOT / "data" / "id_map.json", ROOT / "data" / "sweep_map.json", ROOT / "referee" / "FINDINGS.md",
+                                    Path(host_gaps), Path(lab) / "retests.json"], None),
+            "profile": sc.stat_sig(profile_path(lab)),
+            "models": f"{len(models)}:{max((m.stat().st_mtime_ns for m in models), default=0)}",
+            "code": sc.files_hash([ROOT / c for c in GROUPS_CODE], ROOT)}
+
+
 # ================================================================== grouping
 
 class DSU:
@@ -1253,6 +1307,7 @@ def main(argv=None) -> int:
     ap.add_argument("--decompiled", type=Path, default=DECOMPILED)
     ap.add_argument("--host-gaps", type=Path, default=HOST_GAPS)
     ap.add_argument("--referee", type=Path, default=REFEREE)
+    ap.add_argument("--force", action="store_true", help="group again even when no input changed since the last run (LAB/stamps/groups.json)")
     a = ap.parse_args(argv)
 
     lab = a.lab.resolve()
@@ -1269,6 +1324,14 @@ def main(argv=None) -> int:
     sources += [("mutation", p, stamp_utc(p)) for p in a.mutation]
     read = {"batch": batch_symptoms, "run": run_symptoms, "corpus": corpus_symptoms, "refset": refset_symptoms, "codex": walk_symptoms,
             "invariants": invariant_symptoms, "mutation": mutation_symptoms}
+    backlog_path = a.backlog or newest_backlog(a.referee)
+    parts = inputs_parts(lab, sources, backlog_path, a.host_gaps, a.decompiled, a.referee)
+    want = sc.digest(parts)
+    outputs = sc.outputs_of(lab, [a.out, a.summary])
+    why = None if a.force else sc.skip_reason(lab, "groups", want, outputs)
+    if why:  # nothing the grouping reads has changed: the file it wrote stands
+        print(f"step skipped: groups: {why}")
+        return 0
     per_source, pools = collections.Counter(), {}
     for kind, path, when in sources:
         got = read[kind](Path(path), lab, when)
@@ -1286,7 +1349,6 @@ def main(argv=None) -> int:
     with contextlib.suppress(OSError):
         findings = (ROOT / "referee" / "FINDINGS.md").read_text(encoding="utf-8")
     hosts = HostGaps(read_json(a.host_gaps), findings)
-    backlog_path = a.backlog or newest_backlog(a.referee)
     items = backlog_index(read_json(backlog_path) if backlog_path else None, id_map)
     groups = build(symptoms, feats, prof, hosts, items, read_json(a.out), pools, read_json(lab / "retests.json", {}) or {})
     doc = {"main_sha": git_sha(), "generated_utc": utc_now(),
@@ -1298,6 +1360,7 @@ def main(argv=None) -> int:
     text = summary_md(doc, symptoms)
     a.summary.parent.mkdir(parents=True, exist_ok=True)
     a.summary.write_text(text, encoding="utf-8")
+    sc.write_stamp(lab, "groups", want, outputs, job=a.job[0].name if a.job else "", parts={k: str(v)[:16] for k, v in parts.items()})
     rel_ = collections.Counter(g["relation"] for g in groups)
     print(f"groups: {len(groups)} from {len(symptoms)} symptoms; {dict(rel_)}; host-suspect {sum(g['host_suspect'] for g in groups)}; stale {sum(bool(g.get('stale')) for g in groups)}"
           + (f"; stale host-gap entries {hosts.stale_entries}" if hosts.stale_entries else ""))

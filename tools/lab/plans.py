@@ -23,6 +23,7 @@ from typing import Any
 from tools.lab import hypotheses as hyp
 from tools.lab import jobs as jobkinds
 from tools.lab import retest
+from tools.lab import stepcache as sc
 from tools.lab.winsys import NO_WINDOW
 
 TOKEN = re.compile(r"\{(\w+)\}")
@@ -59,6 +60,7 @@ class Ctx:
     game_src: Path
     nuget: Path
     skip: tuple[str, ...] = ()
+    report_beside: bool = False  # groups and kits run beside the next job (runner.Report), not as steps of this one
 
     def tokens(self) -> dict[str, str]:
         f = lambda p: str(p).replace("\\", "/")  # noqa: E731
@@ -161,15 +163,17 @@ def plan_presort(c: Ctx) -> list[Step]:
                                 "--character", "IRONCLAD", "--ascension", "10", "--shard", f"{i}/4"],
                  stderr=f"{{job}}/codex/s{i}.err", needs=["{tree}/" + EMUDUMP, "{codex}", "{decompiled}"], mkdirs=["{job}/codex"],
                  cleanup=[f"{{job}}/codex/s{i}.*"], outputs={"codex_walk": f"codex/s{i}.jsonl", "codex_walk_err": f"codex/s{i}.err"},
-                 core=True) for i in range(4)]
+                 core=True, when=_unchanged(f"codex-s{i}"), post=_stamp_after(f"codex-s{i}", [f"codex/s{i}.jsonl"])) for i in range(4)]
     # Both keep their results outside the job (the refset's scores folder, the corpus's runs folder); a copy goes
     # into the job folder under the roles lab_groups reads, so their symptoms reach the groups.
     refset = Cmd("refset", ["{py}", "-m", "tools.fidelity.refset_score", "--emu", "{tree}", "--procs", str(p["procs_refset"]),
                             "--label", "lab-{sha7}"], needs=["{tree}/tools/fidelity/refset_score.py", "{tree}/" + EMUDUMP],
-                 ok_rcs=(0, 1), outputs={"refset_score": "refset/score.json"}, core=True, post=_keep_refset)
+                 ok_rcs=(0, 1), outputs={"refset_score": "refset/score.json"}, core=True, when=_unchanged("refset"),
+                 post=_stamp_after("refset", ["refset/score.json"], _keep_refset))
     corpus = Cmd("corpus", ["{py}", "tools/fidelity/corpus.py", "check", "--no-scan", "--procs", str(p["procs_corpus"]), "--label", "lab-{sha7}"],
                  needs=["{tree}/tools/fidelity/corpus.py", "{tree}/" + EMUDUMP], ok_rcs=(0, 1),
-                 outputs={"corpus": "corpus/results.json"}, core=True, post=_keep_corpus)
+                 outputs={"corpus": "corpus/results.json"}, core=True, when=_unchanged("corpus"),
+                 post=_stamp_after("corpus", ["corpus/results.json"], _keep_corpus))
     return [
         Step("tree", [Cmd("worktree-add", ["git", "-C", "{fork}", "worktree", "add", "--detach", "{tree}", "{sha}"], cwd="{fork}",
                           when=lambda c: "tree exists" if (c.tree / ".git").exists() else None),
@@ -190,6 +194,52 @@ def plan_presort(c: Ctx) -> list[Step]:
         Step("corpus", [corpus]),
         *report_steps(c),
     ]
+
+
+# ---- skip a check whose inputs have not changed (tools/lab/stepcache.py; reset order D44 step D)
+
+CORPUS_CODE = ("tools/fidelity/corpus.py", "tools/fidelity/fight_compare.py", "tools/fidelity/reanchor_compare.py")
+REFSET_CODE = ("tools/fidelity/refset_score.py", "tools/fidelity/fight_compare.py", "tools/fidelity/reanchor_compare.py", "referee/refset.py")
+
+
+def check_parts(c: Ctx, step: str) -> dict[str, str]:
+    """The named inputs of a presort check, each as a short digest. The tree's sha is not one of them: what the checks read of
+    it is the engine (emulator and EmuDump sources, the data they copy) and the check's own code, so a landing that changes
+    neither leaves the digest as it was. Read-only; evaluated just before the check would run, after the tree step."""
+    t = c.tree
+    data = [t / "tools/fidelity" / n for n in ("allowed_diff.json", "fuzz_explained.json", "hook_dispatch.json", "hook_families.json")]
+    if step.startswith("codex-s"):  # EmuDump codex <dataset> --decompiled <dir> --character IRONCLAD --ascension 10 --shard i/4
+        return {"engine": sc.engine_digest(t), "codex": sc.stat_sig(c.codex), "decompiled": sc.decompiled_sig(c.decompiled),
+                "args": f"IRONCLAD A10 shard {step[len('codex-s'):]}/4"}
+    if step == "corpus":  # the corpus check reads the corpus index (the fights) and replays them with EmuDump
+        root = corpus_root(t)
+        return {"engine": sc.engine_digest(t), "code": sc.files_hash([t / r for r in CORPUS_CODE] + data, t),
+                "corpus": sc.file_hash(root / "index.json") if root else sc.MISSING}
+    if step == "refset":  # the reference set's records and manifest, scored with EmuDump
+        ref = c.backlog_dir.parent / "refset" / "v2"
+        return {"engine": sc.engine_digest(t), "code": sc.files_hash([t / r for r in REFSET_CODE] + data, t),
+                "set": sc.digest({n: sc.stat_sig(ref / n) for n in ("manifest.json", "refs-all.json", "refs-pilot.json", "record")})}
+    raise KeyError(step)
+
+
+def _unchanged(step: str) -> Callable[[Ctx], str | None]:
+    """The check's `when`: skipped when its last stamp holds the digest of its inputs now and its output is still as written."""
+    return sc.when_unchanged(lambda c: c.lab, step, lambda c: sc.digest(check_parts(c, step)))
+
+
+def _stamp_after(step: str, outputs: list[str], then: Callable[[Ctx], str | None] | None = None) -> Callable[[Ctx], str | None]:
+    """The check's `post`: what `then` does, and when that finds no problem the stamp that lets the next presort skip the check."""
+    def post(c: Ctx) -> str | None:
+        problem = then(c) if then else None
+        if problem:
+            return problem
+        try:
+            parts = check_parts(c, step)
+            sc.write_stamp(c.lab, step, sc.digest(parts), [c.job_dir / o for o in outputs], job=c.job_name, parts=parts)
+        except Exception as e:  # noqa: BLE001  (a stamp that cannot be written only means the next presort runs the check)
+            return f"no skip stamp for {step}: {type(e).__name__}"
+        return None
+    return post
 
 
 def _copy_in(src: Path | None, dst: Path, what: str) -> str | None:
@@ -237,8 +287,9 @@ def game_cmd() -> Cmd:
                needs=["{tree}/referee/linkcopy.py", "{game_src}"], when=lambda c: "game copy exists" if c.game.exists() else None)
 
 
-def report_steps(c: Ctx) -> list[Step]:
-    """Groups and kits (other branches' tools; skipped where the tree does not have them yet)."""
+def report_cmds(c: Ctx) -> list[Cmd]:
+    """Groups and kits (other branches' tools; skipped where the tree does not have them yet). Both skip themselves when nothing they
+    read has changed (tools/lab/stepcache.py) and say so on a line starting 'step skipped'."""
     bl = ["--backlog", "{backlog}"] if c.backlog else []
     # This job has no done.rc while its groups step runs: name it, so its own fights and checks are grouped now.
     own = ["--job", "{job}"] if source_has(c.tree / "tools/fidelity/lab_groups.py", '"--job"')[0] else []
@@ -247,6 +298,14 @@ def report_steps(c: Ctx) -> list[Step]:
     kits = Cmd("kits", ["{py}", "-m", "tools.fidelity.packet", "--top", "20", "--groups", "{lab}/groups.json", *bl,
                         "--out", "{backlog_dir}/packets"],
                needs=["{tree}/tools/fidelity/packet.py", "{lab}/groups.json"], when=_kits_ready)
+    return [groups, kits]
+
+
+def report_steps(c: Ctx) -> list[Step]:
+    """The job's groups and kits steps; none when they run beside the next job (the runner's report, runner.Report)."""
+    if c.report_beside:
+        return []
+    groups, kits = report_cmds(c)
     return [Step("groups", [groups]), Step("kits", [kits])]
 
 

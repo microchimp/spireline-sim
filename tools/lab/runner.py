@@ -20,7 +20,9 @@ first unfinished step if main has not moved, else closed with done.rc 3.
 The runner makes no AI calls and no network use. It lowers its own priority to BelowNormal (children inherit
 it), lives in a Job Object with KILL_ON_JOB_CLOSE (children die with it, however it ends), and gives the machine
 back on user input, on sustained load from other processes, on LAB/PAUSE or backlog/main.lock, and when disk
-runs short (tools/lab/guards.py). backlog/main.lock stops only a running presort (the one job that touches git
+runs short (tools/lab/guards.py). With --always-on the groups and kits of a finished job run beside the next job (Report, below),
+one at a time, at the runner's BelowNormal priority; they stop for the guards, for a presort's tree and for a nightly window.
+backlog/main.lock stops only a running presort (the one job that touches git
 state) and holds every new job; any other running job carries on under it. Exit 0 when it stopped for any of those or finished a --trial / --once; 1 on
 a crash; 2 on bad arguments.
 """
@@ -51,6 +53,8 @@ from tools.lab import guards, jobs, mix, plans, prune, winsys  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
 ROTATION = ("fights", "fights", "probes", "fights", "mutation", "fights", "invariants")  # after presort, by value
+REPORT_JOBS = ("presort", "fights", "runs", "probes", "invariants")  # the jobs that end with groups and kits (plans.report_steps)
+REPORT_TIMEOUT_S = 2 * 3600.0  # a report command that runs longer is stopped (the longest groups step seen took 65 minutes)
 DEFAULTS = {
     "lab": "D:/spireline/referee/lab", "tree": "D:/spireline/fork/wt-lab", "game": "D:/spireline/referee/game-lab",
     "game_src": "D:/spireline/referee/game", "backlog_dir": "D:/spireline/referee/backlog",
@@ -126,6 +130,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--once", choices=JOB_TYPES, default=None, help="run one job of this type, then exit")
     ap.add_argument("--always-on", action="store_true",
                     help="for the logon task: keyboard and mouse input and LAB/HALT pause the lab instead of ending the runner")
+    ap.add_argument("--report-beside", choices=("auto", "on", "off"), default="auto",
+                    help="run the groups and kits of a finished job beside the next job instead of as its last steps; auto: on with --always-on, "
+                         "off with --once, --trial and --dry-run")
     ap.add_argument("--dry-run", action="store_true", help="print the guards, the next job and its plan; change nothing")
     ap.add_argument("--skip", default="", help="comma-separated step or command name prefixes to skip (codex, refset, corpus, ...)")
     ap.add_argument("--no-guard", default="", help=f"comma-separated guards to switch off for a test: {','.join(guards.GUARD_NAMES)}")
@@ -263,6 +270,22 @@ class Running:
         self.cmd, self.proc, self.files, self.t0, self.in_job = cmd, proc, files, t0, in_job
 
 
+def rep_cpu(rep: Report | None) -> float:
+    return rep.sj.cpu_time() / 1e7 if rep is not None else 0.0
+
+
+class Report:
+    """The groups and kits of finished jobs, running beside the next job: one chain at a time, groups then kits, in a Job Object of
+    their own. It covers every job that finished since the last chain started; each of them gets its yield row when the chain ends."""
+
+    def __init__(self, run: Run, ctx: plans.Ctx, cmds: list[plans.Cmd], covers: list[tuple[Run, int]], sj: winsys.JobObject):
+        self.run, self.ctx, self.cmds, self.covers, self.sj = run, ctx, cmds, covers, sj
+        self.running: Running | None = None
+        self.failed = False
+        self.ok: dict[str, bool] = {}
+        self.t0 = time.monotonic()
+
+
 # ---------------------------------------------------------------- the runner
 
 LAB_SOURCES = Path(__file__).resolve().parent
@@ -315,6 +338,13 @@ class Runner:
         self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
         self.code_stale_logged = ""
         self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
+        self.report_beside = a.report_beside == "on" or (a.report_beside == "auto" and a.always_on and a.once is None
+                                                          and a.trial is None and not a.dry_run)
+        self.report: Report | None = None  # the chain running beside the job
+        self.report_cpu_done = 0.0  # CPU seconds of the reports that ended or were stopped
+        self.report_due: list[tuple[Run, int]] = []  # finished jobs whose groups and kits have not run yet
+        self.running_job: str | None = None  # the type of the job execute() is running
+        self.guards_ok = True  # the last guard reading allowed work (a main.lock does not stop the report)
         self.lock_stops = True  # main.lock stops what runs now: only a presort (set by execute); between jobs it holds every pick
         self._lock_episode = False  # a "main.lock held: ... continues" line was written for the lock that is up now
 
@@ -348,6 +378,8 @@ class Runner:
             extra = (extra + " " if extra else "") + f"other_cpu={rd['load'][0]}%/{rd['load'][1]}s"
         if self.current and self.current_strategy:
             where += f" strategy={self.current_strategy}"
+        if self.report:
+            where += f" report={self.report.run.name}"
         line = (f"{utc()} {state} {where} since={self.since} tree={main} jobs_done={sum(c['jobs_done'].values())} "
                 f"fights={c['fights']} runs={c.get('runs', 0)} interrupts={intr}" + (f" | {extra}" if extra else ""))
         try:
@@ -362,6 +394,8 @@ class Runner:
 
     def prune_some(self, need: int) -> int:
         busy = {self.current[0]} if self.current else set()
+        if self.report:  # the report reads its covered jobs' recordings
+            busy |= {r.name for r, _ in self.report.covers}
         freed = prune.prune(self.lab.root, need, busy)
         if freed:
             self.log(f"disk: pruned {freed / guards.GB:.2f} GB of raw outputs")
@@ -385,12 +419,15 @@ class Runner:
                          sha=sha, job_dir=run.dir if run else self.lab.runs / name, job_name=name, params=params,
                          backlog_dir=Path(a.backlog_dir), backlog=self.newest_backlog(), codex=Path(a.codex),
                          decompiled=Path(a.decompiled), records=Path(a.records), game_src=Path(a.game_src),
-                         nuget=Path(os.path.expanduser("~")) / ".nuget" / "packages", skip=self.skip)
+                         nuget=Path(os.path.expanduser("~")) / ".nuget" / "packages", skip=self.skip, report_beside=self.report_beside)
 
     def poll(self) -> guards.Verdict:
         if self.stop_signal:
             return guards.Verdict("signal", self.stop_signal, leave=True)
         v = self.guards.poll(self.lock_stops)
+        self.guards_ok = v.ok or v.kind == "lock"
+        if self.report and not self.guards_ok:  # the report gives the machine back at once (it starts over when the lab is free)
+            self.kill_report(str(v))
         if self.guards.readings.get("lock_ignored"):
             if not self._lock_episode:  # once per lock episode, at the first poll that sees it
                 self._lock_episode = True
@@ -661,8 +698,13 @@ class Runner:
             time.sleep(self.a.wait_poll)
 
     def cpu_secs(self) -> float:
-        """CPU seconds of everything the runner has started (its Job Object); 0 where there is none (a test)."""
-        return self.root_job.cpu_time() / 1e7 if self.root_job else 0.0
+        """CPU seconds of everything the runner has started for its jobs (its Job Object, less the reports that ran beside them,
+        which belong to no job's strategy); 0 where there is none (a test)."""
+        return max(0.0, self.root_job.cpu_time() / 1e7 - self.report_cpu()) if self.root_job else 0.0
+
+    def report_cpu(self) -> float:
+        """CPU seconds the reports have used in this process, the running one included."""
+        return self.report_cpu_done + (self.report.sj.cpu_time() / 1e7 if self.report else 0.0)
 
     def account(self, run: Run) -> None:
         """Add the CPU and wall seconds since the last call to the job's record (cpu_secs, wall_secs in job.json)."""
@@ -677,9 +719,15 @@ class Runner:
         self.current_strategy = (run.data.get("params") or {}).get("strategy")
         self._mark = (self.cpu_secs(), self.clock())
         self.lock_stops = run.job == "presort"  # the landing lock guards git state only the presort touches
+        self.running_job = run.job
         try:
+            if run.job == "presort":
+                self.drain_report("the presort moves the tree the report runs from")
+            elif run.job == "nightly-real":
+                self.kill_report("a nightly window opens")
             return self._execute(run)
         finally:
+            self.running_job = None
             self.lock_stops = True
             self.release_nightly_consent(run.job)  # however the job stopped (finished, interrupted, an exception): its games are gone
             if not (run.dir / "done.rc").exists():  # stopped, not finished: what it used so far is kept for the next stretch
@@ -769,15 +817,20 @@ class Runner:
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
         self.account(run)
-        self.record(run, rc)
+        beside = self.report_beside and rc == 0 and run.job in REPORT_JOBS  # its groups and kits run beside the next job
+        self.record(run, rc, yield_now=not beside)
         run.finish(rc)
         self.lab.save_state(st)
         self.log(f"job {run.name} finished rc={rc}")
         self.current = None
         self.status("idle")
+        if beside:
+            self.report_due.append((run, rc))
+            self.service_report()
 
-    def record(self, run: Run, rc: int) -> None:
-        """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv. Never fails the job."""
+    def record(self, run: Run, rc: int, yield_now: bool = True) -> None:
+        """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv (at once, or when the
+        report that groups it has ended: record_yield). Never fails the job."""
         try:
             data = run.data
             strategy = (data.get("params") or {}).get("strategy")
@@ -785,11 +838,155 @@ class Runner:
             if strategy:
                 cpu = self.state.setdefault("strategy_cpu", {})
                 cpu[strategy] = round(float(cpu.get(strategy, 0.0)) + spent, 1)
-            groups_ran = any(r.get("name") == "groups" and r.get("status") == "done" for r in data.get("steps", []))
+        except Exception:  # noqa: BLE001  (the record is a convenience; the job's own files are what matters)
+            self.log("strategy cpu not recorded: " + traceback.format_exc()[-400:])
+        if yield_now:
+            self.record_yield(run, rc)
+
+    def record_yield(self, run: Run, rc: int, groups_ran: bool | None = None) -> None:
+        try:
+            data = run.data
+            if groups_ran is None:
+                groups_ran = any(r.get("name") == "groups" and r.get("status") == "done" for r in data.get("steps", []))
             row = mix.yield_row(run.dir, dict(data, rc=rc), read_json(self.lab.root / "groups.json", None), groups_ran, utc())
             mix.append_yield(self.lab.root, row)
-        except Exception:  # noqa: BLE001  (the record is a convenience; the job's own files are what matters)
+        except Exception:  # noqa: BLE001
             self.log("yield not recorded: " + traceback.format_exc()[-400:])
+
+    # ---- the report: groups and kits beside the next job
+
+    def report_allowed(self) -> bool:
+        """A report may start: none runs, a job left groups to do, the guards allow work, no presort is moving the tree and no
+        nightly window is open (the real-game arms have the machine to themselves)."""
+        return (self.report_beside and self.report is None and bool(self.report_due) and self.guards_ok
+                and self.running_job not in ("presort", "nightly-real") and not jobs.nightly_active(self.lab.root))
+
+    def service_report(self) -> None:
+        """Called wherever the runner waits or loops: start the report when one is due, move a running one on. A fault here turns
+        the feature off for this process and writes the covered jobs' rows without group counts; it never fails a job."""
+        if not self.report_beside:
+            return
+        try:
+            self._service_report()
+        except Exception:  # noqa: BLE001
+            self.log("report beside: fault, groups and kits run as steps of each job from now on: " + traceback.format_exc()[-500:])
+            self.report_beside = False
+            self.kill_report("fault")
+            self.flush_report_rows()
+
+    def _service_report(self) -> None:
+        rep = self.report
+        if rep is None:
+            if self.report_allowed():
+                self.start_report()
+            return
+        r = rep.running
+        if r is None:
+            self.step_report()
+            return
+        rc = r.proc.poll()
+        now = self.clock()
+        if rc is None and r.cmd.timeout and now - r.t0 > r.cmd.timeout:
+            winsys.kill_tree_by_pid(r.proc.pid)
+            rc = r.proc.wait(timeout=30)
+            rep.run.rec(r.cmd.name)["cmds"].setdefault(r.cmd.name, {})["note"] = f"killed after the {r.cmd.timeout:.0f}s limit"
+        if rc is None:
+            return
+        rec = rep.run.rec(r.cmd.name)
+        failed = self.finish_cmd(rep.run, rep.ctx, r, rc, rec, now)
+        rec["status"] = "failed" if failed else "done"
+        rep.run.save()
+        rep.ok[r.cmd.name] = not failed
+        rep.failed = rep.failed or failed
+        rep.running = None
+        self.step_report()
+
+    def start_report(self) -> None:
+        covers = self.report_due
+        run = covers[-1][0]
+        ctx = self.ctx(run, run.job, run.data["main_sha"], run.data["params"])
+        cmds = plans.report_cmds(ctx)  # before the covered jobs leave the queue: a fault here keeps them
+        self.report = Report(run, ctx, cmds, covers, winsys.JobObject())
+        self.report_due = []
+        self.log(f"report beside: groups and kits of {', '.join(r.name for r, _ in covers)}, beside the next job")
+        self.step_report()
+
+    def step_report(self) -> None:
+        """Launch the chain's next command, or end the chain (after a failure the later commands do not run)."""
+        rep = self.report
+        assert rep is not None
+        while rep.running is None:
+            if not rep.cmds or rep.failed:
+                self.end_report()
+                return
+            cmd = rep.cmds.pop(0)
+            rec = rep.run.rec(cmd.name)
+            why = cmd.skip_reason(rep.ctx, cmd.name)
+            if why:
+                rec["cmds"][cmd.name] = {"status": "skipped", "note": why}
+                rec["status"] = "skipped"
+                self.log(f"{cmd.name}/{cmd.name}: skipped ({why})")
+                continue
+            cmd.timeout = cmd.timeout or REPORT_TIMEOUT_S
+            try:
+                rep.running = self.launch(rep.ctx, cmd, rep.sj, rep.run.dir / "logs")
+            except OSError as e:
+                rec["cmds"][cmd.name] = {"status": "failed", "rc": 127, "note": f"could not start: {type(e).__name__}"}
+                rec["status"] = "failed"
+                rep.failed = True
+                rep.ok[cmd.name] = False
+                self.log(f"{cmd.name}/{cmd.name}: could not start ({type(e).__name__})")
+                continue
+            rec["cmds"][cmd.name] = {"status": "running", "argv": cmd.symbolic()}
+            rec["status"] = "running"
+            rec["started_utc"] = utc()
+            rep.run.save()
+
+    def end_report(self) -> None:
+        self.report_cpu_done += rep_cpu(self.report)
+        rep, self.report = self.report, None
+        assert rep is not None
+        rep.sj.close()
+        rep.run.save()
+        for run, rc in rep.covers:
+            self.record_yield(run, rc, groups_ran=rep.ok.get("groups", False))
+        self.log(f"report beside: ended after {time.monotonic() - rep.t0:.0f}s ({'failed' if rep.failed else 'ok'}); "
+                 f"{len(rep.covers)} job(s) grouped")
+
+    def kill_report(self, why: str) -> None:
+        """Stop the running report; its covered jobs wait for the next one."""
+        if self.report is None:
+            return
+        self.report_cpu_done += rep_cpu(self.report)
+        rep, self.report = self.report, None
+        try:
+            rec = rep.run.rec(rep.running.cmd.name) if rep.running else {"cmds": {}}
+            self.kill_group(rep.ctx, rep.sj, [rep.running] if rep.running else [], rec)
+        finally:
+            rep.sj.close()
+        for rname in ("groups", "kits"):  # a stopped command is neither done nor failed: it runs in the next report
+            r = next((x for x in rep.run.data["steps"] if x["name"] == rname and x.get("status") == "running"), None)
+            if r:
+                r["status"] = "pending"
+        rep.run.save()
+        self.report_due = rep.covers + self.report_due
+        self.log(f"report beside: stopped ({why}); {len(rep.covers)} job(s) wait for the next report")
+
+    def drain_report(self, why: str) -> None:
+        """Wait for the running report to end (a guard that stops it ends the wait)."""
+        if self.report is not None:
+            self.log(f"report beside: waiting for it to end ({why})")
+        while self.report is not None and not self.stop_signal:
+            self.poll()
+            self.service_report()
+            if self.report is not None:
+                time.sleep(self.a.poll)
+
+    def flush_report_rows(self) -> None:
+        """Rows of jobs whose groups never ran (the runner stops, or the feature failed): written without group counts."""
+        due, self.report_due = self.report_due, []
+        for run, rc in due:
+            self.record_yield(run, rc, groups_ran=False)
 
     def run_step(self, run: Run, step: plans.Step, rec: dict[str, Any], ctx: plans.Ctx) -> guards.Verdict | None:
         while True:
@@ -863,6 +1060,7 @@ class Runner:
             run.save()
             while running:
                 time.sleep(self.a.poll)
+                self.service_report()
                 now = self.clock()
                 for r in list(running):
                     rc = r.proc.poll()
@@ -1111,6 +1309,7 @@ class Runner:
         if v:
             return self.leave(v)
         self.clear_stale_quiet_lock()
+        self.service_report()
         sha = self.main_sha()
         job, run, why = self.choose(sha)
         if not job:
@@ -1140,6 +1339,7 @@ class Runner:
         end = self.clock() + (self.a.idle_poll if seconds is None else seconds)
         while self.clock() < end:
             time.sleep(min(self.a.wait_poll, 5.0))
+            self.service_report()
             v = self.poll()
             if v.leave:
                 return True
@@ -1147,6 +1347,8 @@ class Runner:
         return False
 
     def leave(self, v: guards.Verdict) -> int:
+        self.kill_report(f"the runner stops: {v}")
+        self.flush_report_rows()
         self.lab.save_state(self.state)
         self.status(f"stopped({v.kind})", v.detail)
         self.log(f"stopping: {v}")

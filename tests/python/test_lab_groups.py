@@ -299,9 +299,9 @@ class EndToEndTests(unittest.TestCase):
             egg = next(g for g in doc["groups"] if "relic:EGG_A" in g["entities"])
             self.assertTrue(egg["examples"][0]["first_event"] or egg["examples"][-1]["first_event"])
             self.assertLessEqual(len(summ.read_text(encoding="utf-8")), 4000)
-            # a second run keeps the ids and the first-seen times
+            # a second run keeps the ids and the first-seen times (--force: on the same inputs the step would skip itself, see test_lab_stepcache)
             self.assertEqual(0, lg.main(["--lab", str(lab), "--out", str(out), "--summary", str(summ), "--decompiled", str(decomp),
-                                         "--host-gaps", str(hosts), "--backlog", str(backlog)]))
+                                         "--host-gaps", str(hosts), "--backlog", str(backlog), "--force"]))
             again = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual({g["id"]: g["first_seen_utc"] for g in doc["groups"]}, {g["id"]: g["first_seen_utc"] for g in again["groups"]})
 
