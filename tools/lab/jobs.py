@@ -75,8 +75,12 @@ def read_lenient(p: Path) -> Any:
 
 def load_config(lab: Path) -> dict[str, dict[str, Any]]:
     """The settings of every new kind: the defaults, with LAB/jobs.json's per-kind keys laid over them."""
+    return config_from(read_lenient(Path(lab) / "jobs.json"))
+
+
+def config_from(doc: Any) -> dict[str, dict[str, Any]]:
+    """load_config for a jobs.json already read (only a dict changes the defaults)."""
     cfg = {k: dict(v) for k, v in DEFAULTS.items()}
-    doc = read_lenient(Path(lab) / "jobs.json")
     if isinstance(doc, dict):
         for k, v in doc.items():
             if k in cfg and isinstance(v, dict):

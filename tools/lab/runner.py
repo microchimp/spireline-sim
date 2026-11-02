@@ -22,6 +22,11 @@ it), lives in a Job Object with KILL_ON_JOB_CLOSE (children die with it, however
 back on user input, on sustained load from other processes, on LAB/PAUSE or backlog/main.lock, and when disk
 runs short (tools/lab/guards.py). With --always-on the groups and kits of a finished job run beside the next job (Report, below),
 one at a time, at the runner's BelowNormal priority; they stop for the guards, for a presort's tree and for a nightly window.
+With --always-on the selfplay kind is the filler when LAB/jobs.json says `selfplay.filler` (D48, tools/lab/cores.py): practice blocks
+run beside the job on the cores it leaves (a Job Object of their own that forces BelowNormal on every process in it, the prior
+server included), with no train marker, shrunk or stopped when a job needs their cores, stopped for the night, for a presort and for
+the guards; they hold no QUIET.lock line and no main.lock. The load guard counts neither the filler (it is in the runner's Job Object)
+nor the always-on fight loop's processes (--loop-status names its daemon).
 backlog/main.lock stops only a running presort (the one job that touches git
 state) and holds every new job; any other running job carries on under it. Exit 0 when it stopped for any of those or finished a --trial / --once; 1 on
 a crash; 2 on bad arguments.
@@ -49,7 +54,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import clock_report, guards, jobs, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import clock_report, cores, guards, jobs, mix, plans, prune, winsys  # noqa: E402
 from tools.lab import stepcache as sc  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
@@ -60,8 +65,10 @@ DEFAULTS = {
     "lab": "D:/spireline/referee/lab", "tree": "D:/spireline/fork/wt-lab", "game": "D:/spireline/referee/game-lab",
     "game_src": "D:/spireline/referee/game", "backlog_dir": "D:/spireline/referee/backlog",
     "codex": "D:/spireline/data/spire-codex/runs-v0.107.1.jsonl.gz", "decompiled": "D:/spireline/referee/decompiled",
-    "records": "D:/spireline/referee/jobs",
+    "records": "D:/spireline/referee/jobs", "loop_status": "D:/spireline/logs/gym-loop/status",
 }
+FILLER_RETRY_S = 120.0  # after a guard, the night, a QUIET.lock line or a failure stopped the filler, it waits this long to start again
+FILLER_TICK_S = 5.0  # the filler's rules are read at most this often (jobs.json, the night's markers, QUIET.lock)
 FORBIDDEN = ("D:/spireline/src",)  # the reviewed upstream checkout: never a lab, tree or game path
 RESUME_HOURS = 24.0
 CLOCK_EVERY_S = 24 * 3600.0  # LAB/clock.md (tools/lab/clock_report.py over runner.log) is written again after this long
@@ -135,6 +142,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--report-beside", choices=("auto", "on", "off"), default="auto",
                     help="run the groups and kits of a finished job beside the next job instead of as its last steps; auto: on with --always-on, "
                          "off with --once, --trial and --dry-run")
+    ap.add_argument("--filler", choices=("auto", "on", "off"), default="auto",
+                    help="run selfplay as the filler beside the jobs when LAB/jobs.json has selfplay.filler (D48); auto: on with --always-on, "
+                         "off with --once, --trial and --dry-run")
+    ap.add_argument("--loop-status", default=d["loop_status"],
+                    help="the always-on fight loop's status file (its daemon pid and phase): the load guard leaves its processes out")
     ap.add_argument("--dry-run", action="store_true", help="print the guards, the next job and its plan; change nothing")
     ap.add_argument("--skip", default="", help="comma-separated step or command name prefixes to skip (codex, refset, corpus, ...)")
     ap.add_argument("--no-guard", default="", help=f"comma-separated guards to switch off for a test: {','.join(guards.GUARD_NAMES)}")
@@ -291,6 +303,14 @@ class Report:
         self.t0 = time.monotonic()
 
 
+class Filler:
+    """One practice block (the selfplay kind) running beside the job: its own job folder, one command, a Job Object of its own that
+    forces BelowNormal on every process in it (D48)."""
+
+    def __init__(self, run: Run, ctx: plans.Ctx, step: plans.Step, sj: winsys.JobObject, running: Running, cores_: int, t0: float):
+        self.run, self.ctx, self.step, self.sj, self.running, self.cores, self.t0 = run, ctx, step, sj, running, cores_, t0
+
+
 # ---------------------------------------------------------------- the runner
 
 LAB_SOURCES = Path(__file__).resolve().parent
@@ -330,7 +350,8 @@ class Runner:
         disabled = {x for x in a.no_guard.split(",") if x}
         deadline = self.t_start + a.trial * 60 if a.trial is not None else None
         lock = Path(a.backlog_dir) / "main.lock"
-        self.load = guards.LoadMonitor(lambda: self.root_job.cpu_time() if self.root_job else 0, window=a.load_window,
+        self.loop_cpu = guards.TreeCpu(self.loop_who)  # the always-on loop's processes: not "other" load (D48)
+        self.load = guards.LoadMonitor(lambda: (self.root_job.cpu_time() if self.root_job else 0) + self.loop_cpu(), window=a.load_window,
                                        interval=min(5.0, max(0.2, a.poll)), clock=clock)
         self.guards = guards.Guards(self.lab.root, lock, disabled=disabled, idle_s=a.idle_seconds, load_pct=a.load_pct,
                                     load_window=a.load_window, lab_gb=a.lab_gb, free_gb=a.free_gb, grace=a.grace, deadline=deadline,
@@ -352,6 +373,14 @@ class Runner:
         self.guards_ok = True  # the last guard reading allowed work (a main.lock does not stop the report)
         self.lock_stops = True  # main.lock stops what runs now: only a presort (set by execute); between jobs it holds every pick
         self._lock_episode = False  # a "main.lock held: ... continues" line was written for the lock that is up now
+        self.filler_mode = a.filler == "on" or (a.filler == "auto" and a.always_on and a.once is None and a.trial is None
+                                                 and not a.dry_run)
+        self.filler: Filler | None = None  # the practice block running beside the job (D48)
+        self.filler_cpu_done = 0.0  # CPU seconds of the filler blocks that ended or were stopped
+        self.filler_next = 0.0  # clock time before which no filler block starts (after a stop by a guard, the night, a failure)
+        self.filler_note = ""  # the last reason the filler did not start, logged once
+        self._filler_tick = float("-inf")
+        self.main_cores = 0  # cores of the job the main lane runs now (0 between jobs)
 
     # ---- plumbing
 
@@ -385,6 +414,8 @@ class Runner:
             where += f" strategy={self.current_strategy}"
         if self.report:
             where += f" report={self.report.run.name}"
+        if self.filler:
+            where += f" filler={self.filler.run.name}@{self.filler.cores}"
         line = (f"{utc()} {state} {where} since={self.since} tree={main} jobs_done={sum(c['jobs_done'].values())} "
                 f"fights={c['fights']} runs={c.get('runs', 0)} interrupts={intr}" + (f" | {extra}" if extra else ""))
         try:
@@ -401,6 +432,8 @@ class Runner:
         busy = {self.current[0]} if self.current else set()
         if self.report:  # the report reads its covered jobs' recordings
             busy |= {r.name for r, _ in self.report.covers}
+        if self.filler:
+            busy.add(self.filler.run.name)
         freed = prune.prune(self.lab.root, need, busy)
         if freed:
             self.log(f"disk: pruned {freed / guards.GB:.2f} GB of raw outputs")
@@ -433,6 +466,8 @@ class Runner:
         self.guards_ok = v.ok or v.kind == "lock"
         if self.report and not self.guards_ok:  # the report gives the machine back at once (it starts over when the lab is free)
             self.kill_report(str(v))
+        if self.filler and not self.guards_ok:  # so does the filler (and waits FILLER_RETRY_S before the next block)
+            self.stop_filler(str(v))
         if self.guards.readings.get("lock_ignored"):
             if not self._lock_episode:  # once per lock episode, at the first poll that sees it
                 self._lock_episode = True
@@ -491,7 +526,12 @@ class Runner:
         cur = self.lab.runs_without_done()
         for d in reversed(cur):
             run = Run.load(d)
-            if run is None:
+            if run is None or (self.filler is not None and d == self.filler.run.dir):
+                continue
+            if (run.data.get("params") or {}).get("filler"):  # a practice block left by a runner that stopped: its runs are kept
+                if not a.dry_run:
+                    self.record(run, 3)
+                    run.finish(3, "filler block: ended with the runner that started it")
                 continue
             if a.once and run.job != a.once:
                 continue
@@ -557,7 +597,7 @@ class Runner:
                 self.next_strategy = strategy if job == "fights" else None
                 return job, "rotation" + (f", {strategy}" if strategy else "")
             self.log(f"{job}: not runnable ({why})")
-        if self.kind_ready("selfplay", sha):  # the filler: nothing above it could run
+        if not self.filler_owns_selfplay() and self.kind_ready("selfplay", sha):  # the filler: nothing above it could run
             self.next_strategy = None
             return "selfplay", "ladder: selfplay (filler, nothing else ready)"
         return "", "no job is runnable"
@@ -607,7 +647,7 @@ class Runner:
             if why is None and self.kind_ready(kind, sha):
                 return kind
         share = float(cfg["selfplay"].get("share") or 0)
-        if share > 0 and cfg["selfplay"].get("enabled"):
+        if share > 0 and cfg["selfplay"].get("enabled") and not self.filler_owns_selfplay(cfg):
             days = float(cfg["selfplay"].get("share_days") or mix.WINDOW_DAYS)  # the span the share is judged over, not all time
             loop, total, by = mix.loop_cpu(self.lab.root, days=days)
             note = (f"self-play loop: {100 * loop / total:.1f}% of the last {days:g} days' CPU "
@@ -669,6 +709,218 @@ class Runner:
         except plans.Unavailable as e:
             return str(e)
 
+    # ---- the filler: practice beside the job (D48, tools/lab/cores.py)
+
+    def loop_who(self) -> tuple[int | None, float | None]:
+        """(pid, latest creation time) of the always-on loop's daemon from its status file, for the load guard's TreeCpu."""
+        p = Path(self.a.loop_status)
+        pid, _ = cores.loop_state(p)
+        try:
+            return pid, p.stat().st_mtime if pid else None
+        except OSError:
+            return None, None
+
+    def filler_owns_selfplay(self, cfg: dict | None = None) -> bool:
+        """The selfplay kind runs as the filler, so the ladder and the rotation never pick it."""
+        if not self.filler_mode:
+            return False
+        sp = (cfg or jobs.load_config(self.lab.root))["selfplay"]
+        return bool(sp.get("enabled") and sp.get("filler"))
+
+    def busy_cores(self, doc: dict) -> int:
+        """Cores the filler may not use: the job's, the report's beside it, and the always-on loop's while it steps."""
+        busy = self.main_cores + (cores.report_cores(doc) if self.report else 0)
+        pid, stepping = cores.loop_state(Path(self.a.loop_status), winsys.parent_alive)
+        return busy + (cores.loop_cores(doc) if pid and stepping else 0)
+
+    def filler_room(self, doc: dict) -> int:
+        return cores.filler_size(cores.total_cores(doc), self.busy_cores(doc), cores.floor(doc))
+
+    def filler_hold(self, doc: dict, starting: bool) -> str | None:
+        """Why the filler may not start (`starting`) or must stop now; None when it may run."""
+        if not self.filler_owns_selfplay(jobs.config_from(doc)):
+            return "selfplay is not the filler (LAB/jobs.json selfplay.enabled and selfplay.filler)"
+        if not self.guards_ok:
+            return "a guard holds the lab"
+        if self.running_job == "presort":
+            return "a presort moves the tree"
+        if self.running_job == "nightly-real":
+            return "the night has the machine"
+        why = cores.night_hold(self.lab.root, doc, starting=starting)
+        if why:
+            return why
+        tag = cores.quiet_blocker(self.quiet_lock_path(), doc)
+        if tag:
+            return f"QUIET.lock is held by {tag}"
+        if not starting:
+            return None
+        st = self.state
+        if not st.get("tree_sha") or st.get("tree_sha") != st.get("last_presorted_sha"):
+            return "the tree is not a presorted build"
+        if self.clock() < self.filler_next:
+            return "waiting after the last stop"
+        disk = self.guards.readings.get("disk")
+        if isinstance(disk, tuple) and (disk[0] > 0.9 * self.a.lab_gb or disk[1] < 1.1 * self.a.free_gb):
+            return f"the lab is near its disk limit (lab {disk[0]} GB of {self.a.lab_gb:g}, drive free {disk[1]} GB)"
+        why = self.unavailable("selfplay", st["tree_sha"])
+        if why:
+            return why
+        return None
+
+    def service_filler(self, start: bool = True) -> None:
+        """Called wherever the runner waits or loops: close a block that ended, stop one that must give way, start one when the
+        rules allow (`start`; not between jobs, so a block never starts just before the pick that would stop it). A fault here
+        turns the filler off for this process; it never fails a job."""
+        if not self.filler_mode:
+            return
+        try:
+            self._service_filler(start)
+        except Halted:
+            raise
+        except Exception:  # noqa: BLE001
+            self.log("filler: fault, off for this runner process: " + traceback.format_exc()[-500:])
+            self.filler_mode = False
+            self.stop_filler("fault")
+
+    def _service_filler(self, start: bool) -> None:
+        f = self.filler
+        if f is not None:
+            rc = f.running.proc.poll()
+            now = self.clock()
+            if rc is None and f.running.cmd.timeout and now - f.running.t0 > f.running.cmd.timeout:
+                f.sj.terminate()
+                rc = f.running.proc.wait(timeout=30)
+                f.run.rec(f.step.name)["note"] = f"killed after the {f.running.cmd.timeout:.0f}s limit"
+            if rc is not None:
+                self.end_filler(rc)
+                f = None
+        now = self.clock()
+        if now - self._filler_tick < FILLER_TICK_S:
+            return
+        self._filler_tick = now
+        doc = cores.load_doc(self.lab.root)
+        if f is not None:
+            why = self.filler_hold(doc, starting=False)
+            if why:
+                self.stop_filler(why)
+                return
+            room = self.filler_room(doc)
+            if room < f.cores:  # a job needs cores the block holds: stop it, the next tick starts one at what is left
+                self.stop_filler(f"a job needs its cores ({f.cores} held, {room} left)", retry=False)
+            return
+        if not start:
+            return
+        why = self.filler_hold(doc, starting=True)
+        size = self.filler_room(doc) if why is None else 0
+        if why is None and size <= 0:
+            why = f"under {cores.floor(doc)} cores free"
+        if why:
+            if why != self.filler_note:
+                self.filler_note = why
+                self.log(f"filler: not started ({why})")
+            return
+        self.filler_note = ""
+        self.start_filler(doc, size)
+
+    def start_filler(self, doc: dict, size: int) -> None:
+        sha = self.state["tree_sha"]
+        cfg = cores.filler_cfg(doc)
+        params = jobs.params_for("selfplay", self.lab.root, cfg)
+        explore = cfg.get("explore") if isinstance(cfg.get("explore"), list) else None
+        params["cmd"] = cores.filler_cmd(params["cmd"], size, explore)
+        params.update(filler=True, cores=size, procs=size)
+        run = Run.create(self.lab, "selfplay", sha, params)
+        n = self.state["counters"]["jobs_started"]
+        n["selfplay"] = n.get("selfplay", 0) + 1
+        self.lab.save_state(self.state)
+        ctx = self.ctx(run, "selfplay", sha, params)
+        step = plans.plan("selfplay", ctx)[0]
+        cmd = step.cmds[0]
+        rec = run.rec(step.name)
+        why = cmd.skip_reason(ctx, step.name)
+        if why:
+            rec["status"], rec["note"] = "skipped", why
+            run.finish(3, f"filler block not started: {why}")
+            self.filler_next = self.clock() + FILLER_RETRY_S
+            self.log(f"filler: {run.name} not started ({why})")
+            return
+        sj = winsys.JobObject(priority_class=winsys.BELOW_NORMAL_PRIORITY_CLASS)
+        try:
+            running = self.launch(ctx, cmd, sj, run.dir / "logs")
+        except OSError as e:
+            sj.close()
+            rec["status"], rec["note"] = "failed", f"could not start: {type(e).__name__}"
+            run.finish(1, rec["note"])
+            self.streak(run, 1)
+            self.filler_next = self.clock() + FILLER_RETRY_S
+            self.log(f"filler: {run.name} {rec['note']}")
+            return
+        rec["cmds"][cmd.name] = {"status": "running", "argv": cmd.symbolic()}
+        rec["status"], rec["started_utc"] = "running", utc()
+        run.save()
+        self.filler = Filler(run, ctx, step, sj, running, size, self.clock())
+        self.log(f"filler: {run.name} at {size} cores beside {self.running_job or 'no job'}")
+
+    def end_filler(self, rc: int) -> None:
+        """A block ended by itself: its command's record, its account, its row, done.rc."""
+        f, self.filler = self.filler, None
+        assert f is not None
+        run, rec = f.run, f.run.rec(f.step.name)
+        failed = self.finish_cmd(run, f.ctx, f.running, rc, rec, self.clock())
+        rec["status"], rec["finished_utc"] = ("failed" if failed else "done"), utc()
+        self.close_filler(f)
+        run.data["outputs"] = self.collect_outputs(run, [f.step], f.ctx)
+        rc_job = 1 if failed else 0
+        self.streak(run, rc_job)
+        c = self.state["counters"]["jobs_done"]
+        c["selfplay"] = c.get("selfplay", 0) + (1 if rc_job == 0 else 0)
+        self.record(run, rc_job)
+        run.finish(rc_job)
+        self.lab.save_state(self.state)
+        if failed:
+            self.filler_next = self.clock() + FILLER_RETRY_S
+        self.log(f"filler: {run.name} finished rc={rc_job}")
+
+    def stop_filler(self, why: str, retry: bool = True) -> None:
+        """Stop the running block (its Job Object: every process in it, by handle, never by image name). The runs it finished are
+        in its shards; the folder is closed with done.rc 0 and the reason."""
+        f, self.filler = self.filler, None
+        if f is None:
+            return
+        rec = f.run.rec(f.step.name)
+        try:
+            self.kill_group(f.ctx, f.sj, [f.running], rec)
+        finally:
+            self.close_filler(f)
+        rec["status"], rec["note"], rec["finished_utc"] = "stopped", why, utc()
+        self.record(f.run, 0)
+        f.run.finish(0, f"filler block stopped: {why}")
+        if retry:
+            self.filler_next = self.clock() + FILLER_RETRY_S
+        self.log(f"filler: {f.run.name} stopped ({why})")
+
+    def close_filler(self, f: Filler) -> None:
+        cpu = f.sj.cpu_time() / 1e7  # read after the end or the kill, so none of it lands in the job's account
+        self.filler_cpu_done += cpu
+        f.sj.close()
+        f.run.data["cpu_secs"] = round(cpu, 1)
+        f.run.data["wall_secs"] = round(self.clock() - f.t0, 1)
+
+    def make_room(self, run: Run) -> None:
+        """Before a job runs: its cores are taken from the filler at once (a job never waits for it). The night and a presort stop
+        it outright."""
+        try:
+            self.main_cores = cores.job_cores(run.job, run.data.get("params"), cores.load_doc(self.lab.root))
+        except Exception:  # noqa: BLE001
+            self.main_cores = cores.total_cores()
+        if self.filler is None:
+            return
+        if run.job in ("nightly-real", "presort"):
+            self.stop_filler("the night starts" if run.job == "nightly-real" else "a presort moves the tree")
+            return
+        self._filler_tick = float("-inf")
+        self.service_filler(start=False)
+
     # ---- running a job
 
     def new_run(self, job: str, sha: str) -> Run:
@@ -705,7 +957,11 @@ class Runner:
     def cpu_secs(self) -> float:
         """CPU seconds of everything the runner has started for its jobs (its Job Object, less the reports that ran beside them,
         which belong to no job's strategy); 0 where there is none (a test)."""
-        return max(0.0, self.root_job.cpu_time() / 1e7 - self.report_cpu()) if self.root_job else 0.0
+        return max(0.0, self.root_job.cpu_time() / 1e7 - self.report_cpu() - self.filler_cpu()) if self.root_job else 0.0
+
+    def filler_cpu(self) -> float:
+        """CPU seconds the filler blocks have used in this process, the running one included (no job's account holds them)."""
+        return self.filler_cpu_done + (self.filler.sj.cpu_time() / 1e7 if self.filler else 0.0)
 
     def report_cpu(self) -> float:
         """CPU seconds the reports have used in this process, the running one included."""
@@ -725,6 +981,7 @@ class Runner:
         self._mark = (self.cpu_secs(), self.clock())
         self.lock_stops = run.job == "presort"  # the landing lock guards git state only the presort touches
         self.running_job = run.job
+        self.make_room(run)
         try:
             if run.job == "presort":
                 self.drain_report("the presort moves the tree the report runs from")
@@ -733,6 +990,7 @@ class Runner:
             return self._execute(run)
         finally:
             self.running_job = None
+            self.main_cores = 0
             self.lock_stops = True
             self.release_nightly_consent(run.job)  # however the job stopped (finished, interrupted, an exception): its games are gone
             if not (run.dir / "done.rc").exists():  # stopped, not finished: what it used so far is kept for the next stretch
@@ -810,15 +1068,7 @@ class Runner:
                 b["fails"] += 1
                 b["retry_after"] = time.time() + min(6 * 3600, 1800 * 2 ** (b["fails"] - 1))
                 st["tree_sha"] = None  # the tree's sources moved but its build did not: nothing may run on it
-        streak = st.setdefault("fail_streak", {})
-        key = (run.data.get("params") or {}).get("strategy") or run.job  # a strategy that keeps failing backs off alone
-        if rc == 0:
-            streak[key] = 0
-            st["backoff"].pop(key, None)
-        elif run.job != "presort":  # a presort has its own per-sha retry
-            streak[key] = streak.get(key, 0) + 1
-            if streak[key] >= 2:
-                st["backoff"][key] = time.time() + min(6 * 3600, 600 * 2 ** (streak[key] - 2))
+        self.streak(run, rc)
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
         self.account(run)
@@ -832,6 +1082,19 @@ class Runner:
         if beside:
             self.report_due.append((run, rc))
             self.service_report()
+
+    def streak(self, run: Run, rc: int) -> None:
+        """A strategy (or job type) that fails twice in a row backs off, doubling from 10 minutes up to 6 hours."""
+        st = self.state
+        streak = st.setdefault("fail_streak", {})
+        key = (run.data.get("params") or {}).get("strategy") or run.job  # a strategy that keeps failing backs off alone
+        if rc == 0:
+            streak[key] = 0
+            st["backoff"].pop(key, None)
+        elif run.job != "presort":  # a presort has its own per-sha retry
+            streak[key] = streak.get(key, 0) + 1
+            if streak[key] >= 2:
+                st["backoff"][key] = time.time() + min(6 * 3600, 600 * 2 ** (streak[key] - 2))
 
     def record(self, run: Run, rc: int, yield_now: bool = True) -> None:
         """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv (at once, or when the
@@ -984,6 +1247,7 @@ class Runner:
         while self.report is not None and not self.stop_signal:
             self.poll()
             self.service_report()
+            self.service_filler()
             if self.report is not None:
                 time.sleep(self.a.poll)
 
@@ -1066,6 +1330,7 @@ class Runner:
             while running:
                 time.sleep(self.a.poll)
                 self.service_report()
+                self.service_filler()
                 now = self.clock()
                 for r in list(running):
                     rc = r.proc.poll()
@@ -1404,6 +1669,7 @@ class Runner:
         self.clear_stale_quiet_lock()
         self.daily_clock()
         self.service_report()
+        self.service_filler(start=False)  # between jobs: a block that ended is closed, none starts before the pick
         sha = self.main_sha()
         job, run, why = self.choose(sha)
         if not job:
@@ -1434,6 +1700,7 @@ class Runner:
         while self.clock() < end:
             time.sleep(min(self.a.wait_poll, 5.0))
             self.service_report()
+            self.service_filler()
             v = self.poll()
             if v.leave:
                 return True
@@ -1442,6 +1709,7 @@ class Runner:
 
     def leave(self, v: guards.Verdict) -> int:
         self.kill_report(f"the runner stops: {v}")
+        self.stop_filler(f"the runner stops: {v}")
         self.flush_report_rows()
         self.lab.save_state(self.state)
         self.status(f"stopped({v.kind})", v.detail)
@@ -1471,6 +1739,15 @@ class Runner:
               f"PAUSE {(self.lab.root / 'PAUSE').exists()}; main.lock {(Path(a.backlog_dir) / 'main.lock').exists()}; "
               f"HALT {(self.lab.root / 'HALT').exists()}; load {load}; lab {size:.2f} GB of {a.lab_gb:g}; drive free {free:.0f} GB (min {a.free_gb:g})")
         print(f"guard verdict now: {v}")
+        doc = cores.load_doc(self.lab.root)
+        saved, self.filler_mode = self.filler_mode, a.filler != "off"
+        try:
+            hold = self.filler_hold(doc, starting=True)
+            fsize = self.filler_room(doc)
+        finally:
+            self.filler_mode = saved
+        print(f"filler (D48): {'would start at ' + str(fsize) + ' cores' if hold is None and fsize else 'not now: ' + (hold or 'under the floor')}"
+              f"; cores: total {cores.total_cores(doc)}, floor {cores.floor(doc)}, busy now {self.busy_cores(doc)}")
         weights, notes = mix.load_mix(self.lab.root, create=False)
         print("mix (wanted share / CPU share had): " + mix.share_table(weights, st["strategy_cpu"]) + ("; " + "; ".join(notes) if notes else ""))
         job, run, why = self.choose(sha)

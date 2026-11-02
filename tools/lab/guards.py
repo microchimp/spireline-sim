@@ -15,7 +15,9 @@
           reported in ``readings["lock_ignored"]``. Between jobs ``lock_stops`` stays True: no job of any kind starts.
   load    other processes used more than ``load_pct`` percent of the machine over the last ``load_window`` seconds.
           "Other" is the whole machine's busy time minus the CPU time of this runner's own Job Object, so the
-          lab's own game servers never count against it. Stop at once, wait, resume when the window cools.
+          lab's own game servers (and its practice filler, D48) never count against it, and minus the always-on
+          fight loop's process tree (``TreeCpu``; it yields to the night and to QUIET.lock lines by itself).
+          Stop at once, wait, resume when the window cools.
   disk    ``LAB`` over ``lab_gb`` or the drive below ``free_gb`` free, after pruning what pruning may remove.
   trial   the ``--trial`` time is up (a running step gets ``grace``).
 
@@ -52,6 +54,40 @@ class Verdict:
 
     def __str__(self) -> str:
         return self.kind if not self.detail else f"{self.kind} ({self.detail})"
+
+
+FILETIME_EPOCH = 116444736000000000  # 1601-01-01 to 1970-01-01 in 100 ns
+
+
+class TreeCpu:
+    """The CPU time (100 ns, never decreasing) a process tree that is not the runner's has used since the first call: the always-on
+    fight loop's daemon and everything under it (D48: the load guard does not count it, as it does not count the runner's own Job
+    Object; the loop yields to the night and to QUIET.lock lines by itself). `who()` gives (pid, latest creation time it may have, in
+    epoch seconds, or None); a pid whose process was created later than that is a reused pid, not the loop. A process first seen
+    after the first call adds all its CPU (it started since); one that ends between two calls loses only its last interval."""
+
+    def __init__(self, who: Callable[[], tuple[int | None, float | None]], times: Callable[[int], dict] = winsys.tree_times):
+        self.who, self.times = who, times
+        self.total = 0
+        self.last: dict[tuple[int, int], int] | None = None
+        self.pid: int | None = None
+
+    def __call__(self) -> int:
+        try:
+            pid, latest = self.who()
+            now = self.times(pid) if pid else {}
+            root = next((k for k in now if k[0] == pid), None)
+            if root is not None and latest is not None and (root[1] - FILETIME_EPOCH) / 1e7 > latest:
+                now = {}  # the pid was reused after the loop wrote its status
+        except Exception:  # noqa: BLE001  (a view of the loop refines the guard; it is never a reason the guard fails)
+            pid, now = None, {}
+        if self.last is None or pid != self.pid:  # first look at this loop: what it used before is not counted
+            self.last, self.pid = dict(now), pid
+            return self.total
+        for k, v in now.items():
+            self.total += max(0, v - self.last.get(k, 0))
+        self.last = now
+        return self.total
 
 
 class LoadMonitor:

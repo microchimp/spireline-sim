@@ -5,13 +5,17 @@ import on any platform. Nothing here reads another process's memory.
 
 - ``user_idle_seconds``      GetLastInputInfo: seconds since the last keyboard or mouse input in this session.
 - ``set_below_normal``       BELOW_NORMAL_PRIORITY_CLASS for this process (children inherit it).
-- ``JobObject``              a Job Object: KILL_ON_JOB_CLOSE (members die with the last handle), TerminateJobObject,
+- ``JobObject``              a Job Object: KILL_ON_JOB_CLOSE (members die with the last handle), optionally one priority class
+                             forced on every member (the lab's filler: BelowNormal), TerminateJobObject,
                              the CPU time and the I/O counters (read and write operations and bytes) of every process that ever ran
                              in it, children included, the pids still in it.
 - ``suspended_popen``        Popen that starts the child suspended, puts it in a job, then resumes it (no grandchild
                              can escape the job in the gap).
 - ``system_times``           GetSystemTimes (idle, kernel, user), for the busy share of the machine.
 - ``parent_alive``           whether the process that started this one still runs.
+- ``priority_class_of``      the priority class of another process.
+- ``tree_times``             the CPU time of a process and its live descendants (Toolhelp snapshot), for the load guard's view of
+                             the always-on loop, whose Job Object is not ours to ask.
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ CREATE_SUSPENDED = 0x00000004
 CREATE_NO_WINDOW = 0x08000000
 NO_WINDOW = CREATE_NO_WINDOW if os.name == "nt" else 0  # creationflags for helper calls: no console flashes under pythonw
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x00000020
+TH32CS_SNAPPROCESS = 0x00000002
 JobObjectBasicAccountingInformation = 1
 JobObjectBasicAndIoAccountingInformation = 8
 JobObjectBasicProcessIdList = 3
@@ -73,6 +79,12 @@ if IS_WIN:
     class _FILETIME(ctypes.Structure):
         _fields_ = [("lo", wintypes.DWORD), ("hi", wintypes.DWORD)]
 
+    class _PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
     _k32.GetCurrentProcess.restype = wintypes.HANDLE
     _k32.GetTickCount.restype = wintypes.DWORD
     _k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -97,6 +109,14 @@ if IS_WIN:
     _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     _k32.WaitForSingleObject.restype = wintypes.DWORD
     _k32.GetSystemTimes.argtypes = [ctypes.POINTER(_FILETIME)] * 3
+    _k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(_FILETIME)] * 4
+    _k32.GetProcessTimes.restype = wintypes.BOOL
+    _k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    _k32.Process32FirstW.restype = wintypes.BOOL
+    _k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+    _k32.Process32NextW.restype = wintypes.BOOL
     _k32.GetSystemTimes.restype = wintypes.BOOL
     _nt.NtResumeProcess.argtypes = [wintypes.HANDLE]
     _nt.NtResumeProcess.restype = ctypes.c_long
@@ -130,6 +150,71 @@ def priority_class() -> int | None:
     return int(_k32.GetPriorityClass(_k32.GetCurrentProcess())) if IS_WIN else None
 
 
+def priority_class_of(pid: int) -> int | None:
+    """The priority class of process `pid` (Windows), None when it cannot be read (gone, no access, not Windows)."""
+    if not IS_WIN:
+        return None
+    h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h:
+        return None
+    try:
+        return int(_k32.GetPriorityClass(h)) or None
+    finally:
+        _k32.CloseHandle(h)
+
+
+def _process_times(pid: int) -> tuple[int, int] | None:
+    """(creation time, user + kernel time), both in 100 ns, of process `pid`; None when it cannot be opened."""
+    h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h:
+        return None
+    try:
+        c, e, k, u = _FILETIME(), _FILETIME(), _FILETIME(), _FILETIME()
+        if not _k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(k), ctypes.byref(u)):
+            return None
+        return (c.hi << 32) | c.lo, ((k.hi << 32) | k.lo) + ((u.hi << 32) | u.lo)
+    finally:
+        _k32.CloseHandle(h)
+
+
+def tree_times(root_pid: int | None) -> dict[tuple[int, int], int]:
+    """{(pid, creation time): user + kernel time in 100 ns} of `root_pid` and its live descendants (empty when it is gone or off
+    Windows). A child counts only when it was created after its parent, so a reused pid is never taken for a child; the creation
+    time in the key keeps a reused pid apart from the process that had it before."""
+    if not IS_WIN or not root_pid:
+        return {}
+    snap = _k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == wintypes.HANDLE(-1).value:
+        return {}
+    children: dict[int, list[int]] = {}
+    try:
+        e = _PROCESSENTRY32W()
+        e.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+        ok = _k32.Process32FirstW(snap, ctypes.byref(e))
+        while ok:
+            children.setdefault(int(e.th32ParentProcessID), []).append(int(e.th32ProcessID))
+            ok = _k32.Process32NextW(snap, ctypes.byref(e))
+    finally:
+        _k32.CloseHandle(snap)
+    out: dict[tuple[int, int], int] = {}
+    root = _process_times(root_pid)
+    if root is None:
+        return out
+    out[(int(root_pid), root[0])] = root[1]
+    todo = [(int(root_pid), root[0])]
+    while todo:
+        pid, created = todo.pop()
+        for c in children.get(pid, []):
+            if c == pid or c == 0:
+                continue
+            t = _process_times(c)
+            if t is None or t[0] < created or (c, t[0]) in out:
+                continue
+            out[(c, t[0])] = t[1]
+            todo.append((c, t[0]))
+    return out
+
+
 def system_times() -> tuple[int, int, int] | None:
     """(idle, kernel, user) in 100 ns units summed over all CPUs; kernel includes idle."""
     if not IS_WIN:
@@ -161,21 +246,26 @@ class JobObject:
     what happens when its owner is killed from outside. Jobs nest (Windows 8 and later): a process that is
     already in one (this runner, or a Task Scheduler instance) can be put in a second, child job."""
 
-    def __init__(self, kill_on_close: bool = True):
+    def __init__(self, kill_on_close: bool = True, priority_class: int | None = None):
+        """`priority_class` (e.g. BELOW_NORMAL_PRIORITY_CLASS): every process in the job runs at that class, whatever it asks for
+        itself, and so does everything it starts."""
         self.h = None
         if not IS_WIN:
             return
         self.h = _k32.CreateJobObjectW(None, None)
         if not self.h:
             raise OSError(ctypes.get_last_error(), "CreateJobObject failed")
-        if kill_on_close:
+        flags = (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE if kill_on_close else 0) | (JOB_OBJECT_LIMIT_PRIORITY_CLASS if priority_class else 0)
+        if flags:
             ext = _EXT_LIMIT()
-            ext.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            ext.Basic.LimitFlags = flags
+            if priority_class:
+                ext.Basic.PriorityClass = int(priority_class)
             if not _k32.SetInformationJobObject(self.h, JobObjectExtendedLimitInformation, ctypes.byref(ext),
                                                 ctypes.sizeof(ext)):
                 err = ctypes.get_last_error()
                 self.close()
-                raise OSError(err, "SetInformationJobObject(KILL_ON_JOB_CLOSE) failed")
+                raise OSError(err, "SetInformationJobObject(limits) failed")
 
     def assign_handle(self, process_handle: int) -> None:
         if self.h and not _k32.AssignProcessToJobObject(self.h, process_handle):

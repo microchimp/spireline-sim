@@ -10,12 +10,13 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `plans.py` | the jobs as data: steps and symbolic commands (`{tree}`, `{lab}`, `{job}` ...), one plan per strategy |
 | `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
-| `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict` |
+| `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict`; `TreeCpu`, the always-on loop's CPU the load guard leaves out |
+| `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
 | `pairing_check.py` | `docs/PROMOTION_GUARD.md` section 4 points 1 and 2 on two arms' `runs.jsonl` (seed sets, config, crashes, discordant kills, floor-difference SD), with a permutation reference; read-only |
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
 | `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |
-| `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects, GetSystemTimes, mutex |
+| `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects (optionally forcing one priority class on every member), GetSystemTimes, a process tree's CPU, mutex |
 | `stepcache.py` | the skip-by-inputs stamps (`LAB/stamps/<step>.json`): digests of a step's inputs, the engine digest, `skip_reason` / `write_stamp` |
 | `register_task.ps1` | registers "Spireline fix lab" (`-Trigger Idle` or `Logon`, `-WhatIf`, `-Unregister`) |
 
@@ -28,7 +29,7 @@ python tools/lab/runner.py [--lab D:/spireline/referee/lab] [--tree D:/spireline
     [--fights 300] [--batch 50] [--servers 8] [--procs 8] [--mutants 150]
     [--shrink 1000] [--shrink-cap 160] [--shrink-budget 6000] [--shrink-minutes 45] [--trace 1000] [--trace-minutes 20]
     [--runs 40] [--run-batch 10] [--run-procs 4] [--run-stop-act 3]
-    [--report-beside auto|on|off] [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
+    [--report-beside auto|on|off] [--filler auto|on|off] [--loop-status D:/spireline/logs/gym-loop/status] [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
     [--fork <main checkout>] [--branch main] [--game-src D:/spireline/referee/game] [--backlog-dir ...] [--backlog FILE]
     [--codex DATASET] [--decompiled DIR] [--records DIR] [--poll 2] [--wait-poll 10] [--idle-poll 300]
 ```
@@ -181,7 +182,7 @@ older) means self-play first, and the runner log says so; the log also says the 
 
 | kind | priority | ready when | default | writes |
 |---|---|---|---|---|
-| `selfplay` | 6 | `enabled` (filler; `share` > 0 puts it ahead of the rotation until the loop has used that share of the last 7 days' CPU, see below) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
+| `selfplay` | 6 | `enabled` (with `filler`: beside the jobs, see D48 below; else the bottom of the ladder, `share` > 0 puts it ahead of the rotation until the loop has used that share of the last 7 days' CPU, see below) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
 | `train` | 3 | `LAB/train/ready-<gen>` exists (oldest first; renamed `done-<gen>` on success); 60 min cap | on, marker-gated | yield: generation, promoted, loss |
 | `score-real` | 2 | `LAB/score/pending` exists, or `weekly` and 7 days since `LAB/score/last-ok`; 240 min cap | on, marker-gated; weekly off | yield: runs, wins, mean_floor, crashes, decisions_s, divergences. `LAB/score/active` exists while it runs; fights and runs jobs are not started then (a marker older than 5 h is ignored) |
 | `nightly-real` | 2 | `enabled`, `every_h` (20) since `LAB/nightly/last-ok`; held (reason in runner.log) while `LAB/HALT` or `LAB/PAUSE` exists, `LAB/nightly/active` or `LAB/score/active` is fresh, or the last try was skipped under 1 h ago; 600 min cap | off; placeholder command | runs `rl/nightly_real.py`: per night a fresh 2,000-seed block (`N-<date>[-<agent>]` in `LAB/seeds/`) for the incumbent and each generation promoted since the last night, the lockstep with the emulator arm on `--engine core2`, `--recycle 60`, under `QUIET.lock` (`lab-nightly <UTC>`, refreshed while it runs; waits up to 2 h, then skips). Folder `LAB/nightly/<date>/<agent>/` (+ sibling `<agent>-emu/`); summary.json `nightly` counts a crash as a loss; readiness.json `nightly`; yield: runs, wins, mean_floor, crashes, divergences |
@@ -192,8 +193,29 @@ Ranking input of the nightly blocks (each folder is already ranked in place; to 
 
 A command reports through `{job}/result.json` (an object; keys named like the yield columns). All guards (PAUSE, HALT, main.lock,
 user input, load, disk, parent) apply to these kinds as to every job, between steps and while the command runs. The runner is
-sequential, so a job never runs beside another; `train` therefore does not overlap `selfplay` here. New `yield.tsv` columns come after
-`screen_groups`; an older file is widened with NA, and old rows keep their values.
+sequential, so a job never runs beside another job of the ladder or the rotation (the filler below is the exception). New `yield.tsv`
+columns come after `screen_groups`; an older file is widened with NA, and old rows keep their values.
+
+## Practice as the filler, cores not turns (D48, `cores.py`)
+
+With `--always-on` (or `--filler on`) and `selfplay.enabled` and `selfplay.filler` in `LAB/jobs.json`, self-play is no longer a ladder
+job: it runs beside whatever job runs, on the cores that job leaves. Each job type has a `cores` figure (a kind's own `cores`, else its
+`procs`, else its command's `--procs`; the fix-lab types from the top-level `cores` map; nightly-real always the whole machine;
+presort the whole machine by default, since it moves and rebuilds the tree the filler runs from). The filler's size is `cores.total`
+less the job's cores, the report's (`cores.report`, 2) while one runs, and the always-on loop's (`cores.loop`, 6) while its status file
+says it is stepping; it runs only at `selfplay.floor` (4) or more. Before a job runs, the filler gives up the cores the job needs at once
+(stopped through its Job Object, then started again at what is left); a block that ends starts the next at whatever is free then.
+Each block is a `LAB/runs/<UTC>-selfplay` job folder (`params.filler`), its command the selfplay command without `--lab`,
+`--shards-root`, `--budget-runs`, `--review-guard`, `--gen-dir` and exploring flags, with `--record` and `--procs` / `--server-procs`
+set to its size, plus `selfplay.explore` when given: it plays `agent/current.json`, writes shards to its own folder and never a train
+marker. Its Job Object forces BelowNormal on every process in it (the prior server included). It holds no QUIET.lock line and no
+main.lock; it stops for every guard but main.lock, for a presort, for a live QUIET.lock line whose tag is not in `selfplay.quiet_ignore`
+(`gym-loop`, `lab-score`), when `LAB/nightly/active` appears, two minutes before the night is due (`LAB/nightly/last-ok` + `every_h`, or the retry
+after a skipped try) and when a nightly-real job starts; it does not start within `selfplay.night_margin_min` (30) of the due time,
+within 120 s of a stop, near the disk limits, or on a tree that is not a presorted build. A stopped block is closed with done.rc 0 and
+the reason (its finished runs are in its shards); a block left by a runner that died is closed (done.rc 3), never resumed. Its CPU stays
+out of the jobs' accounts. The load guard counts neither the filler (it is in the runner's Job Object) nor the always-on loop's
+process tree (`--loop-status`), so neither pauses a job.
 
 ## Lab folder
 
