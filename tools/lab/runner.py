@@ -1596,7 +1596,9 @@ class Runner:
 
     def setup(self) -> int | None:
         """None: go on. An int: the exit code (2 refused arguments, 0 another runner already holds this lab)."""
-        for label, p in (("lab", self.lab.root), ("tree", self.tree), ("game", self.game)):
+        for label, p in (("lab", self.lab.root), ("tree", self.tree), ("game", self.game), ("filler-tree", self.filler_root)):
+            if p is None:
+                continue
             q = str(p.resolve()).replace("\\", "/").lower()
             if any(q.startswith(f.lower()) for f in FORBIDDEN):
                 self.log(f"refused: --{label} is under the reviewed upstream checkout")

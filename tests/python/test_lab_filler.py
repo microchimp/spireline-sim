@@ -646,6 +646,11 @@ class FrozenFillerTest(FillerBase):
         got = self.started(r)
         self.assertEqual(self.copy_of().resolve(), Path(got["cwd"]).resolve())
 
+    def test_the_copies_are_never_made_under_the_reviewed_checkout(self):
+        r = self.runner("--filler-tree", "D:/spireline/src/sts2/filler")
+        self.assertEqual(2, r.setup())
+        self.assertIn("--filler-tree is under the reviewed upstream checkout", self.log(r))
+
     def test_a_presort_left_unfinished_by_a_restart_holds_the_first_copy(self):
         d = self.lab / "runs" / "20261104T0000-presort"
         put(d / "job.json", "{}")
