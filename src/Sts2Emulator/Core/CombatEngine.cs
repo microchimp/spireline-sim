@@ -2024,6 +2024,10 @@ public static class CombatEngine
         // It was lifted before the hand pass, and the Puzzle's three came through.
         BuffSystem.Remove(state.PlayerBuffs, BuffId.NoDraw);
 
+        // `HellraiserPower.AfterSideTurnEnd`: its count of Strikes played into infinite HP
+        // starts again, before the relics below can draw.
+        Effects.CardEffects.ResetHellraiserCount(state);
+
         // The relics' `AfterSideTurnEnd` -- Joss Paper's payout. It is the same
         // `Hook.AfterTurnEnd` pass as the player's powers above, but
         // `CombatState.IterateHookListeners` walks a creature's powers BEFORE its player's

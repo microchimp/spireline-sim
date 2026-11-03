@@ -2730,7 +2730,8 @@ public static class CardEffects
 
             bool hellraised =
                 BuffSystem.Get(state.PlayerBuffs, BuffId.Hellraiser) > 0
-                && IsStrikeCard(top.DefId);
+                && IsStrikeCard(top.DefId)
+                && HellraiserPlaysDrawnStrike(state);
             var card = hellraised
                 ? GrowKinglyCardOnDraw(top)
                 : BindOnDraw(state, ConfuseCostOnDraw(state, GrowKinglyCardOnDraw(top)));
@@ -3732,6 +3733,67 @@ public static class CardEffects
     {
         var name = GeneratedData.Cards.Get(defId).Name;
         return name.Contains("Strike", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// How many drawn Strikes Hellraiser plays in one turn while no hittable enemy can lose
+    /// HP for good (<see cref="EnemyAI.ShowsInfiniteHp" />); the next ones stay in hand.
+    /// </summary>
+    internal const int HellraiserInfiniteAutoPlayCap = 9;
+
+    /// <summary>
+    /// `HellraiserPower.AfterCardDrawnEarly` before it plays the Strike just drawn: when every
+    /// hittable enemy shows infinite HP -- a Hardened Shell that has taken its fill this turn, a
+    /// Waterfall Giant waiting to blow, or no hittable enemy at all -- the power counts the draw,
+    /// and from the tenth such draw in a turn on it leaves the Strike in hand. A Strike drawn
+    /// while some hittable enemy can still lose HP is played and starts the count again, and so
+    /// does the end of the player's turn (<see cref="ResetHellraiserCount" />).
+    /// </summary>
+    /// <remarks>
+    /// The count is what ends a Pillage, or any other draw, in a fight its Strikes cannot finish:
+    /// each Strike Hellraiser plays goes to the discard instead of the hand, so with nothing but
+    /// Attacks in the piles the hand never fills, the discard is shuffled back, and nothing else
+    /// stops the draw. The emulator had no count and drew for ever. It is the power's own data,
+    /// so it rides on the power as <see cref="BuffState.Data" /> (zero, and so unwritten, until
+    /// a Strike is drawn into such a fight).
+    /// </remarks>
+    /// <returns>Whether the Strike is played.</returns>
+    private static bool HellraiserPlaysDrawnStrike(CombatState state)
+    {
+        var buffs = state.PlayerBuffs;
+        int at = buffs.FindIndex(static buff => buff.Id == BuffId.Hellraiser);
+        var power = buffs[at];
+        foreach (var enemy in state.Enemies)
+        {
+            if (EnemyAI.IsTargetable(enemy) && !EnemyAI.ShowsInfiniteHp(enemy))
+            {
+                if (power.Data != 0)
+                {
+                    buffs[at] = power with { Data = 0 };
+                }
+
+                return true;
+            }
+        }
+
+        buffs[at] = power with { Data = power.Data + 1 };
+        return power.Data < HellraiserInfiniteAutoPlayCap;
+    }
+
+    /// <summary>
+    /// `HellraiserPower.AfterSideTurnEnd` on the player's side: the count of
+    /// <see cref="HellraiserPlaysDrawnStrike" /> starts again for the next turn.
+    /// </summary>
+    internal static void ResetHellraiserCount(CombatState state)
+    {
+        var buffs = state.PlayerBuffs;
+        for (int i = 0; i < buffs.Count; i++)
+        {
+            if (buffs[i].Id == BuffId.Hellraiser && buffs[i].Data != 0)
+            {
+                buffs[i] = buffs[i] with { Data = 0 };
+            }
+        }
     }
 
     /// <summary>
@@ -10085,6 +10147,12 @@ public static class CardEffects
     /// Attack that keeps it drawing, and a card Stratagem's pick or Iteration's draw put in hand
     /// is not what was drawn.
     /// </summary>
+    /// <remarks>
+    /// With only Attacks left it ends at the full hand, or at a draw that finds both piles empty,
+    /// or when the fight ends. A Strike Hellraiser plays never reaches the hand, so against an
+    /// enemy those Strikes cannot finish the hand fills only because Hellraiser stops playing
+    /// them (<see cref="HellraiserPlaysDrawnStrike" />).
+    /// </remarks>
     private static void DrawUntilNonAttack(CombatState state, Random rng)
     {
         var drawn = new List<CardInstance>(1);

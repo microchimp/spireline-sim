@@ -5063,6 +5063,20 @@ public static class EnemyAI
         enemy.DefId == KE.WaterfallGiant && enemy.MoveIndex >= WaterfallGiantExplodeMove;
 
     /// <summary>
+    /// `Creature.HpDisplay.IsInfinite()`: the enemy's HP bar shows it cannot be worn down. Two
+    /// things set it: a Hardened Shell once the turn's tally reaches its amount (it goes back
+    /// with the tally, at the start of either side's turn), and a Waterfall Giant from the
+    /// moment it is set to wait to blow until it explodes. Hellraiser reads it
+    /// (<c>CardEffects.HellraiserPlaysDrawnStrike</c>).
+    /// </summary>
+    internal static bool ShowsInfiniteHp(EnemyState enemy) =>
+        (enemy.DefId == KE.WaterfallGiant && enemy.MoveIndex >= WaterfallGiantAboutToBlowMove)
+        || (
+            BuffSystem.Get(enemy.Buffs, BuffId.HardenedShell) is > 0 and var shell
+            && enemy.HardenedShellDamageThisTurn >= shell
+        );
+
+    /// <summary>
     /// A Waterfall Giant that has died holding Steam Eruption and not yet been answered
     /// for it. `SteamEruptionPower.ShouldStopCombatFromEnding` holds the fight open for it,
     /// and <see cref="TriggerAboutToBlow" /> is the answer.

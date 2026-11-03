@@ -67,7 +67,6 @@ missing RedSkull.AfterRoomEntered  # relic; RelicEffects.ApplyAfterPlayerHpChang
 missing RegalPillow.AfterRoomEntered  # relic; RunEngine.RestHealAmount
 missing StoneCalendar.AfterRoomEntered  # relic; RelicEffects.ApplyEndOfPlayerTurn
 missing HatchPower.AfterSideTurnEnd  # power; CombatFactory.ApplyIntrinsicEnemyPowers, EnemyAI.ApplyBuffIntent, EnemyAI.CreateEnemy
-missing HellraiserPower.AfterSideTurnEnd  # power; CardEffects.ApplyCore, CardEffects.DrawCards
 missing JugglingPower.AfterSideTurnEnd  # power; CardEffects.ApplyCore, CombatEngine.ResolvePlay
 missing Kusarigama.AfterSideTurnEnd  # relic; RelicEffects.ApplyAfterCardPlayed, RelicEffects.ApplyStartOfPlayerTurn, RelicEffects.PerTurnCounters
 missing SkittishPower.AfterSideTurnEnd  # power; CardEffects.Finish, CardEffects.Note, CombatFactory.ApplyIntrinsicEnemyPowers

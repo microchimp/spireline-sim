@@ -963,5 +963,8 @@ public enum BuffId
 /// It is zero for every power that has none, and the snapshot omits a zero. A counter's
 /// <c>Data</c> counts UP from zero, so an instance built without one (the live game's snapshot
 /// has none) reads as a settled new one.
+///
+/// One power that is not Instanced keeps a second number too: Hellraiser, its count of Strikes
+/// drawn this turn into enemies that all show infinite HP (`CardEffects.HellraiserPlaysDrawnStrike`).
 /// </remarks>
 public record struct BuffState(BuffId Id, int Magnitude, int Data = 0);
