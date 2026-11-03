@@ -144,6 +144,64 @@ def batch_tensors(flat: dict, rows, device, width: int, n_buckets: int, solver_o
                     "most": t(np.argmax(visits, axis=1).astype(np.int64))}
 
 
+def load_net(path: Path):
+    """A `combat_policy.pt` as a `CombatNet` on the CPU, with its shape (width, bucket count) for `batch_tensors`."""
+    import torch  # noqa: PLC0415
+    from combat_net import CombatNet  # noqa: PLC0415
+    from combat_tokens import VOCAB  # noqa: PLC0415
+
+    blob = torch.load(path, map_location="cpu", weights_only=True)
+    m = CombatNet(VOCAB, blob["n_buckets"], d_model=blob["d_model"], layers=blob["layers"], heads=blob["heads"])
+    m.load_state_dict(blob["model"])
+    return m, {k: blob[k] for k in ("n_buckets", "width", "max_hp", "d_model", "layers", "heads")}
+
+
+def evaluate_model(flat: dict, model, shape: dict, device, limit: int = 20000) -> dict:
+    """Value NLL, policy cross-entropy and top-1 agreement with the teacher on the newest `limit` held-out rows of `flat`."""
+    import torch  # noqa: PLC0415
+
+    idx = flat.get("val_idx")
+    if idx is None or not len(idx):
+        return {}
+    idx = idx[-limit:]
+    model.train(False)
+    tot = {"value": 0.0, "policy": 0.0, "agree": 0.0, "n": 0}
+    with torch.no_grad():
+        for s in range(0, len(idx), 512):
+            rows = idx[s: s + 512]
+            inputs, tg = batch_tensors(flat, rows, device, shape["width"], shape["n_buckets"], solver_override=False)
+            vl, pl, ag = losses(model, inputs, tg)
+            tot["value"] += float(vl) * len(rows)
+            tot["policy"] += float(pl) * len(rows)
+            tot["agree"] += float(ag) * len(rows)
+            tot["n"] += len(rows)
+    n = max(1, tot["n"])
+    return {"val_rows": tot["n"], "val_value_nll": tot["value"] / n, "val_policy_ce": tot["policy"] / n,
+            "val_top1_agree": tot["agree"] / n}
+
+
+def score_pair(root: Path, cand_dir: Path, base_dir: Path, window: int = 300_000, limit: int = 20000) -> dict:
+    """A checkpoint and an incumbent on the same held-out rows (the newest `limit` of the buffer's newest `window` rows), on the
+    CPU on one thread: the gate pre-filter's figures for a checkpoint whose own train.json does not carry them for this
+    incumbent and split (a checkpoint from before the figures named whose they were, or an incumbent promoted since)."""
+    import torch  # noqa: PLC0415
+
+    torch.set_num_threads(1)
+    buf = Buffer(Path(root) / "buffer" / "shards", window)
+    buf.refresh()
+    flat = buf.arrays()
+    out: dict = {}
+    for tag, d in (("", Path(cand_dir)), ("base_", Path(base_dir))):
+        m, shape = load_net(d / "combat_policy.pt")
+        got = evaluate_model(flat, m, shape, "cpu", limit)
+        if not got:
+            raise RuntimeError("no held-out rows in the buffer")
+        out.update({f"{tag}{k}": v for k, v in got.items() if k != "val_rows" or not tag})
+        out[f"{tag}sha256"] = gl.sha256_file(d / "combat_policy.pt")
+    out["split"] = gl.val_split_id()
+    return out
+
+
 def losses(model, inputs: dict, tg: dict):
     """train_combat.train's two terms: soft cross-entropy on the value (one-hot outcome bucket) and on the policy target."""
     import torch  # noqa: PLC0415
@@ -292,39 +350,26 @@ class Trainer:
         return n
 
     def evaluate(self, model=None, limit: int = 20000) -> dict:
-        torch = self.torch
-        flat = self.buffer.arrays()
-        idx = flat.get("val_idx")
-        if idx is None or not len(idx):
-            return {}
-        idx = idx[-limit:]
-        model = model or self.model
-        model.train(False)
-        tot = {"value": 0.0, "policy": 0.0, "agree": 0.0, "n": 0}
-        with torch.no_grad():
-            for s in range(0, len(idx), 512):
-                rows = idx[s: s + 512]
-                inputs, tg = batch_tensors(flat, rows, self.device, self.shape["width"], self.shape["n_buckets"], solver_override=False)
-                vl, pl, ag = losses(model, inputs, tg)
-                tot["value"] += float(vl) * len(rows)
-                tot["policy"] += float(pl) * len(rows)
-                tot["agree"] += float(ag) * len(rows)
-                tot["n"] += len(rows)
-        n = max(1, tot["n"])
-        return {"val_rows": tot["n"], "val_value_nll": tot["value"] / n, "val_policy_ce": tot["policy"] / n,
-                "val_top1_agree": tot["agree"] / n}
+        return evaluate_model(self.buffer.arrays(), model or self.model, self.shape, self.device, limit)
+
+    def incumbent(self) -> tuple[str, Path]:
+        """The daemon's incumbent now (its state.json), not the one this process was started beside: a promotion does not restart
+        the trainer, and the gate's pre-filter compares each checkpoint with the incumbent it would meet."""
+        st = gl.read_json(self.root / "state.json", {}) or {}
+        name = st.get("incumbent")
+        d = ((st.get("versions") or {}).get(name) or {}).get("dir") if name else None
+        if d and (Path(d) / "combat_policy.pt").is_file():
+            return str(name), Path(d)
+        return Path(self.a.base).name, Path(self.a.base)
 
     def base_eval(self) -> dict:
-        """The incumbent's network on the same held-out rows, for comparison (once per checkpoint, small)."""
-        import torch  # noqa: PLC0415
-        from combat_net import CombatNet  # noqa: PLC0415
-        from combat_tokens import VOCAB  # noqa: PLC0415
-
-        blob = torch.load(Path(self.a.base) / "combat_policy.pt", map_location="cpu", weights_only=True)
-        m = CombatNet(VOCAB, blob["n_buckets"], d_model=blob["d_model"], layers=blob["layers"], heads=blob["heads"])
-        m.load_state_dict(blob["model"])
+        """The incumbent's network on the same held-out rows, for comparison (once per checkpoint, small). The figures carry whose
+        they are (`base_version`, `base_sha256` of its combat_policy.pt) and which split they were scored on."""
+        name, d = self.incumbent()
+        m, _ = load_net(d / "combat_policy.pt")
         m.to(self.device)
-        return {f"base_{k}": v for k, v in self.evaluate(m).items() if k != "val_rows"}
+        return {"base_version": name, "base_sha256": gl.sha256_file(d / "combat_policy.pt"),
+                **{f"base_{k}": v for k, v in self.evaluate(m).items() if k != "val_rows"}}
 
     def checkpoint(self) -> str:
         import combat_prior  # noqa: PLC0415
@@ -347,7 +392,7 @@ class Trainer:
         info = {"checkpoint": name, "t": gl.stamp(), "steps": self.st["steps"], "samples": self.st["samples"],
                 "rows_seen": self.st["rows_seen"], "window_rows": self.buffer.rows, "train_s": self.st["train_s"],
                 "idle_s": self.st["idle_s"], "device": self.device, "ema_value": self.st.get("ema_value"),
-                "ema_policy": self.st.get("ema_policy"), **ev}
+                "ema_policy": self.st.get("ema_policy"), "split": gl.val_split_id(), **ev}
         (tmp / "train.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
         os.replace(tmp, self.ckdir / name)
         self.st["ck"] = n
@@ -421,6 +466,16 @@ def _opt_cpu(sd: dict) -> dict:
 
 
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["score"]:  # the gate pre-filter's figures for one checkpoint (see `score_pair`); one JSON line on stdout
+        sp = argparse.ArgumentParser(prog="gym_loop_train.py score")
+        sp.add_argument("--root", required=True)
+        sp.add_argument("--candidate", required=True)
+        sp.add_argument("--base", required=True)
+        sp.add_argument("--window", type=int, default=300_000)
+        s = sp.parse_args(argv[1:])
+        print(json.dumps(score_pair(Path(s.root), Path(s.candidate), Path(s.base), s.window)))
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", required=True)
     ap.add_argument("--base", required=True, help="the incumbent's folder: its combat_policy.pt is the first weights")

@@ -25,7 +25,10 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
 2. **Training** runs beside it in its own process on the card (`rl/gym_loop_train.py`, the GPU venv): over the buffer's newest
    window, from the incumbent's weights, a checkpoint every 30 minutes, at most `--max-epochs` epochs over unchanged data (then it
    idles and logs the idle time).
-3. **The gate.** A checkpoint not yet scored is played on the fight board's 200 Act-1 boss starts with the board's seeds, under the
+3. **The gate.** Only checkpoints that pass the pre-filter (D49, `prefilter_pick`) enter it: a checkpoint's held-out policy
+   cross-entropy must be below the incumbent's on the same rows, and below that of every checkpoint already rejected against this
+   incumbent; at least one gate every six hours regardless (the best of the skipped ones). The rule below is untouched.
+   A checkpoint not yet scored is played on the fight board's 200 Act-1 boss starts with the board's seeds, under the
    player config (`--player-config`: a3-v1, or the judge-equipped config once it lands), paired with the incumbent on the same games
    (the incumbent's games are played once per incumbent, engine and config, and kept). Stage 1 uses a pair of seed indices the
    incumbent was not picked on, one pair per promotion, with the incumbent's games on it taken from its own promotion gate (D43).
@@ -119,6 +122,17 @@ PROMOTION_RULE = {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): sta
                   "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
                   "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"}
 
+# The gate's pre-filter (D49 item 3, 2026-11-03; it decides who enters the gate, never who is promoted). Every checkpoint's train.json
+# carries its held-out policy cross-entropy beside the incumbent's on the same rows (the trainer scores both in one call). The
+# policy is what the gate's player reads (the prior), so the policy figure is the one compared; "gap" is the incumbent's minus the
+# checkpoint's (positive: the checkpoint is better). Measured when it was written: all 78 checkpoints gated against v2 (c0020 to
+# c0100) had a positive gap, 0.0028 to 0.0129 nats from c0049 on (before it the trainer still compared with an older version), and none was
+# promoted, so "below the incumbent's" alone skips nothing; mode "best" also asks the gap to exceed that of every checkpoint
+# already gated and rejected against this incumbent.
+# `margin` is nats the gap must exceed; `floor_h` hours after which the best-gap skipped checkpoint of the window is gated.
+PREFILTER = {"name": "gym-loop-prefilter-v1", "fixed": "2026-11-03 (D49)", "metric": "val_policy_ce", "mode": "best",
+             "margin": 0.0, "floor_h": 6.0}
+
 _HOME = re.compile(r"(?i)[a-z]:[\\/]+users[\\/]+[^\\/\s'\"]+")
 
 
@@ -162,6 +176,11 @@ def sha256_file(p: Path) -> str:
 def is_val_seed(run_seed: str) -> bool:
     """The trainer's held-out split, by run seed: a fixed tenth of seeds."""
     return int(hashlib.sha256(f"gym-loop-val:{run_seed}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF < VAL_SHARE
+
+
+def val_split_id() -> str:
+    """Names the held-out split (the rule and its share); a held-out figure is the same measure only under the same id."""
+    return f"gym-loop-val:{VAL_SHARE}"
 
 
 # ---------------------------------------------------------------------------------------------------------- the locks
@@ -1142,6 +1161,174 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
     return out
 
 
+# ---------------------------------------------------------------------------------------------------------- the gate's pre-filter
+
+
+PREFILTER_SCORE_TIMEOUT_S = 900.0
+_SHA_CACHE: dict = {}
+
+
+def _t(s: str) -> dt.datetime:
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+def policy_sha(d: Path) -> str:
+    """sha256 of a folder's combat_policy.pt (kept by path, size and time: an incumbent's file does not change)."""
+    p = Path(d) / "combat_policy.pt"
+    s = p.stat()
+    key = (str(p), s.st_mtime_ns, s.st_size)
+    if key not in _SHA_CACHE:
+        _SHA_CACHE[key] = sha256_file(p)
+    return _SHA_CACHE[key]
+
+
+def prefilter_cfg(a: argparse.Namespace | None = None) -> dict:
+    """PREFILTER's settings, overridden by the daemon's flags (`--prefilter`, `--prefilter-margin`, `--prefilter-floor-h`)."""
+    cfg = {**PREFILTER, "window": 300_000}
+    if a is not None:
+        cfg.update(mode=a.prefilter, margin=a.prefilter_margin, floor_h=a.prefilter_floor_h, window=a.train_window)
+    return cfg
+
+
+def prefilter_state(loop: Loop, now: dt.datetime | None = None) -> dict:
+    """The pre-filter's record in state.json: the incumbent it is about, the time of the last gate (the floor counts from it), the
+    checkpoints skipped since then, each decided checkpoint's figures and the best gap among those gated and rejected. A new
+    incumbent starts a new record: the gaps were measured against the old one."""
+    inc = loop.state["incumbent"]
+    pf = loop.state.get("prefilter")
+    if not isinstance(pf, dict) or pf.get("incumbent") != inc:
+        last = next((r["t"] for r in reversed(fg.read_jsonl(loop.gates / "verdicts.jsonl")) if r.get("t")),
+                    (now or utc()).strftime("%Y-%m-%dT%H:%M:%SZ"))  # the last gate played, whoever it was against
+        pf = {"rule": PREFILTER["name"], "incumbent": inc, "last_gate": last, "window": [], "figures": {}, "best": None}
+        loop.state["prefilter"] = pf
+    return pf
+
+
+def _figures_ok(d: dict, inc: str, sha: str, split: str) -> bool:
+    """A held-out record is the incumbent's reference only when it names this incumbent (version and weights) and this split."""
+    try:
+        return (d.get("base_version") == inc and d.get("base_sha256") == sha and d.get("split") == split
+                and math.isfinite(float(d["val_policy_ce"])) and math.isfinite(float(d["base_val_policy_ce"])))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _fig(d: dict, source: str) -> dict:
+    loss, ref = float(d["val_policy_ce"]), float(d["base_val_policy_ce"])
+    return {"loss": loss, "ref": ref, "gap": ref - loss, "rows": d.get("val_rows"), "source": source}
+
+
+def score_checkpoint(loop: Loop, cand_dir: Path, inc_dir: Path, window: int) -> dict:
+    """The held-out figures of a checkpoint and the incumbent on the same rows, from the trainer's `score` command (GPU venv, the
+    CPU, one thread); an error raises."""
+    argv = [GPU_PYTHON, str(ROOT / "rl" / "gym_loop_train.py"), "score", "--root", str(loop.root), "--candidate", str(cand_dir),
+            "--base", str(inc_dir), "--window", str(window)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=PREFILTER_SCORE_TIMEOUT_S, cwd=str(ROOT),
+                       env={**os.environ, "CUDA_VISIBLE_DEVICES": ""}, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                       check=False)
+    if r.returncode != 0:
+        raise RuntimeError(f"score rc={r.returncode}: {(r.stderr or r.stdout).strip()[-300:]}")
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def checkpoint_figures(loop: Loop, cand_dir: Path, window: int = 300_000, scorer=None) -> dict:
+    """{loss, ref, gap, rows, source}: the checkpoint's held-out policy cross-entropy and the incumbent's on the same rows. They come
+    from the checkpoint's train.json when that names this incumbent and split, else from the checkpoint's prefilter.json when that
+    does, else the incumbent is scored once on the current held-out rows with the checkpoint (`scorer`) and the record is stored in
+    prefilter.json: so a new incumbent or a new split recomputes the reference, and nothing is scored twice."""
+    cand_dir = Path(cand_dir)
+    inc, inc_dir = loop.incumbent()
+    sha, split = policy_sha(inc_dir), val_split_id()
+    for name in ("train.json", "prefilter.json"):
+        d = read_json(cand_dir / name, {}) or {}
+        if _figures_ok(d, inc, sha, split) and (name == "train.json" or d.get("sha256") == policy_sha(cand_dir)):
+            return _fig(d, name)
+    got = (scorer or score_checkpoint)(loop, cand_dir, inc_dir, window)
+    rec = {"checkpoint": cand_dir.name, "t": stamp(), "base_version": inc, **got}
+    if not _figures_ok(rec, inc, sha, split):
+        raise RuntimeError("the scored figures do not name this incumbent and split")
+    write_json(cand_dir / "prefilter.json", rec)
+    return _fig(rec, "scored")
+
+
+def prefilter_decide(pf: dict, fig: dict, cfg: dict) -> tuple[bool, str]:
+    """(gate it, why). The gap is the incumbent's held-out loss minus the checkpoint's: it must exceed the margin, and in mode
+    'best' also the gap of every checkpoint already gated and rejected against this incumbent (a re-test of a net no better than
+    one the gate has refused tells the gate nothing)."""
+    gap = fig["gap"]
+    if gap <= cfg["margin"]:
+        return False, "not below the incumbent's" + (f" by more than {cfg['margin']:.4f}" if cfg["margin"] else "")
+    best = pf.get("best")
+    if cfg["mode"] == "best" and best and gap <= best["gap"]:
+        return False, f"not past {best['cand']}'s gap of {best['gap']:+.4f}, which the gate rejected"
+    return True, "below the incumbent's" + (f" and past {best['cand']}'s gap of {best['gap']:+.4f}" if cfg["mode"] == "best" and best
+                                            else "")
+
+
+def prefilter_pick(loop: Loop, cfg: dict, now: dt.datetime | None = None, scorer=None) -> tuple[str, Path] | None:
+    """The checkpoint to gate now, or None. Every checkpoint without a verdict is decided once (oldest first): one that passes is a
+    candidate (the newest passing one is gated, the older ones superseded as before), one that does not is marked skipped, logged
+    with both figures and put in the window. The floor: when `floor_h` hours have passed since the last gate, the skipped
+    checkpoint with the best gap in the window is gated, so the board keeps moving whatever the figures say. A checkpoint whose
+    figures cannot be had goes to the gate (the filter never blocks on its own failure)."""
+    now = now or utc()
+    pf = prefilter_state(loop, now)
+    inc, _ = loop.incumbent()
+    gated = loop.state["gated"]
+    ungated = sorted(p for p in loop.checkpoints.glob("c[0-9][0-9][0-9][0-9]")
+                     if p.name not in gated and (p / "model.json").is_file() and (p / "combat_policy.pt").is_file())
+    chosen = None
+    for d in ungated:
+        fig = pf["figures"].get(d.name)
+        fresh = fig is None
+        if fresh:
+            try:
+                fig = checkpoint_figures(loop, d, int(cfg.get("window", 300_000)), scorer)
+            except Exception as error:  # noqa: BLE001 -- logged; the gate decides
+                fig = {"error": clean(f"{type(error).__name__}: {error}")[:240]}
+        if "error" in fig:
+            go, why = True, "no held-out figures, the gate decides"
+        else:
+            go, why = prefilter_decide(pf, fig, cfg)
+        pf["figures"][d.name] = {**fig, "go": go}
+        if fresh:
+            if "error" in fig:
+                loop.log(f"prefilter: {d.name} gated: {why} ({fig['error']})")
+            else:
+                loop.log(f"prefilter: {d.name} {'gated' if go else 'skipped'}: held-out policy CE {fig['loss']:.4f} against "
+                         f"{inc}'s {fig['ref']:.4f} on the same {fig['rows']} rows (gap {fig['gap']:+.4f}): {why}"
+                         + ("" if go else f"; {len(pf['window']) + 1} skipped since the last gate"))
+        if go:
+            chosen = (d.name, d)
+        elif d.name not in gated:
+            gated[d.name] = {"verdict": "skipped", "why": why, "incumbent": inc, "loss": fig["loss"], "inc_loss": fig["ref"]}
+            pf["window"].append(d.name)
+    for stale in sorted(pf["figures"])[:-200]:
+        pf["figures"].pop(stale, None)
+    if chosen is None:
+        win = [n for n in pf["window"] if (loop.checkpoints / n).is_dir() and "gap" in pf["figures"].get(n, {})]
+        age_h = (now - _t(pf["last_gate"])).total_seconds() / 3600
+        if win and age_h >= cfg["floor_h"]:
+            n = max(win, key=lambda x: pf["figures"][x]["gap"])
+            f = pf["figures"][n]
+            loop.log(f"prefilter: floor: {age_h:.1f} h since the last gate, gating {n}, the best of {len(win)} skipped "
+                     f"(held-out policy CE {f['loss']:.4f} against {inc}'s {f['ref']:.4f}, gap {f['gap']:+.4f})")
+            chosen = (n, loop.checkpoints / n)
+    loop.save()
+    return chosen
+
+
+def prefilter_note_verdict(loop: Loop, cand: str, verdict: dict, now: dt.datetime | None = None) -> None:
+    """A gate has been played to a verdict: the window is over (the floor counts from now), and the checkpoint's gap joins the
+    bar a later checkpoint must pass."""
+    pf = prefilter_state(loop, now)
+    pf["last_gate"] = (now or utc()).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pf["window"] = []
+    fig = pf["figures"].get(cand)
+    if fig and "gap" in fig and verdict.get("verdict") in ("reject", "promote") and (pf["best"] is None or fig["gap"] > pf["best"]["gap"]):
+        pf["best"] = {"cand": cand, "gap": fig["gap"], "loss": fig["loss"], "ref": fig["ref"]}
+
+
 def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) -> str:
     """The checkpoint becomes the next version: copied to players/vN, the incumbent from now on, its board row built."""
     n = 1 + max(int(v[1:]) for v in loop.state["versions"])
@@ -1468,10 +1655,12 @@ class Daemon:
 
     # -- the steps
     def next_gate(self) -> tuple[str, Path] | None:
-        newest = self.loop.newest_checkpoint()
-        if newest is None or newest[0] in self.loop.state["gated"]:
-            return None
-        return newest
+        if self.a.prefilter == "off":
+            newest = self.loop.newest_checkpoint()
+            if newest is None or newest[0] in self.loop.state["gated"]:
+                return None
+            return newest
+        return prefilter_pick(self.loop, prefilter_cfg(self.a))
 
     def gate(self, cand: str, cand_dir: Path) -> None:
         self.status("gate", candidate=cand)
@@ -1479,6 +1668,8 @@ class Daemon:
                      judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
+        if self.a.prefilter != "off":
+            prefilter_note_verdict(self.loop, cand, v)
         older = sorted(p.name for p in self.loop.checkpoints.glob("c[0-9][0-9][0-9][0-9]") if p.name < cand)
         for old in older:  # superseded while untested: the newest is always the one scored
             self.loop.state["gated"].setdefault(old, {"verdict": "superseded", "by": cand})
@@ -1545,6 +1736,9 @@ class Daemon:
         self.loop.log(f"daemon: state reloaded: incumbent {self.loop.state['incumbent']}, {len(self.loop.state['gated'])} checkpoints "
                       f"with a verdict, segment {self.loop.state['segment']}; {PROMOTION_RULE['name']}: stage 1 plays j "
                       f"{list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}")
+        pcfg = prefilter_cfg(self.a)
+        self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
+                      f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")
@@ -1672,6 +1866,13 @@ def main(argv=None) -> int:
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
             p.add_argument("--no-gate", action="store_true")
+            p.add_argument("--prefilter", choices=("best", "incumbent", "off"), default=PREFILTER["mode"],
+                           help="who enters the gate (D49): best, a checkpoint whose held-out policy CE is below the incumbent's "
+                                "and below every rejected checkpoint's; incumbent, below the incumbent's only; off, every one")
+            p.add_argument("--prefilter-margin", type=float, default=PREFILTER["margin"],
+                           help="nats a checkpoint's held-out policy CE must be below the incumbent's")
+            p.add_argument("--prefilter-floor-h", type=float, default=PREFILTER["floor_h"],
+                           help="hours after which the best skipped checkpoint is gated whatever its figures")
     a = ap.parse_args(argv)
     if a.cmd == "starts":
         loop = Loop(a.root)

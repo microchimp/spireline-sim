@@ -13,6 +13,7 @@ Real games are short arena fights with the fixture prior, on core2 in spawned pr
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import multiprocessing as mp
 import os
@@ -714,6 +715,15 @@ class LoopGameTests(unittest.TestCase):
             info = json.loads((ck / "train.json").read_text())
             self.assertIn("val_top1_agree", info)
             self.assertIn("base_val_top1_agree", info)
+            # the pre-filter's reference: whose figures the base ones are, on which split, and the same figures from `score_pair`
+            inc_name, inc_dir = t.incumbent()
+            self.assertEqual((info["base_version"], info["split"]), (inc_name, gl.val_split_id()))
+            self.assertEqual(info["base_sha256"], gl.sha256_file(inc_dir / "combat_policy.pt"))
+            got = tr.score_pair(self.loop.root, ck, inc_dir, window=a.window)
+            self.assertEqual((got["base_sha256"], got["split"]), (info["base_sha256"], info["split"]))
+            self.assertEqual(got["sha256"], gl.sha256_file(ck / "combat_policy.pt"))
+            for k in ("val_rows", "val_policy_ce", "base_val_policy_ce", "val_value_nll", "base_val_value_nll"):
+                self.assertAlmostEqual(got[k], info[k], places=4, msg=k)
             steps = t.st["steps"]
             t.save_state()
             t2 = tr.Trainer(a)
@@ -742,6 +752,203 @@ class LoopGameTests(unittest.TestCase):
         self.assertEqual((v["rule"], v["stage1_js"]), ("gym-loop-promote-v2", [0]))  # a new loop's stage 1 plays the first pair
         self.assertEqual(v2["verdict"], v["verdict"])
         self.assertEqual({r["arm"] for r in inc_games}, {"v0"})
+
+
+# ---------------------------------------------------------------------------------------------------------- the gate's pre-filter
+
+
+class PrefilterTests(unittest.TestCase):
+    """D49 item 3: who enters the gate. Checkpoints are folders with fake weights and a train.json; no games, no torch."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.loop = gl.Loop(Path(self.tmp.name) / "loop")
+        self.addCleanup(self.tmp.cleanup)
+        self._version("v2", b"weights of v2")
+        self.loop.state["incumbent"] = "v2"
+        self.cfg = {**gl.PREFILTER, "window": 1000}
+        self.t0 = dt.datetime(2026, 11, 3, 6, 0, 0, tzinfo=dt.timezone.utc)
+
+    def _version(self, name, blob):
+        d = self.loop.players / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "combat_policy.pt").write_bytes(blob)
+        self.loop.state["versions"][name] = {"dir": str(d), "n": int(name[1:])}
+
+    def _ck(self, name, loss, ref, base="v2", split=None, identity=True):
+        """A checkpoint as the trainer writes it: its held-out policy CE and the incumbent's, naming whose and on which split."""
+        d = self.loop.checkpoints / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "model.json").write_text("{}", encoding="utf-8")
+        (d / "combat_policy.pt").write_bytes(b"weights of " + name.encode())
+        info = {"checkpoint": name, "val_rows": 20000, "val_policy_ce": loss, "base_val_policy_ce": ref}
+        if identity:
+            info.update(base_version=base, base_sha256=gl.sha256_file(self.loop.players / base / "combat_policy.pt"),
+                        split=split or gl.val_split_id())
+        (d / "train.json").write_text(json.dumps(info), encoding="utf-8")
+        return d
+
+    def _log(self):
+        return (self.loop.root / "loop.log").read_text(encoding="utf-8") if (self.loop.root / "loop.log").exists() else ""
+
+    def _scorer(self, calls, loss=1.0500, ref=1.0700):
+        def score(loop, cand_dir, inc_dir, window):
+            calls.append((cand_dir.name, inc_dir.name, window))
+            return {"val_rows": 777, "val_policy_ce": loss, "base_val_policy_ce": ref, "sha256": gl.sha256_file(cand_dir / "combat_policy.pt"),
+                    "base_sha256": gl.sha256_file(inc_dir / "combat_policy.pt"), "split": gl.val_split_id()}
+        return score
+
+    def _pick(self, now=None, scorer=None):
+        return gl.prefilter_pick(self.loop, self.cfg, now or self.t0, scorer)
+
+    def _verdict(self, cand, now, verdict="reject"):
+        gl.prefilter_note_verdict(self.loop, cand, {"verdict": verdict}, now)
+        self.loop.state["gated"][cand] = {"verdict": verdict}
+
+    def test_a_checkpoint_not_below_the_incumbents_loss_is_skipped_and_the_log_gives_both_figures(self):
+        self._ck("c0001", 1.0800, 1.0700)  # worse
+        self._ck("c0002", 1.0700, 1.0700)  # equal: not below
+        self.assertIsNone(self._pick())
+        self.assertEqual({k: self.loop.state["gated"][k]["verdict"] for k in ("c0001", "c0002")},
+                         {"c0001": "skipped", "c0002": "skipped"})
+        log = self._log()
+        self.assertIn("prefilter: c0001 skipped: held-out policy CE 1.0800 against v2's 1.0700 on the same 20000 rows", log)
+        self.assertIn("not below the incumbent's", log)
+        self.assertIn("prefilter: c0002 skipped: held-out policy CE 1.0700 against v2's 1.0700", log)
+        self.assertEqual(self.loop.state["prefilter"]["window"], ["c0001", "c0002"])
+        before = self._log()
+        self.assertIsNone(self._pick())  # decided once: no second line, nothing new to gate
+        self.assertEqual(self._log(), before)
+
+    def test_a_better_one_is_gated_and_the_newest_passing_one_wins(self):
+        self._ck("c0001", 1.0600, 1.0700)  # gap +0.0100
+        self._ck("c0002", 1.0650, 1.0700)  # gap +0.0050
+        self.assertEqual(self._pick()[0], "c0002")  # both pass: the newest is gated (the gate supersedes the older)
+        self.assertIn("prefilter: c0001 gated: held-out policy CE 1.0600 against v2's 1.0700", self._log())
+        self.assertIn("prefilter: c0002 gated", self._log())
+        self.assertEqual(self.loop.state["prefilter"]["window"], [])
+
+    def test_a_checkpoint_no_better_than_one_the_gate_rejected_is_skipped_unless_the_mode_is_incumbent(self):
+        self._ck("c0001", 1.0600, 1.0700)
+        self.assertEqual(self._pick()[0], "c0001")
+        self._verdict("c0001", self.t0 + dt.timedelta(minutes=8))
+        self.assertEqual(self.loop.state["prefilter"]["best"]["cand"], "c0001")
+        self._ck("c0002", 1.0610, 1.0700)  # gap +0.0090 against the rejected one's +0.0100
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(minutes=40)))
+        self.assertIn("c0002 skipped", self._log())
+        self.assertIn("not past c0001's gap of +0.0100, which the gate rejected", self._log())
+        self._ck("c0003", 1.0580, 1.0700)  # +0.0120: a new best
+        self.assertEqual(self._pick(self.t0 + dt.timedelta(minutes=70))[0], "c0003")
+        self.assertIn("c0003 gated: held-out policy CE 1.0580 against v2's 1.0700 on the same 20000 rows (gap +0.0120): "
+                      "below the incumbent's and past c0001's gap of +0.0100", self._log())
+        # mode incumbent: only the incumbent's figure counts
+        self._verdict("c0003", self.t0 + dt.timedelta(minutes=80))
+        self.cfg = {**self.cfg, "mode": "incumbent"}
+        self._ck("c0004", 1.0640, 1.0700)  # +0.0060
+        self.assertEqual(self._pick(self.t0 + dt.timedelta(minutes=100))[0], "c0004")
+        # and a margin the gap must exceed
+        self._verdict("c0004", self.t0 + dt.timedelta(minutes=110))
+        self.cfg = {**self.cfg, "margin": 0.0070}
+        self._ck("c0005", 1.0640, 1.0700)
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(minutes=130)))
+        self.assertIn("not below the incumbent's by more than 0.0070", self._log())
+
+    def test_the_floor_gates_the_best_skipped_checkpoint_after_six_hours_and_only_then(self):
+        self._ck("c0001", 1.0600, 1.0700)
+        self.assertEqual(self._pick()[0], "c0001")
+        self._verdict("c0001", self.t0)  # the last gate: the floor counts from here
+        for i, gap in enumerate((0.0080, 0.0095, 0.0090, -0.0020), start=2):
+            self._ck(f"c{i:04d}", 1.0700 - gap, 1.0700)
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(hours=5, minutes=59)))
+        self.assertEqual(self.loop.state["prefilter"]["window"], ["c0002", "c0003", "c0004", "c0005"])
+        got = self._pick(self.t0 + dt.timedelta(hours=6, minutes=1))
+        self.assertEqual(got[0], "c0003")  # the best gap of the window, not the newest
+        self.assertEqual(got[1], self.loop.checkpoints / "c0003")
+        self.assertRegex(self._log(), r"prefilter: floor: 6\.0 h since the last gate, gating c0003, the best of 4 skipped "
+                                      r"\(held-out policy CE 1\.0605 against v2's 1\.0700, gap \+0\.0095\)")
+        self.assertEqual(self._pick(self.t0 + dt.timedelta(hours=6, minutes=2))[0], "c0003")  # a stopped gate comes back
+        self._verdict("c0003", self.t0 + dt.timedelta(hours=6, minutes=10))
+        self.assertEqual(self.loop.state["prefilter"]["window"], [])  # the window is over
+        self.assertEqual(self.loop.state["prefilter"]["best"]["cand"], "c0001")  # the bar is the best gap rejected so far
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(hours=7)))  # nothing in the window: nothing to gate
+        self._ck("c0006", 1.0705, 1.0700)
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(hours=7, minutes=1)))
+        self.assertIsNone(self._pick(self.t0 + dt.timedelta(hours=12, minutes=9)))  # six hours counted from the last verdict
+        self.assertEqual(self._pick(self.t0 + dt.timedelta(hours=12, minutes=11))[0], "c0006")
+
+    def test_the_reference_is_recomputed_when_the_incumbent_or_the_split_changes(self):
+        calls: list = []
+        score = self._scorer(calls)
+        d = self._ck("c0001", 1.0600, 1.0700)
+        fig = gl.checkpoint_figures(self.loop, d, 1000, score)
+        self.assertEqual((calls, fig["source"], round(fig["gap"], 4)), ([], "train.json", 0.0100))  # the trainer's, on disk
+        # a checkpoint from before the figures named whose they were: scored once, stored, read from the store after that
+        old = self._ck("c0002", 1.0600, 1.0700, identity=False)
+        fig = gl.checkpoint_figures(self.loop, old, 1000, score)
+        self.assertEqual((calls, fig["source"], fig["rows"], round(fig["gap"], 4)), ([("c0002", "v2", 1000)], "scored", 777, 0.0200))
+        stored = json.loads((old / "prefilter.json").read_text())
+        self.assertEqual((stored["base_version"], stored["split"]), ("v2", gl.val_split_id()))
+        self.assertEqual(gl.checkpoint_figures(self.loop, old, 1000, score)["source"], "prefilter.json")
+        self.assertEqual(len(calls), 1)
+        # a new incumbent: the trainer's figures were against the old one and the stored ones too: scored again for both
+        self._version("v3", b"weights of v3")
+        self.loop.state["incumbent"] = "v3"
+        for name in ("c0001", "c0002"):
+            self.assertEqual(gl.checkpoint_figures(self.loop, self.loop.checkpoints / name, 1000, score)["source"], "scored")
+        self.assertEqual([c[:2] for c in calls], [("c0002", "v2"), ("c0001", "v3"), ("c0002", "v3")])
+        self.assertEqual(json.loads((self.loop.checkpoints / "c0002" / "prefilter.json").read_text())["base_version"], "v3")
+        self.assertEqual(gl.checkpoint_figures(self.loop, self.loop.checkpoints / "c0002", 1000, score)["source"], "prefilter.json")
+        self.assertEqual(len(calls), 3)
+        # the same name with other weights is another incumbent
+        (self.loop.players / "v3" / "combat_policy.pt").write_bytes(b"v3 retrained")
+        self.assertEqual(gl.checkpoint_figures(self.loop, self.loop.checkpoints / "c0002", 1000, score)["source"], "scored")
+        self.assertEqual(len(calls), 4)
+        # a new split: the held-out rows are not the same rows
+        with mock.patch.object(gl, "VAL_SHARE", 0.2):
+            self.assertEqual(gl.val_split_id(), "gym-loop-val:0.2")
+            fig = gl.checkpoint_figures(self.loop, self.loop.checkpoints / "c0002", 1000, score)
+            self.assertEqual((fig["source"], len(calls)), ("scored", 5))
+            self.assertEqual(json.loads((self.loop.checkpoints / "c0002" / "prefilter.json").read_text())["split"], "gym-loop-val:0.2")
+
+    def test_a_new_incumbent_starts_a_new_record_and_the_floor_counts_from_its_promotion_gate(self):
+        self._ck("c0001", 1.0600, 1.0700)
+        self.assertEqual(self._pick()[0], "c0001")
+        self._verdict("c0001", self.t0)
+        self.assertEqual(self.loop.state["prefilter"]["best"]["cand"], "c0001")
+        (self.loop.gates / "verdicts.jsonl").write_text(json.dumps({"t": "2026-11-03T07:30:00Z", "verdict": "promote"}) + "\n", encoding="utf-8")
+        self._version("v3", b"weights of v3")
+        self.loop.state["incumbent"] = "v3"
+        pf = gl.prefilter_state(self.loop, self.t0 + dt.timedelta(hours=2))
+        self.assertEqual((pf["incumbent"], pf["best"], pf["window"], pf["figures"], pf["last_gate"]),
+                         ("v3", None, [], {}, "2026-11-03T07:30:00Z"))
+
+    def test_figures_that_cannot_be_had_send_the_checkpoint_to_the_gate(self):
+        def broken(loop, cand_dir, inc_dir, window):
+            raise RuntimeError("score rc=1: no held-out rows in the buffer")
+        self._ck("c0001", 1.0600, 1.0700, identity=False)
+        got = self._pick(scorer=broken)
+        self.assertEqual(got[0], "c0001")
+        self.assertIn("prefilter: c0001 gated: no held-out figures, the gate decides (RuntimeError: score rc=1", self._log())
+        bad = self._scorer([])  # a scorer that scored another incumbent's weights is refused as well
+        self._ck("c0002", 1.0600, 1.0700, identity=False)
+        with mock.patch.object(gl, "policy_sha", lambda d: "x" if Path(d).parent.name == "players" else "y"):
+            with self.assertRaises(RuntimeError):
+                gl.checkpoint_figures(self.loop, self.loop.checkpoints / "c0002", 1000, bad)
+
+    def test_the_daemon_asks_the_filter_unless_it_is_off(self):
+        self._ck("c0001", 1.0800, 1.0700)
+        a = argparse.Namespace(prefilter="best", prefilter_margin=0.0, prefilter_floor_h=6.0, train_window=1000)
+        d = gl.Daemon.__new__(gl.Daemon)
+        d.a, d.loop = a, self.loop
+        self.assertIsNone(gl.Daemon.next_gate(d))  # skipped
+        self.assertEqual(self.loop.state["gated"]["c0001"]["verdict"], "skipped")
+        self._ck("c0002", 1.0800, 1.0700)
+        d.a = argparse.Namespace(**{**vars(a), "prefilter": "off"})
+        self.assertEqual(gl.Daemon.next_gate(d)[0], "c0002")  # the old rule: the newest without a verdict
+        cfg = gl.prefilter_cfg(argparse.Namespace(prefilter="incumbent", prefilter_margin=0.002, prefilter_floor_h=3.0, train_window=5))
+        self.assertEqual((cfg["mode"], cfg["margin"], cfg["floor_h"], cfg["window"]), ("incumbent", 0.002, 3.0, 5))
+        self.assertEqual(gl.prefilter_cfg()["floor_h"], 6.0)
+        self.assertEqual(gl.PROMOTION_RULE["name"], "gym-loop-promote-v2")  # the promotion rule is untouched
 
 
 if __name__ == "__main__":

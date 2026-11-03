@@ -89,7 +89,12 @@ the end-HP bucket (value) and on the visit distribution over legal actions (poli
 the search's move was worse, the solver's move is the policy target. **Freshness:** each new row adds `--max-epochs` (4) rows of
 budget; with the budget spent the trainer idles and counts the idle time by reason. **Checkpoints** every 30 minutes when it trained,
 each scored on the held-out rows (value NLL, policy cross-entropy, top-1 agreement with the teacher), beside the incumbent's network
-on the same rows.
+on the same rows. The incumbent is the daemon's incumbent at the checkpoint (read from `state.json`, not the one the trainer was
+started beside: a promotion does not restart it), and `train.json` names it (`base_version`, `base_sha256` of its
+`combat_policy.pt`) and the held-out split (`split`, `gym_loop.val_split_id()`); before 2026-11-03 it did not, and the base
+figures of c0020 to c0048 were an older version's (the trainer's start-up base) although v2 was the incumbent: a policy CE gap of 0.06 that was never v2's. The held-out rows
+are the newest 20,000 held-out rows of the window, so they move a little with each checkpoint: only a candidate figure and an
+incumbent figure scored in the same call compare.
 
 ## 5. The gate and the board (decided before the first checkpoint)
 
@@ -106,6 +111,22 @@ on the discordant pairs gives p < 0.05 and the paired mean L0 difference is not 
 scored; older ones are marked superseded. A promoted checkpoint becomes `players/vN`, the incumbent, and its board row "Fight player,
 version N": `board_commit` rebuilds `docs/paper/fight-board.html` in its own Spireline worktree (`D:/spireline/wt-board`) with the
 standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main. The page's own arms are kept in its order (`page_arms`), each with its games file (`BOARD_GAMES`, or `board/games.json` in the loop's folder for an arm added later); an arm with no known games stops the step, so a rebuild never drops a row.
+
+**The pre-filter** (D49 item 3, 2026-11-03; `PREFILTER`, `prefilter_pick`; `--prefilter best|incumbent|off`, `--prefilter-margin`,
+`--prefilter-floor-h`). It decides who enters the gate; `PROMOTION_RULE` above is untouched. Each checkpoint without a verdict is
+decided once, from its `train.json`: the held-out policy cross-entropy (the policy is what the gate's player reads) against the
+incumbent's on the same rows; the gap is the incumbent's minus the checkpoint's. It is gated if the gap exceeds the margin (0)
+and, in mode `best` (the default), the gap of every checkpoint already gated and rejected against this incumbent; otherwise it
+is marked `skipped` in `state.json`'s `gated`, put in the window, and the log says `prefilter: cNNNN skipped: held-out policy CE
+x against vN's y on the same R rows (gap g): why`. **Floor:** when six hours have passed since the last gate's verdict, the
+skipped checkpoint with the best gap in the window is gated, so the board keeps moving and the rule can be checked against
+what the gate says. If the figures do not name this incumbent and split (a checkpoint from before they did, or an incumbent
+promoted since), the incumbent is scored once with the checkpoint on the current held-out rows (`gym_loop_train.py score`, the
+CPU, one thread, about 80 s) and stored as the checkpoint's `prefilter.json`; if even that fails the checkpoint goes to the gate.
+A new incumbent starts a new record (`state.json`'s `prefilter`: last gate, window, figures, best rejected gap). Why mode
+`best`: measured on the day it was written, all 78 checkpoints gated against v2 had a held-out policy CE below v2's (gap 0.003 to
+0.013 from c0049 on) and none was promoted, so a bare 'below the incumbent's' skips nothing; replayed on c0049 to c0100 the rule
+gates 22 of 53 (the floor never fires while the gap keeps setting records).
 
 The power, estimated: with about a quarter of pairs discordant, a +3-point candidate passes stage 1 four times in five and stage 2
 (SE about 1.1 points on 2,000 pairs) about 85% of the time; a candidate with no gain reaches stage 2 a third of the time and is
