@@ -780,11 +780,17 @@ def fighter_manifests(root: Path, prior_sha256: str, gens: Sequence[int] | None 
 
 def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, gens: Sequence[int] | None = None,
                           beta: float = MATCHED_BETA, threads: int = 4, device: str | None = None,
-                          seed_dirs: Sequence[Path | str] = (), seed_dir: Path | None = None) -> dict[str, Any]:
+                          seed_dirs: Sequence[Path | str] = (), seed_dir: Path | None = None,
+                          incumbent: Path | str | None = None, ranking_check: Any = None) -> dict[str, Any]:
     """A V_run fit (FightNet, the value head and the D33 keep record) on the runs one combat prior played, into `out`
     (run_value.pt, run_value.npz, vrun_fit.json): the fighter-matched recipe of the reset order's step C. The window is every
     self-play block of that prior (`fighter_manifests`), all of its generations in V's buffer; no E-block seed may be among its
-    runs (the train job's rule). `build_candidate(vrun_fit=out)` puts the fit into a candidate when its keep record passes."""
+    runs (the train job's rule). `build_candidate(vrun_fit=out)` puts the fit into a candidate when its keep record passes.
+
+    The keep record also carries the ranking check (D47, D49): the fit's options ranked against `incumbent`'s head (a run_value.npz,
+    a generation directory or a current.json) on the fixed set of held-out decisions in the self-play shards under `shards_root`,
+    the fit window's runs left out. A fit is `kept` only when the D33 conditions and the ranking check both pass; with no
+    `incumbent` the check cannot run and the fit is not kept."""
     mans = fighter_manifests(shards_root, prior_sha256, gens)
     if not mans:
         raise ValueError(f"no self-play shards of prior {prior_sha256[:12]} under {Path(shards_root).name}")
@@ -802,16 +808,72 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
                          value_generations=generations[-1] - generations[0] + 1, beta=beta)
     value = dict(rv.get("value") or {})
     keep_doc = value.pop("keep", None) or {"status": "not_run", "all_computable_pass": False}
+    if (out / "run_value.npz").is_file():
+        keep_doc["ranking"] = ranking_block(out / "run_value.npz", incumbent, shards_root, out, exclude_seeds=window_seeds, check=ranking_check)
     doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta,
            "window": {"blocks": len(mans), "generations": generations,
                       "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
                                              for g in generations},
                       "jobs": sorted(d.parent.name for d, _ in mans)},
            "run_value": {**rv, "value": value}, "keep": keep_doc,
-           "kept": bool(keep_doc.get("all_computable_pass")) and (out / "run_value.npz").is_file(),
+           "kept": vrun_keep_passed(keep_doc, out),
            "sha256": file_sha256(out / "run_value.npz") if (out / "run_value.npz").is_file() else None}
     write_json(out / VRUN_FIT_JSON, doc)
     return doc
+
+
+def fit_window_seeds(fit_doc: dict[str, Any], shards_root: Path | str) -> list[str]:
+    """The run seeds of the window a `fit_run_value_matched` record (`vrun_fit.json`) was fitted on."""
+    mans = fighter_manifests(shards_root, fit_doc["prior_sha256"], fit_doc["window"]["generations"])
+    return [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
+
+
+def rerank_vrun_fit(fit_dir: Path | str, incumbent: Path | str | None, shards_root: Path | str, *, seed_dir: Path | None = None,
+                    seed_dirs: Sequence[Path | str] = (), ranking_check: Any = None) -> dict[str, Any]:
+    """Run the ranking check again on a fit `fit_run_value_matched` already wrote (the fit itself is not repeated) and rewrite its
+    `vrun_fit.json`: the ranking block and `kept`. For a check that could not run when the fit was made (the fit takes about
+    twenty minutes, the check a few more)."""
+    fit_dir = Path(fit_dir)
+    doc = read_json(fit_dir / VRUN_FIT_JSON)
+    window_seeds = fit_window_seeds(doc, shards_root)
+    check_disjoint(window_seeds, known_seed_sets(seed_dir or COMMITTED_SEEDS, None, "", seed_dirs))
+    if file_sha256(fit_dir / "run_value.npz") != doc.get("sha256"):
+        raise ValueError(f"{fit_dir.name}/run_value.npz is not the fit {VRUN_FIT_JSON} records")
+    doc["keep"]["ranking"] = ranking_block(fit_dir / "run_value.npz", incumbent, shards_root, fit_dir, exclude_seeds=window_seeds,
+                                           check=ranking_check)
+    doc["kept"] = vrun_keep_passed(doc["keep"], fit_dir)
+    doc["reranked"] = utc_now()
+    write_json(fit_dir / VRUN_FIT_JSON, doc)
+    return doc
+
+
+def incumbent_head(source: Path | str | None) -> Path | None:
+    """The run_value.npz of the head a new fit is ranked against: a .npz itself, a generation directory, or a current.json."""
+    if source is None:
+        return None
+    p = Path(source)
+    if p.is_file() and p.suffix == ".json":
+        p = Path(read_json(p)["dir"])
+    return p / "run_value.npz" if p.is_dir() else p
+
+
+def ranking_block(candidate_npz: Path, incumbent: Path | str | None, runs_root: Path | str, out_dir: Path, *,
+                  exclude_seeds: Sequence[str] = (), check: Any = None) -> dict[str, Any]:
+    """The `ranking` block of a keep record (D47, D49): the fit's `run_value.npz` ranked against the incumbent's on the fixed set
+    of held-out decisions (`run_train.ranking.run_check`, which writes `ranking_set.json` and `ranking.json` into `out_dir`).
+    `check` stands in for `run_check` (tests). A check that cannot run (no incumbent, no head file, an error) is a failing block that
+    says why: the fit is not kept on a missing check."""
+    from run_train import ranking  # noqa: PLC0415
+
+    inc = incumbent_head(incumbent)
+    if inc is None:
+        return ranking.not_run("no incumbent head was named to rank the fit against")
+    if not inc.is_file():
+        return ranking.not_run(f"the incumbent head {inc.parent.name}/{inc.name} is not a file")
+    try:
+        return (check or ranking.run_check)(candidate_npz, inc, runs_root, out_dir, exclude_seeds=exclude_seeds)
+    except Exception as err:  # noqa: BLE001 -- recorded in the block; the fit stays unkept
+        return ranking.not_run(f"{type(err).__name__}: {err}")
 
 
 def read_vrun_fit(fit_dir: Path | str) -> dict[str, Any]:
@@ -975,9 +1037,19 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
     return res
 
 
+def ranking_ok(keep_doc: dict[str, Any] | None) -> bool:
+    """Whether the keep record's ranking block (D47, D49: how the fit ranks rest, card and map options against the head it would
+    replace; `run_train.ranking`) lets the fit stand. A record without the block (made before D49, or a synthetic one) is not judged
+    on it; a record with the block needs `pass` true, and every fit made now carries one: a check that could not run is written
+    as a failing block, never left out."""
+    block = (keep_doc or {}).get("ranking")
+    return True if block is None else bool(block.get("pass"))
+
+
 def vrun_keep_passed(keep_doc: dict[str, Any] | None, cand: Path) -> bool:
-    """Whether the V_run keep record passes every computable condition and the candidate holds its export."""
-    return bool(keep_doc and keep_doc.get("all_computable_pass")) and (Path(cand) / "run_value.npz").is_file()
+    """Whether the V_run keep record passes every computable condition and its ranking check (`ranking_ok`), and the candidate
+    holds its export."""
+    return bool(keep_doc and keep_doc.get("all_computable_pass")) and ranking_ok(keep_doc) and (Path(cand) / "run_value.npz").is_file()
 
 
 def macro_vrun_on(flag: bool | None = None) -> bool:
@@ -994,6 +1066,15 @@ def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None 
     V_run's macro is judged with its prior and V_run together; that is the decision (VRUN_SWEEP.md 1.5), and the E-block's
     rule (floor, boss-kill guard, F7 audit) is unchanged."""
     return "vrun" if vrun_keep_passed(keep_doc, cand) and macro_vrun_on(enabled) else "rules"
+
+
+def ranking_summary(keep_doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What agent.json and train.json keep of a keep record's ranking block: the verdict, the set's digest and each check's figures."""
+    block = (keep_doc or {}).get("ranking")
+    if block is None:
+        return None
+    return {"status": block.get("status"), "pass": block.get("pass"), "set_digest": (block.get("set") or {}).get("digest"),
+            "checks": [{k: c.get(k) for k in ("name", "candidate", "incumbent", "diff", "limit", "pass")} for c in block.get("checks") or []]}
 
 
 def file_sha256(path: Path | str) -> str:
@@ -1063,12 +1144,15 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
                      max_fights: int = MAX_FIGHTS, threads: int = 6, vrun: bool = True, export: bool = True,
                      seed_dir: Path | None = None, retrain: int = 0, policy_target: str = "visits",
                      exclude_prior_paths: tuple[str, ...] = (), seed_dirs: Sequence[Path | str] = (),
-                     vrun_seed: Path | str | None = None, candidate_generation: int | None = None) -> Path:
+                     vrun_seed: Path | str | None = None, candidate_generation: int | None = None,
+                     ranking_check: Any = None) -> Path:
     """Train generation `gen`'s candidate (the next generation's, or `candidate_generation`'s) from the last GEN_WINDOW generations' shards. `seed_dirs`
     are further folders of E-blocks (the lab's generated ones) that no training seed may belong to. `vrun_seed` is a V_run fit
     (`run_value.npz`) the candidate carries unless its own new fit passes the keep test (`carry_vrun_fit`, D33). `candidate_generation`
     names the candidate's generation number when it is not gen + 1 (a new policy skipping the numbers between: it is written as
-    gen<target>/candidate, its attempt count starts at zero, and train.json / agent.json carry a `lineage` note)."""
+    gen<target>/candidate, its attempt count starts at zero, and train.json / agent.json carry a `lineage` note). A new V_run fit is
+    also ranked against the seed fit (`ranking_block`, D47/D49) and carried only when that check passes too; with no seed fit there
+    is nothing to rank against and the check does not apply (`ranking.no_incumbent`). `ranking_check` stands in for the check (tests)."""
     from run_train import shards as rs  # noqa: PLC0415
 
     target = gen + 1 if candidate_generation is None else int(candidate_generation)
@@ -1118,6 +1202,12 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     # rules play outside fights otherwise. The record sits in train.json under vrun_keep; the agent.json macro follows its verdict.
     keep_doc = (doc.get("run_value", {}).get("value") or {}).pop("keep", None)
     doc["vrun_keep"] = keep_doc if keep_doc is not None else {"status": "not_run", "all_computable_pass": False}
+    if vrun and (cand / "run_value.npz").is_file():  # D47/D49: the new fit's ranking against the seed fit it would replace
+        from run_train import ranking  # noqa: PLC0415
+
+        seed_ok = vrun_seed is not None and Path(vrun_seed).is_file()
+        doc["vrun_keep"]["ranking"] = (ranking_block(cand / "run_value.npz", vrun_seed, shards_root, cand, exclude_seeds=window_seeds,
+                                                     check=ranking_check) if seed_ok else ranking.no_incumbent())
     passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
     fit = doc["vrun_fit"] = carry_vrun_fit(cand, doc["vrun_keep"], vrun_seed) if vrun else {"source": "none", "kept": False, "sha256": None}
     macro = macro_for({"all_computable_pass": fit["kept"]}, cand, enabled)  # a kept fit (new or seed) and the export decide
@@ -1230,7 +1320,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     if fit_doc is not None:
         fit = {"source": "fit", "sha256": file_sha256(npz), "dir": Path(vrun_fit).as_posix(), "recipe": fit_doc.get("recipe"),
                "prior_sha256": fit_doc.get("prior_sha256"), "matched": fit_doc.get("prior_sha256") == champ.policy_sha256,
-               "window": fit_doc.get("window"), "beta": fit_doc.get("beta")}
+               "window": fit_doc.get("window"), "beta": fit_doc.get("beta"), "ranking": ranking_summary(fit_doc.get("keep"))}
     base_meta = read_json(base_dir / "agent.json") if (base_dir / "agent.json").is_file() else {}
     source_train = read_json(prior_dir / "train.json") if (prior_dir / "train.json").is_file() else None
     prior = {"dir": prior_dir.as_posix(), "policy_sha256": model["policy_sha256"], "net_sha256": file_sha256(cand / "combat_net.pt")}

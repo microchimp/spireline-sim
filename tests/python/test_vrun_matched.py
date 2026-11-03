@@ -34,6 +34,16 @@ def shard_block(root: Path, name: str, generation: int, prior_sha: str | None, s
     return root / name
 
 
+def fake_ranking(passes=True, calls=None):
+    """Stands in for `run_train.ranking.run_check`: a ranking block that passes or fails, and what it was asked."""
+    def check(candidate_npz, incumbent_npz, runs_root, out_dir, **kw):
+        if calls is not None:
+            calls.append({"candidate": Path(candidate_npz).read_bytes(), "incumbent": Path(incumbent_npz).name,
+                          "exclude": sorted(kw.get("exclude_seeds", ()))})
+        return {"status": "ok", "pass": passes, "checks": [{"name": "heal_rate", "pass": passes}], "set": {"digest": "d" * 8}}
+    return check
+
+
 def fake_train_run_value(paths, out, **kw):
     """Stands in for the torch fit: writes the two files and returns a keep record that passes unless told otherwise."""
     Path(out, "run_value.npz").write_bytes(b"fit " + str(len(paths)).encode())
@@ -52,12 +62,17 @@ class FighterWindowTests(unittest.TestCase):
         shard_block(self.runs, "jrules", 3, None, ["C000000001", "C000000002"])
         fake_train_run_value.calls, fake_train_run_value.passes = [], True
         self.no_seeds = Path(self.tmp.name) / "no-seeds"
+        self.incumbent = Path(self.tmp.name) / "inc" / "run_value.npz"
+        self.incumbent.parent.mkdir()
+        self.incumbent.write_bytes(b"incumbent head")
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def fit(self, sha=OLD, out="fit", **kw):
         kw.setdefault("seed_dir", self.no_seeds)
+        kw.setdefault("incumbent", self.incumbent)
+        kw.setdefault("ranking_check", fake_ranking())
         with mock.patch.object(gen_loop, "train_run_value", side_effect=fake_train_run_value):
             return gen_loop.fit_run_value_matched(self.runs, sha, Path(self.tmp.name) / out, **kw)
 
@@ -100,6 +115,49 @@ class FighterWindowTests(unittest.TestCase):
         (out / "run_value.npz").write_bytes(b"another file")
         with self.assertRaises(ValueError):
             gen_loop.read_vrun_fit(out)
+
+    def test_a_fit_is_kept_only_when_the_ranking_check_passes_too(self):
+        out = Path(self.tmp.name) / "fit"
+        calls: list = []
+        doc = self.fit(ranking_check=fake_ranking(True, calls))
+        self.assertTrue(doc["kept"])
+        self.assertTrue(doc["keep"]["ranking"]["pass"])
+        # the check read the fit's own head, the incumbent's file, and left the fit window's runs out of the set
+        self.assertEqual(calls, [{"candidate": (out / "run_value.npz").read_bytes(), "incumbent": "run_value.npz",
+                                  "exclude": ["A000000001", "A000000002", "A000000003", "A000000004"]}])
+        gen_loop.read_vrun_fit(out)
+        failed = self.fit(ranking_check=fake_ranking(False))
+        self.assertTrue(failed["keep"]["all_computable_pass"])  # the outcome forecasts passed (D33) ...
+        self.assertFalse(failed["kept"])  # ... and the ranking did not
+        with self.assertRaises(ValueError):
+            gen_loop.read_vrun_fit(out)
+        saved = json.loads((out / gen_loop.VRUN_FIT_JSON).read_text())
+        self.assertFalse(saved["keep"]["ranking"]["pass"])
+
+    def test_a_fit_with_no_incumbent_to_rank_against_is_not_kept(self):
+        doc = self.fit(incumbent=None)
+        self.assertFalse(doc["kept"])
+        self.assertEqual((doc["keep"]["ranking"]["status"], doc["keep"]["ranking"]["pass"]), ("not_run", False))
+        self.assertTrue(doc["keep"]["all_computable_pass"])
+
+    def test_a_check_that_fails_to_run_does_not_keep_the_fit_and_a_rerun_can(self):
+        out = Path(self.tmp.name) / "fit"
+
+        def broken(*a, **k):
+            raise OSError("the corpus is not on this disk")
+
+        doc = self.fit(ranking_check=broken)
+        self.assertFalse(doc["kept"])
+        self.assertIn("corpus", doc["keep"]["ranking"]["why"])
+        again = gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(True))
+        self.assertTrue(again["kept"])
+        self.assertEqual(again, json.loads((out / gen_loop.VRUN_FIT_JSON).read_text()))
+        self.assertEqual(gen_loop.read_vrun_fit(out)["keep"]["ranking"]["status"], "ok")
+        again = gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(False))
+        self.assertFalse(again["kept"])
+        (out / "run_value.npz").write_bytes(b"another file")
+        with self.assertRaises(ValueError):  # the fit changed since it was recorded
+            gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(True))
 
     def test_the_fit_passes_beta_and_the_buffer_to_the_trainer(self):
         import torch

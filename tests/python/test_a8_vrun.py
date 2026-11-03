@@ -226,7 +226,7 @@ class SeedFitTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def train(self, new_passes: bool, seed, env=None):
+    def train(self, new_passes: bool, seed, env=None, ranking_passes: bool = True):
         """train_generation with the V fit stubbed: it writes run_value.npz (b"NEWFIT") and a keep record that passes or fails."""
         type(self).count += 1
         head = {"positives": 40, "positive_runs": 40, "rows": 900, "pass": new_passes,
@@ -244,7 +244,9 @@ class SeedFitTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env or {}), mock.patch.object(gen_loop, "train_run_value", fake_fit):
             os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None) if not env else None
             return gen_loop.train_generation(1, self.root / "runs", self.root / "agent", device="cpu", epochs=1, max_fights=20,
-                                             threads=2, vrun=True, export=False, retrain=self.count, vrun_seed=seed)
+                                             threads=2, vrun=True, export=False, retrain=self.count, vrun_seed=seed,
+                                             ranking_check=lambda *a, **k: {"status": "ok", "pass": ranking_passes, "set": {"digest": "d"},
+                                                                            "checks": [{"name": "heal_rate", "pass": ranking_passes}]})
 
     def test_a_failing_new_fit_keeps_the_seed_fit_and_a_passing_one_replaces_it(self):
         failing = self.train(False, self.seed)
@@ -265,6 +267,16 @@ class SeedFitTests(unittest.TestCase):
         self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["sha256"]), ("new", gen_loop.file_sha256(passing / "run_value.npz")))
         self.assertEqual(t["vrun_fit"]["new_fit_oof"]["brier_skill_vs_base_rate"]["ci"], [0.01, 0.07])
         self.assertEqual(json.loads((passing / "agent.json").read_text())["macro"], "vrun")
+
+    def test_a_new_fit_that_passes_the_keep_test_but_not_the_ranking_check_keeps_the_seed_fit(self):
+        ranked = self.train(True, self.seed, ranking_passes=False)  # D47, D49
+        self.assertEqual((ranked / "run_value.npz").read_bytes(), b"SEEDFIT")
+        self.assertEqual((ranked / "rejected-fit" / "run_value.npz").read_bytes(), b"NEWFIT")
+        t = json.loads((ranked / "train.json").read_text())
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["new_fit_passed_keep"]), ("seed", False))
+        self.assertFalse(t["vrun_keep"]["ranking"]["pass"])
+        self.assertTrue(t["vrun_keep"]["all_computable_pass"])
+        self.assertEqual(t["vrun_keep"]["macro_switch"]["passed"], False)
 
     def test_without_a_seed_a_failing_fit_leaves_the_rules_macro_and_the_opt_out_still_wins(self):
         none = self.train(False, None)

@@ -802,24 +802,58 @@ def build_cmd(a: argparse.Namespace) -> int:
 
 def vrun_fit_cmd(a: argparse.Namespace) -> int:
     """`vrun-fit`: V_run fit on the runs one combat prior played (`gen_loop.fit_run_value_matched`), at BelowNormal priority;
-    prints the window and the keep verdict. Nothing is promoted or written into the agent folder: `build --vrun-fit OUT` does that."""
+    prints the window and the keep verdict. Nothing is promoted or written into the agent folder: `build --vrun-fit OUT` does that.
+    The keep verdict includes the ranking check (D47, D49) against `--incumbent` (default: the generation of `--gen-dir`);
+    `--ranking-only` repeats just that check on a fit already in OUT."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
     from sts2_gym import procutil  # noqa: PLC0415
 
     procutil.lower_priority()  # BelowNormal on Windows: the fit yields to the lab
-    sha = a.prior_sha or gen_loop.load_agent(a.gen_dir).describe()["prior_sha256"]
-    if not sha:
-        raise SystemExit(f"{a.gen_dir} plays no combat prior")
-    gens = [int(x) for x in a.gens.split(",")] if a.gens else None
-    doc = gen_loop.fit_run_value_matched(Path(a.shards_root), sha, Path(a.out), gens=gens,
-                                         beta=gen_loop.MATCHED_BETA if a.beta is None else a.beta, threads=a.threads,
-                                         device=a.device, seed_dirs=[gen_loop.lab_seed_dir(a.lab)] if a.lab else ())
+    incumbent = a.incumbent or a.gen_dir
+    if not incumbent:
+        raise SystemExit("the ranking check needs the head the fit would replace: --incumbent (a run_value.npz, a generation "
+                         "directory or a current.json)")
+    seed_dirs = [gen_loop.lab_seed_dir(a.lab)] if a.lab else ()
+    if a.ranking_only:
+        doc = gen_loop.rerank_vrun_fit(Path(a.out), incumbent, Path(a.shards_root), seed_dirs=seed_dirs)
+    else:
+        sha = a.prior_sha or gen_loop.load_agent(a.gen_dir).describe()["prior_sha256"]
+        if not sha:
+            raise SystemExit(f"{a.gen_dir} plays no combat prior")
+        gens = [int(x) for x in a.gens.split(",")] if a.gens else None
+        doc = gen_loop.fit_run_value_matched(Path(a.shards_root), sha, Path(a.out), gens=gens,
+                                             beta=gen_loop.MATCHED_BETA if a.beta is None else a.beta, threads=a.threads,
+                                             device=a.device, seed_dirs=seed_dirs, incumbent=incumbent)
     head = ((doc["keep"].get("heads") or {}).get("act1_boss_kill") or {}).get("brier_skill_vs_base_rate") or {}
+    rk = doc["keep"].get("ranking") or {}
     print(json.dumps({"out": Path(a.out).name, "window": doc["window"]["runs_by_generation"], "beta": doc["beta"], "kept": doc["kept"],
-                      "brier_skill": head.get("value"), "ci": head.get("ci"), "wall_min": doc["run_value"].get("wall_min")}))
+                      "brier_skill": head.get("value"), "ci": head.get("ci"), "wall_min": doc["run_value"].get("wall_min"),
+                      "ranking": {"status": rk.get("status"), "pass": rk.get("pass"), "why": rk.get("why"),
+                                  "checks": [{k: c.get(k) for k in ("name", "candidate", "incumbent", "diff", "pass")}
+                                             for c in rk.get("checks") or []]}}))
     return 0 if doc["kept"] else 3
+
+
+def ranking_check_cmd(a: argparse.Namespace) -> int:
+    """`ranking-check`: the V_run keep test's ranking check (D47, D49) on its own: CANDIDATE's options ranked against INCUMBENT's on the
+    fixed set of held-out decisions, plus the human leg; writes ranking_set.json and ranking.json into OUT. A candidate or incumbent is
+    a run_value.npz, a generation directory, a fit folder or a current.json. Exit 3 when the check does not pass."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+    from run_train import ranking  # noqa: PLC0415
+
+    from sts2_gym import procutil  # noqa: PLC0415
+
+    procutil.lower_priority()  # BelowNormal on Windows: the check yields to the lab
+    fit_json = Path(a.candidate) / gen_loop.VRUN_FIT_JSON  # a fit folder: the runs it was fitted on are left out of the set
+    window = gen_loop.fit_window_seeds(gen_loop.read_json(fit_json), a.runs_root) if fit_json.is_file() else ()
+    rec = ranking.run_check(gen_loop.incumbent_head(a.candidate), gen_loop.incumbent_head(a.incumbent), Path(a.runs_root), Path(a.out),
+                            exclude_seeds=window, human=None if a.no_human else ranking.human_leg)
+    print(json.dumps({"pass": rec["pass"], "set": rec["set"]["digest"], "wall_s": rec["wall_s"],
+                      "checks": [{k: c.get(k) for k in ("name", "candidate", "incumbent", "diff", "se", "limit", "n", "pass")} for c in rec["checks"]]}))
+    return 0 if rec["pass"] else 3
 
 
 def promote_cmd(a: argparse.Namespace) -> int:
@@ -1152,9 +1186,20 @@ def build_parser() -> argparse.ArgumentParser:
     vf.add_argument("--gens", help="comma list: only these generations' blocks of that prior")
     vf.add_argument("--beta", type=float, default=None, help="the bootstrap blend (default: 0, pure Monte Carlo)")
     vf.add_argument("--out", required=True)
+    vf.add_argument("--incumbent", help="the head the fit would replace, for the ranking check (D47, D49): a run_value.npz, a generation "
+                    "directory or a current.json (default: --gen-dir)")
+    vf.add_argument("--ranking-only", action="store_true", help="repeat only the ranking check on the fit already in OUT")
     vf.add_argument("--lab", help="the lab folder: its generated E-blocks (LAB/seeds) are checked against the window too")
     vf.add_argument("--device", default=None)
     vf.add_argument("--threads", type=int, default=4)
+    rk = sub.add_parser("ranking-check", help="the V_run keep test's ranking check (D47, D49): a candidate head's options ranked against "
+                        "the incumbent's on the fixed set of held-out decisions, and against the human choice on the held-out fifth")
+    rk.add_argument("--candidate", required=True, help="a run_value.npz, a generation directory, a fit folder or a current.json")
+    rk.add_argument("--incumbent", required=True, help="the head it would replace (the same forms)")
+    rk.add_argument("--runs-root", default="D:/spireline/referee/LAB/runs", help="the lab's job directories (the set is drawn from "
+                    "their self-play shards)")
+    rk.add_argument("--out", required=True, help="ranking_set.json and ranking.json go here (beside the keep document)")
+    rk.add_argument("--no-human", action="store_true", help="skip the human leg (the record then cannot pass)")
     pr = sub.add_parser("promote", help="play candidate and base on a fresh E-block and test the promotion rule")
     pr.add_argument("--cand", required=True)
     pr.add_argument("--base", help="the base generation directory (default: the champion in --agent-root, else generation 0)")
@@ -1257,6 +1302,8 @@ def main(argv: list[str] | None = None) -> int:
         return build_cmd(a)
     if a.cmd == "vrun-fit":
         return vrun_fit_cmd(a)
+    if a.cmd == "ranking-check":
+        return ranking_check_cmd(a)
     if a.cmd == "promote":
         return promote_cmd(a)
     if a.cmd == "rejudge":
