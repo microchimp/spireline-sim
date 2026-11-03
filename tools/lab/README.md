@@ -11,6 +11,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict`; `TreeCpu`, the always-on loop's CPU the load guard leaves out |
+| `frozen.py` | D52: the frozen copy of the lab tree the practice filler runs from (one per presorted build, outside the lab folder) |
 | `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
 | `pairing_check.py` | `docs/PROMOTION_GUARD.md` section 4 points 1 and 2 on two arms' `runs.jsonl` (seed sets, config, crashes, discordant kills, floor-difference SD), with a permutation reference; read-only |
@@ -29,7 +30,7 @@ python tools/lab/runner.py [--lab D:/spireline/referee/lab] [--tree D:/spireline
     [--fights 300] [--batch 50] [--servers 8] [--procs 8] [--mutants 150]
     [--shrink 1000] [--shrink-cap 160] [--shrink-budget 6000] [--shrink-minutes 45] [--trace 1000] [--trace-minutes 20]
     [--runs 40] [--run-batch 10] [--run-procs 4] [--run-stop-act 3]
-    [--report-beside auto|on|off] [--filler auto|on|off] [--loop-status D:/spireline/logs/gym-loop/status] [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
+    [--report-beside auto|on|off] [--filler auto|on|off] [--filler-tree auto|off|DIR] [--loop-status D:/spireline/logs/gym-loop/status] [--idle-seconds 60] [--load-pct 50] [--load-window 120] [--lab-gb 30] [--free-gb 50] [--grace 90]
     [--fork <main checkout>] [--branch main] [--game-src D:/spireline/referee/game] [--backlog-dir ...] [--backlog FILE]
     [--codex DATASET] [--decompiled DIR] [--records DIR] [--poll 2] [--wait-poll 10] [--idle-poll 300]
 ```
@@ -201,7 +202,7 @@ columns come after `screen_groups`; an older file is widened with NA, and old ro
 With `--always-on` (or `--filler on`) and `selfplay.enabled` and `selfplay.filler` in `LAB/jobs.json`, self-play is no longer a ladder
 job: it runs beside whatever job runs, on the cores that job leaves. Each job type has a `cores` figure (a kind's own `cores`, else its
 `procs`, else its command's `--procs`; the fix-lab types from the top-level `cores` map; nightly-real always the whole machine;
-presort the whole machine by default, since it moves and rebuilds the tree the filler runs from). The filler's size is `cores.total`
+presort 4, its codex shards, since D52). The filler's size is `cores.total`
 less the job's cores, the report's (`cores.report`, 2) while one runs, and the always-on loop's (`cores.loop`, 6) while its status file
 says it is stepping; it runs only at `selfplay.floor` (4) or more. Before a job runs, the filler gives up the cores the job needs at once
 (stopped through its Job Object, then started again at what is left); a block that ends starts the next at whatever is free then.
@@ -209,13 +210,25 @@ Each block is a `LAB/runs/<UTC>-selfplay` job folder (`params.filler`), its comm
 `--shards-root`, `--budget-runs`, `--review-guard`, `--gen-dir` and exploring flags, with `--record` and `--procs` / `--server-procs`
 set to its size, plus `selfplay.explore` when given: it plays `agent/current.json`, writes shards to its own folder and never a train
 marker. Its Job Object forces BelowNormal on every process in it (the prior server included). It holds no QUIET.lock line and no
-main.lock; it stops for every guard but main.lock, for a presort, for a live QUIET.lock line whose tag is not in `selfplay.quiet_ignore`
+main.lock; it stops for every guard but main.lock, for a live QUIET.lock line whose tag is not in `selfplay.quiet_ignore`
 (`gym-loop`, `lab-score`), when `LAB/nightly/active` appears, two minutes before the night is due (`LAB/nightly/last-ok` + `every_h`, or the retry
 after a skipped try) and when a nightly-real job starts; it does not start within `selfplay.night_margin_min` (30) of the due time,
 within 120 s of a stop, near the disk limits, or on a tree that is not a presorted build. A stopped block is closed with done.rc 0 and
 the reason (its finished runs are in its shards); a block left by a runner that died is closed (done.rc 3), never resumed. Its CPU stays
 out of the jobs' accounts. The load guard counts neither the filler (it is in the runner's Job Object) nor the always-on loop's
 process tree (`--loop-status`), so neither pauses a job.
+
+**It runs from a frozen copy of the lab tree (D52, `frozen.py`), not from the tree.** A presort checks out the new main, builds it and
+publishes into `out/`, so a filler running from the tree had to stop for every presort (36 minutes or more with the machine at 7% of
+its CPU, several times a day). The copy is made once per landing, when the tree stands at a presorted build and no presort is moving it
+(`git rev-parse HEAD` equals the state's tree sha, no presort job folder without done.rc): the tracked files and the published `out/`,
+about 1,400 files and 160 MB, two to ten seconds, into `<lab folder>/../filler-tree/<sha12>/` (`--filler-tree DIR` moves it) through a
+`.part` folder renamed once whole, its `FROZEN` marker written last. A presort leaves the filler running (it takes `cores.presort`, 4);
+the first block after a runner restart that finds no copy while a presort is moving the tree waits for the presort. When a presort ends
+on a new sha the block still playing the old build is stopped at once (no 120 s wait), the next block starts from the new copy and the
+old copy is removed when no block uses it. A presort that fails leaves a running block on its copy and starts no new one (the tree is
+not a build). `--filler-tree off`: the D48 way, the filler runs from the tree and every presort stops it (with `cores.presort` 16 in
+`LAB/jobs.json`, the D48 table, a presort also leaves the filler no cores).
 
 ## Lab folder
 

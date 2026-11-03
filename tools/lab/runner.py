@@ -24,8 +24,10 @@ runs short (tools/lab/guards.py). With --always-on the groups and kits of a fini
 one at a time, at the runner's BelowNormal priority; they stop for the guards, for a presort's tree and for a nightly window.
 With --always-on the selfplay kind is the filler when LAB/jobs.json says `selfplay.filler` (D48, tools/lab/cores.py): practice blocks
 run beside the job on the cores it leaves (a Job Object of their own that forces BelowNormal on every process in it, the prior
-server included), with no train marker, shrunk or stopped when a job needs their cores, stopped for the night, for a presort and for
-the guards; they hold no QUIET.lock line and no main.lock. The load guard counts neither the filler (it is in the runner's Job Object)
+server included), with no train marker, shrunk or stopped when a job needs their cores, stopped for the night and for the guards;
+they hold no QUIET.lock line and no main.lock. They run from a frozen copy of the lab tree (tools/lab/frozen.py, made once per
+landing, outside the lab folder), not from the tree itself, so a presort that moves the tree does not stop them (D52; --filler-tree off:
+the old way, from the tree, stopped for every presort). The load guard counts neither the filler (it is in the runner's Job Object)
 nor the always-on fight loop's processes (--loop-status names its daemon).
 backlog/main.lock stops only a running presort (the one job that touches git
 state) and holds every new job; any other running job carries on under it. Exit 0 when it stopped for any of those or finished a --trial / --once; 1 on
@@ -54,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import clock_report, cores, guards, jobs, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import clock_report, cores, frozen, guards, jobs, mix, plans, prune, winsys  # noqa: E402
 from tools.lab import stepcache as sc  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
@@ -145,6 +147,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--filler", choices=("auto", "on", "off"), default="auto",
                     help="run selfplay as the filler beside the jobs when LAB/jobs.json has selfplay.filler (D48); auto: on with --always-on, "
                          "off with --once, --trial and --dry-run")
+    ap.add_argument("--filler-tree", default="auto", metavar="DIR|auto|off",
+                    help="where the filler's frozen copies of the lab tree are made (auto: the folder `filler-tree` next to the lab folder); "
+                         "off: the filler runs from the lab tree and a presort stops it (before D52)")
     ap.add_argument("--loop-status", default=d["loop_status"],
                     help="the always-on fight loop's status file (its daemon pid and phase): the load guard leaves its processes out")
     ap.add_argument("--dry-run", action="store_true", help="print the guards, the next job and its plan; change nothing")
@@ -307,8 +312,10 @@ class Filler:
     """One practice block (the selfplay kind) running beside the job: its own job folder, one command, a Job Object of its own that
     forces BelowNormal on every process in it (D48)."""
 
-    def __init__(self, run: Run, ctx: plans.Ctx, step: plans.Step, sj: winsys.JobObject, running: Running, cores_: int, t0: float):
+    def __init__(self, run: Run, ctx: plans.Ctx, step: plans.Step, sj: winsys.JobObject, running: Running, cores_: int, t0: float,
+                 sha: str = ""):
         self.run, self.ctx, self.step, self.sj, self.running, self.cores, self.t0 = run, ctx, step, sj, running, cores_, t0
+        self.sha = sha  # the presorted build it runs (its frozen copy); "" when it runs from the lab tree
 
 
 # ---------------------------------------------------------------- the runner
@@ -380,6 +387,9 @@ class Runner:
         self.filler_next = 0.0  # clock time before which no filler block starts (after a stop by a guard, the night, a failure)
         self.filler_note = ""  # the last reason the filler did not start, logged once
         self._filler_tick = float("-inf")
+        ft = str(a.filler_tree)
+        self.filler_root: Path | None = (None if ft.lower() == "off" else
+                                         self.lab.root.parent / "filler-tree" if ft.lower() == "auto" else Path(ft))  # frozen copies (D52)
         self.main_cores = 0  # cores of the job the main lane runs now (0 between jobs)
 
     # ---- plumbing
@@ -450,10 +460,10 @@ class Runner:
         files = sorted(Path(self.a.backlog_dir).glob("backlog-*.json"), key=lambda p: p.stat().st_mtime)
         return files[-1] if files else None
 
-    def ctx(self, run: Run | None, job: str, sha: str, params: dict[str, Any]) -> plans.Ctx:
+    def ctx(self, run: Run | None, job: str, sha: str, params: dict[str, Any], tree: Path | None = None) -> plans.Ctx:
         a = self.a
         name = run.name if run else f"{dt.datetime.now(dt.UTC):%Y%m%dT%H%M}-{job}"
-        return plans.Ctx(lab=self.lab.root, tree=self.tree, game=self.game, fork=self.fork, py=sys.executable.replace("\\", "/"),
+        return plans.Ctx(lab=self.lab.root, tree=tree or self.tree, game=self.game, fork=self.fork, py=sys.executable.replace("\\", "/"),
                          sha=sha, job_dir=run.dir if run else self.lab.runs / name, job_name=name, params=params,
                          backlog_dir=Path(a.backlog_dir), backlog=self.newest_backlog(), codex=Path(a.codex),
                          decompiled=Path(a.decompiled), records=Path(a.records), game_src=Path(a.game_src),
@@ -690,7 +700,7 @@ class Runner:
         self.log(f"mix: {chosen} is next (share wanted/had: {mix.share_table(weights, spent)})")
         return ("runs" if chosen == "whole-runs" else "fights"), chosen
 
-    def unavailable(self, job: str, sha: str, strategy: str | None = None) -> str | None:
+    def unavailable(self, job: str, sha: str, strategy: str | None = None, tree: Path | None = None) -> str | None:
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
         if time.time() < until:
             return f"backing off after repeated failures until {utc(until)}"
@@ -704,7 +714,7 @@ class Runner:
             params = self.default_params(job)
             if strategy:
                 params["strategy"] = strategy
-            c = self.ctx(None, job, sha, params)
+            c = self.ctx(None, job, sha, params, tree)
             return plans.runnable(plans.plan(job, c), c)
         except plans.Unavailable as e:
             return str(e)
@@ -742,7 +752,7 @@ class Runner:
             return "selfplay is not the filler (LAB/jobs.json selfplay.enabled and selfplay.filler)"
         if not self.guards_ok:
             return "a guard holds the lab"
-        if self.running_job == "presort":
+        if self.running_job == "presort" and self.filler_root is None:
             return "a presort moves the tree"
         if self.running_job == "nightly-real":
             return "the night has the machine"
@@ -762,10 +772,51 @@ class Runner:
         disk = self.guards.readings.get("disk")
         if isinstance(disk, tuple) and (disk[0] > 0.9 * self.a.lab_gb or disk[1] < 1.1 * self.a.free_gb):
             return f"the lab is near its disk limit (lab {disk[0]} GB of {self.a.lab_gb:g}, drive free {disk[1]} GB)"
-        why = self.unavailable("selfplay", st["tree_sha"])
+        tree, why = self.filler_tree_for(st["tree_sha"])
+        if why:
+            return why
+        why = self.unavailable("selfplay", st["tree_sha"], tree=tree)
         if why:
             return why
         return None
+
+    def filler_tree_for(self, sha: str) -> tuple[Path | None, str]:
+        """(the tree the filler runs from, why not): the lab tree itself in the old mode, else the frozen copy of the presorted build
+        `sha`, made now when there is none and the tree stands at that build with no presort moving it (D52)."""
+        if self.filler_root is None:
+            return self.tree, ""
+        got = frozen.ready(self.filler_root, sha)
+        if got is not None:
+            return got, ""
+        if self.running_job == "presort" or self.unfinished_presort():
+            return None, f"no frozen copy of {sha[:7]} yet and a presort is moving the tree"
+        t0 = time.monotonic()
+        try:
+            got = frozen.make(self.tree, self.filler_root, sha, plans.git_head(self.tree))
+        except frozen.FreezeError as e:
+            return None, str(e)
+        except OSError as e:
+            self.filler_next = self.clock() + FILLER_RETRY_S  # not a copy attempt every tick
+            return None, f"the lab tree could not be copied: {type(e).__name__}"
+        files = sum(len(fn) for _, _, fn in os.walk(got))
+        self.log(f"filler: froze the lab tree at {sha[:7]} ({files} files, {time.monotonic() - t0:.1f}s)")
+        gone = frozen.clean(self.filler_root, [got] + ([self.filler.ctx.tree] if self.filler else []))
+        if gone:
+            self.log(f"filler: removed the frozen copies of {', '.join(gone)}")
+        return got, ""
+
+    def unfinished_presort(self) -> bool:
+        """A presort job folder with no done.rc: the tree may be mid-checkout or mid-build (a restart left it, or it is running)."""
+        return any(not (d / "done.rc").exists() for d in self.lab.runs.glob("*-presort") if (d / "job.json").exists())
+
+    def filler_stale(self, f: Filler) -> str | None:
+        """A running block's build is older than the presorted tree (a presort finished since it started): stop it, the next block plays
+        the new build. Not while a presort runs (the state still names the old build until it ends)."""
+        st = self.state
+        sha = st.get("tree_sha")
+        if self.filler_root is None or not f.sha or not sha or sha == f.sha or sha != st.get("last_presorted_sha"):
+            return None
+        return f"the presort of {sha[:7]} finished; this block plays {f.sha[:7]}"
 
     def service_filler(self, start: bool = True) -> None:
         """Called wherever the runner waits or loops: close a block that ended, stop one that must give way, start one when the
@@ -804,6 +855,10 @@ class Runner:
             if why:
                 self.stop_filler(why)
                 return
+            why = self.filler_stale(f)
+            if why:
+                self.stop_filler(why, retry=False)
+                return
             room = self.filler_room(doc)
             if room < f.cores:  # a job needs cores the block holds: stop it, the next tick starts one at what is left
                 self.stop_filler(f"a job needs its cores ({f.cores} held, {room} left)", retry=False)
@@ -824,6 +879,10 @@ class Runner:
 
     def start_filler(self, doc: dict, size: int) -> None:
         sha = self.state["tree_sha"]
+        tree, why = self.filler_tree_for(sha)
+        if why:
+            self.log(f"filler: not started ({why})")
+            return
         cfg = cores.filler_cfg(doc)
         params = jobs.params_for("selfplay", self.lab.root, cfg)
         explore = cfg.get("explore") if isinstance(cfg.get("explore"), list) else None
@@ -833,7 +892,7 @@ class Runner:
         n = self.state["counters"]["jobs_started"]
         n["selfplay"] = n.get("selfplay", 0) + 1
         self.lab.save_state(self.state)
-        ctx = self.ctx(run, "selfplay", sha, params)
+        ctx = self.ctx(run, "selfplay", sha, params, tree)
         step = plans.plan("selfplay", ctx)[0]
         cmd = step.cmds[0]
         rec = run.rec(step.name)
@@ -858,8 +917,9 @@ class Runner:
         rec["cmds"][cmd.name] = {"status": "running", "argv": cmd.symbolic()}
         rec["status"], rec["started_utc"] = "running", utc()
         run.save()
-        self.filler = Filler(run, ctx, step, sj, running, size, self.clock())
-        self.log(f"filler: {run.name} at {size} cores beside {self.running_job or 'no job'}")
+        self.filler = Filler(run, ctx, step, sj, running, size, self.clock(), sha if self.filler_root is not None else "")
+        self.log(f"filler: {run.name} at {size} cores beside {self.running_job or 'no job'}"
+                 + (f" (frozen copy of {sha[:7]})" if self.filler_root is not None else ""))
 
     def end_filler(self, rc: int) -> None:
         """A block ended by itself: its command's record, its account, its row, done.rc."""
@@ -907,15 +967,15 @@ class Runner:
         f.run.data["wall_secs"] = round(self.clock() - f.t0, 1)
 
     def make_room(self, run: Run) -> None:
-        """Before a job runs: its cores are taken from the filler at once (a job never waits for it). The night and a presort stop
-        it outright."""
+        """Before a job runs: its cores are taken from the filler at once (a job never waits for it). The night stops it outright; so
+        does a presort when the filler runs from the lab tree (--filler-tree off), which the presort moves."""
         try:
             self.main_cores = cores.job_cores(run.job, run.data.get("params"), cores.load_doc(self.lab.root))
         except Exception:  # noqa: BLE001
             self.main_cores = cores.total_cores()
         if self.filler is None:
             return
-        if run.job in ("nightly-real", "presort"):
+        if run.job == "nightly-real" or (run.job == "presort" and self.filler_root is None):
             self.stop_filler("the night starts" if run.job == "nightly-real" else "a presort moves the tree")
             return
         self._filler_tick = float("-inf")

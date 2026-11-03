@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,80 @@ class StepCacheTests(unittest.TestCase):
         cs.write_text("class A { int x; }", encoding="utf-8")
         self.assertNotEqual(base, sc.engine_digest(tree))
 
+    def test_a_python_only_landing_leaves_the_engine_digest_and_an_engine_commit_moves_it(self):
+        """Through git, as the presort's checkout does it: files rewritten at a new time, a Python-only commit, then an engine commit."""
+        tree = Path(self._td.name) / "gtree"
+
+        def git(*args: str) -> str:
+            r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-C", str(tree), *args],
+                               capture_output=True, text=True, check=True)
+            return r.stdout.strip()
+
+        def digest_at(sha: str) -> str:
+            git("checkout", "-q", "--detach", "--force", sha)
+            for f in tree.rglob("*"):  # a fresh checkout time on every file
+                if f.is_file() and ".git" not in f.parts:
+                    os.utime(f, (f.stat().st_atime + 7, f.stat().st_mtime + 7))
+            sc._engine_cache.clear()
+            return sc.engine_digest(tree)
+
+        tree.mkdir()
+        git("init", "-q")
+        put(tree / ".gitignore", "out/\nbin/\nobj/\n")
+        put(tree / "src" / "Sts2Emulator" / "Core" / "A.cs", "class A {}")
+        put(tree / "src" / "Sts2Emulator.Tests" / "Support" / "Invariants" / "I.cs", "class I {}")
+        put(tree / "tools" / "emudump" / "Program.cs", "class P {}")
+        put(tree / "data" / "id_map.json", "{}")
+        put(tree / "Directory.Build.props", "<Project/>")
+        put(tree / "rl" / "gen0.py", "print(1)")
+        git("add", "-A")
+        git("commit", "-q", "-m", "one")
+        one = git("rev-parse", "HEAD")
+        put(tree / "out" / "Sts2Emulator.dll", "build")  # untracked, like the published build
+        put(tree / "src" / "Sts2Emulator" / "obj" / "x.cs", "build output")
+        put(tree / "rl" / "gen0.py", "print(2)")  # a Python-only landing: rl/, a test, a lab tool, docs
+        put(tree / "rl" / "gen_loop.py", "x = 1")
+        put(tree / "tests" / "python" / "test_x.py", "pass")
+        put(tree / "tools" / "lab" / "runner.py", "pass")
+        put(tree / "docs" / "n.md", "notes")
+        put(tree / "src" / "Sts2Emulator.Tests" / "T.cs", "class T {}")
+        git("add", "-A")
+        git("commit", "-q", "-m", "two")
+        two = git("rev-parse", "HEAD")
+        put(tree / "src" / "Sts2Emulator" / "Core" / "A.cs", "class A { int x; }")  # an engine landing
+        git("add", "-A")
+        git("commit", "-q", "-m", "three")
+        three = git("rev-parse", "HEAD")
+        d1 = digest_at(one)
+        self.assertEqual(d1, digest_at(two))
+        self.assertEqual(d1, digest_at(one))
+        d3 = digest_at(three)
+        self.assertNotEqual(d1, d3)
+        put(tree / "src" / "Sts2Emulator.Tests" / "Support" / "Invariants" / "I.cs", "class I { int y; }")  # the checks EmuDump compiles in
+        sc._engine_cache.clear()
+        self.assertNotEqual(d3, sc.engine_digest(tree))
+
+    def test_a_label_keeps_a_junction_of_the_lab_in_its_path(self):
+        ssd = Path(self._td.name) / "ssd"
+        (ssd / "job-b").mkdir(parents=True)
+        lab = Path(self._td.name) / "lab2"
+        lab.mkdir()
+        link_dir(lab / "runs", ssd, self)
+        f = put(lab / "runs" / "job-b" / "codex" / "s0.jsonl", "{}")
+        self.assertEqual("runs/job-b/codex/s0.jsonl", sc.label_of(lab, f))
+        self.assertEqual("s0.jsonl", sc.label_of(lab, Path(self._td.name) / "elsewhere" / "s0.jsonl"))  # outside the lab: the file name
+        self.assertEqual("groups.json", sc.label_of(lab, lab / "groups.json"))
+
+
+def link_dir(link: Path, target: Path, case: unittest.TestCase) -> None:
+    """`link` as a junction to `target` (the lab's runs folder is one since 2026-11-03: LAB/runs on the SSD)."""
+    if os.name == "nt":
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True, check=False)
+        if r.returncode != 0:
+            case.skipTest("a junction cannot be made here")
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
 
 class PresortCheckTests(unittest.TestCase):
     """plans.plan_presort: the codex walk, refset and corpus checks carry the skip."""
@@ -192,6 +267,45 @@ class PresortCheckTests(unittest.TestCase):
         self.run_check(first, "codex-s0", ["codex/s0.jsonl"])
         self.codex.write_text("a longer dataset", encoding="utf-8")
         self.assertIsNone(self.cmds(self.ctx("j2"))["codex-s0"].skip_reason(self.ctx("j2"), "checks"))
+
+    def test_the_checks_skip_when_the_runs_folder_is_a_junction_to_another_drive(self):
+        """The lab's runs folder has been a junction since 2026-11-03. A label made from the resolved path lost the folders and kept the
+        file name, so no stamp found its output again: the 10:41Z presort of 11-03 ran four codex shards (1,400 s each), the corpus and
+        the refset on an engine that had not changed."""
+        self.lab.mkdir(parents=True, exist_ok=True)
+        (self.td / "ssd-runs").mkdir()
+        link_dir(self.lab / "runs", self.td / "ssd-runs", self)
+        first = self.ctx("j1")
+        for i in range(4):
+            self.run_check(first, f"codex-s{i}", [f"codex/s{i}.jsonl"])
+        self.run_check(first, "corpus", ["corpus/results.json"])
+        self.assertEqual({"runs/j1/codex/s0.jsonl"}, set(sc.read_stamp(self.lab, "codex-s0")["outputs"]))
+        self.assertTrue((self.td / "ssd-runs" / "j1" / "codex" / "s0.jsonl").is_file())  # the file really lives behind the junction
+        put(self.tree / "rl" / "gen0.py", "print('a Python-only landing')")
+        sc._engine_cache.clear()
+        second = self.ctx("j2")
+        for i in range(4):
+            why = self.cmds(second)[f"codex-s{i}"].skip_reason(second, "checks")
+            self.assertIsNotNone(why, f"codex-s{i}")
+            self.assertIn("inputs unchanged", why)
+        self.assertIsNotNone(self.cmds(second)["corpus"].skip_reason(second, "checks"))
+        (self.td / "ssd-runs" / "j1" / "codex" / "s2.jsonl").unlink()  # pruned behind the junction: that shard runs again
+        self.assertIsNone(self.cmds(second)["codex-s2"].skip_reason(second, "checks"))
+        self.assertIsNotNone(self.cmds(second)["codex-s3"].skip_reason(second, "checks"))
+
+    def test_a_stamp_that_kept_only_the_file_name_still_finds_its_output(self):
+        """The stamps the runner wrote after the junction move and before the label fix hold bare file names."""
+        first = self.ctx("j1")
+        out = put(first.job_dir / "codex" / "s0.jsonl", "result")
+        parts = pl.check_parts(first, "codex-s0")
+        sc.write_stamp(self.lab, "codex-s0", sc.digest(parts), {"s0.jsonl": out}, job="j1", parts=parts)
+        second = self.ctx("j2")
+        self.assertIsNotNone(self.cmds(second)["codex-s0"].skip_reason(second, "checks"))
+        put(first.job_dir / "elsewhere" / "s0.jsonl", "result")  # two files of that name: which one is the output is not told
+        self.assertIsNone(self.cmds(second)["codex-s0"].skip_reason(second, "checks"))
+        (first.job_dir / "elsewhere" / "s0.jsonl").unlink()
+        out.write_text("written again", encoding="utf-8")  # and a rewritten output still runs the check
+        self.assertIsNone(self.cmds(second)["codex-s0"].skip_reason(second, "checks"))
 
     def test_a_pruned_previous_output_runs_the_check_again(self):
         first = self.ctx("j1")

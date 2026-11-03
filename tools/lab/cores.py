@@ -9,9 +9,11 @@ else starts.
 
 Settings (LAB/jobs.json, read at every decision; every key optional):
 
-  "cores": {"total": 16, "presort": 16, "fights": 8, "runs": 8, "probes": 4, "mutation": 4, "invariants": 6, "report": 2, "loop": 6}
+  "cores": {"total": 16, "presort": 4, "fights": 8, "runs": 8, "probes": 4, "mutation": 4, "invariants": 6, "report": 2, "loop": 6}
       the machine's cores (default: the logical processors), the fix-lab job types, the groups-and-kits chain beside a job, and
-      the always-on loop while it is stepping (its status file names its pid and phase)
+      the always-on loop while it is stepping (its status file names its pid and phase). A presort takes 4 (its codex shards): the
+      filler runs beside it from a frozen copy of the tree (tools/lab/frozen.py, D52), so the presort's checkout and build do not
+      reach it. A figure of 16 for the presort, as the D48 table had it, leaves the filler nothing beside a presort.
   "<kind>": {"cores": N, ...}
       an agent-era kind's own figure (score-real, train, bench-*); without it, the kind's `procs`, else its command's
       `--procs`, else the whole machine. nightly-real always takes the whole machine.
@@ -51,8 +53,11 @@ DEFAULT_MARGIN_MIN = 30.0
 STOP_BEFORE_S = 120.0  # a running block is stopped this long before the night is due, so the night never finds it running
 DEFAULT_QUIET_IGNORE = ("gym-loop", "lab-score")
 QUIET_STALE_H = 2.0  # rl/quiet_lock.STALE_H: a line under this old is live
-# The fix-lab job types (not kinds of jobs.json). None: the whole machine (presort moves and rebuilds the tree the filler runs from).
-JOB_CORES: dict[str, int | None] = {"presort": None, "fights": 8, "runs": 8, "probes": 4, "mutation": 4, "invariants": 6}
+# The fix-lab job types (not kinds of jobs.json). None: the whole machine. A presort takes 4: its four codex shards (the corpus and
+# refset checks and the build are one process or a short burst, and the filler's BelowNormal processes give way to them); the filler
+# runs beside it from its frozen copy of the tree (tools/lab/frozen.py), which the presort does not move. With --filler-tree off the
+# presort stops the filler outright and this figure is not read.
+JOB_CORES: dict[str, int | None] = {"presort": 4, "fights": 8, "runs": 8, "probes": 4, "mutation": 4, "invariants": 6}
 REPORT_CORES = 2
 LOOP_CORES = 6  # rl/gym_loop.py --procs
 LOOP_BUSY = ("start", "starts", "weights", "generate", "gate")  # the loop's status phases that use its processes

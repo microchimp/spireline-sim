@@ -1,4 +1,5 @@
-"""D48: practice as the filler, cores not turns (tools/lab/cores.py, runner.Filler, guards.TreeCpu).
+"""D48: practice as the filler, cores not turns (tools/lab/cores.py, runner.Filler, guards.TreeCpu); D52: the filler runs from a frozen
+copy of the lab tree (tools/lab/frozen.py), so a presort that moves the tree does not stop it.
 
 Trivial `python -c` commands stand in for the self-play block and the jobs; no game, no emulator.
 """
@@ -8,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -17,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from tools.lab import cores  # noqa: E402
+from tools.lab import cores, frozen  # noqa: E402
 from tools.lab import guards as gd  # noqa: E402
 from tools.lab import plans as pl  # noqa: E402
 from tools.lab import runner as rn  # noqa: E402
@@ -38,7 +40,7 @@ BLOCK = ("import ctypes, json, os, subprocess, sys, time\n"
          "c = subprocess.Popen([sys.executable, '-c', 'import ctypes, os, time; k = ctypes.windll.kernel32 if os.name == \"nt\" else None; "
          "k and k.SetPriorityClass(k.GetCurrentProcess(), 0x20); time.sleep(120)'])\n"
          "out = sys.argv[sys.argv.index('--out') + 1]\n"
-         "json.dump(dict(argv=sys.argv[1:], pids=[os.getpid(), c.pid]), open(os.path.join(out, 'argv.json'), 'w'))\n"
+         "json.dump(dict(argv=sys.argv[1:], pids=[os.getpid(), c.pid], cwd=os.getcwd()), open(os.path.join(out, 'argv.json'), 'w'))\n"
          "time.sleep(SECS)\n"
          "c.kill()\n")
 
@@ -97,7 +99,8 @@ class CoresRulesTest(unittest.TestCase):
         self.assertEqual(16, cores.job_cores("train", {}, doc))
         self.assertEqual(16, cores.job_cores("bench-env", {"procs": 12}, doc))  # its own figure wins over procs
         self.assertEqual(6, cores.job_cores("fights", {}, doc))
-        self.assertEqual(16, cores.job_cores("presort", {}, doc))
+        self.assertEqual(4, cores.job_cores("presort", {}, doc))  # its codex shards (D52): the filler runs beside it
+        self.assertEqual(16, cores.job_cores("presort", {}, {"cores": {"total": 16, "presort": 16}}))  # the D48 table
         self.assertEqual(4, cores.job_cores("probes", {}, doc))
         self.assertEqual(16, cores.job_cores("score-real", {}, {"cores": {"total": 16}, "score-real": {"cores": 40}}))
         self.assertEqual(4, cores.filler_size(16, 12, 4))
@@ -234,8 +237,11 @@ class LoadRuleTest(unittest.TestCase):
 
 
 @unittest.skipUnless(winsys.IS_WIN, "Job Objects and priority classes are Windows")
-class FillerRunnerTest(unittest.TestCase):
+class FillerBase(unittest.TestCase):
+    FILLER_TREE = "off"  # --filler-tree: off runs the block from the lab tree (D48), auto from a frozen copy (D52)
+
     def setUp(self):
+        self.sha = "abc"  # the presorted build the runner's state names
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         saved = dict(pl.PLANS)
@@ -260,9 +266,10 @@ class FillerRunnerTest(unittest.TestCase):
     def runner(self, *extra: str) -> rn.Runner:
         a = rn.parse_args(["--lab", str(self.lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--poll", "0.05", "--wait-poll", "0.05", "--grace", "0",
-                           "--no-guard", "user,load,disk", "--loop-status", str(self.tmp / "no-loop"), "--filler", "on", *extra])
+                           "--no-guard", "user,load,disk", "--loop-status", str(self.tmp / "no-loop"), "--filler", "on",
+                           "--filler-tree", self.FILLER_TREE, *extra])
         r = rn.Runner(a)
-        r.state["tree_sha"] = r.state["last_presorted_sha"] = "abc"
+        r.state["tree_sha"] = r.state["last_presorted_sha"] = self.sha
         self.addCleanup(lambda: r.stop_filler("test end", retry=False))
         return r
 
@@ -286,6 +293,11 @@ class FillerRunnerTest(unittest.TestCase):
     def log(self, r: rn.Runner) -> str:
         p = r.lab.root / "runner.log"
         return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+@unittest.skipUnless(winsys.IS_WIN, "Job Objects and priority classes are Windows")
+class FillerRunnerTest(FillerBase):
+    """D48's rules with the block running from the lab tree itself (--filler-tree off): a presort stops it."""
 
     def test_the_filler_runs_without_marker_flags_at_below_normal_and_takes_no_lock(self):
         r = self.runner()
@@ -472,6 +484,231 @@ class FillerRunnerTest(unittest.TestCase):
         r.root_job = Fake(100.0)
         r.report_cpu_done, r.filler_cpu_done = 10.0, 30.0
         self.assertAlmostEqual(60.0, r.cpu_secs())
+
+
+# ---------------------------------------------------------------- D52: the frozen copy
+
+def put(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def git(tree: Path, *args: str) -> str:
+    r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-C", str(tree), *args],
+                       capture_output=True, text=True, check=True)
+    return r.stdout.strip()
+
+
+def commit_tree(tree: Path, tag: str) -> str:
+    """A stand-in lab tree at `tag`, committed in a git repo at `tree` (its sha comes back): tracked rl/, tools/, data/, src/ and a
+    test fixture; the published out/ and the build folders are untracked, as in the real tree."""
+    if not (tree / ".git").exists():
+        tree.mkdir(parents=True, exist_ok=True)
+        git(tree, "init", "-q")
+        put(tree / ".gitignore", "out/\nbin/\nobj/\n__pycache__/\n")
+    for rel in ("rl/gen0.py", "rl/gen_loop.py", "tools/lab/x.py", "src/Sts2Emulator/Core.cs"):
+        put(tree / rel, f"# {tag}\n")
+    put(tree / "data" / "id_map.json", "{}\n")
+    put(tree / "tests" / "fixtures" / "big.json", "{}\n")
+    for rel in ("out/Sts2Emulator.dll", "src/Sts2Emulator/bin/Debug/a.dll", "src/Sts2Emulator/obj/b.o", "rl/__pycache__/gen0.pyc"):
+        put(tree / rel, tag)
+    git(tree, "add", "-A")
+    git(tree, "commit", "-q", "-m", tag)
+    return git(tree, "rev-parse", "HEAD")
+
+
+class FrozenCopyTest(unittest.TestCase):
+    """tools/lab/frozen.py: one whole copy of the lab tree per presorted build."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.tree, self.root = self.tmp / "tree", self.tmp / "filler-tree"
+        self.sha = commit_tree(self.tree, "v1")
+
+    def test_the_copy_holds_the_sources_and_the_build_and_not_the_rest(self):
+        d = frozen.make(self.tree, self.root, self.sha, self.sha)
+        self.assertEqual(self.root / self.sha[:12], d)
+        for rel in ("rl/gen0.py", "rl/gen_loop.py", "out/Sts2Emulator.dll", "tools/lab/x.py", "data/id_map.json", "src/Sts2Emulator/Core.cs"):
+            self.assertTrue((d / rel).is_file(), rel)
+        for rel in (".git", "tests", "src/Sts2Emulator/bin", "src/Sts2Emulator/obj", "rl/__pycache__"):
+            self.assertFalse((d / rel).exists(), rel)
+        self.assertEqual(self.sha, (d / frozen.MARK).read_text(encoding="utf-8").strip())
+        self.assertEqual(d, frozen.ready(self.root, self.sha))
+        self.assertEqual([self.sha[:12]], [x.name for x in self.root.iterdir()])  # no .part left behind
+        self.assertEqual("# v1\n", (self.tree / "rl" / "gen0.py").read_text(encoding="utf-8"))  # the tree is only read
+
+    def test_a_copy_is_not_changed_when_the_tree_moves(self):
+        d = frozen.make(self.tree, self.root, self.sha, self.sha)
+        (self.tree / "rl" / "gen0.py").write_text("# moved\n", encoding="utf-8")
+        (self.tree / "out" / "Sts2Emulator.dll").unlink()
+        self.assertEqual("# v1\n", (d / "rl" / "gen0.py").read_text(encoding="utf-8"))
+        self.assertEqual("v1", (d / "out" / "Sts2Emulator.dll").read_text(encoding="utf-8"))
+        self.assertEqual(d, frozen.ready(self.root, self.sha))
+
+    def test_a_tree_that_is_not_at_the_build_or_has_no_published_build_is_refused(self):
+        with self.assertRaises(frozen.FreezeError) as e:
+            frozen.make(self.tree, self.root, self.sha, "f" * 40)
+        self.assertIn("not at the presorted build", str(e.exception))
+        with self.assertRaises(frozen.FreezeError):
+            frozen.make(self.tree, self.root, self.sha, "")
+        (self.tree / "out" / "Sts2Emulator.dll").unlink()
+        with self.assertRaises(frozen.FreezeError) as e:
+            frozen.make(self.tree, self.root, self.sha, self.sha)
+        self.assertIn("Sts2Emulator.dll", str(e.exception))
+        self.assertFalse(self.root.exists() and any(self.root.iterdir()))
+
+    def test_only_a_whole_copy_of_that_sha_is_ready(self):
+        d = self.root / self.sha[:12]
+        put(d / "rl" / "gen0.py", "x")
+        self.assertIsNone(frozen.ready(self.root, self.sha))  # no marker: a copy that never finished
+        put(d / frozen.MARK, "0" * 40)
+        self.assertIsNone(frozen.ready(self.root, self.sha))  # another sha
+        put(d / frozen.MARK, self.sha)
+        self.assertIsNone(frozen.ready(self.root, self.sha))  # a file a block starts from is missing
+        got = frozen.make(self.tree, self.root, self.sha, self.sha)  # the half-made folder is replaced, not trusted
+        self.assertEqual(got, frozen.ready(self.root, self.sha))
+        self.assertTrue((got / "out" / "Sts2Emulator.dll").is_file())
+
+    def test_a_copy_that_fails_leaves_no_folder(self):
+        import unittest.mock as mock  # noqa: PLC0415
+
+        with mock.patch.object(frozen.shutil, "copytree", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            frozen.make(self.tree, self.root, self.sha, self.sha)
+        self.assertEqual([], list(self.root.iterdir()))
+        self.assertIsNone(frozen.ready(self.root, self.sha))
+
+    def test_clean_keeps_the_copy_in_use_and_drops_the_rest(self):
+        keep, other = self.root / "aaaaaaaaaaaa", self.root / "bbbbbbbbbbbb"
+        fresh, old = self.root / "cccccccccccc.part", self.root / "dddddddddddd.part"
+        for d in (keep, other, fresh, old):
+            put(d / "f", "x")
+        t = time.time() - 2 * 3600
+        os.utime(old, (t, t))
+        gone = frozen.clean(self.root, [keep])
+        self.assertEqual(["bbbbbbbbbbbb", "dddddddddddd.part"], sorted(gone))
+        self.assertTrue(keep.exists() and fresh.exists())
+        self.assertEqual([], frozen.clean(self.tmp / "nowhere"))
+
+
+class FrozenFillerTest(FillerBase):
+    """D52: the filler runs from a frozen copy of the lab tree, so a presort that moves the tree does not stop it and cannot reach it."""
+
+    FILLER_TREE = "auto"
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.tmp / "tree"
+        self.sha = commit_tree(self.tree, "v1")
+        self.jobs({"selfplay": {"cwd": "{tree}", "needs": ["{tree}/rl/gen0.py", "{tree}/out/Sts2Emulator.dll"]}})
+
+    def copy_of(self, sha: str | None = None) -> Path:
+        return self.tmp / "filler-tree" / (sha or self.sha)[:12]
+
+    def test_the_block_runs_from_the_frozen_copy_not_from_the_tree(self):
+        r = self.runner()
+        got = self.started(r)
+        self.assertEqual(self.copy_of().resolve(), Path(got["cwd"]).resolve())
+        self.assertNotEqual(self.tree.resolve(), Path(got["cwd"]).resolve())
+        self.assertIn(f"filler: froze the lab tree at {self.sha[:7]}", self.log(r))
+        self.assertIn(f"(frozen copy of {self.sha[:7]})", self.log(r))
+        self.assertEqual(self.sha, r.filler.sha)
+        self.assertEqual(self.copy_of(), r.filler.ctx.tree)
+
+    def test_a_presort_that_moves_the_tree_neither_stops_the_block_nor_reaches_it(self):
+        r = self.runner()
+        self.started(r)
+        before = r.filler.run.name
+        moves = ("import pathlib, time; t = pathlib.Path(%r); (t / 'rl' / 'gen0.py').write_text('moved'); "
+                 "(t / 'out' / 'Sts2Emulator.dll').unlink(); time.sleep(0.8); (t / 'out' / 'Sts2Emulator.dll').write_text('rebuilt')" % str(self.tree))
+        pl.PLANS["presort"] = lambda c: [pl.Step("p", [self.py("p", moves, core=True)], mode="serial")]
+        self.assertIsNone(r.execute(r.new_run("presort", self.sha)))
+        self.assertEqual("moved", (self.tree / "rl" / "gen0.py").read_text(encoding="utf-8"))  # the presort did move the tree
+        self.assertNotIn("a presort moves the tree", self.log(r))
+        self.assertIsNotNone(r.filler)  # the block shrank to the 12 cores the presort leaves (4 for its codex shards) and plays on
+        self.assertEqual(12, r.filler.cores)
+        self.assertIn("a job needs its cores (16 held, 12 left)", self.log(r))
+        self.assertIn("at 12 cores beside presort (frozen copy of", self.log(r))
+        self.assertEqual(self.copy_of(), r.filler.ctx.tree)
+        self.assertEqual("# v1\n", (self.copy_of() / "rl" / "gen0.py").read_text(encoding="utf-8"))
+        self.assertEqual("v1", (self.copy_of() / "out" / "Sts2Emulator.dll").read_text(encoding="utf-8"))
+        self.assertNotEqual(before, r.filler.run.name)
+
+    def test_the_first_start_waits_for_a_presort_that_is_moving_the_tree(self):
+        r = self.runner()
+        r.running_job = "presort"
+        r.service_filler()
+        self.assertIsNone(r.filler)
+        self.assertIn("filler: not started (no frozen copy of", self.log(r))
+        self.assertFalse(self.copy_of().exists())  # nothing is copied from a tree in motion
+        r.running_job = None
+        got = self.started(r)
+        self.assertEqual(self.copy_of().resolve(), Path(got["cwd"]).resolve())
+
+    def test_a_presort_left_unfinished_by_a_restart_holds_the_first_copy(self):
+        d = self.lab / "runs" / "20261104T0000-presort"
+        put(d / "job.json", "{}")
+        r = self.runner()
+        r.service_filler()
+        self.assertIsNone(r.filler)
+        self.assertIn("a presort is moving the tree", self.log(r))
+        self.assertFalse(self.copy_of().exists())
+        put(d / "done.rc", "0")
+        self.started(r)
+
+    def test_a_tree_that_is_not_at_the_presorted_build_is_not_copied(self):
+        r = self.runner()
+        r.state["tree_sha"] = r.state["last_presorted_sha"] = "f" * 40  # the tree is at self.sha: a presort has moved it since
+        r.service_filler()
+        self.assertIsNone(r.filler)
+        self.assertIn("not at the presorted build", self.log(r))
+        self.assertFalse(self.copy_of("f" * 40).exists())
+
+    def test_a_newer_presorted_build_replaces_the_block_and_the_old_copy(self):
+        r = self.runner()
+        self.started(r)
+        old_copy, block = self.copy_of(), r.filler.running.proc
+        sha2 = commit_tree(self.tree, "v2")  # the presort moved the tree to the new build and finished
+        r.state["tree_sha"] = r.state["last_presorted_sha"] = sha2
+        r.service_filler(start=False)  # between jobs: the old block stops (at once, no wait for the next)
+        self.assertIsNone(r.filler)
+        self.assertIsNotNone(block.poll())
+        self.assertIn(f"the presort of {sha2[:7]} finished; this block plays {self.sha[:7]}", self.log(r))
+        self.assertLessEqual(r.filler_next, r.clock())
+        got = self.started(r)
+        self.assertEqual(self.copy_of(sha2).resolve(), Path(got["cwd"]).resolve())
+        self.assertFalse(old_copy.exists())
+        self.assertIn("removed the frozen copies of " + self.sha[:12], self.log(r))
+        self.assertEqual("# v2\n", (self.copy_of(sha2) / "rl" / "gen0.py").read_text(encoding="utf-8"))
+
+    def test_a_failed_presort_leaves_the_block_on_its_copy_and_starts_nothing_new(self):
+        r = self.runner()
+        self.started(r)
+        block = r.filler.running.proc
+        r.state["tree_sha"] = None  # finish_job's mark for a presort that failed: the tree is not a build
+        r.service_filler(start=False)
+        self.assertIsNotNone(r.filler)
+        self.assertIsNone(block.poll())
+        r.stop_filler("test", retry=False)
+        r.service_filler()
+        self.assertIsNone(r.filler)
+        self.assertIn("the tree is not a presorted build", self.log(r))
+
+    def test_the_night_still_stops_it_and_the_copy_stays_for_the_morning(self):
+        r = self.runner()
+        self.started(r)
+        pl.PLANS["nightly-real"] = lambda c: [pl.Step("n", [self.py("n", "pass", core=True)], mode="serial")]
+        r.execute(r.new_run("nightly-real", self.sha))
+        self.assertIn("the night starts", self.log(r))
+        self.assertTrue(frozen.ready(self.tmp / "filler-tree", self.sha))
+
+    def test_off_runs_from_the_lab_tree_as_before(self):
+        r = self.runner("--filler-tree", "off")
+        got = self.started(r)
+        self.assertEqual(self.tree.resolve(), Path(got["cwd"]).resolve())
+        self.assertFalse((self.tmp / "filler-tree").exists())
+        self.assertEqual("", r.filler.sha)
 
 
 if __name__ == "__main__":

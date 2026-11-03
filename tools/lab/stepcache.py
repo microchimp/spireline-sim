@@ -118,12 +118,30 @@ def read_stamp(lab: Path | str, step: str) -> dict[str, Any] | None:
 
 
 def label_of(lab: Path | str, path: Path | str) -> str:
-    """An output's label: its path under the lab folder (forward slashes), else its file name."""
+    """An output's label: its path under the lab folder (forward slashes), else its file name. The path is read as written first: the
+    lab's runs folder is a junction to another drive (2026-11-03), and a path resolved through it no longer lies under the lab, which
+    cut every job output's label down to its file name, so no stamp could find its output again and no check was ever skipped."""
     p, base = Path(path), Path(lab)
+    try:
+        return Path(os.path.abspath(p)).relative_to(os.path.abspath(base)).as_posix()
+    except ValueError:
+        pass
     try:
         return p.resolve().relative_to(base.resolve()).as_posix()
     except (ValueError, OSError):
         return p.name
+
+
+def where_now(lab: Path | str, stamp: Mapping[str, Any], label: str) -> Path:
+    """Where the output a stamp calls `label` is now: under the lab folder. A label that is a bare file name, in a stamp that names its
+    job, was written by the runner of 2026-11-03 before label_of kept the junction's name: its file is the one of that name in the
+    job's folder (none or several: the lab folder, where it will not be found and the step runs)."""
+    p = Path(lab) / label
+    job = stamp.get("job")
+    if "/" in label or not job or p.exists():
+        return p
+    hits = [Path(dp) / label for dp, _, fn in os.walk(Path(lab) / "runs" / str(job)) if label in fn]
+    return hits[0] if len(hits) == 1 else p
 
 
 def outputs_of(lab: Path | str, outputs: Iterable[Path | str] | Mapping[str, Path | str]) -> dict[str, Path]:
@@ -148,7 +166,7 @@ def skip_reason(lab: Path | str, step: str, want: str, outputs: Iterable[Path | 
     if stamp is None or stamp["digest"] != want:
         return None
     if outputs is None:
-        now = {k: Path(lab) / k for k in stamp["outputs"]}
+        now = {k: where_now(lab, stamp, k) for k in stamp["outputs"]}
     else:
         now = outputs_of(lab, outputs)
     if set(now) != set(stamp["outputs"]):
