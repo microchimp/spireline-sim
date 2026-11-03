@@ -35,6 +35,8 @@ RUN_TIMEOUT_S = 600.0  # the dispatcher's wall limit per emulator run (was the i
 # runs took 123 s, and a hung run was killed, run again and killed again while the other workers idled (2026-11-02 sweep, tails 1,290 to 2,808 s)
 REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
                      "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
+SEQUENTIAL_HELP = ("play the E-block as the funnel (D51, gen_loop.seq_call): a 200-seed smoke block, then 300 seeds at a time, stopping at a "
+                   "look that refuses (or promotes early); a block not stopped plays every seed and is judged as without this flag")
 WORKER_RECYCLE = 20  # a worker process is replaced after this many finished runs (between runs only)
 Z = 1.959964
 
@@ -766,7 +768,8 @@ def train_cmd(a: argparse.Namespace) -> int:
 
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
                                                Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
-                                               prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()))  # off unless the train flags say
+                                               prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
+                                               sequential=bool(getattr(a, "sequential", False)))  # off unless the train flags say
     return 0
 
 
@@ -867,7 +870,8 @@ def promote_cmd(a: argparse.Namespace) -> int:
     doc = gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
                            lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
-                           review_guard=True if a.review_guard else None,
+                           review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
+                           smoke=a.smoke_seeds, batch=a.batch_seeds,
                            **({"server_opts": opts} if opts.mode != "off" else {}))
     print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
     return 0
@@ -1164,6 +1168,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--lib")
     t.add_argument("--lab")
     t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
+    t.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     bd = sub.add_parser("build", help="assemble generation N's candidate from a combat prior export and a generation's V_run fit and "
                         "macro, nothing trained (D44 step A); with --marker-dir the lab's train job then judges it as it is")
     bd.add_argument("--prior", required=True, help="a combat prior export: model.json, combat_policy.pt, combat_net.pt (the fight "
@@ -1213,6 +1218,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--lab-runs", action="append", help="a folder of self-play job directories (the lab's runs folder): "
                     "the E-block must not contain their seeds; repeatable")
     pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
+    pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
+    pr.add_argument("--smoke-seeds", type=int, default=200, help="with --sequential: the seeds of the smoke block, the first look")
+    pr.add_argument("--batch-seeds", type=int, default=300, help="with --sequential: the seeds added between the later looks")
     add_prior_server_flags(pr)
     rj = sub.add_parser("rejudge", help="apply the current promotion rule to a candidate's finished arms on its own block")
     rj.add_argument("--cand", required=True)

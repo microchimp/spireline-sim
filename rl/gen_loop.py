@@ -35,11 +35,12 @@ import subprocess
 import sys
 import time
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import numpy as np
@@ -1615,6 +1616,147 @@ def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = AL
     return {**out, "review_guard": guard, "decision": decide_review(floor, boss, wins, cw, bw, guard, alpha)}
 
 
+# ------------------------------------------------------------------ the funnel (D51): a smoke block, then the block in looks
+
+SEQ_SMOKE = 200  # paired seeds of the smoke block, the first look
+SEQ_BATCH = 300  # seeds added between the later looks
+SEQ_SMOKE_MEAN = -1.0  # the smoke block refuses below this mean paired floor difference ...
+SEQ_SMOKE_ALPHA = 0.05  # ... when the one-sided 95% lower bound of the mean is also below 0
+SEQ_REFUSE_ALPHA = ALPHA  # an interim look refuses when the one-sided 99% upper bound of the mean is below 0
+SEQ_EARLY_ALPHA = 0.001  # all the alpha early promotions may spend, split equally over the interim looks (Bonferroni)
+SEQ_RULE = "D51-funnel"
+
+
+def seq_looks(n_block: int, smoke: int = SEQ_SMOKE, batch: int = SEQ_BATCH) -> list[int]:
+    """The looks of a block of `n_block` seeds: the smoke block, then `batch` more seeds each time, the last look at `n_block`
+    (200, 500, 800, 1100, 1400, 1700, 2000 for 2,000 seeds; a shorter last batch where `batch` does not divide the rest).
+    A block no longer than the smoke block has the one look, the last."""
+    if smoke < 2 or batch < 1:
+        raise ValueError(f"the smoke block needs 2 seeds or more and a batch 1 or more (got {smoke}, {batch})")
+    if n_block <= smoke:
+        return [int(n_block)]
+    looks = [int(smoke)]
+    while looks[-1] + batch < n_block:
+        looks.append(looks[-1] + batch)
+    looks.append(int(n_block))
+    return looks
+
+
+def seq_early_z(n_looks: int, alpha_early: float = SEQ_EARLY_ALPHA) -> float:
+    """The z an interim look must reach to promote early: the standard normal quantile at 1 - alpha_early / (n_looks - 2), the
+    interim promote looks being every look but the smoke block and the last. Infinite when there is none (under three looks)."""
+    k = n_looks - 2
+    return NormalDist().inv_cdf(1 - alpha_early / k) if k > 0 else math.inf
+
+
+def seq_stats(diffs: Sequence[float]) -> dict[str, float]:
+    """Seeds, mean, standard error (SD with n - 1 over the root of n) and z = mean / se of the paired floor differences."""
+    x = np.asarray(diffs, dtype=np.float64)
+    n = int(x.size)
+    if n < 2:
+        return {"n": n, "mean": float(x.mean()) if n else math.nan, "se": math.inf, "z": 0.0}
+    mean, se = float(x.mean()), float(x.std(ddof=1)) / math.sqrt(n)
+    z = mean / se if se > 0 else (math.inf if mean > 0 else -math.inf if mean < 0 else 0.0)
+    return {"n": n, "mean": mean, "se": se, "z": z}
+
+
+def seq_call(diffs: Sequence[float], j: int, looks: Sequence[int], *, alpha_refuse: float = SEQ_REFUSE_ALPHA,
+             alpha_early: float = SEQ_EARLY_ALPHA, smoke_mean: float = SEQ_SMOKE_MEAN, smoke_alpha: float = SEQ_SMOKE_ALPHA) -> dict[str, Any]:
+    """The funnel's floor-side call at look `j` (0-based) of `looks`: `action` is "refuse", "eligible" (clears the early-promote z; the
+    caller still needs every other check), "continue" or "final" (the last look: today's decision on all the seeds).
+
+    The funnel (D51). A block of N paired seeds is played as looks n_1 < ... < n_L = N: 200 (the smoke block), then 300 more each
+    time, the last at N, so 200, 500, 800, 1100, 1400, 1700, 2000. The seeds are the E-block's own in file order: the smoke
+    block is its first tenth, the block is as fresh and as disjoint from every known block as before, and the last look is the
+    2,000-seed figure of today. At look j let d_i be the candidate's floor minus the incumbent's on seed i, m their mean over the
+    n_j seeds played, s = SD / sqrt(n_j) its standard error and z = m / s.
+
+    Refuse (any look but the last): m + 2.326 s < 0, the upper bound of the one-sided 99% interval of the mean below 0, so the
+    primary check cannot be met and no other check can rescue a promotion (all must hold). At the smoke look also: m < -1.0 with
+    the one-sided 95% lower bound m - 1.645 s below 0 (the second clause follows from the first, whatever s is: it is kept as
+    D51 specified it). A refusal is recorded like a block refusal (promotion.json, a promotions.tsv row, the attempt spent).
+
+    Promote early (looks 2 to L-1; the smoke block never promotes): z >= z_e = Phi^-1(1 - 0.001 / (L - 2)), 3.54 for the seven
+    looks (the one-sided 99.98% lower bound of the mean above 0), and today's decision on the seeds played says promote
+    (the floor's bootstrap bound at alpha 0.01, the boss-kill and boss-damage guards, the drift check, the attempt cap) and the
+    drift check is not flagged. Otherwise play on. At the last look the decision is today's, unchanged, on all N seeds.
+
+    Error rates. Promotion happens at the last look by today's test (one-sided alpha 0.01), or earlier by crossing z_e.
+    With no improvement (true mean 0 or below) an early crossing has probability at most (L - 2) * 0.001 / (L - 2) = 0.001, a
+    Bonferroni split of a tenth of today's alpha over the five interim looks (the looks are positively correlated, so the real
+    figure is lower), so P(promote) <= 0.010 + 0.001 = 0.011. Normal model, per-seed SD 7.74 floors (E11's block), 10^6 paths:
+
+        true mean   today's P(promote)   funnel P(promote)   seeds played, mean
+          0.00        0.0101               0.0103              1917
+         +0.30        0.277                0.277               1955
+         +0.50        0.713                0.713               1830
+         +1.07        1.000                1.000                863      (generation 11's block)
+         -0.50        0                    0                   1183
+         -1.44        0                    0                    271      (generation 10's first block)
+         -5.90        0                    0                    200      (generation 12's block)
+
+    A refusal can only turn a promotion into a refusal: a candidate whose last look would have passed is refused early with
+    probability 0.00003 (mean 0), 0.0006 (+0.3), 0.0010 (+0.5), 0.00007 (+1.07). Why Bonferroni on a small early budget and not
+    an O'Brien-Fleming spending: that spending raises the last look's critical value (about 2.36 for 0.01 in all, against
+    2.326) and so changes the final test; spending a tenth of alpha early leaves the last look exactly as it is and adds about
+    0.0002 to the error under no improvement, at the price of a hard early bar (z 3.54), which only a large improvement clears.
+    `tests/python/test_funnel.py` re-runs the table's model."""
+    st = seq_stats(diffs)
+    n_looks = len(looks)
+    z_ref = NormalDist().inv_cdf(1 - alpha_refuse)
+    z_e = seq_early_z(n_looks, alpha_early)
+    out: dict[str, Any] = {**st, "look": j + 1, "of": n_looks, "upper99": st["mean"] + z_ref * st["se"], "lower99": st["mean"] - z_ref * st["se"],
+                           "z_early": z_e}
+    if j >= n_looks - 1:
+        return {**out, "action": "final", "reason": "every seed played: today's decision"}
+    if j == 0 and st["mean"] < smoke_mean and st["mean"] - NormalDist().inv_cdf(1 - smoke_alpha) * st["se"] < 0:
+        return {**out, "action": "refuse", "reason": f"smoke block: mean {st['mean']:+.3f} below {smoke_mean:+.1f} with the 95% lower bound below 0"}
+    if out["upper99"] < 0:
+        return {**out, "action": "refuse", "reason": f"the 99% upper bound {out['upper99']:+.3f} of the mean paired floor difference is below 0"}
+    if j >= 1 and st["z"] >= z_e:
+        return {**out, "action": "eligible", "reason": f"z {st['z']:.2f} clears the early-promote z {z_e:.2f}"}
+    return {**out, "action": "continue", "reason": "neither bound is reached"}
+
+
+def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list[dict]]], judge: Callable[[list[dict], list[dict]], dict],
+           *, smoke: int = SEQ_SMOKE, batch: int = SEQ_BATCH) -> dict[str, Any]:
+    """Walk the looks of `seeds` (see `seq_call` for the rule). `rows_at(n)` gives both arms' rows with at least the first n seeds (it
+    plays them, or reads recorded rows: a replay is the same walk); `judge(cand_rows, base_rows)` is today's decision on rows
+    (`compare_arms` with the guard), asked only at an eligible look. Returns `looks` (one dict per look reached: `seq_call`'s
+    numbers and, for an eligible look that did not stop, `held`, the checks that did not hold), `stop` ({n, look, action, reason}:
+    action "refuse", "promote" or "final") and both arms' rows on the seeds played. The last look is not judged here."""
+    seeds = list(seeds)
+    looks = seq_looks(len(seeds), smoke, batch)
+    log: list[dict[str, Any]] = []
+    for j, n in enumerate(looks):
+        part = set(seeds[:n])
+        cand_all, base_all = rows_at(n)
+        cand_rows, base_rows = [r for r in cand_all if r["seed"] in part], [r for r in base_all if r["seed"] in part]
+        c, b = {r["seed"]: r for r in cand_rows}, {r["seed"]: r for r in base_rows}
+        paired = [s for s in seeds[:n] if s in c and s in b]
+        if len(paired) != n:
+            raise ValueError(f"only {len(paired)} of {n} seeds are paired in both arms at look {j + 1} of {len(looks)}")
+        call = seq_call([float(c[s]["floor"]) - float(b[s]["floor"]) for s in paired], j, looks)
+        log.append({k: call[k] for k in ("look", "n", "mean", "se", "z", "upper99", "lower99", "action", "reason")})
+        stop = {"n": n, "look": j + 1, "action": call["action"], "reason": call["reason"]}
+        if call["action"] == "eligible":
+            res = judge(cand_rows, base_rows)
+            d = res["decision"]
+            flagged = bool((res.get("review_guard") or {}).get("review"))
+            if d["promote"] and not flagged:
+                stop["action"] = "promote"
+                stop["reason"] += "; every check holds on the seeds played"
+            else:
+                held = [k for k, v in d["checks"].items() if not v] + (["drift flagged"] if flagged else [])
+                log[-1]["held"] = held
+                log[-1]["reason"] += f"; played on: {', '.join(held)} did not hold"
+                continue
+        if stop["action"] in ("refuse", "promote", "final"):
+            log[-1]["action"] = stop["action"]
+            return {"looks": log, "stop": stop, "cand_rows": cand_rows, "base_rows": base_rows}
+    raise AssertionError("the last look always stops")  # pragma: no cover
+
+
 # ------------------------------------------------------------------ the E-block and the promotion run
 
 
@@ -1704,35 +1846,66 @@ def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: 
 
 
 def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: int, ascension: int = 10,
-            server_opts=None) -> list[dict]:
+            server_opts=None, resume: bool = False) -> list[dict]:
     """Play the seeds with `agent`, or reuse the arm if the same seeds and config were already played there. The arm uses a
-    prior server only when `server_opts` (a `prior_launch.ServerOpts`) says so; the promotion arms default to the CPU path."""
+    prior server only when `server_opts` (a `prior_launch.ServerOpts`) says so; the promotion arms default to the CPU path.
+
+    With `resume` (the funnel's looks: an arm grows from a first part of the block to the whole of it) the seeds asked for are a
+    part of what the folder may hold: a finished arm of the same agent with a row for every seed asked is reused (its rows for those
+    seeds returned), and otherwise the arm runs into the same folder keeping the rows it has, so only the other seeds are played.
+    summary.json then covers every row, with the wall time summed over the looks and the timed-out seeds of all of them."""
     import gen0  # noqa: PLC0415
 
     arm_dir = Path(arm_dir)
     s = arm_dir / "summary.json"
+    want = set(seeds)
+    carry: dict[str, Any] | None = None
     if s.is_file():
         old = read_json(s)
         rows = arm_rows(arm_dir)
         wanted = "server" if (server_opts is not None and server_opts.mode != "off") else "cpu"
         played = "server" if old.get("prior_server") else "cpu"  # both arms of one comparison play on one transport
-        if (old.get("config") == config and old.get("agent") == agent.describe() and {r["seed"] for r in rows} == set(seeds)
-                and played == wanted):
-            return rows
+        have = {r["seed"] for r in rows}
+        if old.get("config") == config and old.get("agent") == agent.describe() and played == wanted:
+            if (want <= have) if resume else (have == want):
+                return [r for r in rows if r["seed"] in want] if resume else rows
+            carry = old
+    kw = {"resume": True} if resume else {}  # a plain arm is played as it always was
     if server_opts is not None and server_opts.mode != "off":
-        gen0.run_block_served(seeds, config, procs, arm_dir, opts=server_opts, ascension=ascension, agent=agent)
+        gen0.run_block_served(seeds, config, procs, arm_dir, opts=server_opts, ascension=ascension, agent=agent, **kw)
     else:
-        gen0.run_block(seeds, config, procs, arm_dir, ascension=ascension, agent=agent)
-    return arm_rows(arm_dir)
+        gen0.run_block(seeds, config, procs, arm_dir, ascension=ascension, agent=agent, **kw)
+    rows = arm_rows(arm_dir)
+    if not resume:
+        return rows
+    if carry is not None:  # the looks before this one: their wall time and timed-out seeds stay in the summary
+        new = read_json(s)
+        new["wall_s"] = round(float(carry.get("wall_s") or 0) + float(new.get("wall_s") or 0), 1)
+        merged: dict[Any, dict] = {}
+        for x in [*(carry.get("timed_out") or []), *(new.get("timed_out") or [])]:
+            merged.setdefault(x.get("seed"), x)
+        if merged:
+            new["timed_out"] = list(merged.values())
+        write_json(s, new)
+    return [r for r in rows if r["seed"] in want]
 
 
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
-            review_guard: bool | None = None, server_opts=None) -> dict[str, Any]:
+            review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
+            batch: int = SEQ_BATCH) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s, a third attempt
     of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict.
-    `server_opts` puts both arms on a prior server each (one policy per server); the default is the CPU path."""
+    `server_opts` puts both arms on a prior server each (one policy per server); the default is the CPU path.
+
+    With `sequential` (the funnel, D51; see `seq_call` for the rule and its error rates) the block is played in looks: the first
+    `smoke` seeds of the E-block, then `batch` more at a time, both arms to each look, and the block stops at a look that refuses
+    (or promotes early); a block that is not stopped plays every seed and is judged exactly as without `sequential`. A stop is
+    recorded like any verdict: promotion.json (`n_seeds` the seeds played, `sequential` the looks and the stop), a promotions.tsv row
+    (`seeds` the seeds played, the `guard` cell ending with the stop) and, on a refusal, the attempt spent as for a block refusal:
+    the attempt is the number of distinct candidate shas of the generation in promotions.tsv (`attempts_before`), counted from this
+    row on; nothing else holds it. A killed job resumes into the same arm folders at the first look it has not finished."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1754,28 +1927,59 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                          f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
     arm = f"{name}-{config}"
     arm_kw = {"server_opts": server_opts} if server_opts is not None else {}  # the CPU path passes nothing new
-    cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
-    base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
+    seq: dict[str, Any] | None = None
+    if sequential:
+        def verdict(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
+            return (review_guard_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
+                    if guard_on else None)
+
+        def rows_at(n: int) -> tuple[list[dict], list[dict]]:
+            part = seeds[:n]
+            return (run_arm(part, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, resume=True, **arm_kw),
+                    run_arm(part, base_dir / "arms" / arm, base_agent, config, procs, ascension, resume=True, **arm_kw))
+
+        seq = funnel(seeds, rows_at, lambda cr, br: compare_arms(cr, br, ALPHA, boot, verdict(cr, br)), smoke=smoke, batch=batch)
+        cand_rows, base_rows, played = seq["cand_rows"], seq["base_rows"], seq["stop"]["n"]
+    else:
+        cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
+        base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
+        played = len(seeds)
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
              if guard_on else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
-    if res["paired_seeds"] != len(seeds):  # a partial arm must not promote on fewer pairs than the block
-        raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both arms")
-    doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "procs": procs,
+    if res["paired_seeds"] != played:  # a partial arm must not promote on fewer pairs than the block
+        raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both arms")
+    stopped_early = seq is not None and seq["stop"]["action"] != "final"
+    if stopped_early:  # the funnel's own check joins the others, so the decision names why the block ended before its last seed
+        d = res["decision"]
+        d["checks"]["sequential"] = seq["stop"]["action"] != "refuse"
+        d["promote"] = all(d["checks"].values())
+        d["rule"] = f"{d['rule']}+{SEQ_RULE}"
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "procs": procs,
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
            # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
            "f7": "not run", "matched_wall_clock": False}
+    if seq is not None:
+        doc["sequential"] = {"rule": SEQ_RULE, "block_seeds": len(seeds), "played": played, "smoke": smoke, "batch": batch,
+                             "schedule": seq_looks(len(seeds), smoke, batch), "z_early": seq_early_z(len(seq_looks(len(seeds), smoke, batch))),
+                             "refuse_alpha": SEQ_REFUSE_ALPHA, "early_alpha": SEQ_EARLY_ALPHA, "stop": seq["stop"], "looks": seq["looks"]}
+        if stopped_early:  # the figures above are those of the seeds played, not of the whole block
+            doc["sequential"]["note"] = (f"stopped at {played} of {len(seeds)} seeds: floor, boss_kill and wins are the figures at the stop; "
+                                         "the mean of a block that stopped on a bound is biased away from 0 (the decision's error rates hold)")
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
+    cells = guard_cells(guard, attempt)
+    if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
+        cells["guard"] = f"{cells['guard']} | funnel {seq['stop']['action']} at {played} of {len(seeds)} seeds".replace("\t", " ")
     append_promotion(tsv, {"written": doc["written"], "cand_gen": cand_agent.generation, "base_gen": base_agent.generation,
                            "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
                            "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                            "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
                            "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
-                           **guard_cells(guard, attempt)})
+                           **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
@@ -1868,10 +2072,11 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
                            lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
-                           prior_server_flags: tuple[str, ...] = ()) -> int:
+                           prior_server_flags: tuple[str, ...] = (), sequential: bool = False) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
-    `prior_server_flags` the server options (none by default: the arms play on the CPU path)."""
+    `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
+    funnel (`promote(sequential=True)`)."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -1884,6 +2089,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--lab-runs", str(lab_runs)]  # the E-block must not hold a seed the self-play streams played
     if review_guard:
         cmd += ["--review-guard"]
+    if sequential:
+        cmd += ["--sequential"]
     cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise
     return subprocess.run(cmd, check=False).returncode
 
