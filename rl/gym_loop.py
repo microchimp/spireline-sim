@@ -156,13 +156,24 @@ def read_json(p: Path, default=None):
         return default
 
 
-def write_json(p: Path, obj) -> None:
-    """Atomic: written beside, then renamed over."""
+def write_json(p: Path, obj, patience_s: float = 10.0) -> None:
+    """Atomic: written beside, then renamed over. Windows refuses the rename while a reader has the target open (the lab's runner
+    reads the daemon's status file every few seconds; this ended the daemon at 07:18Z on 2026-11-03, rc=1, in a `waiting` write):
+    it is tried again for `patience_s` seconds before the error is raised."""
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + f".tmp{os.getpid()}")
     tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8", newline="\n")
-    os.replace(tmp, p)
+    end = time.monotonic() + patience_s
+    while True:
+        try:
+            os.replace(tmp, p)
+            return
+        except PermissionError:
+            if time.monotonic() >= end:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.2)
 
 
 def sha256_file(p: Path) -> str:
@@ -1616,7 +1627,10 @@ class Daemon:
                "segment": self.loop.state["segment"], "incumbent": self.loop.state["incumbent"],
                "server_pid": self.server_pid, "trainer_pid": self.trainer_pid, **kw}
         STATUS_DIR.mkdir(parents=True, exist_ok=True)
-        write_json(STATUS_DIR / "status", doc)
+        try:
+            write_json(STATUS_DIR / "status", doc)
+        except OSError as error:  # the file is for readers (the lab's runner, the checks): a missed write must not end the daemon
+            self.loop.log(f"status: not written ({type(error).__name__}: {error})")
 
     # -- the trainer process
     def start_trainer(self) -> None:

@@ -935,6 +935,36 @@ class PrefilterTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 gl.checkpoint_figures(self.loop, self.loop.checkpoints / "c0002", 1000, bad)
 
+    def test_a_status_write_a_reader_blocks_is_retried_and_never_ends_the_daemon(self):
+        # 2026-11-03 07:18Z: os.replace of the status file was refused while the lab's runner had it open; the daemon died (rc 1)
+        target = Path(self.tmp.name) / "status"
+        real = os.replace
+        refused = {"n": 3}
+
+        def replace(src, dst):
+            if refused["n"] > 0:
+                refused["n"] -= 1
+                raise PermissionError(5, "Access is denied")
+            return real(src, dst)
+
+        with mock.patch.object(gl.os, "replace", replace), mock.patch.object(gl.time, "sleep", lambda s: None):
+            gl.write_json(target, {"phase": "waiting"})
+        self.assertEqual(json.loads(target.read_text()), {"phase": "waiting"})
+        self.assertEqual(refused["n"], 0)  # refused three times, written on the fourth
+        self.assertEqual([p.name for p in target.parent.glob("status*")], ["status"])  # no temporary file left
+        refused["n"] = 10**9  # a reader that never lets go: the error is raised after the patience, the temporary file removed
+        with mock.patch.object(gl.os, "replace", replace), mock.patch.object(gl.time, "sleep", lambda s: None), \
+                self.assertRaises(PermissionError):
+            gl.write_json(target, {"phase": "x"}, patience_s=0.05)
+        self.assertEqual(json.loads(target.read_text()), {"phase": "waiting"})
+        self.assertEqual([p.name for p in target.parent.glob("status*")], ["status"])
+        d = gl.Daemon.__new__(gl.Daemon)  # and the daemon's status line goes on without the file
+        d.loop, d.commit, d.server_pid, d.trainer_pid = self.loop, "abc", None, None
+        with mock.patch.object(gl, "STATUS_DIR", target.parent), mock.patch.object(gl, "write_json", side_effect=PermissionError(5, "x")):
+            d.status("waiting", why="lock")
+        self.assertEqual(d.phase, "waiting")
+        self.assertIn("status: not written (PermissionError", self._log())
+
     def test_the_daemon_asks_the_filter_unless_it_is_off(self):
         self._ck("c0001", 1.0800, 1.0700)
         a = argparse.Namespace(prefilter="best", prefilter_margin=0.0, prefilter_floor_h=6.0, train_window=1000)
