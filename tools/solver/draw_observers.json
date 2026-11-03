@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners) and every take off the draw pile, each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
- "sources_sha256": "2e0e341dcd400b4d5001a76797a4625bd96061e409323c8e5e5eeaa469624f65",
+ "sources_sha256": "c3d31ed32fae3aff48cfcf9ae19c48793947843fb2e28a715fcb68c24f39c6bc",
  "observers": [
   "ChainsOfBinding",
   "Hellraiser",
@@ -87,6 +87,14 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "class": "safe",
    "why": "Kingly Kick and Kingly Punch grow per copy as they are drawn: the same for any order"
+  },
+  "draw-loop:HellraiserPlaysDrawnStrike": {
+   "kind": "draw-loop",
+   "holder": "HellraiserPlaysDrawnStrike",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "observer",
+   "observer": "Hellraiser",
+   "why": "Hellraiser's count of the Strikes it plays into enemies that all show infinite HP (HellraiserPower.AfterCardDrawnEarly): from the tenth in a turn a Strike stays in hand, so which are played, and when the hand fills, follow the order"
   },
   "draw-loop:IsOverOrEnding": {
    "kind": "draw-loop",

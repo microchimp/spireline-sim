@@ -11,6 +11,7 @@
   "draw-loop:DrawForPagestorm": {"class": "observer", "observer": "Pagestorm", "why": "an Ethereal card drawn draws more: the count drawn depends on the values"},
   "draw-loop:Get": {"class": "safe", "why": "BuffSystem.Get: reads a buff for the Hellraiser test (classed with AutoPlayDrawnCard and IsStrikeCard)"},
   "draw-loop:GrowKinglyCardOnDraw": {"class": "safe", "why": "Kingly Kick and Kingly Punch grow per copy as they are drawn: the same for any order"},
+  "draw-loop:HellraiserPlaysDrawnStrike": {"class": "observer", "observer": "Hellraiser", "why": "Hellraiser's count of the Strikes it plays into enemies that all show infinite HP (HellraiserPower.AfterCardDrawnEarly): from the tenth in a turn a Strike stays in hand, so which are played, and when the hand fills, follow the order"},
   "draw-loop:IsOverOrEnding": {"class": "safe", "why": "the fight-end check before each card: the fight ends inside a draw only through an observer (Hellraiser's play, Speedster's hit); the safe effects here cannot kill"},
   "draw-loop:IsStrikeCard": {"class": "observer", "observer": "Hellraiser", "why": "Hellraiser's test of the drawn card"},
   "draw-loop:Max": {"class": "safe", "why": "a drawn Void's energy loss, Math.Max(0, energy - 1): the same total for any order"},
