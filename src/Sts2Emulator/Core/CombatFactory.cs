@@ -903,10 +903,7 @@ public static class CombatFactory
                 CreateEnemy(KE.SpinyToad, rng, new Intent(IntentType.Buff, 5)),
             ],
 
-            ActOneEncounter.Ovicopter =>
-            [
-                CreateEnemy(KE.Ovicopter, rng, new Intent(IntentType.Buff, 0)),
-            ],
+            ActOneEncounter.Ovicopter => [OvicopterInItsSlot(rng)],
 
             ActOneEncounter.LouseProgenitor =>
             [
@@ -1975,6 +1972,23 @@ public static class CombatFactory
 
     /// <summary>The Fabricator's own index in `FabricatorNormal.Slots`.</summary>
     public const int FabricatorOwnSlot = 2;
+
+    /// <summary>
+    /// `OvicopterNormal.Slots` is `[egg1, egg2, egg3, egg4, egg5, ovicopter]`: the Ovicopter
+    /// stands LAST, and `LayEggsMove` puts each egg in the last slot no creature holds
+    /// (EnemyAI's SummonToughEggs).
+    /// </summary>
+    public const int OvicopterSlotCount = 6;
+
+    /// <summary>The Ovicopter's own index in `OvicopterNormal.Slots`.</summary>
+    public const int OvicopterOwnSlot = 5;
+
+    private static EnemyState OvicopterInItsSlot(Random rng)
+    {
+        var ovicopter = CreateEnemy(KE.Ovicopter, rng, new Intent(IntentType.Buff, 0));
+        ovicopter.Slot = OvicopterOwnSlot;
+        return ovicopter;
+    }
 
     /// <summary>How many slots that encounter has in all.</summary>
     public const int FabricatorSlotCount = 5;

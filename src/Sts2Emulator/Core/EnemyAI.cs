@@ -5166,33 +5166,35 @@ public static class EnemyAI
 
     private static void SummonToughEggs(EnemyState enemy, CombatState state, Random rng)
     {
-        // The cap is FREE SLOTS, and a slot is free when nothing LIVING stands in it:
-        // `Slots.LastOrDefault(s => Enemies.All(c => c.SlotName != s))`. The game REMOVES
-        // a dead creature, so its slot comes back; the emulator keeps the corpse in the
-        // roster on purpose, to hold an observation slot steady. Counting only the living
-        // gets the COUNT right and then grows the list past six, which silently pushes
-        // the Ovicopter itself out of the observation's six enemy slots -- it stopped
-        // being reported at all, while the game still had it at 116.
+        // Ovicopter's LAY_EGGS, three times: each egg goes into the last of the encounter's
+        // slots (egg1..egg5, ovicopter) that no creature in the fight holds, and adding a
+        // creature with a slot sorts the roster by slot (CombatManager.AddCreature). The
+        // game REMOVES a dead creature, so its slot is free again; a corpse the emulator
+        // still keeps in the roster holds nothing (the living are read).
         //
-        // So a dead egg's place is REUSED rather than added to. That is what the game
-        // does with the slot, and it keeps the roster the size the readout can hold.
-        var deadEggs = state
-            .Enemies.Where(other => other.Hp <= 0 && other.DefId == KE.ToughEgg)
-            .ToList();
-        int freeSlots = 6 - state.Enemies.Count(other => other.Hp > 0);
-        int eggsToAdd = Math.Min(3, freeSlots);
-        for (int i = 0; i < eggsToAdd; i++)
+        // The old rule put every new egg in FRONT of the first egg (or took a kept corpse's
+        // place). That is the game's order only while no egg has died: with eggs alive at
+        // egg3 and egg4, the game's next clutch takes egg5, then egg2, then egg1, and the
+        // roster reads [egg1, egg2, egg3, egg4, egg5, ovicopter] where the emulator's read
+        // [new, new, new, old, old, ovicopter] -- the same HPs in another order, so the same
+        // target index named a different egg on each side (the nights' Ovicopter records).
+        EnsureOvicopterSlots(state, enemy);
+        for (int i = 0; i < 3; i++)
         {
-            // `Slots` is `egg1..egg5, ovicopter` and LayEggs takes
-            // `Slots.LastOrDefault(free)` -- the LAST free slot -- so the clutch fills
-            // egg5, egg4, egg3 and the roster, which is in slot order, ends up with the
-            // NEWEST egg first. The emulator appended each egg after the previous one, so
-            // its clutch stood in the opposite order; the player attacks position 0, so a
-            // different egg took the damage and a different egg died.
-            int insertIndex = state.Enemies.FindIndex(other => other.DefId == KE.ToughEgg);
-            if (insertIndex < 0)
+            int slot = -1;
+            for (int candidate = CombatFactory.OvicopterSlotCount - 1; candidate >= 0; candidate--)
             {
-                insertIndex = state.Enemies.IndexOf(enemy);
+                if (!state.Enemies.Any(other => other.Hp > 0 && other.Slot == candidate))
+                {
+                    slot = candidate;
+                    break;
+                }
+            }
+
+            if (slot < 0)
+            {
+                // Every slot is held: `LastOrDefault` is null and no egg is laid.
+                return;
             }
 
             // Not stunned — Ovicopter adds eggs with a plain CreatureCmd.Add, and the
@@ -5205,17 +5207,47 @@ public static class EnemyAI
             );
             BuffSystem.Apply(egg.Buffs, BuffId.Minion, 1);
             var spawned = Effects.RelicEffects.Spawned(state, egg);
-            if (deadEggs.Count > 0)
+            spawned.Slot = slot;
+
+            // A corpse the emulator still keeps in this slot gives its place up: the game
+            // removed it, and the roster stays the size the readout can hold.
+            int corpse = state.Enemies.FindIndex(other => other.Hp <= 0 && other.Slot == slot);
+            if (corpse >= 0)
             {
-                // Reuse the corpse's place: the game freed that slot and refilled it.
-                var corpse = deadEggs[0];
-                deadEggs.RemoveAt(0);
-                state.NoteDeparted(corpse);
-                state.Enemies[state.Enemies.IndexOf(corpse)] = spawned;
+                state.NoteDeparted(state.Enemies[corpse]);
+                state.Enemies[corpse] = spawned;
                 continue;
             }
 
-            state.Enemies.Insert(insertIndex, spawned);
+            InsertBySlot(state, spawned);
+        }
+    }
+
+    /// <summary>
+    /// The Ovicopter's slots when a roster arrived without them (a fight rebuilt from a
+    /// record): the Ovicopter in its own, and the living eggs, in roster order, in the
+    /// slots that end at egg5 -- the order a roster read in slot order shows. A fight the
+    /// factory built has them all already, and this changes nothing.
+    /// </summary>
+    private static void EnsureOvicopterSlots(CombatState state, EnemyState ovicopter)
+    {
+        if (ovicopter.Slot < 0)
+        {
+            ovicopter.Slot = CombatFactory.OvicopterOwnSlot;
+        }
+
+        if (!state.Enemies.Any(other => other != ovicopter && other.Hp > 0 && other.Slot < 0))
+        {
+            return;
+        }
+
+        var eggs = state
+            .Enemies.Where(other => other != ovicopter && other.Hp > 0 && other.DefId == KE.ToughEgg)
+            .ToList();
+        int first = CombatFactory.OvicopterOwnSlot - eggs.Count;
+        for (int j = 0; j < eggs.Count; j++)
+        {
+            eggs[j].Slot = Math.Max(0, first + j);
         }
     }
 
