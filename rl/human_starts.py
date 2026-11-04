@@ -620,6 +620,7 @@ def build(corpus: Path, out_dir: Path, procs: int, hallway_cap: int, limit_runs:
         raise
     n = writer.close()
     report = coverage(recs, stats, fail, seen, len(specs), len(chosen))
+    report["hallway_cap"] = hallway_cap
     text = coverage_text(report)
     print(text)
     if doc_path is not None:
@@ -690,12 +691,13 @@ def coverage_text(rep: dict) -> str:
     """The coverage report (aggregates only; no run is named, no cell under MIN_CELL runs is shown)."""
     out = ["# Human fight starts: coverage", "",
            "Written by `rl/human_starts.py build` (aggregates only; a cell over fewer than %d runs is not shown)." % MIN_CELL, "",
-           f"- corpus lines read: {rep['runs_read']:,}",
-           f"- Ironclad, Ascension 10, standard, finished: {rep['ironclad_a10']:,}",
+           f"- runs read (every run of the corpus, any character and Ascension): {rep['runs_read']:,}",
+           f"- of those Ironclad, Ascension 10, standard mode, finished, no modifiers: {rep['ironclad_a10']:,}",
            f"- left out as the exam fifth (ids file or hash rule): {rep['exam_fifth_left_out']:,}",
            f"- left out for modded acts: {rep['modded_acts']:,}",
            f"- runs usable: {rep['runs_usable']:,}; runs that gave at least one fight: {rep['runs_with_fights']:,}",
-           f"- fight states rebuilt: {rep['floors_in_state']:,}; chosen (elites and bosses all, hallway capped): {rep['floors_chosen']:,}",
+           f"- floors usable (Act 1 and 2 fights whose state could be rebuilt): {rep['floors_in_state']:,}; chosen (every elite and "
+           f"boss, hallway capped at {rep.get('hallway_cap', HALLWAY_CAP):,}): {rep['floors_chosen']:,}",
            f"- records written: {rep['records']:,} (with an enchanted card: {rep['enchanted_records']:,}; potions only partly known: "
            f"{rep['potions_unknown_records']:,})", "", "## Records by act and kind", "",
            "| act and kind | fights the usable runs entered | records | runs |", "|---|---|---|---|"]
