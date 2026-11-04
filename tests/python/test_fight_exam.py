@@ -761,6 +761,7 @@ class ExamGameTests(unittest.TestCase):
         if kind != "ok":
             raise unittest.SkipTest(f"native library unavailable: {got}")
         cls.exam = root / "exam"
+        cls.exam.mkdir()
         starts = [{**s, "seed": f"RUN{i}", "kind": "hallway", "cell": "act1-hallway", "kind_cell": "act1-hallway", "half": fe.half_of(s["id"]),
                    "stratum": "ai", "split": "train"} for i, s in enumerate(got) if not s["id"].startswith("F18")]
         gl.write_start_set(cls.exam, starts)
