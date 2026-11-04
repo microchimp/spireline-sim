@@ -65,6 +65,7 @@ A10_POTION_SLOTS = 2  # TightBelt from Ascension 4; Potion Belt adds two
 NODE_TYPE = {"hallway": 1, "elite": 2, "boss": 6}  # run_train.vocab's node types, as gym_loop.NODE_TYPE
 KINDS = ("hallway", "elite", "boss")
 STARTER_RELIC, BLACK_BLOOD = "BURNING_BLOOD", "BLACK_BLOOD"
+BOSS_FLOOR = {1: 17, 2: 33}  # the floors of the Act 1 and Act 2 bosses on the copy (rl/run_fields.ACT_BOSS_FLOORS)
 VANILLA_ACTS = ("ACT.OVERGROWTH", "ACT.UNDERDOCKS"), "ACT.HIVE", "ACT.GLORY"
 ROSTER_TRIES = 32  # seeds tried for a fight whose roster the copy rolls (slimes, bowlbugs, raiders) until it is the human's
 WEAK_ROOMS = 0  # `reset_arena`'s completed_combat_rooms for a weak Corpse Slugs or Seapunk (-1 deals their normal twin)
@@ -382,6 +383,12 @@ def _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed
     eid = tables.encounter_id(model)
     if eid is None:
         fail["encounter unknown to the copy"] += 1
+        return None
+    if kind == "boss" and f != BOSS_FLOOR[act]:
+        fail["boss at an unusual floor: the route is not the copy's"] += 1
+        return None
+    if not 0 < int(hp or 0) <= int(max_hp or 0):
+        fail["HP before the fight not credible"] += 1
         return None
     ids, ench, level2 = [], [], 0
     for c in deck:

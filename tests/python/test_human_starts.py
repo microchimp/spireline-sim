@@ -54,9 +54,9 @@ def _fight(kind, model, monsters, stats):
                   [{"model_id": model, "monster_ids": monsters, "room_type": kind}])
 
 
-def synthetic_run(rid: str, *, act2: bool = False, drop_final: bool = False) -> dict:
+def synthetic_run(rid: str, *, act2: bool = False, drop_final: bool = False, boss_at_17: bool = True) -> dict:
     """An Ironclad A10 run: Neow (one Strike upgraded, a relic), a weak slimes fight, a shop removing a Strike, a rest upgrading
-    Bash, an elite, the boss; optionally an Act 2 with an elite."""
+    Bash, an elite, eleven quiet rests, the Act 1 boss on floor 17; optionally an Act 2 with an elite on floor 19."""
     a1 = [
         _point("ancient", _stats(64, 80, 99, upgraded_cards=["CARD.STRIKE_IRONCLAD"],
                                  relic_choices=[{"choice": "RELIC.NEOWS_TALISMAN", "was_picked": True}]),
@@ -69,6 +69,7 @@ def synthetic_run(rid: str, *, act2: bool = False, drop_final: bool = False) -> 
         _fight("elite", "ENCOUNTER.SKULKING_COLONY_ELITE", ["MONSTER.SKULKING_COLONY"],
                _stats(30, 80, 60, cards_gained=[{"id": "CARD.BATTLE_TRANCE"}], potion_used=["POTION.FIRE_POTION"],
                       relic_choices=[{"choice": "RELIC.ODDLY_SMOOTH_STONE", "was_picked": True}])),
+        *[_point("rest_site", _stats(30, 80, 60, rest_site_choices=["NOTHING"])) for _ in range(11 if boss_at_17 else 0)],
         _fight("boss", "ENCOUNTER.VANTOM_BOSS", ["MONSTER.VANTOM"], _stats(40, 80, 150, cards_gained=[{"id": "CARD.OFFERING"}])),
     ]
     acts = [a1]
@@ -153,7 +154,7 @@ class RebuildTests(unittest.TestCase):
     def test_each_fight_is_rebuilt_with_the_deck_relics_potions_and_hp_the_human_walked_in_with(self):
         rid = _find_ids(False, 1, "k")[0]
         specs = {s["floor"]: s for s in self._specs(synthetic_run(rid))}
-        self.assertEqual(sorted(specs), [2, 5, 6])
+        self.assertEqual(sorted(specs), [2, 5, 17])
         t = self.tables
         cid = t.cards
         first = specs[2]  # the weak slimes fight, walking in from Neow's floor
@@ -174,7 +175,7 @@ class RebuildTests(unittest.TestCase):
         self.assertEqual(sorted(elite["relics"]), sorted([t.relics["BURNING_BLOOD"], t.relics["NEOWS_TALISMAN"]]))  # not the stone from the elite
         self.assertEqual(elite["potions"], [t.potions["FIRE_POTION"]])
         self.assertEqual((elite["kind"], elite["node_type"], elite["enemy"]), ("elite", 2, "SKULKING_COLONY_ELITE"))
-        boss = specs[6]
+        boss = specs[17]
         self.assertEqual((boss["hp"], boss["kind"], boss["node_type"], boss["cat"]), (30, "boss", 6, "act1-boss"))
         self.assertIn(cid["BATTLE_TRANCE"], boss["deck"])
         self.assertIn(t.relics["ODDLY_SMOOTH_STONE"], boss["relics"])
@@ -185,12 +186,11 @@ class RebuildTests(unittest.TestCase):
         rid = _find_ids(False, 1, "k")[0]
         run = synthetic_run(rid, act2=True)
         run["map_point_history"].append([_fight("boss", "ENCOUNTER.THE_INSATIABLE_BOSS", ["MONSTER.THE_INSATIABLE"], _stats(10))])
-        run["map_point_history"][2][0]["player_stats"][0]["cards_gained"] = []
         fail, seen = Counter(), Counter()
         specs = self._specs(run, fail, seen)
         self.assertEqual(Counter(s["cat"] for s in specs), Counter({"act1-hallway": 1, "act1-elite": 1, "act1-boss": 1, "act2-elite": 1}))
         e = next(s for s in specs if s["cat"] == "act2-elite")
-        self.assertEqual((e["floor"], e["hp"], e["act"], e["enemy"]), (8, 80, 2, "ENTOMANCER_ELITE"))  # floor 7 is the Act 2 ancient
+        self.assertEqual((e["floor"], e["hp"], e["act"], e["enemy"]), (19, 80, 2, "ENTOMANCER_ELITE"))  # floor 18 is the Act 2 ancient
         self.assertEqual(e["monsters"], ["entomancer", "paelslegion"])
         self.assertEqual(fail["act 3 or later: not built"], 1)
         self.assertEqual(seen["act3-boss"], 1)
@@ -200,18 +200,27 @@ class RebuildTests(unittest.TestCase):
         fail = Counter()
         self.assertEqual(self._specs(synthetic_run(rid, drop_final=True), fail), [])  # the replay disagrees with the final deck
         self.assertEqual(fail["deck replay disagrees with the run's final deck: run dropped"], 3)
+        fail = Counter()  # a boss on floor 6: the route is not the copy's (17 and 33)
+        self.assertEqual([s["floor"] for s in self._specs(synthetic_run(rid, boss_at_17=False), fail)], [2, 5])
+        self.assertEqual(fail["boss at an unusual floor: the route is not the copy's"], 1)
+        run = synthetic_run(rid)
+        run["map_point_history"][0][15]["player_stats"][0]["current_hp"] = 0  # the floor before the boss records no HP at all
+        run["map_point_history"][0][15]["player_stats"][0]["max_hp"] = 0
+        fail = Counter()
+        self.assertEqual([s["floor"] for s in self._specs(run, fail)], [2, 5])
+        self.assertEqual(fail["HP before the fight not credible"], 1)
         run = synthetic_run(rid)
         run["map_point_history"][0][1]["rooms"] = [{"model_id": "EVENT.X", "room_type": "event"},
                                                     {"model_id": "ENCOUNTER.SLIMES_WEAK", "monster_ids": ["MONSTER.LEAF_SLIME_S"],
                                                      "room_type": "monster"}]
         fail = Counter()
         specs = self._specs(run, fail)
-        self.assertEqual([s["floor"] for s in specs], [5, 6])
+        self.assertEqual([s["floor"] for s in specs], [5, 17])
         self.assertEqual(fail["an event page before the fight: HP going in not known"], 1)
         run = synthetic_run(rid)
         run["map_point_history"][0][4]["rooms"][0]["model_id"] = "ENCOUNTER.A_MODDED_FIGHT_ELITE"
         fail = Counter()
-        self.assertEqual([s["floor"] for s in self._specs(run, fail)], [2, 6])
+        self.assertEqual([s["floor"] for s in self._specs(run, fail)], [2, 17])
         self.assertEqual(fail["encounter unknown to the copy"], 1)
         run = synthetic_run(rid)
         run["map_point_history"][0][1]["player_stats"][0]["cards_gained"] = [{"id": "CARD.POMMEL_STRIKE"}, {"id": "CARD.A_MODDED_CARD"}]
@@ -370,7 +379,7 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual(len(doc["enemies"]), 3)
 
     def test_the_act_two_elite_gets_its_roster_checked_against_the_humans(self):
-        spec = self.specs[8]
+        spec = self.specs[19]
         doc, why = self.docs[spec["id"]]
         self.assertEqual(why, "")
         self.assertEqual(doc["player"]["hp"], 80)
