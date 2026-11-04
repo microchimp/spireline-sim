@@ -365,6 +365,24 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(int(flag_lines["all"][0]), len(self.cal["always"]))
         self.assertEqual(int(flag_lines["all"][1]), len(self.cal["never"]))
 
+    def test_the_precision_lines_give_each_halfs_rate_and_the_start_level_agreement(self):
+        starts = {f"s{i}": {"cell": "act1-boss-74", "kind_cell": "act1-boss", "half": "AB"[i % 2], "id": f"s{i}", "kind": "boss"} for i in range(400)}
+        rnd = random.Random(4)
+        pt = {sid: rnd.choice((0.05, 0.95)) for sid in starts}  # starts differ a great deal: draws agree
+        games = games_for(starts, lambda s: pt[s["id"]], rnd)
+        p = fe.precision(games, starts, boot=60)
+        self.assertGreater(p["split_r"], 0.8)
+        self.assertEqual(p["split_starts"], 400)
+        self.assertEqual(p["A"]["starts"], 200)
+        self.assertAlmostEqual(p["A"]["unpaired_gap"], 1.96 * 2**0.5 * p["A"]["se"])
+        flat = {sid: 0.5 for sid in starts}  # starts alike: draws are luck
+        low = fe.precision(games_for(starts, lambda s: flat[s["id"]], rnd), starts, boot=20)
+        self.assertLess(abs(low["split_r"]), 0.3)
+        text = " ".join(fe.precision_lines(games, starts))
+        self.assertIn("half A: win rate", text)
+        self.assertIn("start-level agreement of draws 0-1 with draws 2-3", text)
+        self.assertIn("precision of the exam on this player", fe.report_text(games, starts, "v2"))
+
     def test_the_weight_one_table_leaves_out_the_flagged_starts(self):
         w = fe.weights_of(self.cal, self.starts)
         rows = fe.cell_rows(self.games, self.starts, w)

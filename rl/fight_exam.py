@@ -937,6 +937,45 @@ def format_cells(rows: dict, title: str) -> str:
     return "\n".join(lines)
 
 
+def precision(games: dict, starts: dict, boot: int = 400) -> dict:
+    """How well the exam measures one player: the win rate of each half over its starts with its bootstrap standard error (starts
+    resampled within cells), the smallest difference two unpaired players would need to differ by to be told apart at 95% (1.96
+    times the square root of two times the standard error), and the start-level agreement of draws 0-1 with draws 2-3 (Pearson r of a
+    start's win rate on the two pairs, over starts with all four draws: the share of the variation that belongs to the start and not to
+    the shuffles)."""
+    out: dict = {}
+    for h in "AB":
+        groups: dict[str, list[dict]] = defaultdict(list)
+        sm = start_means(games, {s: v for s, v in starts.items() if v["half"] == h})
+        for sid, m in sm.items():
+            groups[starts[sid]["cell"]].append({"won": m["won"]})
+        b = bootstrap(groups, mean_stat("won"), boot=boot)
+        out[h] = {"rate": b["estimate"], "se": b["se"], "starts": b["n"],
+                  "unpaired_gap": None if b["se"] is None else 1.96 * math.sqrt(2.0) * b["se"]}
+    ids = [s for s in starts if all((s, j) in games for j in range(DRAWS))]
+    if len(ids) > 2:
+        lo = [mean(game_values(games[(s, j)])["won"] for j in (0, 1)) for s in ids]
+        hi = [mean(game_values(games[(s, j)])["won"] for j in (2, 3)) for s in ids]
+        out["split_r"] = fg.pearson(lo, hi)
+        out["split_starts"] = len(ids)
+    return out
+
+
+def precision_lines(games: dict, starts: dict) -> list[str]:
+    p = precision(games, starts)
+    lines = []
+    for h in "AB":
+        v = p[h]
+        if v["rate"] is None:
+            continue
+        gap = "" if v["unpaired_gap"] is None else f"; two unpaired players would have to differ by {100 * v['unpaired_gap']:.1f} points to be told apart"
+        lines.append(f"half {h}: win rate {100 * v['rate']:.1f}% over {v['starts']} starts, standard error {100 * (v['se'] or 0):.2f} points{gap}")
+    if p.get("split_r") is not None:
+        lines.append(f"start-level agreement of draws 0-1 with draws 2-3: Pearson r {p['split_r']:.2f} over {p['split_starts']} starts "
+                     "(the closer to 1, the more of the variation is the start's, and the more a paired design gains)")
+    return lines
+
+
 def report_text(games: dict, starts: dict, label: str, cal: dict | None = None, baseline: dict | None = None) -> str:
     """The readings of one player: per-cell win rates and fight-quality measures (over the starts with weight, the calibration's
     always and never won starts counted out and listed), per-boss rates, the flags, the halves, the baseline's agreement."""
@@ -969,6 +1008,11 @@ def report_text(games: dict, starts: dict, label: str, cal: dict | None = None, 
         out.append(f"{k:<20}{a:>8}{n:>8}{m:>8}{t:>8}")
     out.append(f"{'all':<20}{len(cal['always']):>8}{len(cal['never']):>8}{len(cal['mixed']):>8}{len(starts):>8}"
                f"   (not yet fully played: {len(cal['unplayed'])})")
+    pl = precision_lines(games, starts)
+    if pl:
+        out.append("")
+        out.append("precision of the exam on this player")
+        out.extend("  " + x for x in pl)
     if baseline:
         sm = start_means(games, starts)
         ids = [s for s in sm if s in baseline]
