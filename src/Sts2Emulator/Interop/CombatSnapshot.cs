@@ -489,7 +489,8 @@ public static class CombatSnapshot
         }
 
         state.IsEliteCombat = root.Bool("is_elite_combat", state.IsEliteCombat);
-        state.IsEliteRoom = root.Bool("is_elite_room", state.IsEliteRoom);
+        // The relics ask the ROOM; a snapshot that names only the older key (is_elite_combat) is read as naming both.
+        state.IsEliteRoom = root.Bool("is_elite_room", state.IsEliteCombat);
         state.FurCoatBites = root.Bool("fur_coat_bites", state.FurCoatBites);
 
         ReadPlayer(root.Child("player", PlayerFields), state);

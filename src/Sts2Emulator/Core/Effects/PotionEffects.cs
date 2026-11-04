@@ -342,15 +342,16 @@ public static class PotionEffects
                 break;
             case 33: // Glowwater Potion: GlowwaterPotion.cs -- exhaust the WHOLE hand
                 // (every card in it, unconditionally), THEN draw CardsVar(10). The same
-                // "exhaust the hand, then clear it" loop PaelsEye's own end-of-turn hook
-                // uses, so ExhaustCard's hooks fire per card rather than the hand being
-                // dropped in bulk.
+                // snapshot loop PaelsEye's own end-of-turn hook uses: each card leaves the hand
+                // as it is exhausted, so ExhaustCard's hooks fire per card, and a card a hook
+                // puts into the hand meanwhile (Dark Embrace's draw) stays in it rather than
+                // being cleared out of the combat with the rest.
                 foreach (var handCard in state.Hand.ToList())
                 {
+                    state.Hand.Remove(handCard);
                     CardEffects.ExhaustCard(state, handCard, rng: rng!);
                 }
 
-                state.Hand.Clear();
                 CardEffects.DrawCards(state, 10, rng!);
                 break;
             case 34: // Heart of Iron: HeartOfIron.cs -- PowerVar<PlatingPower>(7). Plating

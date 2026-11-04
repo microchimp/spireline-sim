@@ -56,7 +56,7 @@ missing ViciousPower.AfterPowerAmountChanged  # power; CardEffects.ApplyCore, Ca
 missing VitalSparkPower.AfterPowerAmountChanged  # power; CombatEngine.ApplyAfterCardPlayedPowers, CombatFactory.ApplyIntrinsicEnemyPowers, EnemyAI.ExecuteIntent
 missing FairyInABottle.AfterPreventingDeath  # potion; CombatEngine.FairyInABottlePotionId, CombatEngine.IsAboutToLose, CombatEngine.PlayerIsDead
 missing RegalPillow.AfterRestSiteHeal  # relic; RunEngine.RestHealAmount
-missing BigMushroom.AfterRoomEntered  # relic; RelicEffects.ExtraOpeningHandDraw, RunEngine.StepEvent, RunNonCombatEffects.ApplyRelicPickup
+missing BigMushroom.AfterRoomEntered  # relic; RelicEffects.HandDrawBonus, RunEngine.StepEvent, RunNonCombatEffects.ApplyRelicPickup
 missing BurningSticks.AfterRoomEntered  # relic; RelicEffects.ApplyBurningSticks
 missing GhostSeed.AfterRoomEntered  # relic; RelicEffects.MakesBasicsEthereal
 missing LavaLamp.AfterRoomEntered  # relic; RelicEffects.UpgradesCardRewards

@@ -1,6 +1,7 @@
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
 using Sts2Emulator.Core.Rng;
+using Sts2Emulator.Core.Run;
 using Xunit;
 using static Sts2Emulator.Tests.TestDeck;
 
@@ -19,7 +20,7 @@ public class EliteAndUpgradeRelicTests
         var plain = Fight.WithRelics();
         var withConch = Fight.WithRelics(RelicEffects.BoomingConch);
 
-        Assert.False(withConch.State.IsEliteCombat);
+        Assert.False(withConch.State.IsEliteRoom);
         Assert.Equal(plain.State.Energy, withConch.State.Energy);
         Assert.Equal(plain.State.Hand.Count, withConch.State.Hand.Count);
     }
@@ -57,7 +58,7 @@ public class EliteAndUpgradeRelicTests
                 RelicEffects.BoomingConch
             );
 
-            Assert.True(withConch.State.IsEliteCombat, $"{encounter} did not read as elite");
+            Assert.True(withConch.State.IsEliteRoom, $"{encounter} did not read as elite");
             Assert.Equal(plain.State.Energy + 1, withConch.State.Energy);
             Assert.Equal(plain.State.Hand.Count + 2, withConch.State.Hand.Count);
         }
@@ -86,8 +87,88 @@ public class EliteAndUpgradeRelicTests
                 RelicEffects.BoomingConch
             );
 
-            Assert.False(fight.State.IsEliteCombat, $"{encounter} read as an elite");
+            Assert.False(fight.State.IsEliteRoom, $"{encounter} read as an elite");
         }
+    }
+
+    private static int Strength(CombatState state) =>
+        BuffSystem.Get(state.PlayerBuffs, BuffId.Strength);
+
+    /// <summary>
+    /// Booming Conch (two cards, one energy) and Sling of Courage (two Strength) ask the ROOM, and a
+    /// room is an elite room in every act: the direct combat environment, which has only an
+    /// encounter to go by, knows all twelve elites. The elite test was a list of the six Act 1
+    /// ones, so no Hive or Glory elite ever paid (40 hand records of three nights, Entomancer,
+    /// Infested Prisms and Decimillipede).
+    /// </summary>
+    [Fact]
+    public void BoomingConchAndSlingOfCourageFireInEveryEliteOfEveryAct()
+    {
+        // Overgrowth, Underdocks, Hive and Glory, by encounter id.
+        int[] elites = [62, 68, 65, 72, 86, 67, 69, 63, 64, 70, 71, 66];
+
+        foreach (int encounter in elites)
+        {
+            var plain = Fight.Encounter(encounter);
+            var relics = Fight.Encounter(encounter, RelicEffects.BoomingConch, RelicEffects.SlingOfCourage);
+
+            Assert.True(relics.State.IsEliteRoom, $"encounter {encounter} did not read as an elite room");
+            Assert.Equal(plain.State.Hand.Count + 2, relics.State.Hand.Count);
+            Assert.Equal(plain.State.Energy + 1, relics.State.Energy);
+            Assert.Equal(Strength(plain.State) + 2, Strength(relics.State));
+        }
+    }
+
+    /// <summary>
+    /// A run knows its room, and the combat-start hooks and the opening draw ask it while the reset
+    /// runs: the room has to be there before they do. It was set after the reset, so Sling of
+    /// Courage never fired in any run elite, Act 1 included.
+    /// </summary>
+    [Theory]
+    [InlineData(63)] // Entomancer, Act 2
+    [InlineData(68)] // Byrdonis, Act 1
+    public void ARunEliteRoomPaysBothRelics(int encounterId)
+    {
+        var plain = RunAt(RunConstants.NodeElite, encounterId, []);
+        var relics = RunAt(
+            RunConstants.NodeElite,
+            encounterId,
+            [RelicEffects.BoomingConch, RelicEffects.SlingOfCourage]
+        );
+
+        Assert.True(relics.IsEliteRoom);
+        Assert.Equal(plain.Hand.Count + 2, relics.Hand.Count);
+        Assert.Equal(plain.Energy + 1, relics.Energy);
+        Assert.Equal(Strength(plain) + 2, Strength(relics));
+    }
+
+    /// <summary>The ROOM decides, not the encounter: an elite's roster met in a hallway room pays nothing.</summary>
+    [Fact]
+    public void AnEliteRosterInAHallwayRoomPaysNothing()
+    {
+        var plain = RunAt(RunConstants.NodeNormal, 63, []);
+        var relics = RunAt(
+            RunConstants.NodeNormal,
+            63,
+            [RelicEffects.BoomingConch, RelicEffects.SlingOfCourage]
+        );
+
+        Assert.False(relics.IsEliteRoom);
+        Assert.Equal(plain.Hand.Count, relics.Hand.Count);
+        Assert.Equal(plain.Energy, relics.Energy);
+        Assert.Equal(Strength(plain), Strength(relics));
+    }
+
+    private static CombatState RunAt(int roomType, int encounterId, int[] relics)
+    {
+        var engine = new RunEngine();
+        engine.Reset("NXV45HW43K");
+        engine.State.LastResolvedRoomType = roomType;
+        Assert.Equal(
+            0,
+            engine.StartCombat([.. RunConstants.StarterDeckIds], encounterId, relics, 80, 80, [], 99)
+        );
+        return engine.State.ActiveCombat!;
     }
 
     [Fact]

@@ -64,7 +64,7 @@ SPLITS: dict[str, dict] = {
     "CombatEngine.DoomThePlayerAtTurnEnd": {
         "kind": "split",
         "file": "Core/CombatEngine.cs",
-        "sha256": "b8a4b6269ba9ab71535386e8cfe7e715ed9b094d56bc9af26a26eb4f91b11d3f",
+        "sha256": "ed3e38c3554d8d54e2976ce741e124e12e8bb5d6155ec8d2b25c77ce5248e975",
         "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate "
                   "(the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the "
                   "HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on "
@@ -78,7 +78,7 @@ SPLITS: dict[str, dict] = {
     "RelicEffects.BiteForFurCoat": {
         "kind": "split",
         "file": "Core/Effects/RelicEffects.cs",
-        "sha256": "bf0912d6feaec7a3b210af8673c90d979543203dea59cab1b06cf97d04da9fca",
+        "sha256": "6a3e88370807d07cf642bcea68f346eabd796f44f1e30de50fc2e8b064abb435",
         "reason": "Fur Coat's AfterCreatureAddedToCombat body is the method as entered (F01: the bite of whatever "
                   "joins); inside it the hittable test and the one-HP write are F08 (ShouldAllowHitting, "
                   "SetCurrentHp), a separate statement that gates on its own switch",

@@ -2495,7 +2495,8 @@ public static class CombatEngine
         {
             Effects.RelicEffects.TickPaelsLegionCooldown(state);
             // `PollinousCore.BeforeSideTurnStart` bumps its counter; the hand draw below reads
-            // it, and pays two extra cards on every fourth turn.
+            // it, and pays two extra cards on every fourth turn. Turn one's bump is in
+            // `RelicEffects.ApplyBeforeOpeningHand`, the same hook.
             Effects.RelicEffects.TickPollinousCore(state);
             state.PlayerTurn = true;
             // The turn rolls over: what was "this turn" becomes what History Course reads.
@@ -2814,45 +2815,44 @@ public static class CombatEngine
 
             // Draw five cards -- less MindRot, which is `Math.Max(0, count - Amount)` on the
             // whole draw rather than a per-card effect.
-            Effects.CardEffects.DrawCards(
-                state,
-                Math.Max(
-                    0,
-                    5
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.MachineLearning)
-                        // `PaleBlueDotPower.ModifyHandDraw`, and only past the threshold: five
-                        // card plays LAST turn, or the power adds nothing at all.
-                        + (
-                            state.CardPlaysLastTurn >= 5
-                                ? BuffSystem.Get(state.PlayerBuffs, BuffId.PaleBlueDot)
-                                : 0
-                        )
-                        // `TyrannyPower.ModifyHandDraw`, the half of that card that pays.
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny)
-                        // `ToolsOfTheTradePower.ModifyHandDraw`: part of the HAND DRAW, so it is
-                        // in hand before any AfterPlayerTurnStart screen and Fiddle spares it.
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
-                        // `DemesnePower.ModifyHandDraw`, the other half of a power that also
-                        // raises max energy -- both every turn, not once.
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.Demesne)
-                        + Effects.RelicEffects.ExtraHandDraw(state)
-                        // `DrawCardsNextTurnPower.ModifyHandDraw`: part of the HAND DRAW, not a
-                        // draw of its own. It was a separate `DrawCards` after this one, which
-                        // Fiddle's `ShouldDraw` then refused -- it vetoes every draw that is
-                        // not the hand draw, and the game's hand draw is exactly what this is.
-                        // A run holding Fiddle lost every next-turn draw it was owed.
-                        + BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnDraw)
-                        // `ClarityPower.ModifyHandDraw` adds ONE, however many turns are left
-                        // on it -- the counter is turns, not cards, which is the whole of what
-                        // the game's remark means by "distinct due to its stacking behavior".
-                        // Summing the amount here would pay three cards on the first turn and
-                        // none on the other two.
-                        + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
-                        - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
-                ),
-                rng,
-                fromHandDraw: true
+            int handDraw = Math.Max(
+                0,
+                5
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.MachineLearning)
+                    // `PaleBlueDotPower.ModifyHandDraw`, and only past the threshold: five
+                    // card plays LAST turn, or the power adds nothing at all.
+                    + (
+                        state.CardPlaysLastTurn >= 5
+                            ? BuffSystem.Get(state.PlayerBuffs, BuffId.PaleBlueDot)
+                            : 0
+                    )
+                    // `TyrannyPower.ModifyHandDraw`, the half of that card that pays.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.Tyranny)
+                    // `ToolsOfTheTradePower.ModifyHandDraw`: part of the HAND DRAW, so it is
+                    // in hand before any AfterPlayerTurnStart screen and Fiddle spares it.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.ToolsOfTheTrade)
+                    // `DemesnePower.ModifyHandDraw`, the other half of a power that also
+                    // raises max energy -- both every turn, not once.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.Demesne)
+                    // The relics' `ModifyHandDraw`, the same function turn one's draw asks.
+                    + Effects.RelicEffects.HandDrawBonus(state, state.Turn + 1)
+                    // `DrawCardsNextTurnPower.ModifyHandDraw`: part of the HAND DRAW, not a
+                    // draw of its own. It was a separate `DrawCards` after this one, which
+                    // Fiddle's `ShouldDraw` then refused -- it vetoes every draw that is
+                    // not the hand draw, and the game's hand draw is exactly what this is.
+                    // A run holding Fiddle lost every next-turn draw it was owed.
+                    + BuffSystem.Get(state.PlayerBuffs, BuffId.NextTurnDraw)
+                    // `ClarityPower.ModifyHandDraw` adds ONE, however many turns are left
+                    // on it -- the counter is turns, not cards, which is the whole of what
+                    // the game's remark means by "distinct due to its stacking behavior".
+                    // Summing the amount here would pay three cards on the first turn and
+                    // none on the other two.
+                    + (BuffSystem.Get(state.PlayerBuffs, BuffId.Clarity) > 0 ? 1 : 0)
+                    - BuffSystem.Get(state.PlayerBuffs, BuffId.MindRot)
             );
+            // `Hook.AfterModifyingHandDraw`: Pollinous Core's count goes back to zero if it paid.
+            Effects.RelicEffects.AfterModifyingHandDraw(state);
+            Effects.CardEffects.DrawCards(state, handDraw, rng, fromHandDraw: true);
             // `Hook.AfterPlayerTurnStart` for the powers, after the hand draw (SetupPlayerTurn).
             AfterPlayerTurnStartPowers(state, rng);
 

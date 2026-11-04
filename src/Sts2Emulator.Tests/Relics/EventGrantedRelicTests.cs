@@ -429,39 +429,49 @@ public class ActTwoEventRelicTests
         Assert.Equal(plain.State.Enemies.Select(e => e.Hp), wisp.State.Enemies.Select(e => e.Hp));
     }
 
+    private static int CoreCount(CombatState state) =>
+        state.Relics.Single(relic => relic.DefId == RelicEffects.PollinousCore).Counter;
+
     /// <summary>
     /// `PollinousCore`: two extra cards on every FOURTH turn's draw, and nothing on the
-    /// three between.
+    /// three between. Turn one is a turn like the rest: the fight's own start has already counted it.
     /// </summary>
     [Fact]
     public void PollinousCoreDrawsTwoMoreEveryFourthTurn()
     {
         var fight = Fight.WithRelics(RelicEffects.PollinousCore);
-        var extra = new List<int>();
+        Assert.Equal(1, CoreCount(fight.State));
+        var extra = new List<int> { RelicEffects.HandDrawBonus(fight.State, 1) };
 
-        for (int turn = 0; turn < 4; turn++)
+        for (int turn = 2; turn <= 8; turn++)
         {
             RelicEffects.TickPollinousCore(fight.State);
-            extra.Add(RelicEffects.ExtraHandDraw(fight.State));
+            extra.Add(RelicEffects.HandDrawBonus(fight.State, turn));
+            RelicEffects.AfterModifyingHandDraw(fight.State);
         }
 
-        Assert.Equal(new List<int> { 0, 0, 0, 2 }, extra);
+        Assert.Equal(new List<int> { 0, 0, 0, 2, 0, 0, 0, 2 }, extra);
     }
 
-    /// <summary>And the clock restarts rather than sticking on.</summary>
+    /// <summary>And the clock restarts at zero the moment it pays, rather than waiting at four for the next tick.</summary>
     [Fact]
     public void TheCoreResetsAfterItPays()
     {
         var fight = Fight.WithRelics(RelicEffects.PollinousCore);
-        for (int turn = 0; turn < 4; turn++)
+        for (int turn = 2; turn <= 4; turn++)
         {
             RelicEffects.TickPollinousCore(fight.State);
         }
 
-        Assert.Equal(2, RelicEffects.ExtraHandDraw(fight.State));
+        Assert.Equal(4, CoreCount(fight.State));
+        Assert.Equal(2, RelicEffects.HandDrawBonus(fight.State, 4));
+
+        RelicEffects.AfterModifyingHandDraw(fight.State);
+        Assert.Equal(0, CoreCount(fight.State));
+        Assert.Equal(0, RelicEffects.HandDrawBonus(fight.State, 4));
 
         RelicEffects.TickPollinousCore(fight.State);
-        Assert.Equal(0, RelicEffects.ExtraHandDraw(fight.State));
+        Assert.Equal(1, CoreCount(fight.State));
     }
 }
 

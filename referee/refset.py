@@ -273,7 +273,7 @@ COUNTER_MAP: dict[str, tuple[str, object]] = {
     "PEN_NIB": ("AttacksPlayed", _same), "JOSS_PAPER": ("CardsExhausted", _same), "NUNCHAKU": ("AttacksPlayed", _same),
     "TUNING_FORK": ("SkillsPlayed", _same), "HAPPY_FLOWER": ("TurnsSeen", _same), "FAKE_HAPPY_FLOWER": ("TurnsSeen", _same),
     "PENDULUM": ("TurnsSeen", _same),
-    # The game zeroes TurnsSeen as the bonus draw lands; the emulator holds 4 until the next tick restarts it at 1: from 0 both tick to 1.
+    # The game zeroes TurnsSeen as the bonus draw lands (AfterModifyingHandDraw), and the emulator does too (it held 4 until the next tick before 2026-11-04).
     "POLLINOUS_CORE": ("TurnsSeen", _same),
     "IRON_CLUB": ("CardsPlayed", _same), "BOOK_OF_FIVE_RINGS": ("CardsAdded", _same), "FISHING_ROD": ("CombatsSeen", _same),
     "LASTING_CANDY": ("CombatsSeen", _same), "TOY_BOX": ("CombatsSeen", _same), "PUMPKIN_CANDLE": ("KindleCount", _same),

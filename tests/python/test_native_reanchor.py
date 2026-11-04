@@ -99,6 +99,25 @@ class NativeReanchorTests(unittest.TestCase):
         self.assertTrue(message.startswith("no emulator id for"), message)
         self.assertEqual(self.piles(s), before)
 
+    def test_a_decimillipede_record_naming_the_games_segments_is_put_on_the_fight(self):
+        """The game names the elite's three segments by subclass (DECIMILLIPEDE_SEGMENT_FRONT, _MIDDLE, _BACK) and the
+        emulator keeps one enemy under the base class: the anchor tables carry the live layer's subclass names, so a record
+        naming them finds its enemies (it was refused with "no emulator id", 23 of 42 re-anchor failures on 2026-11-03).
+        The game's roster is front, middle, back, and so is the emulator's."""
+        s = engine.RunSession("FTD5K97LDS", 10, engine.CombatBudget(1, 1))
+        self.addCleanup(s.close)
+        deck = [472] * 5 + [131] * 4 + [30, 10001]
+        self.assertEqual(native.run_start_combat(s.handle, deck, 69, [36], 80, 80, [0, 0, 0], 99, 0, s.env._run_obs_buf), 0)
+        before = self.piles(s)
+        self.assertEqual(len(before["enemies"]), 3)
+        rec = self.record(s, before)
+        for enemy, name in zip(rec["enemies"], ("FRONT", "MIDDLE", "BACK"), strict=True):
+            self.assertEqual(enemy["name"], "DECIMILLIPEDE_SEGMENT")
+            enemy["name"] = f"DECIMILLIPEDE_SEGMENT_{name}"
+        status, message = native.run_reanchor_fight(s.handle, rec, s.env._run_obs_buf)
+        self.assertGreaterEqual(status, 0, message)
+        self.assertEqual(self.piles(s)["enemies"], before["enemies"])
+
     def test_no_fight_and_no_json_have_their_own_codes(self):
         s = self.in_fight()
         buf = s.env._run_obs_buf

@@ -627,23 +627,34 @@ public static class CardEffects
 
             case IC.Stoke: // 1-cost, exhaust hand and add random cards
             {
-                int count = state.Hand.Count;
-                foreach (var handCard in state.Hand.ToArray())
+                // A snapshot of the hand, exhausted one `CardCmd.Exhaust` at a time, each card
+                // leaving the hand as it goes: a card a hook puts INTO the hand meanwhile (Dark
+                // Embrace's draw, Burning Sticks' copy) is not in the snapshot and stays there.
+                // Clearing the hand afterwards deleted those from the combat altogether.
+                var snapshot = state.Hand.ToArray();
+                int count = snapshot.Length;
+                foreach (var handCard in snapshot)
                 {
+                    state.Hand.Remove(handCard);
                     ExhaustCard(state, handCard, rng: rng);
                 }
 
-                state.Hand.Clear();
+                // `GetForCombat(..., exhaustCount, ...)` rolls all the cards at once, hand space or no
+                // hand space, and `AddGeneratedCardsToCombat` then files each into the hand, or the
+                // discard pile once the hand is full.
+                var pool = OwnerCharacterGenerationPool(state);
+                var generated = new List<int>(count);
                 for (int i = 0; i < count; i++)
                 {
-                    if (state.Hand.Count < MaxCardsInHand)
-                    {
-                        // `Stoke`: GetForCombat over `Owner.Character.CardPool`.
-                        var pool = OwnerCharacterGenerationPool(state);
-                        int defId = pool[CardGenerationRng(state, rng).Next(pool.Count)];
-                        state.Hand.Add(new CardInstance(defId, upgraded) { Uid = state.NewCardUid() });
-                    }
+                    // `Stoke`: GetForCombat over `Owner.Character.CardPool`.
+                    generated.Add(pool[CardGenerationRng(state, rng).Next(pool.Count)]);
                 }
+
+                foreach (int defId in generated)
+                {
+                    AddToHandOrDiscard(state, new CardInstance(defId, upgraded) { Uid = state.NewCardUid() });
+                }
+
                 break;
             }
 
@@ -9006,11 +9017,13 @@ public static class CardEffects
                 Forge(state, 5);
                 break;
             case "BrightestFlame":
-                // 0-cost: EnergyVar(2) upgrading to 3, CardsVar(2) which does NOT upgrade,
-                // and `LoseMaxHp(1)` -- the price the card is built around, and it was
-                // missing entirely. Its draw was also being upgraded, which only Fuel's is.
+                // 0-cost: EnergyVar(2) and CardsVar(2), and `OnUpgrade` raises BOTH by one (three
+                // energy, three cards), then `LoseMaxHp(1)` -- the price the card is built around.
+                // The draw was left at two on the strength of a remark that it does not upgrade;
+                // the game's `OnUpgrade` upgrades `Cards` beside `Energy` (19 hand records of
+                // 2026-11-04, each the turn after an upgraded Brightest Flame, game one card up).
                 GainEnergy(state, upgraded ? 3 : 2);
-                DrawCards(state, 2, rng);
+                DrawCards(state, upgraded ? 3 : 2, rng);
                 LoseMaxHp(state, 1);
                 break;
 

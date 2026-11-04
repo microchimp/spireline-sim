@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Sts2Emulator.Core;
 using Sts2Emulator.Core.Effects;
+using Sts2Emulator.Core.Run;
 using Xunit;
 using static Sts2Emulator.Tests.TestDeck;
 
@@ -237,6 +238,112 @@ public class TurnOneStartTests
 
         Assert.Equal(7, state.Hand.Count);
         Assert.Equal([IC.Anger, IC.Anger], state.Hand.Take(2).Select(c => c.DefId));
+    }
+
+    private static int CoreCount(CombatState state) =>
+        state.Relics.Single(relic => relic.DefId == RelicEffects.PollinousCore).Counter;
+
+    /// <summary>
+    /// `PollinousCore.BeforeSideTurnStart` counts every player-side turn start, turn one included,
+    /// and `ModifyHandDraw` pays two on the turn the count reaches four, whichever turn that is. A
+    /// core at three going into a fight pays on its first turn and starts again from zero (replay of
+    /// 2026-11-04 seed R6J25H4ECA, Chompers on floor 22: the game 7 cards, the copy 5).
+    /// </summary>
+    [Fact]
+    public void PollinousCorePaysOnTurnOne()
+    {
+        var state = new CombatState { NicheHpRng = new CountingRandom(0) };
+        CardInstance[] deck = [.. Enumerable.Repeat(new CardInstance(StarterDeckIds[0], false), 12)];
+
+        CombatFactory.Reset(
+            state,
+            new Random(0),
+            deck,
+            1,
+            [RelicEffects.PollinousCore],
+            80,
+            80,
+            [],
+            0,
+            runRelics: [new RelicInstance(RelicEffects.PollinousCore, 3)]
+        );
+
+        Assert.Equal(7, state.Hand.Count);
+        Assert.Equal(0, CoreCount(state));
+    }
+
+    /// <summary>
+    /// And turn one counts when it does not pay: the count is one after the reset, the next three
+    /// turns draw five, five and seven (the fourth turn pays), and the cycle starts again.
+    /// </summary>
+    [Fact]
+    public void PollinousCoreCountsTurnOne()
+    {
+        var fight = Fight.WithRelics(RelicEffects.PollinousCore).PlayerHp(999, 999);
+
+        Assert.Equal(1, CoreCount(fight.State));
+        Assert.Equal(5, fight.State.Hand.Count);
+
+        var hands = new List<int>();
+        var counts = new List<int>();
+        for (int turn = 2; turn <= 5; turn++)
+        {
+            fight.EndTurn();
+            hands.Add(fight.State.Hand.Count);
+            counts.Add(CoreCount(fight.State));
+        }
+
+        Assert.Equal(new List<int> { 5, 5, 7, 5 }, hands);
+        Assert.Equal(new List<int> { 2, 3, 0, 1 }, counts);
+    }
+
+    /// <summary>
+    /// The count is the relic's saved turn count and no fight resets it: a core that has seen three
+    /// turns of one fight pays on the first turn of the next (replay A as a unit test).
+    /// </summary>
+    [Fact]
+    public void PollinousCoresCountCarriesFromOneFightToTheNext()
+    {
+        var engine = new RunEngine();
+        engine.Reset("NXV45HW43K");
+        engine.State.PlayerHp = 999;
+        engine.State.PlayerMaxHp = 999;
+        RunNonCombatEffects.ApplyRelicPickup(engine.State, RelicEffects.PollinousCore);
+
+        var first = EnterNextHallwayFight(engine);
+        Assert.Equal(5, first.Hand.Count);
+        Assert.Equal(1, CoreCount(first));
+        for (int turn = 2; turn <= 3; turn++)
+        {
+            engine.Step(first.Hand.Count, -1, out _, out _, out _);
+            first = engine.State.ActiveCombat!;
+            Assert.Equal(5, first.Hand.Count);
+        }
+
+        Assert.Equal(3, CoreCount(first));
+        Assert.Equal(0, engine.DebugResolveCombat());
+
+        var second = EnterNextHallwayFight(engine);
+        Assert.Equal(7, second.Hand.Count);
+        Assert.Equal(0, CoreCount(second));
+    }
+
+    private static CombatState EnterNextHallwayFight(RunEngine engine)
+    {
+        for (int i = 0; i < 40 && engine.State.Phase != RunPhase.Map; i++)
+        {
+            engine.Step(0, -1, out _, out _, out _);
+        }
+
+        Assert.Equal(RunPhase.Map, engine.State.Phase);
+        int action = Array.FindIndex(
+            engine.State.MapNodeTypes,
+            nodeType => nodeType == RunConstants.NodeNormal
+        );
+        Assert.True(action >= 0);
+        Assert.Equal(0, engine.Step(action, -1, out _, out _, out _));
+        Assert.Equal(RunPhase.Combat, engine.State.Phase);
+        return engine.State.ActiveCombat!;
     }
 
     /// <summary>

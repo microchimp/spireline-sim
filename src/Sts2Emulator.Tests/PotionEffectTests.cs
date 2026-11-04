@@ -1038,6 +1038,32 @@ public class PotionEffectTests
         Assert.Empty(state.DrawPile);
     }
 
+    /// <summary>
+    /// Each card leaves the hand as it is exhausted, so Dark Embrace's draw for it is not in the
+    /// snapshot and stays: the three draws open the hand and the potion's ten fill it up to the cap.
+    /// The hand was cleared after the loop, which deleted the draws from the fight.
+    /// </summary>
+    [Fact]
+    public void GlowwaterPotion_KeepsWhatDarkEmbraceDrewWhileItExhausted()
+    {
+        var state = CombatFactory.NewCombat(seed: 0);
+        BuffSystem.Apply(state.PlayerBuffs, BuffId.DarkEmbrace, 1);
+        state.Hand = TestDeck.Pile(IC.StrikeIronclad, IC.StrikeIronclad, IC.DefendIronclad);
+        state.DrawPile = TestDeck.Pile(
+            IC.Anger, IC.Anger, IC.Anger,
+            IC.StrikeIronclad, IC.StrikeIronclad, IC.StrikeIronclad, IC.StrikeIronclad,
+            IC.DefendIronclad, IC.DefendIronclad, IC.DefendIronclad, IC.DefendIronclad,
+            IC.Bash, IC.Bash, IC.Bash
+        );
+
+        PotionEffects.Apply(33, state, new Random(0));
+
+        Assert.Equal(10, state.Hand.Count);
+        Assert.Equal(3, state.ExhaustPile.Count);
+        Assert.Equal([IC.Anger, IC.Anger, IC.Anger], state.Hand.Take(3).Select(c => c.DefId));
+        Assert.Equal(4, state.DrawPile.Count);
+    }
+
     // ── 34: Heart of Iron ───────────────────────────────────────────────────────────
 
     [Fact]

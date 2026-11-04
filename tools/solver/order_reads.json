@@ -1,13 +1,13 @@
 {
  "about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
- "sources_sha256": "477eb0ba7fef1c96d3f7893a880583d6ea0623ef37355f99b98c65309cfb4679",
+ "sources_sha256": "e6283fa98c47beeb068d786f8d2ba76d9de4bd4fe81f974163243fa78de9f088",
  "scope": {
   "src/Sts2Emulator/Core/CardUid.cs": 4,
   "src/Sts2Emulator/Core/CombatEngine.cs": 164,
   "src/Sts2Emulator/Core/CombatFactory.cs": 11,
   "src/Sts2Emulator/Core/CombatObservation.cs": 6,
   "src/Sts2Emulator/Core/CombatState.cs": 15,
-  "src/Sts2Emulator/Core/Effects/CardEffects.cs": 307,
+  "src/Sts2Emulator/Core/Effects/CardEffects.cs": 304,
   "src/Sts2Emulator/Core/Effects/PotionEffects.cs": 14,
   "src/Sts2Emulator/Core/Effects/RelicEffects.cs": 29,
   "src/Sts2Emulator/Core/EnemyAI.cs": 6,
@@ -59,7 +59,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 11834,
+   "line": 11847,
    "holders": [
     "card:BladeDance",
     "card:CloakAndDagger",
@@ -78,7 +78,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 10752,
+   "line": 10765,
    "holders": [
     "engine"
    ],
@@ -90,7 +90,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 4858,
+   "line": 4869,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -560,7 +560,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "for PlayerBuffs",
-   "line": 6167,
+   "line": 6178,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -583,7 +583,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 11439,
+   "line": 11452,
    "holders": [
     "buff:NoxiousFumes",
     "card:Acrobatics",
@@ -1085,7 +1085,7 @@
    "pile": "ExhaustPile",
    "kind": "fixed",
    "read": "ExhaustPile.IndexOf",
-   "line": 1760,
+   "line": 1771,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -2025,7 +2025,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[index]",
-   "line": 984,
+   "line": 995,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -2965,7 +2965,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 756,
+   "line": 767,
    "holders": [
     "card:Armaments"
    ],
@@ -2977,7 +2977,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 1698,
+   "line": 1709,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -3447,7 +3447,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 2082,
+   "line": 2093,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -3917,7 +3917,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 1914,
+   "line": 1925,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -4387,7 +4387,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 1758,
+   "line": 1769,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -4857,7 +4857,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 631,
+   "line": 636,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -5327,7 +5327,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 917,
+   "line": 928,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -5797,7 +5797,7 @@
    "pile": "Hand",
    "kind": "flow",
    "read": "AddRange(Hand)",
-   "line": 7215,
+   "line": 7226,
    "holders": [
     "card:Reboot"
    ],
@@ -5809,7 +5809,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand.LastIndexOf",
-   "line": 7234,
+   "line": 7245,
    "holders": [
     "engine"
    ],
@@ -5821,7 +5821,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[at]",
-   "line": 7237,
+   "line": 7248,
    "holders": [
     "engine"
    ],
@@ -5833,7 +5833,7 @@
    "pile": "Orbs",
    "kind": "walk",
    "read": "for Orbs",
-   "line": 6863,
+   "line": 6874,
    "holders": [
     "card:Darkness"
    ],
@@ -5845,7 +5845,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6879,
+   "line": 6890,
    "holders": [
     "card:Chill"
    ],
@@ -5857,7 +5857,7 @@
    "pile": "Orbs",
    "kind": "walk",
    "read": "foreach Orbs",
-   "line": 6658,
+   "line": 6669,
    "holders": [
     "engine"
    ],
@@ -5869,7 +5869,7 @@
    "pile": "DrawPile",
    "kind": "range",
    "read": "Range(DrawPile)",
-   "line": 9703,
+   "line": 9716,
    "holders": [
     "card:Wish"
    ],
@@ -5881,7 +5881,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 8959,
+   "line": 8970,
    "holders": [
     "engine"
    ],
@@ -5893,7 +5893,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 8939,
+   "line": 8950,
    "holders": [
     "engine"
    ],
@@ -5905,7 +5905,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 8980,
+   "line": 8991,
    "holders": [
     "engine"
    ],
@@ -5917,7 +5917,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 9127,
+   "line": 9140,
    "holders": [
     "card:BulletTime",
     "card:Enlightenment"
@@ -5930,7 +5930,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 9634,
+   "line": 9647,
    "holders": [
     "engine"
    ],
@@ -5942,7 +5942,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 9634,
+   "line": 9647,
    "holders": [
     "engine"
    ],
@@ -5954,7 +5954,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 9634,
+   "line": 9647,
    "holders": [
     "engine"
    ],
@@ -5966,7 +5966,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 9634,
+   "line": 9647,
    "holders": [
     "engine"
    ],
@@ -5978,7 +5978,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 8782,
+   "line": 8793,
    "holders": [
     "engine"
    ],
@@ -5990,7 +5990,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 7361,
+   "line": 7372,
    "holders": [
     "engine"
    ],
@@ -6002,7 +6002,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 7891,
+   "line": 7902,
    "holders": [
     "engine"
    ],
@@ -6014,7 +6014,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 7526,
+   "line": 7537,
    "holders": [
     "engine"
    ],
@@ -6026,7 +6026,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 7866,
+   "line": 7877,
    "holders": [
     "engine"
    ],
@@ -6038,7 +6038,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 7912,
+   "line": 7923,
    "holders": [
     "engine"
    ],
@@ -6050,7 +6050,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 8160,
+   "line": 8171,
    "holders": [
     "engine"
    ],
@@ -6062,7 +6062,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 8367,
+   "line": 8378,
    "holders": [
     "engine"
    ],
@@ -6074,7 +6074,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 8432,
+   "line": 8443,
    "holders": [
     "engine"
    ],
@@ -6086,7 +6086,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 11397,
+   "line": 11410,
    "holders": [
     "card:CrushUnder",
     "card:DyingStar",
@@ -6100,7 +6100,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[i]",
-   "line": 4774,
+   "line": 4785,
    "holders": [
     "engine"
    ],
@@ -6112,7 +6112,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[i]",
-   "line": 4781,
+   "line": 4792,
    "holders": [
     "engine"
    ],
@@ -6124,7 +6124,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 10303,
+   "line": 10316,
    "holders": [
     "card:Uproar"
    ],
@@ -6136,7 +6136,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 10307,
+   "line": 10320,
    "holders": [
     "card:Uproar"
    ],
@@ -6148,7 +6148,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[j]",
-   "line": 4731,
+   "line": 4742,
    "holders": [
     "engine"
    ],
@@ -6160,7 +6160,7 @@
    "pile": "DrawPile",
    "kind": "range",
    "read": "Range(DrawPile)",
-   "line": 4728,
+   "line": 4739,
    "holders": [
     "engine"
    ],
@@ -6172,7 +6172,7 @@
    "pile": "DrawPile",
    "kind": "stop",
    "read": "for DrawPile",
-   "line": 4726,
+   "line": 4737,
    "holders": [
     "engine"
    ],
@@ -6184,7 +6184,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 11538,
+   "line": 11551,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -6436,7 +6436,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 11538,
+   "line": 11551,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -6688,7 +6688,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 11538,
+   "line": 11551,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -6940,7 +6940,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 11538,
+   "line": 11551,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -7192,7 +7192,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 10805,
+   "line": 10818,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -7509,7 +7509,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 10805,
+   "line": 10818,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -7826,7 +7826,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 10805,
+   "line": 10818,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -8143,7 +8143,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 10805,
+   "line": 10818,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -8460,7 +8460,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 11977,
+   "line": 11990,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -8930,7 +8930,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "for PlayerBuffs",
-   "line": 3714,
+   "line": 3725,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -9234,7 +9234,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 10350,
+   "line": 10363,
    "holders": [
     "card:Squeeze"
    ],
@@ -9246,7 +9246,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 10350,
+   "line": 10363,
    "holders": [
     "card:Squeeze"
    ],
@@ -9258,7 +9258,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 10350,
+   "line": 10363,
    "holders": [
     "card:Squeeze"
    ],
@@ -9270,7 +9270,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 10350,
+   "line": 10363,
    "holders": [
     "card:Squeeze"
    ],
@@ -9282,7 +9282,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 11388,
+   "line": 11401,
    "holders": [
     "engine"
    ],
@@ -9294,7 +9294,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 12243,
+   "line": 12256,
    "holders": [
     "card:PerfectedStrike",
     "card:Thrash"
@@ -9307,7 +9307,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 12243,
+   "line": 12256,
    "holders": [
     "card:PerfectedStrike",
     "card:Thrash"
@@ -9320,7 +9320,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 12243,
+   "line": 12256,
    "holders": [
     "card:PerfectedStrike",
     "card:Thrash"
@@ -9333,7 +9333,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 12243,
+   "line": 12256,
    "holders": [
     "card:PerfectedStrike",
     "card:Thrash"
@@ -9346,7 +9346,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 3691,
+   "line": 3702,
    "holders": [
     "engine"
    ],
@@ -9358,7 +9358,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 10428,
+   "line": 10441,
    "holders": [
     "engine"
    ],
@@ -9370,7 +9370,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 4398,
+   "line": 4409,
    "holders": [
     "card:BansheesCry",
     "card:BoneShards",
@@ -9396,7 +9396,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 11882,
+   "line": 11895,
    "holders": [
     "engine"
    ],
@@ -9408,7 +9408,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 4495,
+   "line": 4506,
    "holders": [
     "card:AstralPulse",
     "card:Conflagration",
@@ -9424,7 +9424,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 11727,
+   "line": 11740,
    "holders": [
     "buff:Hailstorm",
     "buff:LightningRod",
@@ -9489,7 +9489,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand[0]",
-   "line": 11748,
+   "line": 11761,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -9508,7 +9508,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 11746,
+   "line": 11759,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -9527,7 +9527,7 @@
    "pile": "DiscardPile",
    "kind": "fixed",
    "read": "DiscardPile.LastIndexOf",
-   "line": 11812,
+   "line": 11825,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -9547,7 +9547,7 @@
    "pile": "Hand",
    "kind": "screen",
    "read": "Range(Hand)",
-   "line": 5109,
+   "line": 5120,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -9864,7 +9864,7 @@
    "pile": "DrawPile",
    "kind": "screen",
    "read": "Range(DrawPile)",
-   "line": 3049,
+   "line": 3060,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -10181,7 +10181,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand[0]",
-   "line": 12105,
+   "line": 12118,
    "holders": [
     "engine"
    ],
@@ -10193,7 +10193,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 12106,
+   "line": 12119,
    "holders": [
     "engine"
    ],
@@ -10205,7 +10205,7 @@
    "pile": "Orbs",
    "kind": "fixed",
    "read": "Orbs[^1]",
-   "line": 6404,
+   "line": 6415,
    "holders": [
     "engine"
    ],
@@ -10217,7 +10217,7 @@
    "pile": "Orbs",
    "kind": "fixed",
    "read": "Orbs[0]",
-   "line": 6389,
+   "line": 6400,
    "holders": [
     "buff:LightningRod",
     "card:Acrobatics",
@@ -10272,7 +10272,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand[0]",
-   "line": 12116,
+   "line": 12129,
    "holders": [
     "engine"
    ],
@@ -10284,7 +10284,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 12114,
+   "line": 12127,
    "holders": [
     "engine"
    ],
@@ -10296,7 +10296,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[index]",
-   "line": 9991,
+   "line": 10004,
    "holders": [
     "card:Cinder",
     "card:Scavenge"
@@ -10309,7 +10309,7 @@
    "pile": "DiscardPile",
    "kind": "fixed",
    "read": "DiscardPile.IndexOf",
-   "line": 4824,
+   "line": 4835,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10329,7 +10329,7 @@
    "pile": "DrawPile",
    "kind": "fixed",
    "read": "DrawPile.IndexOf",
-   "line": 4824,
+   "line": 4835,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10349,7 +10349,7 @@
    "pile": "ExhaustPile",
    "kind": "fixed",
    "read": "ExhaustPile.IndexOf",
-   "line": 4824,
+   "line": 4835,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10369,7 +10369,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand.IndexOf",
-   "line": 4824,
+   "line": 4835,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10389,7 +10389,7 @@
    "pile": "DiscardPile",
    "kind": "stop",
    "read": "foreach DiscardPile",
-   "line": 4822,
+   "line": 4833,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10409,7 +10409,7 @@
    "pile": "DrawPile",
    "kind": "stop",
    "read": "foreach DrawPile",
-   "line": 4822,
+   "line": 4833,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10429,7 +10429,7 @@
    "pile": "ExhaustPile",
    "kind": "stop",
    "read": "foreach ExhaustPile",
-   "line": 4822,
+   "line": 4833,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10449,7 +10449,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "foreach Hand",
-   "line": 4822,
+   "line": 4833,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -10469,7 +10469,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FirstOrDefault",
-   "line": 9980,
+   "line": 9993,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -10939,7 +10939,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[idx]",
-   "line": 9975,
+   "line": 9988,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -11409,7 +11409,7 @@
    "pile": "Enemies",
    "kind": "index",
    "read": "Enemies[idx]",
-   "line": 9977,
+   "line": 9990,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -11879,7 +11879,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[last]",
-   "line": 2999,
+   "line": 3010,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -11902,7 +11902,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[last]",
-   "line": 3001,
+   "line": 3012,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -11925,7 +11925,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[last]",
-   "line": 3001,
+   "line": 3012,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -11948,7 +11948,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[last]",
-   "line": 3003,
+   "line": 3014,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -11971,7 +11971,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[last]",
-   "line": 2999,
+   "line": 3010,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -11994,7 +11994,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[last]",
-   "line": 3001,
+   "line": 3012,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12017,7 +12017,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[last]",
-   "line": 3001,
+   "line": 3012,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12040,7 +12040,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[last]",
-   "line": 3003,
+   "line": 3014,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12063,7 +12063,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 3013,
+   "line": 3024,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12086,7 +12086,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3013,
+   "line": 3024,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12109,7 +12109,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 3013,
+   "line": 3024,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12132,7 +12132,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3013,
+   "line": 3024,
    "holders": [
     "buff:Furnace",
     "card:BigBang",
@@ -12155,7 +12155,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 6141,
+   "line": 6152,
    "holders": [
     "buff:Genesis",
     "buff:StarNextTurn",
@@ -12189,7 +12189,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 3065,
+   "line": 3076,
    "holders": [
     "card:SwordSage",
     "engine"
@@ -12202,7 +12202,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3065,
+   "line": 3076,
    "holders": [
     "card:SwordSage",
     "engine"
@@ -12215,7 +12215,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 3065,
+   "line": 3076,
    "holders": [
     "card:SwordSage",
     "engine"
@@ -12228,7 +12228,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3065,
+   "line": 3076,
    "holders": [
     "card:SwordSage",
     "engine"
@@ -12241,7 +12241,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 4918,
+   "line": 4929,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -12711,7 +12711,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 4921,
+   "line": 4932,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -13181,7 +13181,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 4926,
+   "line": 4937,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -13651,7 +13651,7 @@
    "pile": "DrawPile",
    "kind": "roll",
    "read": "DrawPile[index]",
-   "line": 4940,
+   "line": 4951,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -14121,7 +14121,7 @@
    "pile": "DrawPile",
    "kind": "roll",
    "read": "DrawPile[index]",
-   "line": 4940,
+   "line": 4951,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -14591,7 +14591,7 @@
    "pile": "DrawPile",
    "kind": "roll",
    "read": "DrawPile[index]",
-   "line": 4942,
+   "line": 4953,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -15061,7 +15061,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 3212,
+   "line": 3223,
    "holders": [
     "card:Maul"
    ],
@@ -15073,7 +15073,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3212,
+   "line": 3223,
    "holders": [
     "card:Maul"
    ],
@@ -15085,7 +15085,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 3212,
+   "line": 3223,
    "holders": [
     "card:Maul"
    ],
@@ -15097,7 +15097,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3212,
+   "line": 3223,
    "holders": [
     "card:Maul"
    ],
@@ -15109,7 +15109,7 @@
    "pile": "Hand",
    "kind": "screen",
    "read": "Range(Hand)",
-   "line": 3535,
+   "line": 3546,
    "holders": [
     "engine"
    ],
@@ -15121,7 +15121,7 @@
    "pile": "PlayerBuffs",
    "kind": "fixed",
    "read": "PlayerBuffs.FindIndex",
-   "line": 3764,
+   "line": 3775,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -15425,7 +15425,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3765,
+   "line": 3776,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -15729,7 +15729,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3772,
+   "line": 3783,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -16033,7 +16033,7 @@
    "pile": "PlayerBuffs",
    "kind": "index",
    "read": "PlayerBuffs[at]",
-   "line": 3779,
+   "line": 3790,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -16337,7 +16337,7 @@
    "pile": "Enemies",
    "kind": "stop",
    "read": "foreach Enemies",
-   "line": 3766,
+   "line": 3777,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -16641,7 +16641,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 10866,
+   "line": 10879,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -16958,7 +16958,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 12129,
+   "line": 12142,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -17428,7 +17428,7 @@
    "pile": "DiscardPile",
    "kind": "fixed",
    "read": "DiscardPile[0]",
-   "line": 10180,
+   "line": 10193,
    "holders": [
     "card:Dredge",
     "card:Hologram",
@@ -17442,7 +17442,7 @@
    "pile": "DiscardPile",
    "kind": "stop",
    "read": "for DiscardPile",
-   "line": 10178,
+   "line": 10191,
    "holders": [
     "card:Dredge",
     "card:Hologram",
@@ -17456,7 +17456,7 @@
    "pile": "DiscardPile",
    "kind": "index",
    "read": "DiscardPile[index]",
-   "line": 11688,
+   "line": 11701,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -17773,7 +17773,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 11664,
+   "line": 11677,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -18090,7 +18090,7 @@
    "pile": "DrawPile",
    "kind": "fixed",
    "read": "DrawPile.FindIndex",
-   "line": 12185,
+   "line": 12198,
    "holders": [
     "engine"
    ],
@@ -18102,7 +18102,7 @@
    "pile": "Hand",
    "kind": "fixed",
    "read": "Hand[0]",
-   "line": 12204,
+   "line": 12217,
    "holders": [
     "engine"
    ],
@@ -18114,7 +18114,7 @@
    "pile": "DiscardPile",
    "kind": "stop",
    "read": "for DiscardPile",
-   "line": 10188,
+   "line": 10201,
    "holders": [
     "card:AllForOne"
    ],
@@ -18126,7 +18126,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 10188,
+   "line": 10201,
    "holders": [
     "card:AllForOne"
    ],
@@ -18138,7 +18138,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[i]",
-   "line": 3492,
+   "line": 3503,
    "holders": [
     "engine"
    ],
@@ -18150,7 +18150,7 @@
    "pile": "DrawPile",
    "kind": "range",
    "read": "Range(DrawPile)",
-   "line": 4894,
+   "line": 4905,
    "holders": [
     "engine"
    ],
@@ -18162,7 +18162,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 12078,
+   "line": 12091,
    "holders": [
     "card:DualWield"
    ],
@@ -18174,7 +18174,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3580,
+   "line": 3591,
    "holders": [
     "card:PhotonCut",
     "engine"
@@ -18187,7 +18187,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 3665,
+   "line": 3676,
    "holders": [
     "engine"
    ],
@@ -18199,7 +18199,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 3613,
+   "line": 3624,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18223,7 +18223,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3613,
+   "line": 3624,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18247,7 +18247,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3613,
+   "line": 3624,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18271,7 +18271,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 3611,
+   "line": 3622,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18295,7 +18295,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 3611,
+   "line": 3622,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18319,7 +18319,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 3611,
+   "line": 3622,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -18343,7 +18343,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 3598,
+   "line": 3609,
    "holders": [
     "card:SummonForth"
    ],
@@ -18355,7 +18355,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3598,
+   "line": 3609,
    "holders": [
     "card:SummonForth"
    ],
@@ -18367,7 +18367,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 3598,
+   "line": 3609,
    "holders": [
     "card:SummonForth"
    ],
@@ -18379,7 +18379,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 3596,
+   "line": 3607,
    "holders": [
     "card:SummonForth"
    ],
@@ -18391,7 +18391,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 3596,
+   "line": 3607,
    "holders": [
     "card:SummonForth"
    ],
@@ -18403,7 +18403,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 3596,
+   "line": 3607,
    "holders": [
     "card:SummonForth"
    ],
@@ -18415,7 +18415,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies[0]",
-   "line": 5264,
+   "line": 5275,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -18885,7 +18885,7 @@
    "pile": "Enemies",
    "kind": "roll",
    "read": "Enemies[targetRng.Next(living.Count)]",
-   "line": 5264,
+   "line": 5275,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -19355,7 +19355,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 3309,
+   "line": 3320,
    "holders": [
     "potion:SneckoOil"
    ],
@@ -19367,7 +19367,7 @@
    "pile": "PlayerBuffs",
    "kind": "walk",
    "read": "for PlayerBuffs",
-   "line": 3790,
+   "line": 3801,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -19684,7 +19684,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 10846,
+   "line": 10859,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19707,7 +19707,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 10846,
+   "line": 10859,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19730,7 +19730,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "for ExhaustPile",
-   "line": 10846,
+   "line": 10859,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19753,7 +19753,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 10844,
+   "line": 10857,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19776,7 +19776,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 10844,
+   "line": 10857,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19799,7 +19799,7 @@
    "pile": "ExhaustPile",
    "kind": "walk",
    "read": "foreach ExhaustPile",
-   "line": 10844,
+   "line": 10857,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19822,7 +19822,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 10821,
+   "line": 10834,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -19845,7 +19845,7 @@
    "pile": "DrawPile",
    "kind": "roll",
    "read": "Shuffle(DrawPile)",
-   "line": 3951,
+   "line": 3962,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -20149,7 +20149,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "for DrawPile",
-   "line": 3960,
+   "line": 3971,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -20453,7 +20453,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "foreach DiscardPile",
-   "line": 3929,
+   "line": 3940,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -20757,7 +20757,7 @@
    "pile": "DrawPile",
    "kind": "walk",
    "read": "foreach DrawPile",
-   "line": 3936,
+   "line": 3947,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -21061,7 +21061,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[handIndex]",
-   "line": 2603,
+   "line": 2614,
    "holders": [
     "engine"
    ],
@@ -21073,7 +21073,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[handIndex]",
-   "line": 2611,
+   "line": 2622,
    "holders": [
     "engine"
    ],
@@ -21085,7 +21085,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[idx]",
-   "line": 2630,
+   "line": 2641,
    "holders": [
     "card:Seance",
     "card:Transfigure"
@@ -21098,7 +21098,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 10206,
+   "line": 10219,
    "holders": [
     "card:Compact"
    ],
@@ -21110,7 +21110,7 @@
    "pile": "Orbs",
    "kind": "walk",
    "read": "for Orbs",
-   "line": 6515,
+   "line": 6526,
    "holders": [
     "engine"
    ],
@@ -21122,7 +21122,7 @@
    "pile": "Orbs",
    "kind": "walk",
    "read": "for Orbs",
-   "line": 6490,
+   "line": 6501,
    "holders": [
     "engine"
    ],
@@ -21134,7 +21134,7 @@
    "pile": "Orbs",
    "kind": "walk",
    "read": "for Orbs",
-   "line": 6507,
+   "line": 6518,
    "holders": [
     "engine"
    ],
@@ -21146,7 +21146,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 10915,
+   "line": 10928,
    "holders": [
     "card:Acrobatics",
     "card:AdaptiveStrike",
@@ -21285,7 +21285,7 @@
    "pile": "Orbs",
    "kind": "index",
    "read": "Orbs[index]",
-   "line": 6447,
+   "line": 6458,
    "holders": [
     "card:Darkness",
     "engine"
@@ -21298,7 +21298,7 @@
    "pile": "Orbs",
    "kind": "index",
    "read": "Orbs[index]",
-   "line": 6457,
+   "line": 6468,
    "holders": [
     "card:Darkness",
     "engine"
@@ -21311,7 +21311,7 @@
    "pile": "Orbs",
    "kind": "index",
    "read": "Orbs[index]",
-   "line": 6476,
+   "line": 6487,
    "holders": [
     "card:Darkness",
     "engine"
@@ -21324,7 +21324,7 @@
    "pile": "DiscardPile",
    "kind": "walk",
    "read": "for DiscardPile",
-   "line": 10771,
+   "line": 10784,
    "holders": [
     "card:DrainPower"
    ],
@@ -21336,7 +21336,7 @@
    "pile": "Hand",
    "kind": "stop",
    "read": "for Hand",
-   "line": 10076,
+   "line": 10089,
    "holders": [
     "engine"
    ],
@@ -24485,7 +24485,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2522,
+   "line": 2523,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -24802,7 +24802,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 2598,
+   "line": 2599,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -26070,7 +26070,7 @@
    "pile": "PlayerBuffs",
    "kind": "stop",
    "read": "foreach PlayerBuffs",
-   "line": 2615,
+   "line": 2616,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -40265,7 +40265,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "for Hand",
-   "line": 617,
+   "line": 618,
    "holders": [
     "potion:TouchOfInsanity"
    ],
@@ -40277,7 +40277,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 423,
+   "line": 424,
    "holders": [
     "potion:PotionOfBinding"
    ],
@@ -40289,7 +40289,7 @@
    "pile": "Hand",
    "kind": "walk",
    "read": "foreach Hand",
-   "line": 348,
+   "line": 349,
    "holders": [
     "potion:GlowwaterPotion"
    ],
@@ -40301,7 +40301,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[i]",
-   "line": 721,
+   "line": 722,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -40772,7 +40772,7 @@
    "pile": "PotionSlots",
    "kind": "index",
    "read": "PotionSlots[slot]",
-   "line": 751,
+   "line": 752,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -41243,7 +41243,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2649,
+   "line": 2656,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41270,7 +41270,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2651,
+   "line": 2658,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41297,7 +41297,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2651,
+   "line": 2658,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41320,11 +41320,962 @@
   },
   {
    "file": "RelicEffects",
+   "method": "AfterModifyingHandDraw",
+   "pile": "Relics",
+   "kind": "fixed",
+   "read": "Relics.FindIndex",
+   "line": 1001,
+   "holders": [
+    "buff:Furnace",
+    "buff:Genesis",
+    "buff:Hailstorm",
+    "buff:LightningRod",
+    "buff:NoxiousFumes",
+    "buff:StarNextTurn",
+    "buff:TheBombPower",
+    "card:Acrobatics",
+    "card:AdaptiveStrike",
+    "card:Adrenaline",
+    "card:Afterlife",
+    "card:AllForOne",
+    "card:Anger",
+    "card:Anticipate",
+    "card:Armaments",
+    "card:AshenStrike",
+    "card:AstralPulse",
+    "card:Backflip",
+    "card:BallLightning",
+    "card:BansheesCry",
+    "card:Barrage",
+    "card:BattleTrance",
+    "card:BigBang",
+    "card:BladeDance",
+    "card:BloodWall",
+    "card:Bloodletting",
+    "card:Bludgeon",
+    "card:BodySlam",
+    "card:Bodyguard",
+    "card:Bombardment",
+    "card:BoneShards",
+    "card:BoostAway",
+    "card:BootSequence",
+    "card:BouncingFlask",
+    "card:Brand",
+    "card:Breakthrough",
+    "card:BrightestFlame",
+    "card:BubbleBubble",
+    "card:Bulwark",
+    "card:BundleOfJoy",
+    "card:BurningPact",
+    "card:Bury",
+    "card:ByrdSwoop",
+    "card:CalculatedGamble",
+    "card:CaptureSpirit",
+    "card:CelestialMight",
+    "card:Chaos",
+    "card:ChargeBattery",
+    "card:Chill",
+    "card:Cinder",
+    "card:Clash",
+    "card:Claw",
+    "card:CloakAndDagger",
+    "card:CloakOfStars",
+    "card:ColdSnap",
+    "card:CollisionCourse",
+    "card:Colossus",
+    "card:Compact",
+    "card:CompileDriver",
+    "card:Conflagration",
+    "card:Conqueror",
+    "card:ConsumingShadow",
+    "card:Coolant",
+    "card:Coolheaded",
+    "card:CorrosiveWave",
+    "card:CosmicIndifference",
+    "card:CrushUnder",
+    "card:DaggerThrow",
+    "card:Darkness",
+    "card:DeadlyPoison",
+    "card:DeathMarch",
+    "card:Deathbringer",
+    "card:Debilitate",
+    "card:DefendDefect",
+    "card:DefendNecrobinder",
+    "card:DefendRegent",
+    "card:Defile",
+    "card:Defy",
+    "card:Delay",
+    "card:DemonicShield",
+    "card:Devastate",
+    "card:Distraction",
+    "card:DrainPower",
+    "card:DrumOfBattle",
+    "card:DualWield",
+    "card:Dualcast",
+    "card:DyingStar",
+    "card:EndOfDays",
+    "card:EnfeeblingTouch",
+    "card:Entrench",
+    "card:EscapePlan",
+    "card:EvilEye",
+    "card:Expertise",
+    "card:Expose",
+    "card:Exterminate",
+    "card:Fetch",
+    "card:FightThrough",
+    "card:Finesse",
+    "card:FlameBarrier",
+    "card:FlashOfSteel",
+    "card:Flatten",
+    "card:FocusedStrike",
+    "card:Ftl",
+    "card:Fuel",
+    "card:Fusion",
+    "card:GatherLight",
+    "card:GeneticAlgorithm",
+    "card:GiantRock",
+    "card:Glacier",
+    "card:Glasswork",
+    "card:GlimpseBeyond",
+    "card:Glitterstream",
+    "card:Glow",
+    "card:GoForTheEyes",
+    "card:GraveWarden",
+    "card:Graveblast",
+    "card:GuidingStar",
+    "card:GunkUp",
+    "card:Havoc",
+    "card:Haze",
+    "card:Headbutt",
+    "card:Hegemony",
+    "card:HelixDrill",
+    "card:Hemokinesis",
+    "card:HiddenCache",
+    "card:HiddenDaggers",
+    "card:HighFive",
+    "card:Hologram",
+    "card:Hotfix",
+    "card:HowlFromBeyond",
+    "card:Hyperbeam",
+    "card:IAmInvincible",
+    "card:IceLance",
+    "card:Ignition",
+    "card:Impervious",
+    "card:Intercept",
+    "card:Invoke",
+    "card:IronWave",
+    "card:KinglyKick",
+    "card:KinglyPunch",
+    "card:KnowThyPlace",
+    "card:Largesse",
+    "card:Leap",
+    "card:LegSweep",
+    "card:Lift",
+    "card:LightningRod",
+    "card:LunarBlast",
+    "card:MadScience",
+    "card:MakeItSo",
+    "card:Malaise",
+    "card:ManifestAuthority",
+    "card:Maul",
+    "card:Melancholy",
+    "card:MementoMori",
+    "card:Metamorphosis",
+    "card:MeteorShower",
+    "card:MeteorStrike",
+    "card:MinionDiveBomb",
+    "card:MinionSacrifice",
+    "card:MinionStrike",
+    "card:Mirage",
+    "card:Modded",
+    "card:MomentumStrike",
+    "card:MultiCast",
+    "card:Murder",
+    "card:NegativePulse",
+    "card:Neurosurge",
+    "card:Neutralize",
+    "card:Oblivion",
+    "card:Offering",
+    "card:Overclock",
+    "card:PactsEnd",
+    "card:Parse",
+    "card:ParticleWall",
+    "card:Patter",
+    "card:Peck",
+    "card:PerfectedStrike",
+    "card:PhotonCut",
+    "card:PiercingWail",
+    "card:Pillage",
+    "card:PoisonedStab",
+    "card:Poke",
+    "card:PommelStrike",
+    "card:PreciseCut",
+    "card:Prepared",
+    "card:Prophesize",
+    "card:Protector",
+    "card:PullAggro",
+    "card:PullFromBelow",
+    "card:Putrefy",
+    "card:Quadcast",
+    "card:Quasar",
+    "card:Radiate",
+    "card:Rainbow",
+    "card:Rally",
+    "card:Rampage",
+    "card:ReanimatePower",
+    "card:Reap",
+    "card:Reave",
+    "card:Reboot",
+    "card:Rebound",
+    "card:RefineBlade",
+    "card:Reflect",
+    "card:Reflex",
+    "card:Refract",
+    "card:Relax",
+    "card:Resonance",
+    "card:Restlessness",
+    "card:RightHandHand",
+    "card:RipAndTear",
+    "card:RocketPunch",
+    "card:RoyalGamble",
+    "card:Sacrifice",
+    "card:Scare",
+    "card:Scavenge",
+    "card:Scourge",
+    "card:SeekingEdge",
+    "card:SetupStrike",
+    "card:SevenStars",
+    "card:Severance",
+    "card:ShadowShield",
+    "card:SharedFate",
+    "card:ShiningStrike",
+    "card:ShrugItOff",
+    "card:SicEm",
+    "card:Skim",
+    "card:Snakebite",
+    "card:SolarStrike",
+    "card:Soul",
+    "card:Sow",
+    "card:Spinner",
+    "card:Spite",
+    "card:Splash",
+    "card:SpoilsOfBattle",
+    "card:Spur",
+    "card:Squeeze",
+    "card:Stack",
+    "card:Stardust",
+    "card:Stomp",
+    "card:StormOfSteel",
+    "card:StrikeDefect",
+    "card:StrikeNecrobinder",
+    "card:StrikeRegent",
+    "card:SuckerPunch",
+    "card:SummonForth",
+    "card:Supermassive",
+    "card:Survivor",
+    "card:SweepingBeam",
+    "card:SweepingGaze",
+    "card:SwordBoomerang",
+    "card:Synthesis",
+    "card:Taunt",
+    "card:Tempest",
+    "card:TheGambit",
+    "card:TheScythe",
+    "card:TheSmith",
+    "card:Thrash",
+    "card:Thunderclap",
+    "card:ToricToughness",
+    "card:Tremble",
+    "card:Turbo",
+    "card:TwinStrike",
+    "card:UltimateDefend",
+    "card:UltimateStrike",
+    "card:Undeath",
+    "card:Unleash",
+    "card:Unrelenting",
+    "card:UpMySleeve",
+    "card:Uproar",
+    "card:Veilpiercer",
+    "card:Venerate",
+    "card:WhiteNoise",
+    "card:Wish",
+    "card:WroughtInWar",
+    "card:Zap",
+    "engine",
+    "potion:Ashwater",
+    "potion:AttackPotion",
+    "potion:BlockPotion",
+    "potion:BottledPotential",
+    "potion:Clarity",
+    "potion:ColorlessPotion",
+    "potion:CosmicConcoction",
+    "potion:CunningPotion",
+    "potion:CureAll",
+    "potion:DistilledChaos",
+    "potion:DropletOfPrecognition",
+    "potion:EssenceOfDarkness",
+    "potion:ExplosiveAmpoule",
+    "potion:FirePotion",
+    "potion:Fortifier",
+    "potion:FoulPotion",
+    "potion:GamblersBrew",
+    "potion:GlowwaterPotion",
+    "potion:KingsCourage",
+    "potion:LiquidMemories",
+    "potion:OrobicAcid",
+    "potion:PotOfGhouls",
+    "potion:PotionShapedRock",
+    "potion:PowerPotion",
+    "potion:ShipInABottle",
+    "potion:SkillPotion",
+    "potion:SneckoOil",
+    "potion:StarPotion",
+    "potion:SwiftPotion",
+    "potion:TouchOfInsanity"
+   ],
+   "id": "RelicEffects:AfterModifyingHandDraw:Relics.FindIndex"
+  },
+  {
+   "file": "RelicEffects",
+   "method": "AfterModifyingHandDraw",
+   "pile": "Relics",
+   "kind": "index",
+   "read": "Relics[index]",
+   "line": 1006,
+   "holders": [
+    "buff:Furnace",
+    "buff:Genesis",
+    "buff:Hailstorm",
+    "buff:LightningRod",
+    "buff:NoxiousFumes",
+    "buff:StarNextTurn",
+    "buff:TheBombPower",
+    "card:Acrobatics",
+    "card:AdaptiveStrike",
+    "card:Adrenaline",
+    "card:Afterlife",
+    "card:AllForOne",
+    "card:Anger",
+    "card:Anticipate",
+    "card:Armaments",
+    "card:AshenStrike",
+    "card:AstralPulse",
+    "card:Backflip",
+    "card:BallLightning",
+    "card:BansheesCry",
+    "card:Barrage",
+    "card:BattleTrance",
+    "card:BigBang",
+    "card:BladeDance",
+    "card:BloodWall",
+    "card:Bloodletting",
+    "card:Bludgeon",
+    "card:BodySlam",
+    "card:Bodyguard",
+    "card:Bombardment",
+    "card:BoneShards",
+    "card:BoostAway",
+    "card:BootSequence",
+    "card:BouncingFlask",
+    "card:Brand",
+    "card:Breakthrough",
+    "card:BrightestFlame",
+    "card:BubbleBubble",
+    "card:Bulwark",
+    "card:BundleOfJoy",
+    "card:BurningPact",
+    "card:Bury",
+    "card:ByrdSwoop",
+    "card:CalculatedGamble",
+    "card:CaptureSpirit",
+    "card:CelestialMight",
+    "card:Chaos",
+    "card:ChargeBattery",
+    "card:Chill",
+    "card:Cinder",
+    "card:Clash",
+    "card:Claw",
+    "card:CloakAndDagger",
+    "card:CloakOfStars",
+    "card:ColdSnap",
+    "card:CollisionCourse",
+    "card:Colossus",
+    "card:Compact",
+    "card:CompileDriver",
+    "card:Conflagration",
+    "card:Conqueror",
+    "card:ConsumingShadow",
+    "card:Coolant",
+    "card:Coolheaded",
+    "card:CorrosiveWave",
+    "card:CosmicIndifference",
+    "card:CrushUnder",
+    "card:DaggerThrow",
+    "card:Darkness",
+    "card:DeadlyPoison",
+    "card:DeathMarch",
+    "card:Deathbringer",
+    "card:Debilitate",
+    "card:DefendDefect",
+    "card:DefendNecrobinder",
+    "card:DefendRegent",
+    "card:Defile",
+    "card:Defy",
+    "card:Delay",
+    "card:DemonicShield",
+    "card:Devastate",
+    "card:Distraction",
+    "card:DrainPower",
+    "card:DrumOfBattle",
+    "card:DualWield",
+    "card:Dualcast",
+    "card:DyingStar",
+    "card:EndOfDays",
+    "card:EnfeeblingTouch",
+    "card:Entrench",
+    "card:EscapePlan",
+    "card:EvilEye",
+    "card:Expertise",
+    "card:Expose",
+    "card:Exterminate",
+    "card:Fetch",
+    "card:FightThrough",
+    "card:Finesse",
+    "card:FlameBarrier",
+    "card:FlashOfSteel",
+    "card:Flatten",
+    "card:FocusedStrike",
+    "card:Ftl",
+    "card:Fuel",
+    "card:Fusion",
+    "card:GatherLight",
+    "card:GeneticAlgorithm",
+    "card:GiantRock",
+    "card:Glacier",
+    "card:Glasswork",
+    "card:GlimpseBeyond",
+    "card:Glitterstream",
+    "card:Glow",
+    "card:GoForTheEyes",
+    "card:GraveWarden",
+    "card:Graveblast",
+    "card:GuidingStar",
+    "card:GunkUp",
+    "card:Havoc",
+    "card:Haze",
+    "card:Headbutt",
+    "card:Hegemony",
+    "card:HelixDrill",
+    "card:Hemokinesis",
+    "card:HiddenCache",
+    "card:HiddenDaggers",
+    "card:HighFive",
+    "card:Hologram",
+    "card:Hotfix",
+    "card:HowlFromBeyond",
+    "card:Hyperbeam",
+    "card:IAmInvincible",
+    "card:IceLance",
+    "card:Ignition",
+    "card:Impervious",
+    "card:Intercept",
+    "card:Invoke",
+    "card:IronWave",
+    "card:KinglyKick",
+    "card:KinglyPunch",
+    "card:KnowThyPlace",
+    "card:Largesse",
+    "card:Leap",
+    "card:LegSweep",
+    "card:Lift",
+    "card:LightningRod",
+    "card:LunarBlast",
+    "card:MadScience",
+    "card:MakeItSo",
+    "card:Malaise",
+    "card:ManifestAuthority",
+    "card:Maul",
+    "card:Melancholy",
+    "card:MementoMori",
+    "card:Metamorphosis",
+    "card:MeteorShower",
+    "card:MeteorStrike",
+    "card:MinionDiveBomb",
+    "card:MinionSacrifice",
+    "card:MinionStrike",
+    "card:Mirage",
+    "card:Modded",
+    "card:MomentumStrike",
+    "card:MultiCast",
+    "card:Murder",
+    "card:NegativePulse",
+    "card:Neurosurge",
+    "card:Neutralize",
+    "card:Oblivion",
+    "card:Offering",
+    "card:Overclock",
+    "card:PactsEnd",
+    "card:Parse",
+    "card:ParticleWall",
+    "card:Patter",
+    "card:Peck",
+    "card:PerfectedStrike",
+    "card:PhotonCut",
+    "card:PiercingWail",
+    "card:Pillage",
+    "card:PoisonedStab",
+    "card:Poke",
+    "card:PommelStrike",
+    "card:PreciseCut",
+    "card:Prepared",
+    "card:Prophesize",
+    "card:Protector",
+    "card:PullAggro",
+    "card:PullFromBelow",
+    "card:Putrefy",
+    "card:Quadcast",
+    "card:Quasar",
+    "card:Radiate",
+    "card:Rainbow",
+    "card:Rally",
+    "card:Rampage",
+    "card:ReanimatePower",
+    "card:Reap",
+    "card:Reave",
+    "card:Reboot",
+    "card:Rebound",
+    "card:RefineBlade",
+    "card:Reflect",
+    "card:Reflex",
+    "card:Refract",
+    "card:Relax",
+    "card:Resonance",
+    "card:Restlessness",
+    "card:RightHandHand",
+    "card:RipAndTear",
+    "card:RocketPunch",
+    "card:RoyalGamble",
+    "card:Sacrifice",
+    "card:Scare",
+    "card:Scavenge",
+    "card:Scourge",
+    "card:SeekingEdge",
+    "card:SetupStrike",
+    "card:SevenStars",
+    "card:Severance",
+    "card:ShadowShield",
+    "card:SharedFate",
+    "card:ShiningStrike",
+    "card:ShrugItOff",
+    "card:SicEm",
+    "card:Skim",
+    "card:Snakebite",
+    "card:SolarStrike",
+    "card:Soul",
+    "card:Sow",
+    "card:Spinner",
+    "card:Spite",
+    "card:Splash",
+    "card:SpoilsOfBattle",
+    "card:Spur",
+    "card:Squeeze",
+    "card:Stack",
+    "card:Stardust",
+    "card:Stomp",
+    "card:StormOfSteel",
+    "card:StrikeDefect",
+    "card:StrikeNecrobinder",
+    "card:StrikeRegent",
+    "card:SuckerPunch",
+    "card:SummonForth",
+    "card:Supermassive",
+    "card:Survivor",
+    "card:SweepingBeam",
+    "card:SweepingGaze",
+    "card:SwordBoomerang",
+    "card:Synthesis",
+    "card:Taunt",
+    "card:Tempest",
+    "card:TheGambit",
+    "card:TheScythe",
+    "card:TheSmith",
+    "card:Thrash",
+    "card:Thunderclap",
+    "card:ToricToughness",
+    "card:Tremble",
+    "card:Turbo",
+    "card:TwinStrike",
+    "card:UltimateDefend",
+    "card:UltimateStrike",
+    "card:Undeath",
+    "card:Unleash",
+    "card:Unrelenting",
+    "card:UpMySleeve",
+    "card:Uproar",
+    "card:Veilpiercer",
+    "card:Venerate",
+    "card:WhiteNoise",
+    "card:Wish",
+    "card:WroughtInWar",
+    "card:Zap",
+    "engine",
+    "potion:Ashwater",
+    "potion:AttackPotion",
+    "potion:BlockPotion",
+    "potion:BottledPotential",
+    "potion:Clarity",
+    "potion:ColorlessPotion",
+    "potion:CosmicConcoction",
+    "potion:CunningPotion",
+    "potion:CureAll",
+    "potion:DistilledChaos",
+    "potion:DropletOfPrecognition",
+    "potion:EssenceOfDarkness",
+    "potion:ExplosiveAmpoule",
+    "potion:FirePotion",
+    "potion:Fortifier",
+    "potion:FoulPotion",
+    "potion:GamblersBrew",
+    "potion:GlowwaterPotion",
+    "potion:KingsCourage",
+    "potion:LiquidMemories",
+    "potion:OrobicAcid",
+    "potion:PotOfGhouls",
+    "potion:PotionShapedRock",
+    "potion:PowerPotion",
+    "potion:ShipInABottle",
+    "potion:SkillPotion",
+    "potion:SneckoOil",
+    "potion:StarPotion",
+    "potion:SwiftPotion",
+    "potion:TouchOfInsanity"
+   ],
+   "id": "RelicEffects:AfterModifyingHandDraw:Relics[index]"
+  },
+  {
+   "file": "RelicEffects",
+   "method": "AfterModifyingHandDraw",
+   "pile": "Relics",
+   "kind": "index",
+   "read": "Relics[index]",
+   "line": 1006,
+   "holders": [
+    "buff:Furnace",
+    "buff:Genesis",
+    "buff:Hailstorm",
+    "buff:LightningRod",
+    "buff:NoxiousFumes",
+    "buff:StarNextTurn",
+    "buff:TheBombPower",
+    "card:Acrobatics",
+    "card:AdaptiveStrike",
+    "card:Adrenaline",
+    "card:Afterlife",
+    "card:AllForOne",
+    "card:Anger",
+    "card:Anticipate",
+    "card:Armaments",
+    "card:AshenStrike",
+    "card:AstralPulse",
+    "card:Backflip",
+    "card:BallLightning",
+    "card:BansheesCry",
+    "card:Barrage",
+    "card:BattleTrance",
+    "card:BigBang",
+    "card:BladeDance",
+    "card:BloodWall",
+    "card:Bloodletting",
+    "card:Bludgeon",
+    "card:BodySlam",
+    "card:Bodyguard",
+    "card:Bombardment",
+    "card:BoneShards",
+    "card:BoostAway",
+    "card:BootSequence",
+    "card:BouncingFlask",
+    "card:Brand",
+    "card:Breakthrough",
+    "card:BrightestFlame",
+    "card:BubbleBubble",
+    "card:Bulwark",
+    "card:BundleOfJoy",
+    "card:BurningPact",
+    "card:Bury",
+    "card:ByrdSwoop",
+    "card:CalculatedGamble",
+    "card:CaptureSpirit",
+    "card:CelestialMight",
+    "card:Chaos",
+    "card:ChargeBattery",
+    "card:Chill",
+    "card:Cinder",
+    "card:Clash",
+    "card:Claw",
+    "card:CloakAndDagger",
+    "card:CloakOfStars",
+    "card:ColdSnap",
+    "card:CollisionCourse",
+    "card:Colossus",
+    "card:Compact",
+    "card:CompileDriver",
+    "card:Conflagration",
+    "card:Conqueror",
+    "card:ConsumingShadow",
+    "card:Coolant",
+    "card:Coolheaded",
+    "card:CorrosiveWave",
+    "card:CosmicIndifference",
+    "card:CrushUnder",
+    "card:DaggerThrow",
+    "card:Darkness",
+    "card:DeadlyPoison",
+    "card:DeathMarch",
+    "card:Deathbringer",
+    "card:Debilitate",
+    "card:DefendDefect",
+    "card:DefendNecrobinder",
+    "card:DefendRegent",
+    "card:Defile",
+    "card:Defy",
+    "card:Delay",
+    "card:DemonicShield",
+    "card:Devastate",
+    "card:Distraction",
+    "card:DrainPower",
+    "card:DrumOfBattle",
+    "card:DualWield",
+    "card:Dualcast",
+    "card:DyingStar",
+    "card:EndOfDays",
+    "card:EnfeeblingTouch",
+    "card:Entrench",
+    "card:EscapePlan",
+    "card:EvilEye",
+    "card:Expertise",
+    "card:Expose",
+    "card:Exterminate",
+    "card:Fetch",
+    "card:FightThrough",
+    "card:Finesse",
+    "card:FlameBarrier",
+    "card:FlashOfSteel",
+    "card:Flatten",
+    "card:FocusedStrike",
+    "card:Ftl",
+    "card:Fuel",
+    "card:Fusion",
+    "card:GatherLight",
+    "card:GeneticAlgorithm",
+    "card:GiantRock",
+    "card:Glacier",
+    "card:Glasswork",
+    "card:GlimpseBeyond",
+    "card:Glitterstream",
+    "card:Glow",
+    "card:GoForTheEyes",
+    "card:GraveWarden",
+    "card:Graveblast",
+    "card:GuidingStar",
+    "card:GunkUp",
+    "card:Havoc",
+    "card:Haze",
+    "card:Headbutt",
+    "card:Hegemony",
+    "card:HelixDrill",
+    "card:Hemokinesis",
+    "card:HiddenCache",
+    "card:HiddenDaggers",
+    "card:HighFive",
+    "card:Hologram",
+    "card:Hotfix",
+    "card:HowlFromBeyond",
+    "card:Hyperbeam",
+    "card:IAmInvincible",
+    "card:IceLance",
+    "card:Ignition",
+    "card:Impervious",
+    "card:Intercept",
+    "card:Invoke",
+    "card:IronWave",
+    "card:KinglyKick",
+    "card:KinglyPunch",
+    "card:KnowThyPlace",
+    "card:Largesse",
+    "card:Leap",
+    "card:LegSweep",
+    "card:Lift",
+    "card:LightningRod",
+    "card:LunarBlast",
+    "card:MadScience",
+    "card:MakeItSo",
+    "card:Malaise",
+    "card:ManifestAuthority",
+    "card:Maul",
+    "card:Melancholy",
+    "card:MementoMori",
+    "card:Metamorphosis",
+    "card:MeteorShower",
+    "card:MeteorStrike",
+    "card:MinionDiveBomb",
+    "card:MinionSacrifice",
+    "card:MinionStrike",
+    "card:Mirage",
+    "card:Modded",
+    "card:MomentumStrike",
+    "card:MultiCast",
+    "card:Murder",
+    "card:NegativePulse",
+    "card:Neurosurge",
+    "card:Neutralize",
+    "card:Oblivion",
+    "card:Offering",
+    "card:Overclock",
+    "card:PactsEnd",
+    "card:Parse",
+    "card:ParticleWall",
+    "card:Patter",
+    "card:Peck",
+    "card:PerfectedStrike",
+    "card:PhotonCut",
+    "card:PiercingWail",
+    "card:Pillage",
+    "card:PoisonedStab",
+    "card:Poke",
+    "card:PommelStrike",
+    "card:PreciseCut",
+    "card:Prepared",
+    "card:Prophesize",
+    "card:Protector",
+    "card:PullAggro",
+    "card:PullFromBelow",
+    "card:Putrefy",
+    "card:Quadcast",
+    "card:Quasar",
+    "card:Radiate",
+    "card:Rainbow",
+    "card:Rally",
+    "card:Rampage",
+    "card:ReanimatePower",
+    "card:Reap",
+    "card:Reave",
+    "card:Reboot",
+    "card:Rebound",
+    "card:RefineBlade",
+    "card:Reflect",
+    "card:Reflex",
+    "card:Refract",
+    "card:Relax",
+    "card:Resonance",
+    "card:Restlessness",
+    "card:RightHandHand",
+    "card:RipAndTear",
+    "card:RocketPunch",
+    "card:RoyalGamble",
+    "card:Sacrifice",
+    "card:Scare",
+    "card:Scavenge",
+    "card:Scourge",
+    "card:SeekingEdge",
+    "card:SetupStrike",
+    "card:SevenStars",
+    "card:Severance",
+    "card:ShadowShield",
+    "card:SharedFate",
+    "card:ShiningStrike",
+    "card:ShrugItOff",
+    "card:SicEm",
+    "card:Skim",
+    "card:Snakebite",
+    "card:SolarStrike",
+    "card:Soul",
+    "card:Sow",
+    "card:Spinner",
+    "card:Spite",
+    "card:Splash",
+    "card:SpoilsOfBattle",
+    "card:Spur",
+    "card:Squeeze",
+    "card:Stack",
+    "card:Stardust",
+    "card:Stomp",
+    "card:StormOfSteel",
+    "card:StrikeDefect",
+    "card:StrikeNecrobinder",
+    "card:StrikeRegent",
+    "card:SuckerPunch",
+    "card:SummonForth",
+    "card:Supermassive",
+    "card:Survivor",
+    "card:SweepingBeam",
+    "card:SweepingGaze",
+    "card:SwordBoomerang",
+    "card:Synthesis",
+    "card:Taunt",
+    "card:Tempest",
+    "card:TheGambit",
+    "card:TheScythe",
+    "card:TheSmith",
+    "card:Thrash",
+    "card:Thunderclap",
+    "card:ToricToughness",
+    "card:Tremble",
+    "card:Turbo",
+    "card:TwinStrike",
+    "card:UltimateDefend",
+    "card:UltimateStrike",
+    "card:Undeath",
+    "card:Unleash",
+    "card:Unrelenting",
+    "card:UpMySleeve",
+    "card:Uproar",
+    "card:Veilpiercer",
+    "card:Venerate",
+    "card:WhiteNoise",
+    "card:Wish",
+    "card:WroughtInWar",
+    "card:Zap",
+    "engine",
+    "potion:Ashwater",
+    "potion:AttackPotion",
+    "potion:BlockPotion",
+    "potion:BottledPotential",
+    "potion:Clarity",
+    "potion:ColorlessPotion",
+    "potion:CosmicConcoction",
+    "potion:CunningPotion",
+    "potion:CureAll",
+    "potion:DistilledChaos",
+    "potion:DropletOfPrecognition",
+    "potion:EssenceOfDarkness",
+    "potion:ExplosiveAmpoule",
+    "potion:FirePotion",
+    "potion:Fortifier",
+    "potion:FoulPotion",
+    "potion:GamblersBrew",
+    "potion:GlowwaterPotion",
+    "potion:KingsCourage",
+    "potion:LiquidMemories",
+    "potion:OrobicAcid",
+    "potion:PotOfGhouls",
+    "potion:PotionShapedRock",
+    "potion:PowerPotion",
+    "potion:ShipInABottle",
+    "potion:SkillPotion",
+    "potion:SneckoOil",
+    "potion:StarPotion",
+    "potion:SwiftPotion",
+    "potion:TouchOfInsanity"
+   ],
+   "id": "RelicEffects:AfterModifyingHandDraw:Relics[index]#2"
+  },
+  {
+   "file": "RelicEffects",
    "method": "ApplyAfterCardExhausted",
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2632,
+   "line": 2639,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41351,7 +42302,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2052,
+   "line": 2059,
    "holders": [
     "engine"
    ],
@@ -41363,7 +42314,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2024,
+   "line": 2031,
    "holders": [
     "engine"
    ],
@@ -41375,7 +42326,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2415,
+   "line": 2422,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -41692,7 +42643,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2415,
+   "line": 2422,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42009,7 +42960,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2415,
+   "line": 2422,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42326,7 +43277,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 2404,
+   "line": 2411,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42643,7 +43594,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 2405,
+   "line": 2412,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42960,7 +43911,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2779,
+   "line": 2786,
    "holders": [
     "engine"
    ],
@@ -42972,7 +43923,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2875,
+   "line": 2882,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -43289,7 +44240,7 @@
    "pile": "Relics",
    "kind": "walk",
    "read": "for Relics",
-   "line": 3118,
+   "line": 3125,
    "holders": [
     "engine"
    ],
@@ -43301,7 +44252,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 1985,
+   "line": 1992,
    "holders": [
     "engine"
    ],
@@ -43313,7 +44264,7 @@
    "pile": "DrawPile",
    "kind": "fixed",
    "read": "DrawPile.FindIndex",
-   "line": 1054,
+   "line": 1105,
    "holders": [
     "engine"
    ],
@@ -43325,7 +44276,7 @@
    "pile": "DrawPile",
    "kind": "index",
    "read": "DrawPile[k]",
-   "line": 1020,
+   "line": 1071,
    "holders": [
     "engine"
    ],
@@ -43337,7 +44288,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 994,
+   "line": 1045,
    "holders": [
     "engine"
    ],
@@ -43361,7 +44312,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FirstOrDefault",
-   "line": 640,
+   "line": 641,
    "holders": [
     "engine"
    ],
@@ -43373,7 +44324,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 760,
+   "line": 765,
    "holders": [
     "engine"
    ],
@@ -43385,7 +44336,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2291,
+   "line": 2298,
    "holders": [
     "engine"
    ],
@@ -43397,7 +44348,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2294,
+   "line": 2301,
    "holders": [
     "engine"
    ],
@@ -43409,7 +44360,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2294,
+   "line": 2301,
    "holders": [
     "engine"
    ],
@@ -43421,7 +44372,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1837,
+   "line": 1844,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -43444,7 +44395,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1843,
+   "line": 1850,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -43467,7 +44418,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1844,
+   "line": 1851,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -43490,7 +44441,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1844,
+   "line": 1851,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -43513,7 +44464,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1789,
+   "line": 1796,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -43983,7 +44934,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1792,
+   "line": 1799,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -44453,7 +45404,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2222,
+   "line": 2229,
    "holders": [
     "engine"
    ],
@@ -44465,7 +45416,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[inCombat]",
-   "line": 2228,
+   "line": 2235,
    "holders": [
     "engine"
    ],
@@ -44501,7 +45452,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2171,
+   "line": 2178,
    "holders": [
     "engine"
    ],
@@ -44513,7 +45464,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2174,
+   "line": 2181,
    "holders": [
     "engine"
    ],
@@ -44525,7 +45476,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2174,
+   "line": 2181,
    "holders": [
     "engine"
    ],
@@ -44537,7 +45488,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2176,
+   "line": 2183,
    "holders": [
     "engine"
    ],
@@ -44549,7 +45500,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2251,
+   "line": 2258,
    "holders": [
     "engine"
    ],
@@ -44561,7 +45512,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2252,
+   "line": 2259,
    "holders": [
     "engine"
    ],
@@ -44573,7 +45524,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2254,
+   "line": 2261,
    "holders": [
     "engine"
    ],
@@ -44585,7 +45536,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2254,
+   "line": 2261,
    "holders": [
     "engine"
    ],
@@ -44597,7 +45548,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2256,
+   "line": 2263,
    "holders": [
     "engine"
    ],
@@ -44609,7 +45560,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1469,
+   "line": 1476,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44632,7 +45583,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1475,
+   "line": 1482,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44655,7 +45606,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1476,
+   "line": 1483,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44678,7 +45629,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1476,
+   "line": 1483,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44701,7 +45652,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1486,
+   "line": 1493,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -45053,7 +46004,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1487,
+   "line": 1494,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -45405,7 +46356,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1492,
+   "line": 1499,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -45757,7 +46708,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1492,
+   "line": 1499,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -46109,7 +47060,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1521,
+   "line": 1528,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -46426,7 +47377,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1522,
+   "line": 1529,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -46743,7 +47694,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 3274,
+   "line": 3281,
    "holders": [
     "engine"
    ],
@@ -46755,7 +47706,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 3275,
+   "line": 3282,
    "holders": [
     "engine"
    ],
@@ -46767,7 +47718,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2162,
+   "line": 2169,
    "holders": [
     "engine"
    ],
@@ -46779,7 +47730,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2164,
+   "line": 2171,
    "holders": [
     "engine"
    ],
@@ -46791,7 +47742,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2165,
+   "line": 2172,
    "holders": [
     "engine"
    ],
@@ -46803,7 +47754,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1548,
+   "line": 1555,
    "holders": [
     "engine"
    ],
@@ -46815,7 +47766,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1549,
+   "line": 1556,
    "holders": [
     "engine"
    ],
@@ -46827,7 +47778,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[handIndex]",
-   "line": 1429,
+   "line": 1436,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -46850,7 +47801,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[handIndex]",
-   "line": 1429,
+   "line": 1436,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -46873,7 +47824,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 1405,
+   "line": 1412,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -46896,7 +47847,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 1407,
+   "line": 1414,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -46919,7 +47870,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 1407,
+   "line": 1414,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -46942,7 +47893,7 @@
    "pile": "Hand",
    "kind": "range",
    "read": "Range(Hand)",
-   "line": 1404,
+   "line": 1411,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -47025,7 +47976,7 @@
    "pile": "Relics",
    "kind": "walk",
    "read": "foreach Relics",
-   "line": 2719,
+   "line": 2726,
    "holders": [
     "card:Acrobatics",
     "card:AdaptiveStrike",
@@ -47164,7 +48115,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1577,
+   "line": 1584,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -47489,7 +48440,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1584,
+   "line": 1591,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -47814,7 +48765,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1592,
+   "line": 1599,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -48139,7 +49090,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1592,
+   "line": 1599,
    "holders": [
     "buff:Doom",
     "buff:Furnace",
@@ -48464,7 +49415,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2264,
+   "line": 2271,
    "holders": [
     "engine"
    ],
@@ -48476,7 +49427,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2267,
+   "line": 2274,
    "holders": [
     "engine"
    ],
@@ -48488,7 +49439,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2267,
+   "line": 2274,
    "holders": [
     "engine"
    ],
@@ -48512,7 +49463,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1527,
+   "line": 1534,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -48829,7 +49780,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1530,
+   "line": 1537,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -49146,7 +50097,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1530,
+   "line": 1537,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -49463,7 +50414,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2276,
+   "line": 2283,
    "holders": [
     "engine"
    ],
@@ -49475,7 +50426,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2277,
+   "line": 2284,
    "holders": [
     "engine"
    ],
@@ -49487,7 +50438,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2282,
+   "line": 2289,
    "holders": [
     "engine"
    ],
@@ -49499,7 +50450,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2282,
+   "line": 2289,
    "holders": [
     "engine"
    ],
@@ -49559,7 +50510,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2305,
+   "line": 2312,
    "holders": [
     "engine"
    ],
@@ -49571,7 +50522,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2306,
+   "line": 2313,
    "holders": [
     "engine"
    ],
@@ -49583,7 +50534,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2311,
+   "line": 2318,
    "holders": [
     "engine"
    ],
@@ -49595,7 +50546,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2311,
+   "line": 2318,
    "holders": [
     "engine"
    ],
@@ -49607,7 +50558,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2313,
+   "line": 2320,
    "holders": [
     "engine"
    ],
@@ -49619,7 +50570,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1107,
+   "line": 1163,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -49936,7 +50887,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1113,
+   "line": 1169,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -50253,7 +51204,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1114,
+   "line": 1172,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -50570,7 +51521,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1114,
+   "line": 1172,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -50887,7 +51838,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2244,
+   "line": 2251,
    "holders": [
     "engine"
    ],
@@ -50899,7 +51850,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2245,
+   "line": 2252,
    "holders": [
     "engine"
    ],

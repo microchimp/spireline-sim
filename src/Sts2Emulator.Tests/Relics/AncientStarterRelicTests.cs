@@ -118,28 +118,26 @@ public class AncientStarterRelicTests
     {
         Assert.Equal(
             1,
-            RelicEffects.ExtraOpeningHandDraw(FirstFight(Run(RelicEffects.PaelsBlood)))
+            RelicEffects.HandDrawBonus(FirstFight(Run(RelicEffects.PaelsBlood)), 1)
         );
-        Assert.Equal(1, RelicEffects.ExtraHandDraw(FirstFight(Run(RelicEffects.PaelsBlood))));
+        Assert.Equal(1, RelicEffects.HandDrawBonus(FirstFight(Run(RelicEffects.PaelsBlood)), 2));
     }
 
     /// <summary>
-    /// `RingOfTheDrake` pays while the game's `TurnNumber <= 3`. The emulator counts turns
-    /// from zero, so that is `state.Turn + 1 <= 3` -- turns one, two and three, and the
-    /// fourth turn gets nothing. The off-by-one is the entire content of this test.
+    /// `RingOfTheDrake` pays while the game's `TurnNumber <= 3`: turns one, two and three, and
+    /// the fourth turn gets nothing. The draw is asked for the turn number it is FOR.
     /// </summary>
     [Theory]
-    [InlineData(0, 2)]
     [InlineData(1, 2)]
     [InlineData(2, 2)]
-    [InlineData(3, 0)]
-    [InlineData(9, 0)]
-    public void RingOfTheDrakeStopsAfterTheThirdTurn(int turn, int expected)
+    [InlineData(3, 2)]
+    [InlineData(4, 0)]
+    [InlineData(10, 0)]
+    public void RingOfTheDrakeStopsAfterTheThirdTurn(int turnNumber, int expected)
     {
         var combat = FirstFight(Run(RelicEffects.RingOfTheDrake));
-        combat.Turn = turn;
 
-        Assert.Equal(expected, RelicEffects.ExtraHandDraw(combat));
+        Assert.Equal(expected, RelicEffects.HandDrawBonus(combat, turnNumber));
     }
 
     /// <summary>Turn one comes off the opening hand rather than the per-turn draw.</summary>
@@ -148,7 +146,7 @@ public class AncientStarterRelicTests
     {
         Assert.Equal(
             2,
-            RelicEffects.ExtraOpeningHandDraw(FirstFight(Run(RelicEffects.RingOfTheDrake)))
+            RelicEffects.HandDrawBonus(FirstFight(Run(RelicEffects.RingOfTheDrake)), 1)
         );
     }
 
@@ -789,8 +787,8 @@ public class FiddleTests
     [Fact]
     public void FiddleDrawsTwoMore()
     {
-        Assert.Equal(2, RelicEffects.ExtraOpeningHandDraw(Fight(RelicEffects.Fiddle)));
-        Assert.Equal(2, RelicEffects.ExtraHandDraw(Fight(RelicEffects.Fiddle)));
+        Assert.Equal(2, RelicEffects.HandDrawBonus(Fight(RelicEffects.Fiddle), 1));
+        Assert.Equal(2, RelicEffects.HandDrawBonus(Fight(RelicEffects.Fiddle), 2));
         Assert.Equal(7, Fight(RelicEffects.Fiddle).Hand.Count);
     }
 

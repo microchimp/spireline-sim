@@ -1949,6 +1949,14 @@ def run_set_anchor_tables(id_map: dict | None = None, aliases: dict | None = Non
         id_map = json.loads((root / "data" / "id_map.json").read_text(encoding="utf-8"))
     if aliases is None:
         aliases = json.loads((root / "tools" / "fidelity" / "power_aliases.json").read_text(encoding="utf-8"))
+    # The game names a monster by its subclass (DECIMILLIPEDE_SEGMENT_FRONT, _MIDDLE, _BACK; MYSTERIOUS_KNIGHT) where
+    # the emulator keeps one enemy under the base class; the live layer already maps them, and the fight loader reads
+    # a record's enemies through these tables, so a record naming a segment found no emulator id (23 of 42 re-anchor
+    # failures on 2026-11-03, and the Booming Conch elite fights that could not be re-anchored).
+    from sts2_gym.live.ids import MONSTER_SUBCLASSES  # noqa: PLC0415 -- not needed unless tables are handed over
+
+    enemies = dict(id_map.get("enemies", {}))
+    id_map = {**id_map, "enemies": {**enemies, **{sub: enemies[base] for sub, base in MONSTER_SUBCLASSES.items() if base in enemies}}}
     text = json.dumps({"id_map": id_map, "aliases": aliases}).encode("utf-8")
     if _lib.Sts2Run_SetAnchorTables(text, len(text)) != 0:
         raise RuntimeError("Sts2Run_SetAnchorTables failed")

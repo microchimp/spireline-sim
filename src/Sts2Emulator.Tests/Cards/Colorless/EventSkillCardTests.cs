@@ -41,13 +41,14 @@ public class BrightestFlameTests
     private static int Id => GeneratedData.Cards.FindId("BrightestFlame")!.Value;
 
     /// <summary>
-    /// `EnergyVar(2)` upgrading to 3, `CardsVar(2)` which does NOT upgrade, and
-    /// `LoseMaxHp(1)` — the price the card is built around, which was missing entirely.
+    /// `EnergyVar(2)` and `CardsVar(2)`, and `OnUpgrade` raises BOTH by one: three energy and three
+    /// cards. The draw was pinned at two on a remark that it does not upgrade (19 hand records of
+    /// 2026-11-04, each after an upgraded Brightest Flame, the game one card up).
     /// </summary>
     [Theory]
-    [InlineData(false, 2)]
-    [InlineData(true, 3)]
-    public void EnergyUpgradesButTheDrawDoesNot(bool upgraded, int energy)
+    [InlineData(false, 2, 2)]
+    [InlineData(true, 3, 3)]
+    public void EnergyAndTheDrawBothUpgrade(bool upgraded, int energy, int cards)
     {
         var fight = Fight.Hand(new CardInstance(Id, upgraded)).Energy(3).Enemy(hp: 300);
         fight.State.DrawPile.Clear();
@@ -60,7 +61,7 @@ public class BrightestFlameTests
         fight.Play(0);
 
         Assert.Equal(before + energy, fight.State.Energy);
-        Assert.Equal(2, fight.State.Hand.Count);
+        Assert.Equal(cards, fight.State.Hand.Count);
     }
 
     [Fact]

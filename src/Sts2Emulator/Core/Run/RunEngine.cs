@@ -304,11 +304,12 @@ public sealed class RunEngine : Core2.ICombatEndHost
             nicheSkipCount: 0,
             aiRng,
             runRelics,
-            openingHps
+            openingHps,
+            // Booming Conch and Sling of Courage read the ROOM, not the encounter, and read it while
+            // the reset runs the combat-start hooks and the opening draw: the room goes in with it.
+            // Set after the reset, as this was, Sling of Courage never fired in any run elite.
+            eliteRoom: State.LastResolvedRoomType == RunConstants.NodeElite
         );
-        // Sling of Courage reads the ROOM, not the encounter, so the room type travels
-        // with the combat.
-        combat.IsEliteRoom = State.LastResolvedRoomType == RunConstants.NodeElite;
 
         // `LavaLamp.AfterRoomEntered` clears its flag as the fight begins.
         State.TookUnblockedDamageThisCombat = false;

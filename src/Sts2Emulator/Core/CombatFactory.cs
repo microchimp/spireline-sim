@@ -330,7 +330,13 @@ public static class CombatFactory
         IReadOnlyList<RelicInstance>? runRelics = null,
         // The opening roster's HP, rolled before this fight (RollOpeningNicheHps): no Niche
         // draw is made for the creatures it covers.
-        IReadOnlyList<int>? openingNicheHps = null
+        IReadOnlyList<int>? openingNicheHps = null,
+        // Whether the room the fight is in is an Elite room: what Booming Conch, Sling of Courage and
+        // the other elite-room relics ask, and they ask it while this method runs the combat-start
+        // hooks and the opening draw, so the room has to be known HERE. A run passes its room; the
+        // direct combat environment (no run, only an encounter) passes nothing and the room is the
+        // encounter's kind.
+        bool? eliteRoom = null
     )
     {
         state.PlayerMaxHp = Math.Max(1, playerMaxHp);
@@ -399,7 +405,9 @@ public static class CombatFactory
             ? (ActOneEncounter)encounterId.Value
             : SelectFirstCombatEncounter(rng);
         state.EncounterId = (int)encounter;
-        state.IsEliteCombat = IsEliteEncounter(encounter);
+        state.IsEliteRoom = eliteRoom ?? IsEliteEncounter(encounter);
+        // The snapshot and the state key still carry the fact under its older name; no rule reads it.
+        state.IsEliteCombat = state.IsEliteRoom;
         // Use state.NicheHpRng (set by caller) as the dedicated HP RNG matching
         // RunState.Rng.Niche.  Null falls back to the main combat rng.
         _currentAscension = state.AscensionLevel;
@@ -465,8 +473,11 @@ public static class CombatFactory
     {
         int handDraw = ApplyTurnOneDrawPileReorder(
             state.DrawPile,
-            5 + RelicEffects.ExtraOpeningHandDraw(state)
+            5 + RelicEffects.HandDrawBonus(state, 1)
         );
+        // `Hook.AfterModifyingHandDraw`, as on every turn: Pollinous Core's count goes back to zero if
+        // it paid.
+        RelicEffects.AfterModifyingHandDraw(state);
         CardEffects.DrawCards(state, handDraw, rng, fromHandDraw: true);
     }
 
@@ -1123,24 +1134,25 @@ public static class CombatFactory
     /// <para>
     /// It also swept up every boss, and the game does not: BoomingConch asks for
     /// <c>CurrentRoom.RoomType == RoomType.Elite</c>, and a boss room is RoomType.Boss.
-    /// Act 2's elites are deliberately absent — the emulator models act 1, and listing
-    /// names it cannot reach would be guessing.
+    /// Act 2's elites were left out on purpose while the emulator modelled act 1 only; it plays all
+    /// three acts now, and a run elite of any act is an Elite room, so they are all here (2026-11-04:
+    /// 40 hand records of three nights were a Booming Conch that paid in no Hive or Glory elite).
+    /// </para>
+    /// <para>
+    /// This is the direct combat environment's answer. A run does not use it: it passes the room it
+    /// is in to <c>Reset</c>, which is the game's question (<c>CurrentRoom.RoomType</c>).
     /// </para>
     /// </remarks>
-    private static readonly ActOneEncounter[] EliteEncounters =
+    private static readonly HashSet<int> EliteEncounterIds =
     [
-        // Overgrowth, per Acts/Overgrowth.cs.
-        ActOneEncounter.BygoneEffigy,
-        ActOneEncounter.Byrdonis,
-        ActOneEncounter.PhrogParasite,
-        // Underdocks, per Acts/Underdocks.cs.
-        ActOneEncounter.PhantasmalGardeners,
-        ActOneEncounter.SkulkingColony,
-        ActOneEncounter.TerrorEel,
+        .. GeneratedData.EncounterTags.Pool(Run.RunConstants.ActOvergrowth, "Elite"),
+        .. GeneratedData.EncounterTags.Pool(Run.RunConstants.ActUnderdocks, "Elite"),
+        .. GeneratedData.EncounterTags.Pool(Run.RunConstants.ActHive, "Elite"),
+        .. GeneratedData.EncounterTags.Pool(Run.RunConstants.ActGlory, "Elite"),
     ];
 
     private static bool IsEliteEncounter(ActOneEncounter encounter) =>
-        Array.IndexOf(EliteEncounters, encounter) >= 0;
+        EliteEncounterIds.Contains((int)encounter);
 
     private static List<EnemyState> CreateSlimeEncounter(
         Random rng,

@@ -626,7 +626,8 @@ public static class RelicEffects
                 CardEffects.UpgradeCards(state.DrawPile, shuffled.Take(2));
             },
             // Elite rooms only: the relic's hook fires before the combat exists, so the room
-            // type is handed over rather than looked up.
+            // type is handed over rather than looked up -- `CombatFactory.Reset` sets
+            // `IsEliteRoom` from the room before it runs this phase.
             [SlingOfCourage] = () =>
             {
                 if (state.IsEliteRoom)
@@ -717,6 +718,10 @@ public static class RelicEffects
             // CardsVar(2) ZERO-COST cards out of the draw pile and into hand, ahead of the
             // opening draw, which then draws five more.
             [PowerCell] = () => CardEffects.MoveZeroCostDrawCardsToHandForPowerCell(state, 2, rng),
+            // `PollinousCore.BeforeSideTurnStart` counts the turn, turn one included: it has no
+            // guard, and `StartCombatInternal` runs the same `StartTurn` as every later turn. The
+            // count is the relic's saved `TurnsSeen`, which no fight resets.
+            [PollinousCore] = () => TickPollinousCore(state),
         });
 
         // Phase 5, the energy reset: ModifyMaxEnergy is read whenever the game asks for the
@@ -802,7 +807,7 @@ public static class RelicEffects
             },
             [BoomingConch] = () =>
             {
-                if (state.IsEliteCombat)
+                if (state.IsEliteRoom)
                 {
                     CardEffects.GainEnergy(state, 1);
                 }
@@ -928,33 +933,79 @@ public static class RelicEffects
     private const int PocketwatchCardThreshold = 3;
 
     /// <summary>
-    /// Extra cards the opening draw of a turn owes to relics — Pocketwatch's CardsVar(3)
-    /// after a turn of three cards or fewer.
+    /// The cards the hand draw of turn <paramref name="turnNumber"/> owes to relics on top of the
+    /// five: the sum of the relics' `ModifyHandDraw` (Fiddle's is the Late pass), ONE function for
+    /// every turn, turn one included.
     /// </summary>
-    public static int ExtraHandDraw(CombatState state) =>
-        (state.Relics.Any(relic => relic.DefId == Pocketwatch && relic.Counter > 0) ? 3 : 0)
+    /// <remarks>
+    /// The game has no separate first-turn draw: `SetupPlayerTurn` asks every relic on turn ten
+    /// what it asked on turn one, and each relic carries its own turn guard. This was two lists,
+    /// `ExtraOpeningHandDraw` for turn one and `ExtraHandDraw` for the rest, and a relic that pays
+    /// on any turn had to be written into both: Pollinous Core was written into one, so it never
+    /// paid on a fight's first turn and, since its count was also ticked only from turn two, the
+    /// copy's count ran one turn behind at every fight (259 of the 342 Act 2 and 3 hand records
+    /// of 2026-11-04). The guards, as the game's relics write them:
+    /// <list type="bullet">
+    /// <item>Snecko Eye +2, Pael's Blood +1, Fiddle +2: every turn.</item>
+    /// <item>Ring of the Drake +2 while the turn number is 3 or less.</item>
+    /// <item>Pocketwatch +3 from turn two, after a turn of three cards or fewer (its counter
+    /// holds that verdict, set at the turn start).</item>
+    /// <item>Pollinous Core +2 on whichever turn its count stands at four.</item>
+    /// <item>Ring of the Snake +2, Bag of Preparation +2, Booming Conch +2 (an elite ROOM) and
+    /// Big Mushroom -2: turn one only. Booming Conch asks the room, so a Hive or Glory elite
+    /// pays like an Overgrowth one; its energy is `ApplyFirstTurnAfterSideTurnStart`.</item>
+    /// </list>
+    /// The opening hand's size feeds `ApplyTurnOneDrawPileReorder`, which is what decides how many
+    /// Innate cards the hand is guaranteed to hold.
+    /// </remarks>
+    public static int HandDrawBonus(CombatState state, int turnNumber) =>
+        (turnNumber > 1 && state.Relics.Any(relic => relic.DefId == Pocketwatch && relic.Counter > 0) ? 3 : 0)
         // `SneckoEye.ModifyHandDraw`: CardsVar(2), every turn and unconditionally. The two
         // cards are what pays for the Confused; Fake Snecko Eye gives the Confused and no
         // cards at all.
         + (HasRelic(state, SneckoEye) ? 2 : 0)
         // `PaelsBlood.ModifyHandDraw`: CardsVar(1), unconditionally.
         + (HasRelic(state, PaelsBlood) ? 1 : 0)
-        // `Fiddle.ModifyHandDrawLate`: CardsVar(2), unconditionally.
+        // `Fiddle.ModifyHandDrawLate`: CardsVar(2), unconditionally. Its PRICE is `ShouldDraw`,
+        // which refuses every draw that is not a hand draw while it is your turn -- see
+        // `BlocksExtraDraws`. A bigger hand, and nothing else may add to it.
         + (HasRelic(state, Fiddle) ? 2 : 0)
         // `RingOfTheDrake.ModifyHandDraw`: CardsVar(2) while `TurnNumber <= Turns`, where
-        // Turns is 3 -- so turns two and three, turn one having been paid by the opening
-        // hand above. The comparison is on the turn number the draw is FOR.
-        + (HasRelic(state, RingOfTheDrake) && state.Turn + 1 <= RingOfTheDrakeTurns ? 2 : 0)
+        // Turns is 3. The comparison is on the turn number the draw is FOR.
+        + (HasRelic(state, RingOfTheDrake) && turnNumber <= RingOfTheDrakeTurns ? 2 : 0)
         // `PollinousCore.ModifyHandDraw`: CardsVar(2) on the turn its counter reaches
-        // `Turns` (4), and `AfterModifyingHandDraw` resets it to zero. The counter is
-        // bumped in `BeforeSideTurnStart`, so this is every fourth turn.
-        + (
-            state.Relics.Any(relic =>
-                relic.DefId == PollinousCore && relic.Counter == PollinousCoreTurns
-            )
-                ? 2
-                : 0
+        // `Turns` (4); `AfterModifyingHandDraw` resets it to zero.
+        + (PollinousCorePays(state) ? 2 : 0)
+        // `RingOfTheSnake.ModifyHandDraw` and `BagOfPreparation.ModifyHandDraw`: CardsVar(2)
+        // each, returned unchanged when `TurnNumber > 1`.
+        + (turnNumber <= 1 && HasRelic(state, RingOfTheSnake) ? 2 : 0)
+        + (turnNumber <= 1 && HasRelic(state, BagOfPreparation) ? 2 : 0)
+        // `BoomingConch.ModifyHandDraw`: CardsVar(2) on turn one, in an Elite ROOM.
+        + (turnNumber <= 1 && HasRelic(state, BoomingConch) && state.IsEliteRoom ? 2 : 0)
+        // Big Mushroom's `ModifyHandDraw` SUBTRACTS its `CardsVar(2)` on turn one: the
+        // opening hand is three, and that is the price of its twenty max HP.
+        - (turnNumber <= 1 && HasRelic(state, BigMushroom) ? 2 : 0);
+
+    /// <summary>Whether Pollinous Core's count stands at its fourth turn, so this draw pays.</summary>
+    private static bool PollinousCorePays(CombatState state) =>
+        state.Relics.Any(relic => relic.DefId == PollinousCore && relic.Counter == PollinousCoreTurns);
+
+    /// <summary>
+    /// `Hook.AfterModifyingHandDraw` for the relics whose `ModifyHandDraw` changed the count:
+    /// Pollinous Core's `TurnsSeen` goes back to zero the moment it has paid, so the count the
+    /// next turn adds one to is the game's, not one that waits at four for the next tick. Called
+    /// with the count settled and before the cards are drawn, on every turn.
+    /// </summary>
+    internal static void AfterModifyingHandDraw(CombatState state)
+    {
+        int index = state.Relics.FindIndex(relic =>
+            relic.DefId == PollinousCore && relic.Counter == PollinousCoreTurns
         );
+        if (index >= 0)
+        {
+            state.Relics[index] = state.Relics[index] with { Counter = 0 };
+        }
+    }
 
     /// <summary>
     /// `Fiddle.ShouldDraw` returns FALSE for its owner on its OWN side turn whenever the
@@ -1101,7 +1152,12 @@ public static class RelicEffects
         return true;
     }
 
-    /// <summary>Pollinous Core's per-turn tick, and the reset once it has paid.</summary>
+    /// <summary>
+    /// `PollinousCore.BeforeSideTurnStart`: the saved turn count goes up by one at every player-side
+    /// turn start, turn one of a fight included. Turn one's is in `ApplyBeforeOpeningHand`, later
+    /// turns' in `CombatEngine.EndTurn`. The reset to zero after it has paid is
+    /// <see cref="AfterModifyingHandDraw" />, the game's own place for it.
+    /// </summary>
     internal static void TickPollinousCore(CombatState state)
     {
         int index = state.Relics.FindIndex(relic => relic.DefId == PollinousCore);
@@ -1111,62 +1167,13 @@ public static class RelicEffects
         }
 
         int seen = state.Relics[index].Counter;
+        // A count left standing at four (a state from before the reset moved to the draw) is the
+        // payment already made, so the next turn is the first of the new cycle.
         state.Relics[index] = state.Relics[index] with
         {
             Counter = seen >= PollinousCoreTurns ? 1 : seen + 1,
         };
     }
-
-    /// <summary>
-    /// `RingOfTheSnake.ModifyHandDraw` and `BagOfPreparation.ModifyHandDraw`: `CardsVar(2)`
-    /// each while `TurnNumber > 1` is false, so they pay on turn ONE and never again --
-    /// seven cards in the opening hand rather than five.
-    ///
-    /// They ride the opening hand rather than `ExtraHandDraw` because that is where turn
-    /// one's draw happens: the turn-start path only ever runs from turn two, where both
-    /// relics are already spent.
-    /// </summary>
-    /// <remarks>
-    /// Bag of Preparation used to draw its two through a separate `DrawCards` at COMBAT
-    /// START, which runs after the opening hand is already dealt. Same seven cards, and
-    /// two things wrong with them: the pair were not part of the hand draw, so the hooks
-    /// that fire only on EXTRA draws saw them (Speedster, Death March -- see E329), and the
-    /// opening-hand size feeds `ApplyTurnOneDrawPileReorder`, which is what decides how
-    /// many Innate cards the hand is guaranteed to hold.
-    ///
-    /// THREE relics carry the same mechanic and the emulator had them three different
-    /// ways: Ring of the Snake through this path and correct, Bag of Preparation and
-    /// Booming Conch through a separate `DrawCards` at combat start. One shape modelled
-    /// more than once is a shape modelled wrongly somewhere, which is the more useful half
-    /// of the finding.
-    ///
-    /// Booming Conch also asks the ROOM: its `ModifyHandDraw` pays only in an Elite, and
-    /// only on turn one. Its energy is a separate `AfterSideTurnStart` and stays where it
-    /// is, in `ApplyCombatStart`.
-    /// </remarks>
-    public static int ExtraOpeningHandDraw(CombatState state) =>
-        // `SneckoEye.ModifyHandDraw` has NO turn guard, so unlike Ring of the Snake's pair
-        // it pays on turn one AND every turn after. It therefore appears here and in
-        // `ExtraHandDraw`, which is the only relic that has to.
-        (HasRelic(state, SneckoEye) ? 2 : 0)
-        + (HasRelic(state, RingOfTheSnake) ? 2 : 0)
-        + (HasRelic(state, BagOfPreparation) ? 2 : 0)
-        + (HasRelic(state, BoomingConch) && state.IsEliteCombat ? 2 : 0)
-        // `PaelsBlood.ModifyHandDraw`: CardsVar(1) with no turn guard, so like Snecko Eye
-        // it pays on turn one and every turn after and has to appear in both places.
-        + (HasRelic(state, PaelsBlood) ? 1 : 0)
-        // `Fiddle.ModifyHandDrawLate`: CardsVar(2), every turn. Its PRICE is `ShouldDraw`,
-        // which refuses every draw that is not a hand draw while it is your turn -- see
-        // `BlocksExtraDraws`. A bigger hand, and nothing else may add to it.
-        + (HasRelic(state, Fiddle) ? 2 : 0)
-        // `RingOfTheDrake.ModifyHandDraw`: CardsVar(2) while TurnNumber <= Turns(3). Turn
-        // one is here; turns two and three are in `ExtraHandDraw`.
-        + (HasRelic(state, RingOfTheDrake) ? 2 : 0)
-        // Big Mushroom's `ModifyHandDraw` SUBTRACTS its `CardsVar(2)` on turn one: the
-        // opening hand is three, and that is the price of its twenty max HP. Its pickup
-        // half was modelled and this one was not -- read the `AfterObtained` and stop, and
-        // a relic with a drawback becomes a relic without one.
-        - (HasRelic(state, BigMushroom) ? 2 : 0);
 
     /// <summary>
     /// The relics that pay out every Nth card of a type played in one turn. The game holds

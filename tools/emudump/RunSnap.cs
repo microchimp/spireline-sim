@@ -110,9 +110,9 @@ static class RunSnap
         new("HAPPY_FLOWER", "ints", "TurnsSeen", C, SetC),
         new("PENDULUM", "ints", "TurnsSeen", C, SetC),
         new("FAKE_HAPPY_FLOWER", "ints", "TurnsSeen", C, SetC),
-        // The game zeroes TurnsSeen as the bonus draw lands (AfterModifyingHandDraw); the
-        // emulator holds the turn count until the next tick restarts it at 1.
-        new("POLLINOUS_CORE", "ints", "TurnsSeen", (s, r) => r.Counter == Sts2Emulator.Core.Effects.RelicEffects.PollinousCoreTurns ? 0 : r.Counter, SetC),
+        // The game zeroes TurnsSeen as the bonus draw lands (AfterModifyingHandDraw), and so does the
+        // emulator now (RelicEffects.AfterModifyingHandDraw): the counter is the game's at every point.
+        new("POLLINOUS_CORE", "ints", "TurnsSeen", C, SetC),
         new("IRON_CLUB", "ints", "CardsPlayed", C, SetC),
         new("BOOK_OF_FIVE_RINGS", "ints", "CardsAdded", C, SetC),
         new("FISHING_ROD", "ints", "CombatsSeen", C, SetC),

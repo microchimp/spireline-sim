@@ -309,7 +309,7 @@ READ: dict[str, tuple[str, str]] = {
     ),
     "SneckoEye": (
         "fc91b603409b",
-        "Confused, and TWO more cards every hand draw -- no turn guard, so it rides ExtraOpeningHandDraw as well as ExtraHandDraw, the only relic that has to. Confused re-rolls each drawn card's cost to 0..3 off the run's combat_energy_costs stream, skipping X-cost cards, and it has to be applied before the OPENING hand is dealt.",
+        "Confused, and TWO more cards every hand draw -- no turn guard, so RelicEffects.HandDrawBonus pays it on every turn, turn one included. Confused re-rolls each drawn card's cost to 0..3 off the run's combat_energy_costs stream, skipping X-cost cards, and it has to be applied before the OPENING hand is dealt.",
     ),
     "Byrdpip": (
         "9caa3a1b78bc",
