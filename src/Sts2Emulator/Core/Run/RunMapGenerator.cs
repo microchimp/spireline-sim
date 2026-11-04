@@ -867,6 +867,9 @@ public static class RunMapGenerator
     /// coordinates and only re-rolls when they no longer land on fights, which is the same
     /// answer for a map generated from the same seed.
     /// </remarks>
+    /// <summary>Fur Coat's ModelId entry, the name its own stream is seeded from.</summary>
+    internal const string FurCoatEntry = "FUR_COAT";
+
     private static void MarkRoomsForFurCoat(RunState state)
     {
         state.FurCoatRooms.Clear();
@@ -886,7 +889,11 @@ public static class RunMapGenerator
             .ThenBy(node => node.Row)
             .ToList();
 
-        state.Rng.RelicRng("FurCoat").Shuffle(fights);
+        // The relic's own stream hashes its ModelId ENTRY, FUR_COAT (the shape NEOW and
+        // the events' entries have), not its class name: seeded from "FurCoat" the coat
+        // marked seven other rooms, so a marked fight in the game opened at full HP in the
+        // emulator and an unmarked one at 1 HP.
+        state.Rng.RelicRng(FurCoatEntry).Shuffle(fights);
         state.FurCoatRooms.AddRange(
             fights.Take(RunConstants.FurCoatCombats).Select(node => (node.Col, node.Row))
         );

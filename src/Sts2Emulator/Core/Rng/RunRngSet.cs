@@ -56,7 +56,8 @@ public sealed class RunRngSet
     /// <summary>
     /// A relic's OWN stream: <c>new Rng(owner, Id)</c>, which is
     /// <c>Seed + slotIndex + hash(Id.Entry)</c> -- the same shape as Neow's, with the
-    /// relic's entry name in place of "NEOW". Fur Coat is the only user.
+    /// relic's entry name (SCREAMING_SNAKE, e.g. "FUR_COAT", not the class name) in place
+    /// of "NEOW". Fur Coat is the only user.
     /// </summary>
     public GameRng RelicRng(string entry, int netId = 0)
     {
