@@ -11,6 +11,7 @@ No game is played here except in the last class, which plays short arena fights 
 
 from __future__ import annotations
 
+import argparse
 import json
 import multiprocessing as mp
 import random
@@ -19,6 +20,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -406,6 +408,24 @@ class SampleTasksTests(unittest.TestCase):
     def test_no_preloss_when_it_is_off(self):
         tasks = gl.sample_tasks(self.loop, "c0001", 900.0, "x16", 0.25, random.Random(1), preloss=False)
         self.assertTrue(all("preloss" not in t[4] for t in tasks))
+
+    def test_the_segment_puts_the_mix_and_the_regret_quartiles_in_the_log_and_in_segments_jsonl(self):
+        _fake_shard(self.loop.shards / "s000001-1.npz", [{"start": self.human[3]["id"], "root": 80.0, "won": False}])
+        self.loop.save()
+        a = argparse.Namespace(root=str(self.root), procs=1, segment_min=12.0, teacher="x16", exact_wall_s=0.25, k=2, prior="cpu",
+                               buffer_rows=10**6, buffer_days=21.0, buffer_gb=20.0, no_preloss=False)
+        d = gl.Daemon(a)
+        with mock.patch.object(gl, "play_tasks", lambda *args, **kw: None), mock.patch.object(gl.Daemon, "status", lambda *args, **kw: None):
+            d.segment()
+        log = (self.root / "loop.log").read_text(encoding="utf-8")
+        line = next(x for x in log.splitlines() if "segment 8:" in x)
+        self.assertRegex(line, r"fights by .* under x16; mix act1-hallway night \d+; act2-boss night \d+ human \d+; regret q1/med/q3 ")
+        row = json.loads((self.root / "games" / "segments.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(row["segment"], 8)
+        self.assertEqual(set(row["mix"]), {"act1-hallway", "act2-boss"})
+        self.assertEqual(sum(sum(v.values()) for v in row["mix"].values()), row["tasks"])
+        self.assertIn("regret_quartiles", row)
+        self.assertEqual(row["preloss"], {})
 
 
 class PrelossTests(unittest.TestCase):
