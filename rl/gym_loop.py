@@ -1717,6 +1717,8 @@ class Daemon:
         argv = [GPU_PYTHON, str(ROOT / "rl" / "gym_loop_train.py"), "--root", str(self.loop.root), "--base", str(inc_dir),
                 "--parent-pid", str(os.getpid()), "--every-min", str(self.a.checkpoint_min), "--max-epochs", str(self.a.max_epochs),
                 "--window", str(self.a.train_window)]
+        if getattr(self.a, "reset_every", 0):
+            argv += ["--reset-every", str(self.a.reset_every)]
         logf = open(self.loop.trainer / "trainer.out", "a", encoding="utf-8")  # noqa: SIM115 -- the child's for its life
         self.trainer = winsys.suspended_popen(argv, self.job, stdout=logf, stderr=subprocess.STDOUT, cwd=str(ROOT),
                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -1951,7 +1953,9 @@ def main(argv=None) -> int:
             p.add_argument("--yield-s", type=float, default=150.0)
             p.add_argument("--exact-wall-s", type=float, default=0.25)
             p.add_argument("--checkpoint-min", type=float, default=30.0)
-            p.add_argument("--max-epochs", type=float, default=4.0)
+            p.add_argument("--max-epochs", type=float, default=4.0, help="the trainer's pass cap over each new row")
+            p.add_argument("--reset-every", type=int, default=0,
+                           help="the trainer re-initialises the heads' last layers after every N-th checkpoint (0: never)")
             p.add_argument("--train-window", type=int, default=300_000)
             p.add_argument("--buffer-rows", type=int, default=3_000_000)
             p.add_argument("--buffer-days", type=float, default=21.0)
