@@ -696,8 +696,13 @@ def run_task(task: tuple) -> dict:
     refused: Counter = Counter()
     state = {"labelled": 0, "seconds": 0.0}
 
+    cache: dict[str, Any] = {"at": -1e9, "counts": Counter()}
+
     def have() -> Counter:
-        return count_cells(read_labels(out))
+        """The labels of each cell so far, read from the files at most every five seconds."""
+        if time.monotonic() - cache["at"] > 5.0:
+            cache["at"], cache["counts"] = time.monotonic(), count_cells(read_labels(out))
+        return cache["counts"]
 
     def hook(pt: Point) -> bool:
         act = int(pt.view.act_index)
