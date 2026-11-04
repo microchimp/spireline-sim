@@ -2,33 +2,33 @@
 
 Written by `rl/human_starts.py build` (aggregates only; a cell over fewer than 20 runs is not shown).
 
-- corpus lines read: 653,733
-- Ironclad, Ascension 10, standard, finished: 14,974
+- runs read (every run of the corpus, any character and Ascension): 653,733
+- of those Ironclad, Ascension 10, standard mode, finished, no modifiers: 14,974
 - left out as the exam fifth (ids file or hash rule): 2,968
 - left out for modded acts: 45
 - runs usable: 11,961; runs that gave at least one fight: 11,299
-- fight states rebuilt: 122,596; chosen (elites and bosses all, hallway capped): 46,514
-- records written: 46,512 (with an enchanted card: 18,786; potions only partly known: 0)
+- floors usable (Act 1 and 2 fights whose state could be rebuilt): 122,494; chosen (every elite and boss, hallway capped at 5,000): 46,412
+- records written: 46,410 (with an enchanted card: 18,718; potions only partly known: 0)
 
 ## Records by act and kind
 
 | act and kind | fights the usable runs entered | records | runs |
 |---|---|---|---|
-| act1-boss | 8,844 | 8,224 | 8223 |
+| act1-boss | 8,844 | 8,216 | 8216 |
 | act1-elite | 21,552 | 20,169 | 10316 |
 | act1-hallway | 59,346 | 2,498 | 2260 |
-| act2-boss | 4,563 | 4,042 | 4042 |
+| act2-boss | 4,563 | 3,948 | 3948 |
 | act2-elite | 10,130 | 9,079 | 4933 |
 | act2-hallway | 27,644 | 2,500 | 2098 |
 
 ## Records by act, kind and enemy (runs per cell)
 
-- act1 boss CEREMONIAL_BEAST_BOSS: 1426
+- act1 boss CEREMONIAL_BEAST_BOSS: 1425
 - act1 boss LAGAVULIN_MATRIARCH_BOSS: 1281
 - act1 boss SOUL_FYSH_BOSS: 1295
-- act1 boss THE_KIN_BOSS: 1445
+- act1 boss THE_KIN_BOSS: 1442
 - act1 boss VANTOM_BOSS: 1507
-- act1 boss WATERFALL_GIANT_BOSS: 1267
+- act1 boss WATERFALL_GIANT_BOSS: 1266
 - act1 elite BYGONE_EFFIGY_ELITE: 3535
 - act1 elite BYRDONIS_ELITE: 3519
 - act1 elite PHANTASMAL_GARDENERS_ELITE: 3047
@@ -65,9 +65,9 @@ Written by `rl/human_starts.py build` (aggregates only; a cell over fewer than 2
 - act1 hallway TOADPOLES_WEAK: 180
 - act1 hallway TWO_TAILED_RATS_NORMAL: 45
 - act1 hallway VINE_SHAMBLER_NORMAL: 40
-- act2 boss KAISER_CRAB_BOSS: 1338
-- act2 boss KNOWLEDGE_DEMON_BOSS: 1356
-- act2 boss THE_INSATIABLE_BOSS: 1348
+- act2 boss KAISER_CRAB_BOSS: 1309
+- act2 boss KNOWLEDGE_DEMON_BOSS: 1325
+- act2 boss THE_INSATIABLE_BOSS: 1314
 - act2 elite DECIMILLIPEDE_ELITE: 3059
 - act2 elite ENTOMANCER_ELITE: 2996
 - act2 elite INFESTED_PRISMS_ELITE: 2946
@@ -85,16 +85,17 @@ Written by `rl/human_starts.py build` (aggregates only; a cell over fewer than 2
 - act2 hallway THE_OBSCURA_NORMAL: 136
 - act2 hallway THIEVING_HOPPER_WEAK: 291
 - act2 hallway TUNNELER_WEAK: 270
-- 1 further cells are under 20 runs and not shown
+- 0 further cells are under 20 runs and not shown
 
 ## Rebuild failures by reason
 
 - act 3 or later: not built: 24,393
-- deck replay disagrees with the run's final deck: run dropped: 7,748
-- relic unknown to the copy: 1,275
+- deck replay disagrees with the run's final deck: run dropped: 7,725
+- relic unknown to the copy: 1,273
 - an event page before the fight: HP going in not known: 689
-- card unknown to the copy: 270
-- enchantment unknown to the copy: 165
+- card unknown to the copy: 267
+- enchantment unknown to the copy: 160
+- boss at an unusual floor: the route is not the copy's: 135
 - encounter unknown to the copy: 25
 - roster differs: 2
 
