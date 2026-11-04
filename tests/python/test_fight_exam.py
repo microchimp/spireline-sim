@@ -1,0 +1,769 @@
+"""The fight exam (rl/fight_exam.py; D55, item 3.1 of the 2026-11-04 train-and-test memo).
+
+The pinned facts: the exam is stratified by act, kind and boss, up to the per-cell target, from clean starts (held-out split or never
+played by the generation) of runs the promotion board does not stand on, and a short cell is reported short; its exclusion list names
+the runs and the start ids behind it; the halves are a fixed hash of the start id; the draws' seeds are in their own namespace and do
+not depend on the player; the calibration flags give always-won and never-won starts weight zero; the paired differences, the
+McNemar counts, the bootstrap and the baseline adjustment come out as the arithmetic says on synthetic outcomes; the report text
+names the cells, the bosses, the flags and the halves' sizes; the lock protocol reads the labs' files as the loop does; and, when
+the native library is there, the observer changes no move of the gym's game and its measures are consistent with the fight.
+"""
+
+from __future__ import annotations
+
+import json
+import multiprocessing as mp
+import os
+import random
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = Path(__file__).resolve().parent
+for _path in (ROOT / "rl", ROOT / "src", ROOT, HERE):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+import fight_exam as fe  # noqa: E402
+import fight_gym as fg  # noqa: E402
+import gym_loop as gl  # noqa: E402
+
+F18 = HERE / "fixtures" / "f18_step_hang.json"
+
+
+def lite(i: int, act: int, kind: str, enc: int = 0, seed: str | None = None, split: str = "train") -> dict:
+    cat = f"act{act}-{kind}"
+    return {"id": f"n/g:R{i}|f{i % 30:02d}", "cat": cat, "kind": kind, "act": act, "floor": i % 30, "seed": seed or f"R{i}", "ix": i, "night": "n/g",
+            "k": 0, "node_type": 1, "hp": 50, "max_hp": 80, "deck_size": 12, "potions": 1, "relics": 3, "encounter_id": enc, "turn": 0,
+            "kind_same": True, "replay_same": False, "split": split, "doc": {"x": i}}
+
+
+def synthetic_pool() -> list[dict]:
+    """Act 1: hallways 40, elites 12, bosses 70 / 30 / 5 of encounters 74 / 77 / 79; Act 2: hallways 25, elites 6, bosses 3 / 30 of 75 / 76."""
+    pool, i = [], 0
+    for act, kind, enc, n in ((1, "hallway", 11, 40), (1, "elite", 62, 12), (1, "boss", 74, 70), (1, "boss", 77, 30), (1, "boss", 79, 5),
+                              (2, "hallway", 21, 25), (2, "elite", 63, 6), (2, "boss", 75, 3), (2, "boss", 76, 30)):
+        for _ in range(n):
+            pool.append(lite(i, act, kind, enc))
+            i += 1
+    return pool
+
+
+class SelectionTests(unittest.TestCase):
+    def test_cells_are_act_kind_and_for_a_boss_the_boss(self):
+        self.assertEqual(fe.cell_of(lite(1, 1, "hallway", 11)), "act1-hallway")
+        self.assertEqual(fe.cell_of(lite(1, 2, "elite", 63)), "act2-elite")
+        self.assertEqual(fe.cell_of(lite(1, 1, "boss", 74)), "act1-boss-74")
+        self.assertEqual(fe.kind_cell(lite(1, 1, "boss", 74)), "act1-boss")
+        self.assertIn("ceremonial-beast", fe.cell_label("act1-boss-74"))
+        self.assertEqual(fe.cell_label("act1-elite"), "act1-elite")
+
+    def test_the_pick_fills_each_cell_to_the_target_and_reports_the_short_ones(self):
+        pool = synthetic_pool()
+        chosen, report = fe.pick_exam(pool, exclude_runs=set(), practised={}, per_cell=20)
+        per = {c: sum(1 for s in chosen if s["cell"] == c) for c in report}
+        self.assertEqual(per, {"act1-hallway": 20, "act1-elite": 12, "act1-boss-74": 20, "act1-boss-77": 20, "act1-boss-79": 5,
+                               "act2-hallway": 20, "act2-elite": 6, "act2-boss-75": 3, "act2-boss-76": 20})
+        short = sorted(c for c, v in report.items() if v["short"])
+        self.assertEqual(short, ["act1-boss-79", "act1-elite", "act2-boss-75", "act2-elite"])
+        self.assertEqual(report["act1-boss-74"], {"pool": 70, "clean": 70, "chosen": 20, "practised_added": 0, "short": False})
+        by_kind = {k: sum(1 for s in chosen if s["kind_cell"] == k) for k in ("act1-boss", "act2-boss")}
+        self.assertEqual(by_kind, {"act1-boss": 45, "act2-boss": 23})
+        for s in chosen:
+            self.assertEqual(s["half"], fe.half_of(s["id"]))
+            self.assertTrue(s["clean"])
+
+    def test_the_pick_is_fixed_by_its_seed_and_not_by_the_pools_order(self):
+        pool = synthetic_pool()
+        a, _ = fe.pick_exam(pool, exclude_runs=set(), practised={}, per_cell=10, seed=7)
+        b, _ = fe.pick_exam(list(reversed(pool)), exclude_runs=set(), practised={}, per_cell=10, seed=7)
+        c, _ = fe.pick_exam(pool, exclude_runs=set(), practised={}, per_cell=10, seed=8)
+        self.assertEqual(sorted(s["id"] for s in a), sorted(s["id"] for s in b))
+        self.assertNotEqual(sorted(s["id"] for s in a), sorted(s["id"] for s in c))
+
+    def test_runs_the_board_stands_on_are_never_picked(self):
+        pool = synthetic_pool()
+        board = {s["seed"] for s in pool[:30]}
+        chosen, report = fe.pick_exam(pool, exclude_runs=board, practised={}, per_cell=100)
+        self.assertTrue(all(s["seed"] not in board for s in chosen))
+        self.assertEqual(report["act1-hallway"]["pool"], 10)  # 40 hallways, 30 of them in excluded runs
+
+    def test_only_clean_starts_are_taken_unless_asked_and_then_the_least_played_first(self):
+        pool = synthetic_pool()
+        boss = [s for s in pool if s["encounter_id"] == 74]
+        practised = {s["id"]: 3 for s in boss[:60]}  # 60 of the 70 were played; 10 never
+        practised[boss[0]["id"]] = 9
+        boss[5]["split"] = "val"  # played, but its run is held out of training: clean
+        chosen, report = fe.pick_exam(pool, exclude_runs=set(), practised=practised, per_cell=30)
+        got = [s for s in chosen if s["cell"] == "act1-boss-74"]
+        self.assertEqual(len(got), 11)  # the 10 never played and the held-out one
+        self.assertTrue(report["act1-boss-74"]["short"])
+        self.assertEqual(report["act1-boss-74"]["clean"], 11)
+        more, rep2 = fe.pick_exam(pool, exclude_runs=set(), practised=practised, per_cell=30, allow_practised=True)
+        got2 = [s for s in more if s["cell"] == "act1-boss-74"]
+        self.assertEqual(len(got2), 30)
+        self.assertEqual(sum(1 for s in got2 if not s["clean"]), 19)
+        self.assertEqual(rep2["act1-boss-74"]["practised_added"], 19)
+        self.assertNotIn(boss[0]["id"], [s["id"] for s in got2])  # the one played nine times is the last to be added
+        self.assertTrue(all(s["practised"] == 3 for s in got2 if not s["clean"]))
+
+    def test_the_exclusion_lists_name_the_runs_and_the_starts(self):
+        chosen, _ = fe.pick_exam(synthetic_pool(), exclude_runs=set(), practised={}, per_cell=5)
+        ex = fe.exclusion(chosen)
+        self.assertEqual(ex["starts"], len(chosen))
+        self.assertEqual(ex["start_ids"], sorted(s["id"] for s in chosen))
+        self.assertEqual(ex["run_seeds"], sorted({s["seed"] for s in chosen}))
+        self.assertEqual(ex["by_stratum"], {"ai": len(chosen)})
+
+
+class HalfAndDrawTests(unittest.TestCase):
+    def test_the_half_is_a_fixed_hash_of_the_start_id_and_the_halves_are_even(self):
+        ids = [f"n/g:S{i}|f{i % 30:02d}" for i in range(4000)]
+        halves = [fe.half_of(x) for x in ids]
+        self.assertEqual(halves, [fe.half_of(x) for x in ids])
+        a = halves.count("A")
+        self.assertTrue(1900 < a < 2100, a)
+        # pinned: the rule is sha256("fight-exam-half:" + id), first 32 bits below 2^31 is A; a change of rule moves the halves
+        import hashlib  # noqa: PLC0415
+
+        for x in ids[:50]:
+            h = int(hashlib.sha256(("fight-exam-half:" + x).encode()).hexdigest()[:8], 16)
+            self.assertEqual(fe.half_of(x), "A" if h < 2**31 else "B")
+        self.assertEqual({fe.half_of(x) for x in ("n/g:S0|f00", "n/g:S1|f01")} <= {"A", "B"}, True)
+
+    def test_the_draws_seeds_have_their_own_namespace_and_never_depend_on_the_player(self):
+        self.assertEqual(fe.NS, "x")
+        self.assertNotIn(fe.NS, (gl.PROMOTION_RULE["ns"], gl.NS_GEN, gl.NS_WEIGHTS))
+        for j in range(fe.DRAWS):
+            self.assertEqual(fe.draw_seed("S|f01", j), fg.game_seed("S|f01", j, "xload"))
+            self.assertNotEqual(fe.draw_seed("S|f01", j), fg.game_seed("S|f01", j, "gload"))
+            self.assertNotEqual(fe.draw_seed("S|f01", j), fe.draw_seed("S|f01", j + 1))
+        starts = {s["id"]: {**s, "cell": fe.cell_of(s), "half": fe.half_of(s["id"])} for s in synthetic_pool()[:20]}
+        t1 = fe.exam_tasks(starts, "v2", "v2", "a3-v1", Path("e"), set())
+        t2 = fe.exam_tasks(starts, "c0150", "c0150", "a3-v1", Path("e"), set())
+        key = lambda t: (t[1], t[2], t[4]["ns"])  # noqa: E731
+        self.assertEqual(sorted(map(key, t1)), sorted(map(key, t2)))  # the same games to play, whoever plays them
+        self.assertEqual(len(t1), 20 * fe.DRAWS)
+        self.assertEqual({t[4]["ns"] for t in t1}, {"x"})
+        self.assertEqual(len(fe.exam_tasks(starts, "v2", "v2", "a3-v1", Path("e"), {(t[1], t[2]) for t in t1[:7]})), len(t1) - 7)
+        half = fe.exam_tasks(starts, "v2", "v2", "a3-v1", Path("e"), set(), half="A")
+        self.assertTrue(all(starts[t[1]]["half"] == "A" for t in half))
+        order = [starts[t[1]]["kind"] for t in t1]  # long fights first
+        self.assertEqual(order, sorted(order, key={"boss": 0, "elite": 1, "hallway": 2}.get))
+
+
+# ---------------------------------------------------------------------------------------------------------- the readings
+
+
+def games_for(starts: dict, p_of, rnd: random.Random, draws: int = 4, tweak=None) -> dict:
+    """Synthetic games: start s wins each draw with probability p_of(s); the other measures follow the win."""
+    out = {}
+    for sid, s in starts.items():
+        for j in range(draws):
+            won = rnd.random() < p_of(s)
+            out[(sid, j)] = {"start": sid, "j": j, "won": won, "capped": False, "L0": (0.6 + 0.3 * rnd.random()) if won else 0.0,
+                             "hp_lost": float(rnd.randint(0, 20) if won else 50), "potions_used": float(rnd.randint(0, 1)),
+                             "turns": float(rnd.randint(3, 9)), "dealt": float(rnd.randint(20, 90)), "energy": float(rnd.randint(8, 30)),
+                             "wasted": float(rnd.randint(0, 12))}
+            if tweak:
+                tweak(out[(sid, j)], s, j)
+    return out
+
+
+def synth_starts(n_per_cell: int = 12) -> dict:
+    pool = []
+    i = 0
+    for act, kind, enc in ((1, "hallway", 11), (1, "elite", 62), (1, "boss", 74), (1, "boss", 77), (2, "hallway", 21), (2, "boss", 75)):
+        for _ in range(n_per_cell):
+            pool.append(lite(i, act, kind, enc))
+            i += 1
+    return {s["id"]: {**{k: v for k, v in s.items() if k != "doc"}, "cell": fe.cell_of(s), "kind_cell": fe.kind_cell(s), "half": fe.half_of(s["id"]),
+                      "stratum": "ai"} for s in pool}
+
+
+class CalibrationAndPairingTests(unittest.TestCase):
+    def setUp(self):
+        self.starts = synth_starts()
+        self.rnd = random.Random(5)
+
+    def test_always_and_never_won_starts_get_weight_zero_and_the_rest_one(self):
+        ids = sorted(self.starts)
+        wins = {ids[0]: [1, 1, 1, 1], ids[1]: [0, 0, 0, 0], ids[2]: [1, 0, 0, 0], ids[3]: [1, 1, 1, 0]}
+        games = {}
+        for sid in ids:
+            for j in range(4):
+                if sid in wins:
+                    games[(sid, j)] = {"start": sid, "j": j, "won": bool(wins[sid][j]), "capped": False}
+        games[(ids[4], 0)] = {"start": ids[4], "j": 0, "won": True, "capped": False}  # only one draw: not flagged
+        cal = fe.calibration(games, self.starts)
+        self.assertEqual(cal["always"], [ids[0]])
+        self.assertEqual(cal["never"], [ids[1]])
+        self.assertEqual(sorted(cal["mixed"]), sorted([ids[2], ids[3]]))
+        self.assertIn(ids[4], cal["unplayed"])
+        w = fe.weights_of(cal, self.starts)
+        self.assertEqual((w[ids[0]], w[ids[1]], w[ids[2]], w[ids[3]], w[ids[4]], w[ids[10]]), (0.0, 0.0, 1.0, 1.0, 0.0, 0.0))
+        capped = {(ids[5], j): {"start": ids[5], "j": j, "won": True, "capped": True} for j in range(4)}
+        self.assertEqual(fe.calibration(capped, self.starts)["never"], [ids[5]])  # a capped game is lost
+
+    def test_the_paired_difference_is_the_mean_over_weight_one_starts_by_cell_on_shared_draws(self):
+        champ = games_for(self.starts, lambda s: 0.5, self.rnd)
+        cand = {k: dict(v) for k, v in champ.items()}
+        ids = sorted(self.starts)
+        for sid in ids[:6]:  # the candidate wins one more draw than the champion on six starts, if it can
+            for j in range(4):
+                if not champ[(sid, j)]["won"]:
+                    cand[(sid, j)]["won"] = True
+                    break
+        cal = fe.calibration(champ, self.starts)
+        w = fe.weights_of(cal, self.starts)
+        groups = fe.paired_starts(champ, cand, self.starts, w)
+        flat = [it for v in groups.values() for it in v]
+        self.assertEqual({it["start"] for it in flat}, {s for s in ids if w[s] > 0})
+        want = sum(it["d_won"] for it in flat) / len(flat)
+        self.assertAlmostEqual(fe.mean_stat("d_won")(groups), want)
+        for it in flat:
+            self.assertAlmostEqual(it["d_won"], it["cand_won"] - it["champ_won"])
+        part = fe.paired_starts(champ, {k: v for k, v in cand.items() if k[1] < 2}, self.starts, w)  # a candidate with two draws
+        self.assertTrue(all(it["draws"] == 2 for v in part.values() for it in v))
+
+    def test_mcnemar_counts_match_the_loops_exact_test(self):
+        ids = sorted(self.starts)[:4]
+        champ, cand = {}, {}
+        outcomes = [(1, 0)] * 5 + [(0, 1)] * 2 + [(1, 1)] * 3 + [(0, 0)] * 2
+        k = 0
+        for sid in ids:
+            for j in range(4):
+                if k < len(outcomes):
+                    champ[(sid, j)] = {"start": sid, "j": j, "won": bool(outcomes[k][0]), "capped": False}
+                    cand[(sid, j)] = {"start": sid, "j": j, "won": bool(outcomes[k][1]), "capped": False}
+                    k += 1
+        starts = {s: self.starts[s] for s in ids}
+        mc = fe.mcnemar_counts(champ, cand, starts, {s: 1.0 for s in ids})
+        self.assertEqual((mc["cand_only"], mc["champ_only"], mc["both"], mc["neither"], mc["pairs"]), (2, 5, 3, 2, 12))
+        self.assertAlmostEqual(mc["p"], gl.mcnemar_one_sided(2, 5))
+        zero = fe.mcnemar_counts(champ, cand, starts, {s: 0.0 for s in ids})
+        self.assertEqual(zero["pairs"], 0)
+        self.assertEqual(zero["p"], 1.0)
+
+    def test_the_cross_fit_uses_flags_from_other_draws_and_a_selection_the_all_draws_flags_make_shows_only_in_those(self):
+        # Two identical players: the difference is zero in expectation. Flags from all four of the champion's draws select the
+        # starts it happened to play in the middle of its range, and the candidate's draws on them are unselected: positive bias.
+        starts = {f"s{i}": {"cell": "act1-boss-74", "kind_cell": "act1-boss", "half": "A", "id": f"s{i}", "kind": "boss"} for i in range(5000)}
+        rnd = random.Random(11)
+        pt = {sid: rnd.choice((0.8, 0.85, 0.9, 0.95, 0.5)) for sid in starts}
+        champ = games_for(starts, lambda s: pt[s["id"]], rnd)
+        cand = games_for(starts, lambda s: pt[s["id"]], rnd)
+        cal = fe.calibration(champ, starts)
+        all4 = fe.mean_stat("d_won")(fe.paired_starts(champ, cand, starts, fe.weights_of(cal, starts)))
+        cf = fe.crossfit_difference(champ, cand, starts, boot=50)
+        self.assertGreater(all4, 0.03)  # selected on the champion's own draws: the candidate looks better than an equal player
+        self.assertLess(abs(cf["estimate"]), 0.02)  # flags from the other draws: no selection
+        self.assertLess(abs(cf["estimate"]), all4 / 2)
+
+
+class StatisticsTests(unittest.TestCase):
+    def test_ols_recovers_a_plane(self):
+        rnd = random.Random(1)
+        rows = [[rnd.random(), rnd.random()] for _ in range(200)]
+        y = [0.3 + 2.0 * r[0] - 1.5 * r[1] for r in rows]
+        b = fe.ols(rows, y)
+        for got, want in zip(b, (0.3, 2.0, -1.5)):
+            self.assertAlmostEqual(got, want, places=5)
+
+    def test_the_bootstrap_is_fixed_by_its_seed_and_covers_the_mean(self):
+        rnd = random.Random(2)
+        groups = {"a": [{"d": rnd.gauss(0.1, 1.0)} for _ in range(300)], "b": [{"d": rnd.gauss(0.1, 1.0)} for _ in range(300)]}
+        one = fe.bootstrap(groups, fe.mean_stat("d"), boot=400, seed=3)
+        two = fe.bootstrap(groups, fe.mean_stat("d"), boot=400, seed=3)
+        self.assertEqual(one, two)
+        self.assertEqual(one["n"], 600)
+        self.assertLess(one["lo"], one["estimate"])
+        self.assertGreater(one["hi"], one["estimate"])
+        self.assertAlmostEqual(one["se"], 1.0 / 600**0.5, delta=0.01)
+        self.assertLess(one["lo"], 0.1 + 0.05)
+        self.assertGreater(one["hi"], 0.1 - 0.05)
+
+    def test_the_bootstrap_resamples_inside_the_cells(self):
+        groups = {"a": [{"d": 1.0}] * 10, "b": [{"d": 0.0}] * 30}
+        b = fe.bootstrap(groups, fe.mean_stat("d"), boot=200)
+        self.assertAlmostEqual(b["estimate"], 0.25)
+        self.assertAlmostEqual(b["lo"], 0.25)  # the cells' sizes are kept: no resample moves the mean
+        self.assertAlmostEqual(b["hi"], 0.25)
+
+    def _items(self, rnd, n, shift=0.0):
+        items = []
+        for i in range(n):
+            x = min(0.97, max(0.03, rnd.random() * 0.9 + 0.05 + shift))
+            d = 0.8 * x * (1 - x) * 2 + rnd.gauss(0, 0.02)
+            items.append({"start": f"s{i}", "x": x, "d_won": d})
+        return items
+
+    def test_the_adjustment_moves_the_mean_to_the_reference_and_narrows_the_interval_when_the_baseline_explains_the_differences(self):
+        rnd = random.Random(9)
+        everyone = self._items(rnd, 2000)
+        ref = [sum(f) / len(everyone) for f in zip(*[fe.features(it["x"]) for it in everyone])]
+        truth = sum(it["d_won"] for it in everyone) / len(everyone)
+        sample = self._items(rnd, 300, shift=0.3)  # a half whose baselines run high: its raw mean is off
+        raw = fe.mean_stat("d_won")({"c": sample})
+        adj = fe.adjusted_stat("d_won", ref)({"c": sample})
+        self.assertGreater(abs(raw - truth), 0.03)
+        self.assertLess(abs(adj - truth), 0.012)
+        b_raw = fe.bootstrap({"c": sample}, fe.mean_stat("d_won"), boot=300)
+        b_adj = fe.bootstrap({"c": sample}, fe.adjusted_stat("d_won", ref), boot=300)
+        self.assertLess(b_adj["hi"] - b_adj["lo"], 0.5 * (b_raw["hi"] - b_raw["lo"]))
+
+    def test_with_the_sample_equal_to_the_reference_the_adjusted_estimate_is_the_raw_one(self):
+        rnd = random.Random(10)
+        items = self._items(rnd, 400)
+        ref = [sum(f) / len(items) for f in zip(*[fe.features(it["x"]) for it in items])]
+        self.assertAlmostEqual(fe.adjusted_stat("d_won", ref)({"c": items}), fe.mean_stat("d_won")({"c": items}), places=9)
+
+    def test_items_without_a_baseline_are_left_out_of_the_adjustment(self):
+        items = [{"start": f"s{i}", "x": None, "d_won": 0.1} for i in range(10)]
+        self.assertIsNone(fe.adjusted_stat("d_won", [0.5, 0.25])({"c": items}))
+
+    def test_the_baseline_is_a_mean_over_a_starts_draws(self):
+        rows = [{"start": "a", "j": 0, "p_win": 0.2, "l0": 0.4}, {"start": "a", "j": 1, "p_win": 0.4, "l0": 0.6}, {"start": "b", "j": 0, "p_win": 0.9, "l0": 0.9}]
+        got = fe.baseline_by_start(rows)
+        self.assertAlmostEqual(got["a"]["p_win"], 0.3)
+        self.assertEqual(got["b"]["draws"], 1)
+        starts = {"a": {}, "b": {}, "c": {}}
+        ref = fe.reference_means(starts, {"a": 1.0, "b": 1.0, "c": 1.0}, got)  # c has no baseline: left out
+        self.assertAlmostEqual(ref[0], 0.6)
+        self.assertAlmostEqual(ref[1], (0.3 * 0.7 + 0.9 * 0.1) / 2)
+
+
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        self.starts = synth_starts()
+        rnd = random.Random(21)
+        # champion: wins boss 74 never, boss 77 half the time, the rest mostly; flags follow
+        p = {"act1-boss-74": 0.0, "act1-boss-77": 0.5, "act1-hallway": 1.0, "act1-elite": 0.7, "act2-hallway": 0.9, "act2-boss-75": 0.1}
+        self.games = games_for(self.starts, lambda s: p[s["cell"]], rnd)
+        self.cal = fe.calibration(self.games, self.starts)
+
+    def test_the_report_names_the_cells_the_bosses_the_flags_and_the_halves(self):
+        text = fe.report_text(self.games, self.starts, "v2", self.cal)
+        n = len(self.starts)
+        halves = {h: sum(1 for s in self.starts.values() if s["half"] == h) for h in "AB"}
+        self.assertIn(f"{n} of {n} starts played, {n * 4} games", text)
+        self.assertIn(f"half A {halves['A']} starts", text)
+        self.assertIn(f"half B {halves['B']} /", text)
+        for cell in ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-boss", "act1-boss-74 (ceremonial-beast)",
+                     "act1-boss-77 (lagavulin-matriarch)", "act2-boss-75 (kaiser-crab)"):
+            self.assertIn(cell, text)
+        self.assertIn("calibration flags", text)
+        self.assertIn("hp lost", text)
+        self.assertIn("wasted blk", text)
+        # every act1-hallway start is won on all draws, every act1-boss-74 start on none
+        flag_lines = {ln.split()[0]: ln.split()[1:] for ln in text.splitlines() if ln.startswith(("act1-hallway ", "act1-boss ", "all "))}
+        self.assertEqual(flag_lines["act1-hallway"][:3], ["12", "0", "0"])
+        self.assertEqual(int(flag_lines["act1-boss"][1]), 12)  # boss 74's twelve starts are never won
+        self.assertEqual(int(flag_lines["all"][0]), len(self.cal["always"]))
+        self.assertEqual(int(flag_lines["all"][1]), len(self.cal["never"]))
+
+    def test_the_weight_one_table_leaves_out_the_flagged_starts(self):
+        w = fe.weights_of(self.cal, self.starts)
+        rows = fe.cell_rows(self.games, self.starts, w)
+        self.assertNotIn("act1-hallway", rows)
+        self.assertNotIn("act1-boss-74", rows)
+        self.assertEqual(rows["act1-boss-77"]["starts"], sum(1 for sid in self.cal["mixed"] if self.starts[sid]["cell"] == "act1-boss-77"))
+        every = fe.cell_rows(self.games, self.starts)
+        self.assertEqual(every["act1-boss"]["starts"], 24)
+        self.assertEqual(every["act1-boss"]["games"], 96)
+        self.assertEqual(every["act1-boss-74"]["won"], 0.0)
+
+    def test_the_report_adds_the_baseline_agreement_when_there_is_one(self):
+        base = {sid: {"p_win": 0.5, "l0": 0.5, "draws": 4} for sid in self.starts}
+        self.assertIn("the judge's opening P(win)", fe.report_text(self.games, self.starts, "v2", self.cal, base))
+        self.assertNotIn("the judge's opening P(win)", fe.report_text(self.games, self.starts, "v2", self.cal, None))
+
+    def test_the_comparison_prints_the_raw_adjusted_and_cross_fitted_differences_and_decides_nothing(self):
+        rnd = random.Random(33)
+        p_c = {"act1-boss-77": 0.5, "act1-elite": 0.5, "act2-boss-75": 0.3}
+        champ = games_for({s: v for s, v in self.starts.items() if v["cell"] in p_c}, lambda s: p_c[s["cell"]], rnd)
+        sub = {s: v for s, v in self.starts.items() if v["cell"] in p_c}
+        cand = games_for(sub, lambda s: p_c[s["cell"]] + 0.15, rnd)
+        cal = fe.calibration(champ, sub)
+        base = {sid: {"p_win": p_c[sub[sid]["cell"]], "l0": 0.5, "draws": 4} for sid in sub}
+        text = fe.compare_text(champ, cand, sub, cal, base, "v2", "c0150", half="all", boot=60)
+        for needle in ("McNemar on the games", "win rate difference, raw", "win rate difference, adjusted", "cross-fitted", "HP lost a fight",
+                       "potions spent", "enemy HP removed per energy", "block wasted a fight", "act1-boss-77 (lagavulin-matriarch)", "points"):
+            self.assertIn(needle, text)
+        self.assertNotIn("promote", text.lower().replace("promotion rule", ""))
+        text_a = fe.compare_text(champ, cand, sub, cal, None, "v2", "c0150", half="A", boot=20)
+        self.assertIn("no baseline", text_a)
+        self.assertIn("on half A", text_a)
+
+
+# ---------------------------------------------------------------------------------------------------------- the observer
+
+
+class ObserverTests(unittest.TestCase):
+    def doc(self, hp, block, energy, turn, enemies):
+        return {"player": {"hp": hp, "block": block, "energy": energy}, "turn": turn, "enemies": enemies}
+
+    def test_the_digest_reads_hp_block_energy_and_the_announced_attack(self):
+        d = fe.digest(self.doc(40, 6, 2, 3, [{"hp": 30, "intent": {"type": 0, "magnitude": 5, "hits": 2, "carries_damage": False}},
+                                              {"hp": 12, "intent": {"type": 3, "magnitude": 9, "hits": 1, "carries_damage": False}},
+                                              {"hp": 8, "intent": {"type": 4, "magnitude": 7, "hits": 1, "carries_damage": True}},
+                                              {"hp": 0, "intent": {"type": 0, "magnitude": 99, "hits": 1, "carries_damage": False}}]))
+        self.assertEqual(d, {"hp": 40, "block": 6, "energy": 2, "turn": 3, "ehp": 50, "incoming": 5 * 2 + 7 + 99})
+        self.assertEqual(fe.digest({"player": {}, "enemies": []})["incoming"], 0)
+
+    def test_dealt_energy_and_wasted_block_follow_the_steps(self):
+        class Best:
+            def __init__(self, kind):
+                self.kind = kind
+
+        looks = iter([
+            {"hp": 50, "block": 0, "energy": 3, "turn": 1, "ehp": 40, "incoming": 10},  # play a card: attack, 1 energy, 8 dealt
+            {"hp": 50, "block": 0, "energy": 2, "turn": 1, "ehp": 32, "incoming": 10},  # a potion: no energy
+            {"hp": 50, "block": 0, "energy": 2, "turn": 1, "ehp": 32, "incoming": 10},  # a card: 2 energy, block 12 gained
+            {"hp": 50, "block": 12, "energy": 0, "turn": 1, "ehp": 32, "incoming": 10},  # end turn: 12 block, 10 announced: 2 wasted
+            {"hp": 50, "block": 0, "energy": 3, "turn": 2, "ehp": 30, "incoming": 6},  # next turn: 2 removed during the enemy phase
+            {"hp": 44, "block": 5, "energy": 3, "turn": 2, "ehp": 30, "incoming": 6},  # end turn again: block 5 under 6 announced
+        ])
+        obs = fe.Observer()
+        with mock.patch.object(fe.Observer, "look", staticmethod(lambda world: next(looks))):
+            for kind in ("card", "potion", "card", "end_turn", "card", "end_turn"):
+                obs(None, 0, Best(kind))
+            looks2 = iter([{"hp": 44, "block": 0, "energy": 3, "turn": 3, "ehp": 4, "incoming": 0}])
+            with mock.patch.object(fe.Observer, "look", staticmethod(lambda world: next(looks2))):
+                obs.finish(None, False)
+        s = obs.summary()
+        self.assertEqual(s["energy"], 1.0 + 0.0 + 2.0)  # first card 1, the potion none, the card after it 2 (the third look to the fourth)
+        self.assertEqual(s["wasted"], 2.0)
+        self.assertEqual(s["end_turns"], 2)
+        self.assertEqual(s["block_end"], 17.0)
+        self.assertEqual(s["dealt"], 8.0 + 2.0 + 26.0)  # 40 -> 32, 32 -> 30 over the enemy phase, 30 -> 4 in the last step
+
+    def test_a_won_fight_removes_what_the_enemies_had_left(self):
+        class Best:
+            kind = "card"
+
+        obs = fe.Observer()
+        with mock.patch.object(fe.Observer, "look", staticmethod(lambda world: {"hp": 9, "block": 0, "energy": 3, "turn": 1, "ehp": 14, "incoming": 0})):
+            obs(None, 0, Best())
+        obs.finish(None, True)
+        self.assertEqual(obs.summary()["dealt"], 14.0)
+
+
+# ---------------------------------------------------------------------------------------------------------- the folder and the lock
+
+
+class ExamFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.loop = t / "loop"
+        (self.loop / "starts").mkdir(parents=True)
+        self.pool = [{**s, "doc": {"x": s["id"], "hp": 3}} for s in synthetic_pool()]
+        gl.write_start_set(self.loop / "starts", self.pool)
+        gl.write_json(self.loop / "state.json", {"next_j": {s["id"]: 2 for s in self.pool[:30]}})
+        self.out = t / "exam"
+        self.board = {self.pool[100]["seed"], self.pool[101]["seed"]}
+        self.p = mock.patch.object(gl, "board_run_seeds", lambda: self.board)
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+        self.tmp.cleanup()
+
+    def test_select_writes_the_exam_its_exclusion_list_and_the_meta_and_keeps_the_documents(self):
+        meta = fe.build_exam(self.loop, self.out, per_cell=20)
+        starts = fe.load_exam(self.out)
+        self.assertEqual(meta["starts"], len(starts))
+        self.assertEqual(meta["halves"], {"A": sum(1 for s in starts.values() if s["half"] == "A"), "B": sum(1 for s in starts.values() if s["half"] == "B")})
+        self.assertEqual(meta["by_kind_cell"]["act1-boss"], 45)  # 20, 20 and the 5 there are; the board's two runs are not among them
+        self.assertEqual(meta["by_cell"]["act1-boss-74"]["pool"], 68)
+        self.assertIn("act1-boss-79", meta["short_cells"])
+        ex = json.loads((self.out / "exclude_runs.json").read_text())
+        self.assertEqual(ex["start_ids"], sorted(starts))
+        self.assertTrue(set(ex["run_seeds"]).isdisjoint(self.board))
+        self.assertEqual(set(ex["run_seeds"]), {s["seed"] for s in starts.values()})
+        # the documents are in the exam's own copy, by the gym's byte index
+        sid = sorted(starts)[3]
+        self.assertEqual(gl.load_start(str(self.out / "starts.jsonl"), sid)["doc"]["x"], sid)
+        self.assertEqual({s["id"] for s in starts.values()} & {s["id"] for s in self.pool[:30]}, {s["id"] for s in starts.values() if s["split"] == "val"})
+        self.assertTrue(all(s["clean"] for s in starts.values()))
+
+    def test_an_exam_is_not_replaced_without_rebuild_and_a_rebuild_keeps_the_old_files(self):
+        fe.build_exam(self.loop, self.out, per_cell=10)
+        with self.assertRaises(FileExistsError):
+            fe.build_exam(self.loop, self.out, per_cell=10)
+        fe.build_exam(self.loop, self.out, per_cell=5, rebuild=True)
+        self.assertTrue(any(p.name.startswith("starts.jsonl.") and p.name.endswith(".bak") for p in self.out.iterdir()))
+        self.assertTrue(any(p.name.startswith("exclude_runs.json.") for p in self.out.iterdir()))
+        self.assertLess(len(fe.load_exam(self.out)), 60)
+
+    def test_the_hook_takes_a_second_start_file_as_a_stratum_and_adds_its_runs_to_the_exclusion(self):
+        extra = self.out.parent / "human.jsonl"
+        recs = [{"id": f"human:H{i}|f10", "kind": "boss", "act": 2, "seed": f"H{i}", "encounter_id": 76, "doc": {"hp": 1}, "stratum": "human",
+                 "hp": 30, "max_hp": 80, "node_type": 6, "floor": 33, "potions": 1} for i in range(8)]
+        recs += [{"id": f"human:E{i}|f09", "kind": "elite", "act": 1, "seed": f"E{i}", "encounter_id": 62, "doc": {"hp": 1}, "hp": 30,
+                  "max_hp": 80, "node_type": 2, "floor": 9, "potions": 0} for i in range(3)]
+        extra.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+        meta = fe.build_exam(self.loop, self.out, per_cell=10, extra_path=extra)
+        starts = fe.load_exam(self.out)
+        human = [s for s in starts.values() if s["stratum"] == "human"]
+        self.assertEqual(len(human), 8)
+        self.assertTrue(all(s["cell"] == "act2-boss-76" and s["half"] == fe.half_of(s["id"]) for s in human))
+        self.assertEqual(meta["by_stratum"], {"ai": len(starts) - 11, "human": 8, "extra": 3})
+        ex = json.loads((self.out / "exclude_runs.json").read_text())
+        self.assertIn("H3", ex["run_seeds"])
+        self.assertIn("human:H3|f10", ex["start_ids"])
+        self.assertEqual(meta["by_cell"]["act2-boss-76"].get("extra"), 8)
+
+    def test_a_bad_extra_record_is_refused(self):
+        with self.assertRaises(ValueError):
+            fe.pick_extra([{"id": "a", "kind": "boss", "act": 1, "seed": "s", "doc": {}}])  # a boss without its encounter id
+        with self.assertRaises(ValueError):
+            fe.pick_extra([{"id": "a", "kind": "elite", "act": 1, "seed": "s"}])  # no document
+        ok = {"id": "a", "kind": "elite", "act": 1, "seed": "s", "doc": {}, "encounter_id": 3}
+        with self.assertRaises(ValueError):
+            fe.pick_extra([ok, dict(ok)])
+        self.assertEqual(len(fe.pick_extra([ok])), 1)
+
+
+class CommandTests(unittest.TestCase):
+    """`report` and `compare` end to end on an exam built from a synthetic loop folder and synthetic games files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.loop = t / "loop"
+        (self.loop / "starts").mkdir(parents=True)
+        gl.write_start_set(self.loop / "starts", [{**s, "doc": {"x": 1}} for s in synthetic_pool()])
+        self.out = t / "exam"
+        with mock.patch.object(gl, "board_run_seeds", lambda: set()):
+            fe.build_exam(self.loop, self.out, per_cell=15)
+        self.starts = fe.load_exam(self.out)
+        rnd = random.Random(3)
+        p = {"act1-hallway": 0.97, "act1-elite": 0.7, "act1-boss-74": 0.5, "act1-boss-77": 0.4, "act1-boss-79": 0.5, "act2-hallway": 0.9,
+             "act2-elite": 0.6, "act2-boss-75": 0.2, "act2-boss-76": 0.15}
+        champ = games_for(self.starts, lambda s: p[s["cell"]], rnd)
+        cand = games_for(self.starts, lambda s: min(0.99, p[s["cell"]] + 0.1), rnd)
+        for label, games in (("v2", champ), ("c1", cand)):
+            with open(self.out / f"games-{label}.jsonl", "w", encoding="utf-8") as fh:
+                for r in games.values():
+                    fh.write(json.dumps({**r, "config": "a3-v1", "prior_path": "server", "engine": "abc"}) + "\n")
+        with open(self.out / "baseline.jsonl", "w", encoding="utf-8") as fh:
+            for sid, s in self.starts.items():
+                for j in range(4):
+                    fh.write(json.dumps({"start": sid, "j": j, "p_win": p[s["cell"]], "l0": 0.5}) + "\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cmd(self, fn, **kw):
+        import argparse  # noqa: PLC0415
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fn(argparse.Namespace(exam_dir=str(self.out), **kw))
+        return rc, buf.getvalue()
+
+    def test_report_prints_the_cells_and_stores_the_calibration_flags(self):
+        rc, text = self.run_cmd(fe.cmd_report, player="v2", write_calibration=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("fight exam, player v2", text)
+        self.assertIn("act2-boss-75 (kaiser-crab)", text)
+        self.assertIn("cells short of the target 15", text)
+        cal = json.loads((self.out / "calibration-v2.json").read_text())
+        self.assertEqual(sorted(cal["always"] + cal["never"] + cal["mixed"]), sorted(self.starts))
+        self.assertEqual(cal["player"], "v2")
+        rc, text = self.run_cmd(fe.cmd_report, player="nobody", write_calibration=False)
+        self.assertEqual(rc, 1)
+
+    def test_compare_reads_half_a_against_the_stored_flags_and_warns_when_the_players_differ_in_setup(self):
+        self.run_cmd(fe.cmd_report, player="v2", write_calibration=True)
+        rc, text = self.run_cmd(fe.cmd_compare, candidate="c1", champion="v2", no_play=True, boot=40)
+        self.assertEqual(rc, 0)
+        self.assertIn("c1 against v2 on half A", text)
+        self.assertIn("win rate difference, adjusted", text)
+        self.assertNotIn("WARNING", text)
+        rows = [json.loads(x) for x in (self.out / "games-c1.jsonl").read_text().splitlines()]
+        with open(self.out / "games-c1.jsonl", "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps({**r, "prior_path": "cpu"}) + "\n")
+        rc, text = self.run_cmd(fe.cmd_compare, candidate="c1", champion="v2", no_play=True, boot=20)
+        self.assertIn("WARNING: the two players' games differ in prior_path", text)
+        rc, text = self.run_cmd(fe.cmd_compare, candidate="c9", champion="v2", no_play=True, boot=20)
+        self.assertEqual(rc, 1)
+
+
+class LockTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        (t / "LAB" / "nightly").mkdir(parents=True)
+        (t / "backlog").mkdir()
+        self.t = t
+        self.patches = [mock.patch.object(fg, "QUIET", t / "QUIET.lock"), mock.patch.object(fg, "MAIN_LOCK", t / "backlog" / "main.lock"),
+                        mock.patch.object(fg, "ACTIVE", t / "LAB" / "nightly" / "active"), mock.patch.object(gl, "PAUSE", t / "LAB" / "PAUSE"),
+                        mock.patch.object(gl, "HALT", t / "LAB" / "HALT"), mock.patch.object(gl, "in_night_window", lambda now=None: False)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_the_run_reads_the_labs_locks_as_the_loop_does(self):
+        b = lambda starting=True, **kw: fe.blocked_reason(starting=starting, **kw)  # noqa: E731
+        self.assertIsNone(b())
+        now = gl.stamp()
+        fg.QUIET.write_text(f"gym-loop {now} pid=2\ngym-loop-train {now} pid=3\nw3-blocks {now} pid=1\nfight-exam {now} pid=9\n"
+                            "old-gate 2026-01-01T00:00:00Z pid=4\n")
+        self.assertIsNone(b())  # the loop's own lines, w3-blocks, our own and a line over two hours old do not block
+        fg.QUIET.write_text(fg.QUIET.read_text() + f"bench-config {now} pid=5\n")
+        self.assertEqual(b(), "quiet:bench-config")
+        self.assertEqual(b(starting=False), "quiet:bench-config")
+        fg.QUIET.unlink()
+        (self.t / "backlog" / "main.lock").write_text("x\n")
+        self.assertEqual(b(), "main.lock")
+        self.assertIsNone(b(starting=False))  # a running step carries on through a landing
+        (self.t / "backlog" / "main.lock").unlink()
+        for f, why in ((self.t / "LAB" / "PAUSE", "pause"), (self.t / "LAB" / "nightly" / "active", "nightly-active"), (self.t / "LAB" / "HALT", "halt")):
+            f.write_text("x\n")
+            self.assertEqual(b(), why)
+            f.unlink()
+        stop = self.t / "STOP"
+        stop.write_text("x\n")
+        self.assertEqual(b(stop_file=stop), "stop")
+        stop.unlink()
+        self.assertEqual(b(until="2000-01-01T00:00:00Z"), "until")
+        self.assertIsNone(b(until="2999-01-01T00:00:00Z"))
+        with mock.patch.object(gl, "in_night_window", lambda now=None: True):
+            self.assertEqual(b(), "night-window")
+
+    def test_the_line_carries_our_pid_and_keeps_the_others(self):
+        fg.QUIET.write_text("gym-loop 2026-10-30T10:00:00Z pid=1\n")
+        fe.hold_line(True)
+        lines = fg.QUIET.read_text().splitlines()
+        self.assertEqual(lines[0], "gym-loop 2026-10-30T10:00:00Z pid=1")
+        self.assertTrue(lines[1].startswith("fight-exam ") and lines[1].endswith(f"pid={os.getpid()}"))
+        fe.hold_line(True)
+        self.assertEqual(len(fg.QUIET.read_text().splitlines()), 2)
+        fe.hold_line(False)
+        self.assertEqual(fg.QUIET.read_text().splitlines(), ["gym-loop 2026-10-30T10:00:00Z pid=1"])
+        fg.QUIET.unlink()
+        fe.hold_line(True)
+        fe.hold_line(False)
+        self.assertFalse(fg.QUIET.exists())
+
+    def test_the_lock_is_refused_while_another_holds_the_machine_and_waits_for_the_loops_line_to_go(self):
+        now = gl.stamp()
+        fg.QUIET.write_text(f"bench-config {now} pid=5\n")
+        with self.assertRaises(fe.Blocked):
+            with fe.ExamLock():
+                self.fail("entered")
+        self.assertEqual(fg.QUIET.read_text(), f"bench-config {now} pid=5\n")  # ours was never written
+        fg.QUIET.write_text(f"gym-loop {now} pid=2\n")
+        sleeps = []
+
+        def sleep(s):  # the loop drops its line within its stop poll
+            sleeps.append(s)
+            if len(sleeps) == 2:
+                fg.QUIET.write_text("".join(x + "\n" for x in fg.QUIET.read_text().splitlines() if not x.startswith("gym-loop")))
+
+        with mock.patch.object(fe.time, "sleep", sleep):
+            with fe.ExamLock() as lock:
+                lines = fg.QUIET.read_text().splitlines()
+                self.assertEqual([x.split()[0] for x in lines], ["fight-exam"])
+                self.assertIsNone(lock.stop_reason())
+                fg.QUIET.write_text(fg.QUIET.read_text() + f"bench-config {now} pid=5\n")
+                self.assertEqual(lock.stop_reason(), "quiet:bench-config")  # another's line stops a running play at once
+        self.assertEqual([x.split()[0] for x in fg.QUIET.read_text().splitlines()], ["bench-config"])
+
+    def test_the_lock_gives_up_when_the_loops_line_stays(self):
+        fg.QUIET.write_text(f"gym-loop {gl.stamp()} pid=2\n")
+        with mock.patch.object(fe.time, "sleep", lambda s: None), self.assertRaises(fe.Blocked):
+            with fe.ExamLock(wait_s=0.0):
+                self.fail("entered")
+        self.assertEqual([x.split()[0] for x in fg.QUIET.read_text().splitlines()], ["gym-loop"])
+
+
+# ---------------------------------------------------------------------------------------------------------- real games
+
+
+class ExamGameTests(unittest.TestCase):
+    """Short arena fights at a3-v1 with the fixture prior in the loop's lockstep processes: the observer changes no move, and its
+    measures agree with the fight. Skipped where the native library is not there."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from prior_fixture import export_prior  # noqa: PLC0415 -- torch and the native library
+        except (FileNotFoundError, ImportError) as error:
+            raise unittest.SkipTest(f"native library unavailable: {error}") from error
+        from test_gym_lockstep import _make_starts  # noqa: PLC0415
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        export_prior(root / "agents" / "fixture", prior_min_visits=0)
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+        p = ctx.Process(target=_make_starts, args=(queue, json.loads(F18.read_text(encoding="utf-8"))["doc"]), daemon=True)
+        p.start()
+        kind, got = queue.get(timeout=120)
+        p.join(30)
+        if kind != "ok":
+            raise unittest.SkipTest(f"native library unavailable: {got}")
+        cls.exam = root / "exam"
+        starts = [{**s, "seed": f"RUN{i}", "kind": "hallway", "cell": "act1-hallway", "kind_cell": "act1-hallway", "half": fe.half_of(s["id"]),
+                   "stratum": "ai", "split": "train"} for i, s in enumerate(got) if not s["id"].startswith("F18")]
+        gl.write_start_set(cls.exam, starts)
+        cls.starts = fe.load_exam(cls.exam)
+        cls.agent = root / "agents" / "fixture"
+        cls.init = ("core2", str(cls.agent.parent), cls.agent.name, str(root))
+        import gym_lockstep  # noqa: PLC0415
+
+        tasks = fe.exam_tasks(cls.starts, "fixture", "fixture", "a3-v1", cls.exam, set(), draws=2)
+        cls.rows = cls.exam / "rows.jsonl"
+        stopped, _ = gym_lockstep.run_lockstep(tasks, cls.rows, 1, 2, cls.init, {"prior": "cpu", "game_steps": "fight_exam:exam_game_steps",
+                                                                                  "paths": [str(ROOT / "rl")]})
+        assert stopped is None
+        info = {"starts": str(cls.exam / "starts.jsonl"), "incoming": "", "player": "fixture", "config": "a3-v1", "record": False, "ns": fe.NS}
+        plain = [(a, s, j, c, info) for a, s, j, c, _ in tasks]
+        cls.plain = cls.exam / "plain.jsonl"
+        stopped, _ = gym_lockstep.run_lockstep(plain, cls.plain, 1, 2, cls.init, {"prior": "cpu", "game_steps": "gym_loop:gen_game_steps",
+                                                                                   "paths": [str(ROOT / "rl")]})
+        assert stopped is None
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_observer_changes_no_move_and_the_game_is_the_gyms(self):
+        a, b = fe.index_games(fg.read_jsonl(self.rows)), fe.index_games(fg.read_jsonl(self.plain))
+        self.assertEqual(len(a), 6)
+        self.assertEqual(sorted(a), sorted(b))
+        for key in a:
+            for f in ("won", "end_hp", "turns", "decisions", "sims", "moves_sha", "first_move", "L0", "potions_used"):
+                self.assertEqual(a[key][f], b[key][f], (key, f))
+
+    def test_the_measures_are_consistent_with_the_fight(self):
+        for r in fg.read_jsonl(self.rows):
+            self.assertEqual(r["exam"], fe.EXAM_RULE)
+            self.assertEqual(r["cell"], "act1-hallway")
+            self.assertEqual(r["hp_lost"], r["start_hp"] - (r["end_hp"] if r["won"] else 0))
+            self.assertGreaterEqual(r["energy"], 0.0)
+            self.assertLessEqual(r["energy"], 3.0 * r["turns"] + 12)
+            self.assertGreaterEqual(r["wasted"], 0.0)
+            self.assertLessEqual(r["wasted"], r["block_end"])
+            if r["won"]:
+                self.assertGreater(r["dealt"], 0.0)
+            self.assertEqual(r["j"] in range(2), True)
+            self.assertEqual(len(r["engine"]), 12)
+
+
+if __name__ == "__main__":
+    unittest.main()

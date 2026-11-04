@@ -160,3 +160,44 @@ played once per incumbent.
 - `gpu.jsonl`: the card's busy share per process from Windows' GPU Engine counters, split into the loop's inference (its server),
   its training (the trainer), the lab's Python processes and the rest.
 - `gate/verdicts.jsonl` and `trainer/checkpoints.jsonl`: each checkpoint's scores.
+
+## 7. The fight exam (D55, item 3.1 of the 2026-11-04 train-and-test memo): a second ruler beside the gate
+
+`rl/fight_exam.py` builds and plays a fixed, stratified, held-out set of fight starts and prints what a candidate does to the
+champion's results on it. It is a parallel instrument: it never reads or writes the gate's games, it never changes
+`PROMOTION_RULE`, and its `compare` prints figures and decides nothing. The module's docstring is the specification; this is the
+short version and the working notes.
+
+- **The set.** About 1,100 starts from the gym's start records (the nights' replays): act (1, 2) by kind (hallway, elite, boss),
+  a boss a cell of its own, up to 100 a cell, drawn by a seeded hash, clean starts only (the run is in the trainer's held-out
+  split, or the generation never played the start: `state.json`'s `next_j`). The board's 200 starts and every run behind them are
+  out. Cells the clean pool cannot fill are listed short in `exam/meta.json` and in every report. `--extra-starts PATH` takes a
+  second file in the same record schema as a stratum (the human starts), up to 100 a cell, and puts its runs on the exclusion
+  list. The exam keeps its own copy of every start's document (`exam/starts.jsonl`, the gym's format and byte index): the gym
+  rebuilds its start set with each night and drops the old nights, the exam does not move.
+- **For the practice sampler.** `exam/exclude_runs.json` lists `run_seeds` (every run behind an exam start) and `start_ids`. The
+  daemon's sampler (`sample_tasks`) picks any start of `starts.lite.json` and does not read it yet: **until it skips them the
+  practice can play exam starts, and every exam start it plays is no longer clean** (the teacher's moves at that position become
+  training data). Skipping the start ids is the minimum; skipping the runs is the board's own rule (here that is about 38 in 100 of
+  the runs of the nine nights, because a run gives one exam start of each kind it reached).
+- **Draws.** Four a start (`DRAWS`), game j in the seed namespace `x` (the gate's is `g`, generation's `L`, the weights' `W`);
+  seeds never depend on the player, so a candidate plays the champion's shuffles and per-decision search seeds.
+- **Halves.** `half_of(id)`: sha256 of `fight-exam-half:` and the id, first 32 bits below 2^31 is A. The gate side reads half A
+  (`compare` plays half A only); half B is the orchestrator's weekly read (`play --half B`).
+- **Scores.** Per game: win (capped is lost), L0, HP lost, potions spent, turns, enemy HP removed, energy spent on cards, block
+  held at the end of a turn above the attack the intents announce (wasted block). The last three come from an observer that reads
+  the position before each decision (`Observer`; the moves are the gym's, a test pins it). Per start: the mean over draws.
+- **Baseline.** `baseline` asks the judge (`agent/judge/v0/judge.pt`, on the CPU) for P(win) and L0 at the first decision of every
+  start and draw: a property of the start and the shuffles. `compare` prints the paired win difference raw and adjusted (a
+  regression of the per-start differences on P(win) and P(win)(1 - P(win)), moved to the exam's mean baseline), each with a
+  bootstrap interval over starts resampled within cells. With common draws the start's difficulty already cancels in a paired
+  difference, so the adjustment mostly corrects half A's baseline imbalance and removes the part of the differences that
+  difficulty explains; it is not AIVAT (chance after the first decision is not corrected).
+- **Calibration flags.** Starts the champion won on all four draws or none are kept and weighted zero, listed in every report. A
+  flag made from the champion's draws and used on the same draws flatters a candidate when difficulties are skewed (the cross-fit
+  test shows it), so `compare` also prints the win difference with flags from two draws and the difference on the other two.
+- **Run it.** `select` (pauses the loop for about a minute), then `play --player v2` (the calibration, about 4,400 games, the
+  champion's `a3-v1` games under the loop's lockstep processes and prior server), `report --write-calibration`, later
+  `compare c0150`. A run takes the QUIET.lock line `fight-exam` (refreshed every ten minutes), starts only with no other tag but
+  the loop's own and `w3-blocks`, never while `LAB/nightly/active` exists or in the night window, stops at once on any of them and at
+  `--until`, and is resumable (a game with a row is never played twice). Games go to `exam/games-<player>.jsonl`.
