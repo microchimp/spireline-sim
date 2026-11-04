@@ -2339,6 +2339,71 @@ public sealed class RunEngine : Core2.ICombatEndHost
         }
     }
 
+    /// <summary>
+    /// The Scythe and Genetic Algorithm grow on every play, and the game grows the DECK
+    /// version too (their play buffs <c>DeckVersion</c> as well as the card in the fight), so
+    /// a Scythe played in one fight opens the next one 4 (5 upgraded) stronger, and a Genetic
+    /// Algorithm 3 (4) more block, for the rest of the run.
+    /// </summary>
+    /// <remarks>
+    /// The fight carries that growth on the card (<c>BonusDamage</c>, <c>BonusBlock</c>, the
+    /// fields its play writes back), and its card list starts as the run deck's cards, so
+    /// writing the fight's value back onto the deck card is the whole of it. Matched as Goopy
+    /// is (no link from a fight card back to its deck card): by card id, largest first, so a
+    /// copy upgraded during the fight still finds its deck card. The fields hold nothing
+    /// else for these two cards but a Momentum enchantment's running bonus, which the game
+    /// keeps on the fight's card alone; a Momentum Scythe would carry that too (not seen).
+    /// </remarks>
+    private void CarryPlayGrowthToTheDeck(CombatState combat)
+    {
+        CarryGrowth(combat, ScytheCard, card => card.BonusDamage, (card, v) => card with { BonusDamage = v });
+        CarryGrowth(
+            combat,
+            GeneticAlgorithmCard,
+            card => card.BonusBlock,
+            (card, v) => card with { BonusBlock = v }
+        );
+    }
+
+    private static readonly int ScytheCard = GeneratedData.Cards.FindId("TheScythe") ?? -1;
+    private static readonly int GeneticAlgorithmCard = GeneratedData.Cards.FindId("GeneticAlgorithm") ?? -1;
+
+    private void CarryGrowth(
+        CombatState combat,
+        int defId,
+        Func<CardInstance, int> read,
+        Func<CardInstance, int, CardInstance> write
+    )
+    {
+        var grown = new Queue<int>(
+            combat.AllCards().Where(card => card.DefId == defId).Select(read).OrderByDescending(v => v)
+        );
+        if (grown.Count == 0)
+        {
+            return;
+        }
+
+        foreach (
+            int index in Enumerable
+                .Range(0, State.Deck.Count)
+                .Where(i => State.Deck[i].DefId == defId)
+                .OrderByDescending(i => read(State.Deck[i]))
+                .ToList()
+        )
+        {
+            if (grown.Count == 0)
+            {
+                break;
+            }
+
+            int value = grown.Dequeue();
+            if (value > read(State.Deck[index]))
+            {
+                State.Deck[index] = write(State.Deck[index], value);
+            }
+        }
+    }
+
     /// <summary>The post-combat sync, exposed so a test can drive it without a fight.</summary>
     internal void SyncAfterCombatForTest() => SyncAfterCombat();
 
@@ -2356,6 +2421,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
         Effects.RelicEffects.CollectUsedUpRelics(State.ActiveCombat, State.UsedUpRelics);
         Effects.RelicEffects.CarryRunCountersBack(State.ActiveCombat, State.Relics);
         CarryGoopyGrowthToTheDeck(State.ActiveCombat);
+        CarryPlayGrowthToTheDeck(State.ActiveCombat);
         State.PlayerHp = Math.Max(0, State.ActiveCombat.PlayerHp);
         State.PlayerMaxHp = Math.Max(1, State.ActiveCombat.PlayerMaxHp);
         State.Gold = Math.Max(0, State.ActiveCombat.PlayerGold);

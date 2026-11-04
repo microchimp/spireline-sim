@@ -7068,9 +7068,9 @@ public static class CardEffects
                 // a literal, so the 1 is written out here.
                 //
                 // The growth rides on the copy, as Rampage's damage does. The game also
-                // buffs `base.DeckVersion`, so a Genetic Algorithm that grew in one fight
-                // starts the NEXT one bigger -- that half is run state and is not modelled;
-                // combat builds its card list fresh from the deck.
+                // grows the deck version, so a Genetic Algorithm that grew in one fight
+                // starts the NEXT one bigger: RunEngine.CarryPlayGrowthToTheDeck writes the
+                // card's grown BonusBlock back onto the deck card after the fight.
                 GainBlock(state, 1 + card.BonusBlock, rng);
                 state.PlayedCardBonusBlock += upgraded ? 4 : 3;
                 return true;
@@ -7785,9 +7785,9 @@ public static class CardEffects
                 //
                 // The emulator scaled it by the cards EXHAUSTED this turn, which is a
                 // different card. It exhausts itself, so within one combat the growth shows
-                // only if the copy is recovered -- but `BuffFromPlay` is also called on
-                // `DeckVersion`, so the growth is meant to persist for the whole RUN.
-                // Combat does not write back to the deck here, so that half is still owed.
+                // only if the copy is recovered -- but the play grows the deck version too,
+                // so the growth persists for the whole RUN: RunEngine.CarryPlayGrowthToTheDeck
+                // writes the card's grown BonusDamage back onto the deck card after the fight.
                 DealDamage(state, DmgFrom(state, 13, def, card, card.BonusDamage));
                 state.PlayedCardBonusDamage += upgraded ? 5 : 4;
                 return true;
