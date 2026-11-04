@@ -32,6 +32,9 @@ import json
 import math
 import os
 import random
+import re
+import threading
+import time
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from itertools import accumulate
@@ -378,6 +381,37 @@ def doc_cards(doc: dict) -> list[dict]:
     return out
 
 
+_SEQ_LOCK = threading.Lock()
+_SEQ_LAST = 0
+
+
+def next_seq() -> int:
+    """A pre-loss start's write sequence number: the wall clock in ns, held strictly above this process's last number. The
+    clock alone ticks coarsely on Windows (about 16 ms), and a segment's games write dozens of starts inside one tick, so a
+    start's own number is what says which was written after which, not its file's modification time."""
+    global _SEQ_LAST
+    with _SEQ_LOCK:
+        _SEQ_LAST = max(time.time_ns(), _SEQ_LAST + 1)
+        return _SEQ_LAST
+
+
+_J_IN_ID = re.compile(r"\|j(\d+)\|")
+
+
+def preloss_rank(rec: dict, file_ns: int = 0) -> tuple:
+    """The total order of "newest" among pre-loss starts: (write sequence, parent start, game number, id). Every part is in the
+    record, so the order does not depend on the file system's time resolution or on the order a directory lists its files.
+    Two writer processes can still draw the same sequence number; the rest of the key then breaks the tie the same way on every
+    merge (the game number as a number, so j2 comes before j10). A record written before the sequence existed has no `seq`: the
+    modification time of its file (the same clock, ns since the epoch) stands in for it."""
+    seq = rec.get("seq")
+    j = rec.get("j")
+    if j is None:
+        m = _J_IN_ID.search(str(rec.get("id", "")))
+        j = int(m.group(1)) if m else -1
+    return (int(seq) if seq is not None else int(file_ns), str(rec.get("parent", "")), int(j), str(rec.get("id", "")))
+
+
 def preloss_start(parent: dict, sid: str, j: int, k: int, doc: dict, root: float | None, player: str, made: str) -> dict:
     """The start made from the position at decision `k` of game `j` of start `sid`, a fight the AI lost. It keeps the parent's
     kind, run and split; its score0 is the loss it comes from: the root value of that position against the death."""
@@ -386,7 +420,8 @@ def preloss_start(parent: dict, sid: str, j: int, k: int, doc: dict, root: float
     pl = doc.get("player") or {}
     return {"id": f"preloss:{sid}|j{j}|k{k}", "cat": parent["cat"], "kind": parent["kind"], "act": parent["act"],
             "floor": parent["floor"], "seed": parent["seed"], "run": parent.get("run") or parent["seed"], "ix": parent.get("ix", -1),
-            "night": "preloss", "source": "preloss", "parent": sid, "parent_player": player, "k": int(k),
+            "night": "preloss", "source": "preloss", "parent": sid, "parent_player": player, "j": int(j), "k": int(k),
+            "seq": next_seq(),
             "node_type": parent["node_type"], "hp": pl.get("hp"), "max_hp": pl.get("max_hp"), "deck_size": len(doc_cards(doc)),
             "potions": held, "relics": len(doc.get("relics") or []), "encounter_id": doc.get("encounter_id"),
             "turn": int(doc.get("turn", 0)), "kind_same": True, "replay_same": None, "split": parent.get("split"),
@@ -396,22 +431,29 @@ def preloss_start(parent: dict, sid: str, j: int, k: int, doc: dict, root: float
 def merge_preloss(root: Path, max_keep: int) -> dict:
     """Move the pre-loss starts the segment's games wrote (`starts/preloss-new/*.json`, one atomic file a start) into
     `preloss-starts.jsonl`, its byte index and its lite list. Keeps the newest `max_keep` (the set is rewritten when it is a
-    quarter over). Returns {merged, kept, dropped}."""
+    quarter over). Returns {merged, kept, dropped}.
+
+    The set is in write order: a segment's starts go in by `preloss_rank` (their own sequence numbers, not file times or names),
+    after the starts of the segments before, so the list's tail is the newest and the cut keeps it, and the draw pools (which
+    follow the list) are the same on every merge of the same starts."""
     sd = Path(root) / "starts"
     inbox = sd / "preloss-new"
-    files = sorted((p for p in inbox.glob("*.json")), key=lambda p: (p.stat().st_mtime_ns, p.name)) if inbox.is_dir() else []
+    files = []
+    for p in (inbox.glob("*.json") if inbox.is_dir() else ()):
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+            rec["id"]  # a record without its id is no start
+            files.append((preloss_rank(rec, p.stat().st_mtime_ns), p, rec))
+        except (OSError, ValueError, KeyError, TypeError):
+            p.unlink(missing_ok=True)
+    files.sort(key=lambda t: t[0])
     path, idx_p, lite_p = sd / "preloss-starts.jsonl", sd / "preloss-starts.index.json", sd / "preloss-starts.lite.json"
     index = _read_json(idx_p, {}) or {}
     lite = _read_json(lite_p, []) or []
     merged = 0
     if files:
         with open(path, "ab") as fh:
-            for p in files:
-                try:
-                    rec = json.loads(p.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    p.unlink(missing_ok=True)
-                    continue
+            for _, p, rec in files:
                 if rec["id"] not in index:
                     fh.seek(0, 2)
                     index[rec["id"]] = fh.tell()

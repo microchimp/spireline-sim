@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing as mp
+import os
 import random
 import sys
 import tempfile
@@ -503,6 +504,89 @@ class PrelossTests(unittest.TestCase):
             self.assertEqual(ids, {f"preloss:2026-11-02/g9:CYVX|f17|j{j}|k8" for j in range(4, 12)})
             for sid in ids:
                 self.assertEqual(gl.load_start(str(root / "starts" / "preloss-starts.jsonl"), sid)["id"], sid)
+
+    # "Newest" is a total order carried in the records (their sequence numbers), not read off the file system: a segment's games
+    # write dozens of starts inside one clock tick (about 16 ms on Windows), and file times and names then tie.
+
+    def _inbox(self, root: Path) -> Path:
+        d = root / "starts" / "preloss-new"
+        d.mkdir(parents=True)
+        return d
+
+    def _hand_record(self, parent_id: str, j: int, **over) -> dict:
+        parent = {**self.PARENT, "id": parent_id}
+        rec = pm.preloss_start(parent, parent_id, j, 8, self.Rec(12).states[0][1], 48.0, "c0144", "2026-11-05T00:00:00Z")
+        rec.update(over)
+        return rec
+
+    def _lite_ids(self, root: Path) -> list[str]:
+        return [x["id"] for x in json.loads((root / "starts" / "preloss-starts.lite.json").read_text())]
+
+    def test_many_starts_written_inside_one_tick_are_kept_newest_exactly(self):
+        pid = self.PARENT["id"]
+        self.addCleanup(setattr, pm, "_SEQ_LAST", pm._SEQ_LAST)  # the frozen clock must not leave a future number behind
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(pm.time, "time_ns", return_value=1_800_000_000_000_000_000):
+            root = Path(tmp)
+            inbox = self._inbox(root)
+            cfg = {"dir": str(inbox), "back": 3, "min_decisions": 5}
+            lost = {"won": False, "capped": False}
+            for j in range(20):
+                gl.write_preloss(cfg, self.PARENT, pid, j, lost, self.Rec(12), "c0144")
+            for p in inbox.glob("*.json"):  # one tick: every file the same time too
+                os.utime(p, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
+            self.assertEqual(pm.merge_preloss(root, max_keep=100)["merged"], 20)
+            # a second parent's games interleaved with the first's, still inside the same tick
+            other = "2026-11-02/g9:ZZZZ|f17"
+            for j in range(20, 40):
+                gl.write_preloss(cfg, {**self.PARENT, "id": other}, other, j, lost, self.Rec(12), "c0144")
+                gl.write_preloss(cfg, self.PARENT, pid, j, lost, self.Rec(12), "c0144")
+            for p in inbox.glob("*.json"):
+                os.utime(p, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
+            self.assertEqual(len({p.stat().st_mtime_ns for p in inbox.glob("*.json")}), 1)
+            r = pm.merge_preloss(root, max_keep=8)
+            self.assertEqual((r["merged"], r["kept"], r["dropped"]), (40, 8, 52))
+            # the last eight written: j36..39 of both parents, in write order
+            want = [f"preloss:{s}|j{j}|k8" for j in range(36, 40) for s in (other, pid)]
+            self.assertEqual(self._lite_ids(root), want)
+            gl._START_CACHE.clear()
+            for sid in want:
+                self.assertEqual(gl.load_start(str(root / "starts" / "preloss-starts.jsonl"), sid)["id"], sid)
+
+    def test_sequence_numbers_rise_inside_a_frozen_clock_and_when_the_clock_steps_back(self):
+        self.addCleanup(setattr, pm, "_SEQ_LAST", pm._SEQ_LAST)
+        with mock.patch.object(pm.time, "time_ns", return_value=5_000_000_000_000_000_000):
+            a, b, c = pm.next_seq(), pm.next_seq(), pm.next_seq()
+        self.assertTrue(a < b < c)
+        with mock.patch.object(pm.time, "time_ns", return_value=1):
+            d = pm.next_seq()
+        self.assertGreater(d, c)
+
+    def test_equal_sequence_numbers_from_two_writers_tie_by_parent_then_game_number_whatever_the_file_names(self):
+        recs = [self._hand_record(pid, j, seq=777) for pid in ("run:B|f17", "run:A|f17") for j in (10, 2, 3)]
+        want = [f"preloss:{pid}|j{j}|k8" for pid in ("run:A|f17", "run:B|f17") for j in (2, 3, 10)]  # j2 before j10: a number
+        for names in (lambda i: f"a{i:02d}", lambda i: f"z{len(recs) - i:02d}"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                inbox = self._inbox(root)
+                for i, rec in enumerate(recs):
+                    (inbox / f"{names(i)}.json").write_text(json.dumps(rec), encoding="utf-8")
+                pm.merge_preloss(root, max_keep=100)
+                self.assertEqual(self._lite_ids(root), want)
+
+    def test_a_start_written_before_sequence_numbers_existed_is_ranked_by_its_files_time_then_game_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = self._inbox(root)
+            pid = "run:A|f17"
+            # (j, file time): j5 is the oldest file; j10 and j2 share a time; j7 is the newest. Names run against the times.
+            for name, j, t in (("a", 7, 4_000), ("b", 2, 3_000), ("c", 10, 3_000), ("d", 5, 1_000)):
+                rec = self._hand_record(pid, j)
+                del rec["seq"], rec["j"]
+                p = inbox / f"{name}.json"
+                p.write_text(json.dumps(rec), encoding="utf-8")
+                os.utime(p, ns=(t, t))
+            pm.merge_preloss(root, max_keep=100)
+            self.assertEqual(self._lite_ids(root), [f"preloss:{pid}|j{j}|k8" for j in (5, 2, 10, 7)])
 
 
 # ---------------------------------------------------------------------------------------------------------- real games
