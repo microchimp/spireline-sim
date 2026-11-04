@@ -1413,6 +1413,7 @@ def play(a) -> int:
                "reanchor_fail_reasons": _merge(e["stats"].get("reanchor_fail_reasons", {}) for e in ends),
                "reanchor_by_plan": _merge(e["stats"].get("reanchor_by_plan", {}) for e in ends),
                **_provenance(ends),
+               "hidden": _hidden(ends),
                "divergences_by_type": _count(f"{d['type']}:{'gap' if d.get('gap') else 'state'}:{(d.get('reason') or ','.join(x[0] for x in d['diff'][:3]))[:40]}" for d in divs),
                "run_s_total": round(sum(e["s"] for e in ends), 1),
                "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),
@@ -1445,6 +1446,18 @@ def _provenance(ends) -> dict:
             "streams_moved": sum(s.get("streams_moved", 0) for s in st),
             "streams_unmoved_names": _merge(s.get("streams_unmoved_names", {}) for s in st),
             "walk": {k: sum(s.get("walk", {}).get(k, 0) for s in st) for k in ("walks", "floors", "picks", "fights")}}
+
+
+def _hidden(ends) -> dict:
+    """The lockstep's second, unranked comparison (referee/hidden_diff.py), summed over the finished runs' stats: the decisions it
+    looked at, the ones with a difference, the divergence records that carry one (`records`; the ranked records are the same
+    with or without it), the runs that had a difference, and by field the records carrying it and the unbroken runs of
+    differing decisions that began with it. Nothing here enters `diverged_decisions`, the divergences or the ranking."""
+    st = [e["stats"].get("hidden") or {} for e in ends]
+    return {"checked": sum(s.get("checked", 0) for s in st), "diverged_decisions": sum(s.get("diverged", 0) for s in st),
+            "records": sum(s.get("records", 0) for s in st), "runs_with_a_difference": sum(1 for s in st if s.get("diverged")),
+            "errors": sum(s.get("errors", 0) for s in st),
+            "by_field": _merge(s.get("by_field", {}) for s in st), "parts_by_field": _merge(s.get("parts_by_field", {}) for s in st)}
 
 
 def _merge(dicts) -> dict:

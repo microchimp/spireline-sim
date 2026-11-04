@@ -59,6 +59,16 @@ def _paths() -> None:
             sys.path.insert(0, str(p))
 
 
+def _hidden_diff():
+    """referee/hidden_diff.py: the second, unranked comparison (enemy block and powers, the player's block and powers, relic
+    counters and the melted flag). Imported on first use, as `refset` is."""
+    try:
+        from referee import hidden_diff  # noqa: PLC0415
+    except ImportError:
+        import hidden_diff  # noqa: PLC0415
+    return hidden_diff
+
+
 def macro_policy():
     """The macro policy (outside fights) of the agent SPIRELINE_GEN_DIR names (score-real sets it to the scored agent), or
     generation 0's rules when it is unset. The emulator arm (gen0.play_emu_run) plays the same `Agent.macro_policy()`, so both
@@ -328,8 +338,16 @@ class Lockstep:
 
         self.fields = run_fields.RunFields()  # the run's record fields (boss damage), read by envproto play
         self.fields_error: str | None = None  # the first fault of a record-field hook; the hooks stop after it
+        # `stats["hidden"]` counts the second, unranked comparison (referee/hidden_diff.py): the decisions it looked at (the copy
+        # in lockstep and a side that reads those fields), the ones it found a difference on, the divergence records that carry
+        # one, and by field the records carrying it (`by_field`) and the unbroken runs of differing decisions that began with
+        # it (`parts_by_field`). None of it enters `diverged`, a record's `diff` or `agent_weighted`.
         self.stats = {"decisions": 0, "ranked": 0, "not_ranked": 0, "diverged": 0, "gaps": 0, "reanchors": 0,
-                      "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {}}
+                      "reanchor_failed": 0, "resumed": 0, "first_loss": None, "losses": {},
+                      "hidden": {"checked": 0, "diverged": 0, "records": 0, "by_field": {}, "parts_by_field": {}, "errors": 0}}
+        self.hidden = self.stats["hidden"]
+        self.hidden_run: dict | None = None  # the unbroken run of decisions with a hidden difference now in force
+        self.hidden_ended: dict | None = None  # the last run that ended before this decision
 
     def decide(self, msg: dict) -> int:
         msg = self._take_hidden(msg)
@@ -380,9 +398,12 @@ class Lockstep:
     def _take_hidden(self, msg: dict) -> dict:
         """The firewall of the hidden anchor state (PLAN.md section 5, "The bridge, decided"). The game's stream counters and
         draw order (driver spec "anchor_state") go to the emulator side's `take_anchor_state` and nowhere else: the message
-        returned is a copy without the key, so the agent's fallback, the divergence records, the pairing and the search never
-        see it (the search forks the position with resample_hidden=True besides). Without the key the emulator side is told
-        None, so a state from an earlier decision cannot linger."""
+        returned is a copy without the key, so the agent's fallback, the pairing and the search never see it (the search forks
+        the position with resample_hidden=True besides). The divergence records do not see it either, with one narrow exception:
+        the emulator side's relic comparison (`EmuLock.hidden_diff`, the second, unranked check) returns the relics whose
+        counter or melted flag differs, as (relic, game value, copy value), and a record carries those; the records feed the
+        analysis, never the agent, and a relic's counter is on the game's screen. The streams and the draw order stay in. Without
+        the key the emulator side is told None, so a state from an earlier decision cannot linger."""
         hidden = msg.get(ANCHOR_KEY)
         if ANCHOR_KEY in msg:
             msg = {k: v for k, v in msg.items() if k != ANCHOR_KEY}
@@ -480,6 +501,7 @@ class Lockstep:
     def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None,
               rec: dict | None = None) -> None:
         self.lost = reason
+        self.hidden_run = self.hidden_ended = None
         key = reason.split(":")[0] + (":" + reason.split(":")[1] if reason.startswith(("unmapped", "apply", "catchup")) else "")
         self.stats["losses"][key] = self.stats["losses"].get(key, 0) + 1
         self.stats["first_loss"] = self.stats["first_loss"] or {"decision": i, "reason": reason}
@@ -546,6 +568,8 @@ class Lockstep:
         self._note_walk(getattr(self.emu, "walk", None))
         by = self.stats.setdefault("reanchor_by_plan", {})
         by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
+        if ok:
+            self.hidden_run = self.hidden_ended = None  # the copy is on the game's record again: a new run of differences starts there
         return ok
 
     def _note_streams(self, rep: dict | None) -> None:
@@ -579,9 +603,59 @@ class Lockstep:
         self.stats["resumed"] += 1
         return True
 
+    def _look_hidden(self, i: int, msg: dict, reason: str | None) -> list | None:
+        """The second, unranked comparison at this decision: [path, game, copy] for the fields the ranked projection does not
+        hold (enemy block and powers, the player's block and powers; at a re-anchor point also the relics' counters and melted
+        flag), or None when there is nothing to compare (a side without the reader, the copy not caught up, a reader that
+        failed). It runs after the copy has replayed the game's own moves (`sync`) and before any re-anchor changes it, and
+        keeps the unbroken run of decisions with a difference: where it began is the step the two sides parted.
+        Nothing here is ranked: `diverged`, a record's `diff`, its hash and `agent_weighted` do not see it."""
+        look = getattr(self.emu, "hidden_diff", None)
+        if look is None or reason:
+            return None
+        try:
+            found = look(msg.get("obs") or {})
+        except Exception:  # noqa: BLE001 -- a reader that fails costs the look, never the run
+            self.hidden["errors"] += 1
+            return None
+        hd = _hidden_diff()
+        self.hidden["checked"] += 1
+        if found:
+            self.hidden["diverged"] += 1
+            if self.hidden_run is None:
+                self.hidden_run = {"decision": i, "turn": self.round, "acted": self.prev_act, "last": i,
+                                   "diff": found[:hd.RECORD_CAP]}
+                for k in sorted({hd.kind(x[0]) for x in found}):
+                    self.hidden["parts_by_field"][k] = self.hidden["parts_by_field"].get(k, 0) + 1
+            else:
+                self.hidden_run["last"] = i
+        elif self.hidden_run is not None:
+            self.hidden_ended, self.hidden_run = self.hidden_run, None
+        return found
+
+    def _note_hidden(self, rec: dict, hidden: list | None) -> None:
+        """A divergence record carries what the second comparison found at its decision (`hidden_diff`, empty when it looked and
+        found nothing; absent when it did not look), when that run of differences began (`hidden_since`: the decision, the
+        turn, the step before it and the first differences) or, when none is in force, the last run that ended (`hidden_ended`).
+        Records are not added for a hidden difference alone: the ranking sees the records it always saw."""
+        if hidden is None:
+            return
+        hd = _hidden_diff()
+        rec["hidden_diff"], rec["n_hidden"] = hidden[:hd.RECORD_CAP], len(hidden)
+        if hidden:
+            self.hidden["records"] += 1
+            for k in sorted({hd.kind(x[0]) for x in hidden}):
+                self.hidden["by_field"][k] = self.hidden["by_field"].get(k, 0) + 1
+        run = self.hidden_run if hidden else None
+        if run is not None:
+            rec["hidden_since"] = {k: run[k] for k in ("decision", "turn", "acted", "diff")}
+        elif self.hidden_ended is not None:
+            rec["hidden_ended"] = {k: self.hidden_ended[k] for k in ("decision", "last", "turn", "acted", "diff")}
+
     def _check(self, i: int, kind: str, labels: list, msg: dict) -> bool:
         obs = msg.get("obs", {})
         reason, d, r, e = self._equal(kind, labels, msg)
+        hidden = self._look_hidden(i, msg, reason)
         if not reason and not d:
             return True
         gap = bool(reason) and reason.startswith(GAP_PREFIXES)
@@ -590,6 +664,7 @@ class Lockstep:
                            ref_hash=view_hash(r), emu_hash=view_hash(e), referee_state_hash=msg.get("h"),
                            reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx,
                            **self._probe(msg))
+        self._note_hidden(rec, hidden)
         plan = reanchor_plan(kind, self.prev_kind)
         rec["reanchor_plan"] = plan
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
@@ -748,7 +823,9 @@ class EmuLock:
         v = self.s.view()
         out = {"act": self.s.act_index, "floor": v.floor, "hp": v.hp, "max_hp": v.max_hp, "gold": v.gold,
                "deck": [self._card(c) for c in v.deck],
-               "relics": [self.slug["relics"].get(r, f"?{r}") for r in v.relics],
+               # The game keeps a melted relic in the player's list (flagged), and its observation lists it; the copy keeps it
+               # beside the relics in play (state list 24), so the two lists are the same list.
+               "relics": [self.slug["relics"].get(r, f"?{r}") for r in v.relics] + (self._melted_relics() or []),
                "potions": [self.slug["potions"].get(p, f"?{p}") for p in v.potions]}
         if self.s.phase == self.E.rc.PHASE_COMBAT:
             obs, ls = self._obs(), self.ls
@@ -934,6 +1011,53 @@ class EmuLock:
         belt = [self.slug["potions"].get(p, f"?{p}") for p in self.s.view().potions]
         return {"emu_energy": int(obs[3]), "emu_legal": names, "emu_potions": belt, "emu_selection": is_open}
 
+    # -- the second, unranked comparison (referee/hidden_diff.py)
+    def _melted_relics(self) -> list[str] | None:
+        """The relics the copy holds melted (state list 24), by name, or None when its library has no such list (an older
+        build answers -3) or the stub in a test has no library."""
+        try:
+            return [self.slug["relics"].get(r, f"?{r}") for r in self.native.run_state_list(self.s.handle, 24, 64) if r]
+        except Exception:  # noqa: BLE001 -- a library without the list: the lockstep reads none, as before
+            return None
+
+    def _relic_state(self) -> dict[str, int]:
+        """{relic: counter} of the relics in play, the open fight's copy while there is one (state list 25), else {}."""
+        try:
+            flat = self.native.run_state_list(self.s.handle, 25, 128)
+        except Exception:  # noqa: BLE001
+            return {}
+        return {self.slug["relics"].get(flat[k], f"?{flat[k]}"): flat[k + 1] for k in range(0, len(flat) - 1, 2) if flat[k]}
+
+    def hidden_view(self) -> dict:
+        """The copy's block and powers, the player's and the enemies', from the observation buffer the agent reads, in a fight."""
+        hd = _hidden_diff()
+        if getattr(self, "_buff_names", None) is None:
+            from sts2_gym import names  # noqa: PLC0415 -- the BuffId enum, read off the engine's own source
+
+            self._buff_names = names.buffs()
+        ls, nat = self.ls, self.native
+        return hd.emu_view(self._obs(), player_buffs_at=nat.OBS_PLAYER_BUFF_OFFSET, player_buff_slots=nat.OBS_MAX_PLAYER_BUFFS,
+                           enemies_at=ls._ENEMIES, enemy_size=ls._ENEMY, enemy_slots=nat.MAX_ENEMIES,
+                           enemy_buff_slots=ls._ENEMY_BUFFS, names=self._buff_names)
+
+    def hidden_diff(self, obs: dict) -> list:
+        """[path, game, copy] for the fields the ranked comparison does not hold, at the decision whose observation is `obs`
+        (`Lockstep._look_hidden`): in a fight the block and powers of the player and of each enemy; where the driver sent the
+        game's hidden state (a map decision, a fight's first decision) also the relics' counters and melted flag. Of the hidden
+        state only these differences leave this side (the relic and the two numbers), never the state itself."""
+        hd = _hidden_diff()
+        out: list = []
+        if self.s.phase == self.E.rc.PHASE_COMBAT:
+            out += hd.diff(hd.game_view(obs), self.hidden_view())
+        relics = (self._hidden or {}).get("relics")
+        if isinstance(relics, list):
+            try:
+                from referee import refset  # noqa: PLC0415
+            except ImportError:
+                import refset  # noqa: PLC0415
+            out += hd.relic_diff(relics, self._relic_state(), self._melted_relics(), refset.relic_counter_writes)
+        return out
+
     def _auto_combat(self) -> None:
         """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""
         env = self.s.env
@@ -1035,7 +1159,7 @@ class EmuLock:
 
     def _set_player(self, obs: dict) -> bool:
         cards = [(self.ids["cards"].get(c[0]), int(c[1]), 0, 0) for c in obs.get("deck", [])]
-        relics = [self.ids["relics"].get(r) for r in obs.get("relics", [])]
+        relics = self._melted_marked(obs, [self.ids["relics"].get(r) for r in obs.get("relics", [])])
         belt = obs.get("potions", [])
         potions = [self.ids["potions"].get(p) if p else 0 for p in belt]
         if any(c[0] is None for c in cards) or None in relics or None in potions:
@@ -1058,6 +1182,19 @@ class EmuLock:
                                          gold=int(obs["gold"]), cards=cards, relics=relics, potions=potions,
                                          max_potion_slots=len(belt), **extra)
         return True
+
+    def _melted_marked(self, obs: dict, relics: list) -> list:
+        """`relics` (the emulator ids of the observation's relic list) with a relic the game holds melted as its negative id, which
+        the native write files as melted: the game's list names the relic and its `IsMelted` flag is in the driver's anchor state
+        (`bools`), position by position. Without the anchor state, a list that is not this observation's, or a library that
+        cannot hold a melted relic (no state list 24), the list is written as it was, every relic in play."""
+        game = (self._hidden or {}).get("relics")
+        listed = obs.get("relics") or []
+        if not isinstance(game, list) or len(game) != len(listed) or None in relics or self._melted_relics() is None:
+            return relics
+        if any(not isinstance(g, dict) or g.get("id") != r for g, r in zip(game, listed)):
+            return relics
+        return [-r if (g.get("bools") or {}).get("IsMelted") else r for g, r in zip(game, relics)]
 
     def _game_cards(self, obs: dict, cards: list) -> tuple[list, dict]:
         """`cards` ((id, upgraded, enchantment, amount) in the game's deck order) with the driver's per-card data put over the

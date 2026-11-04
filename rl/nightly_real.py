@@ -233,6 +233,10 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
             "boss_kill_rate": boss / t["runs"] if t["runs"] else None, "crashes": t["crashes"],
             "stalls": stalls, "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
             "reanchors": summ.get("reanchors"), "reanchor_failed": summ.get("reanchor_failed"), "wall_s": summ.get("wall_s"),
+            # the second, unranked comparison (referee/hidden_diff.py): divergence records that carry a difference in a field the
+            # ranking does not look at, and the decisions with one; None: a summary from before it. Not in the ranked groups.
+            "hidden_records": (summ.get("hidden") or {}).get("records"),
+            "hidden_diverged_decisions": (summ.get("hidden") or {}).get("diverged_decisions"),
             # game processes that did not come up: starts retried on a fresh process, and seeds whose tries all failed (a crash row each);
             # the lines are in the block folder's boot.jsonl (referee/envproto.py boot_game). None: a summary from before the retry
             "boot_retries": summ.get("boot_retries"), "boot_gave_up": summ.get("boot_gave_up"),

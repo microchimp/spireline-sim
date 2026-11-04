@@ -209,6 +209,29 @@ class ProvenanceSummaryTest(unittest.TestCase):
         self.assertEqual(envproto._provenance([])["anchored_with"], {"hidden": 0, "observation": 0, "streams": 0, "none": 0})
 
 
+class HiddenSummaryTest(unittest.TestCase):
+    """The lockstep's second, unranked comparison (referee/hidden_diff.py) is counted in the block's summary under its own key and
+    nowhere else: the divergence counts, the rate and the divergence rows are what they were."""
+
+    def test_the_counts_are_summed_over_the_runs_and_a_run_from_before_adds_none(self):
+        a = {"stats": {"hidden": {"checked": 40, "diverged": 6, "records": 2, "errors": 0, "by_field": {"enemy_block": 2},
+                                  "parts_by_field": {"enemy_block": 1, "relic_counter:PEN_NIB": 1}}}}
+        b = {"stats": {"hidden": {"checked": 10, "diverged": 0, "records": 0, "errors": 1, "by_field": {}, "parts_by_field": {}}}}
+        h = envproto._hidden([a, b, {"stats": {}}])
+        self.assertEqual(h, {"checked": 50, "diverged_decisions": 6, "records": 2, "runs_with_a_difference": 1, "errors": 1,
+                             "by_field": {"enemy_block": 2}, "parts_by_field": {"enemy_block": 1, "relic_counter:PEN_NIB": 1}})
+        self.assertEqual(envproto._hidden([])["checked"], 0)
+
+    def test_the_ranked_summary_counts_do_not_see_it(self):
+        plain = {"decisions": 100, "ranked": 40, "diverged": 1, "reanchors": 0, "reanchor_failed": 0, "first_loss": None}
+        with_hidden = {**plain, "hidden": {"checked": 40, "diverged": 9, "records": 1, "errors": 0, "by_field": {"enemy_block": 1},
+                                           "parts_by_field": {"enemy_block": 1}}}
+        for stats in (plain, with_hidden):
+            ends = [{"stats": stats, "s": 1.0}]
+            self.assertEqual(sum(e["stats"]["diverged"] for e in ends), 1)
+        self.assertEqual(envproto._provenance([{"stats": plain}]), envproto._provenance([{"stats": with_hidden}]))
+
+
 class FullSelectSpecTest(unittest.TestCase):
     def test_reset_spec_carries_the_flag_only_when_on(self):
         self.assertNotIn("full_select", envproto.reset_spec("S1"))  # old records and specs are unchanged
@@ -426,7 +449,7 @@ class PlayResumeTest(unittest.TestCase):
                           "decisions_per_s", "wall_s", "ranked_share", "diverged_decisions", "divergence_rate", "reanchors", "reanchor_failed",
                           "first_loss_by_reason", "first_divergences_by_type", "gaps", "resumed", "losses_by_reason", "reanchor_fail_reasons",
                           "reanchor_by_plan", "anchored_with", "streams_named", "streams_moved", "streams_unmoved_names", "walk",
-                          "divergences_by_type", "run_s_total", "decisions_per_s_per_proc", "ranked_decisions_per_s_per_proc",
+                          "hidden", "divergences_by_type", "run_s_total", "decisions_per_s_per_proc", "ranked_decisions_per_s_per_proc",
                           "network_connections", "errors"], list(summary))
         self.assertEqual([(0, ["S0", "S2", "S4"], [0, 2, 4]), (1, ["S1", "S3", "S5"], [1, 3, 5])], [c[:3] for c in self.calls])
 

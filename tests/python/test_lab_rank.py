@@ -224,6 +224,26 @@ class RankTest(unittest.TestCase):
         self.assertIn("| 1 |", (self.tmp / "out" / "top20.md").read_text())
         self.assertEqual(0, rank.rank(self.tmp / "nothing")["summary"]["groups"])
 
+    def test_the_second_comparisons_keys_change_nothing_in_the_ranking_the_families_or_the_agent_weighted_figures(self):
+        """A fixture night written twice: as the lockstep wrote it before the second, unranked comparison (referee/hidden_diff.py) and
+        with its keys on every record. ranked.json, top20.md, by_family.json and by_family.md are byte for byte the same."""
+        plain = [rec(1, 5, SAME_SIZE), rec(2, 30, HP), rec(3, 31, HP, run="S2"), rec(4, 12, RUN_HP, type="map"),
+                 rec(5, 40, HP, emu_outcome={"class": "win"}), rec(6, 8, BIGGER, ai_state_assumed=True),
+                 rec(7, 9, [], gap=True, reason="apply:no_emulator_option:rest")]
+        extra = {"hidden_diff": [[".combat.enemies[0].block", 5, 0]], "n_hidden": 1,
+                 "hidden_since": {"decision": 2, "turn": 3, "acted": {"type": "play", "kind": "combat", "label": ["play", 1]},
+                                  "diff": [[".combat.player.powers.STRENGTH", 2, None]]},
+                 "hidden_ended": {"decision": 1, "last": 1, "turn": 1, "acted": None, "diff": []}}
+        with_hidden = [{**r, **{k: v for k, v in extra.items() if (i + len(k)) % 2 == 0 or k == "hidden_diff"}} for i, r in enumerate(plain)]
+        self.assertTrue(all("hidden_diff" in r for r in with_hidden) and not any("hidden_diff" in r for r in plain))
+        files = {}
+        for name, divs in (("plain", plain), ("hidden", with_hidden)):
+            write_records(self.tmp / name, divs)
+            rank.write(self.tmp / name, self.tmp / (name + "-out"))
+            files[name] = {f.name: f.read_bytes() for f in (self.tmp / (name + "-out")).iterdir()}
+        self.assertEqual({"ranked.json", "top20.md", "by_family.json", "by_family.md"}, set(files["plain"]))
+        self.assertEqual(files["plain"], files["hidden"])
+
     def test_confirmed_and_proxy_are_kept_apart_and_only_confirmed_weighs(self):
         d = self.doc([rec(1, 50, RUN_HP, type="map"), rec(2, 50, HP, emu_outcome={"class": "win"})])
         by = {g["display"]["type"]: g for g in d["groups"]}

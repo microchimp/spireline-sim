@@ -2,6 +2,7 @@
 leak tests of DESIGN.md 7.6 (clairvoyance, L2, L3, L8) on the emulator alone. Runs under pytest or
 `python -m unittest`; the emulator tests need the native library and skip without it."""
 
+import json
 import sys
 import unittest
 from types import SimpleNamespace
@@ -1616,3 +1617,271 @@ class UpgradedCardRewardPairingTests(unittest.TestCase):
     def test_an_upgraded_take_does_not_pair_with_the_plain_offer(self):
         self.assertEqual(self.e._pair("card_reward", [["ANGER", 0], ["BASH", 1]]), [None, None])
 
+
+
+# ---------------------------------------------------------------- the second, unranked comparison (referee/hidden_diff.py)
+
+BLOCK = [".combat.enemies[0].block", 5, 0]
+POWER = [".combat.player.powers.STRENGTH", 2, None]
+
+
+class HiddenEmu(FakeEmu):
+    """A FakeEmu with the second comparison's reader: `hidden[k]` is what the k-th look finds ([path, game, copy] entries, or
+    an exception for a reader that fails); the last entry holds for the looks after it."""
+
+    def __init__(self, views, hidden, **kw):
+        super().__init__(views, **kw)
+        self.hidden, self.looks = hidden, []
+
+    def hidden_diff(self, obs):
+        self.looks.append(obs)
+        h = self.hidden[min(len(self.looks) - 1, len(self.hidden) - 1)]
+        if isinstance(h, Exception):
+            raise h
+        return h
+
+
+def hidden_keys(rec):
+    return {k for k in rec if k.startswith("hidden") or k == "n_hidden"}
+
+
+def ranked_part(rec):
+    return {k: v for k, v in rec.items() if k not in hidden_keys(rec)}
+
+
+def fight_views(n, differ_at=None):
+    """n views equal to the referee's fight (one enemy at 15), the one at `differ_at` with the enemy at 12 HP."""
+    out = []
+    for k in range(n):
+        v = view_of(obs(combat=True))
+        if k == differ_at:
+            v["combat"]["enemy_hp"] = [12]
+        out.append(v)
+    return out
+
+
+class HiddenDifferenceTests(unittest.TestCase):
+    def run_stream(self, stream, emu):
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        return ls, [ls.decide(m) for m in stream]
+
+    def fight(self, n):
+        return [msg("combat", obs(combat=True)) for _ in range(n)]
+
+    def test_a_record_carries_the_hidden_difference_and_where_the_run_of_them_began(self):
+        emu = HiddenEmu(fight_views(4, differ_at=3), [[], [BLOCK], [BLOCK, POWER], [BLOCK]])
+        ls, _ = self.run_stream(self.fight(4), emu)
+        (rec,) = ls.log.records
+        self.assertEqual((rec["decision"], rec["diff"][0][0]), (3, ".combat.enemy_hp"))
+        self.assertEqual((rec["hidden_diff"], rec["n_hidden"]), ([BLOCK], 1))
+        since = rec["hidden_since"]
+        self.assertEqual((since["decision"], since["diff"]), (1, [BLOCK]))  # it parted at decision 1, two steps before the HP did
+        self.assertEqual((since["acted"]["kind"], since["acted"]["type"]), ("combat", "choice"))
+        self.assertNotIn("hidden_ended", rec)
+        self.assertEqual(ls.stats["hidden"], {"checked": 4, "diverged": 3, "records": 1, "errors": 0,
+                                              "by_field": {"enemy_block": 1}, "parts_by_field": {"enemy_block": 1}})
+
+    def test_a_hidden_difference_alone_adds_no_record_and_no_divergence(self):
+        emu = HiddenEmu(fight_views(3), [[BLOCK, POWER]])
+        ls, picks = self.run_stream(self.fight(3), emu)
+        self.assertEqual((ls.log.records, ls.stats["diverged"], ls.stats["ranked"], picks), ([], 0, 3, [1, 1, 1]))
+        self.assertIsNone(ls.lost)
+        self.assertEqual(ls.stats["hidden"]["diverged"], 3)
+        self.assertEqual(ls.stats["hidden"]["parts_by_field"], {"enemy_block": 1, "player_power:STRENGTH": 1})
+        self.assertEqual(ls.stats["hidden"]["records"], 0)
+
+    def test_the_ranked_records_stats_and_answers_are_what_they_were_without_the_second_comparison(self):
+        a, b = obs(hp=80), obs(hp=70)
+        streams = {
+            "lost at a card reward": ([msg("rest", a), msg("card_reward", obs(hp=80, floor=2)), msg("rest", a)],
+                                      lambda: [view_of(a), view_of(b)], False),
+            "re-anchored at a room entry": ([msg("map", a), msg("map", a)], lambda: [view_of(obs(hp=70)), view_of(a)], True),
+        }
+        for name, (stream, views, reanchor_ok) in streams.items():
+            with self.subTest(name):
+                plain = FakeEmu(views(), reanchor_ok=reanchor_ok)
+                hidden = HiddenEmu(views(), [[BLOCK], [BLOCK, POWER]], reanchor_ok=reanchor_ok)
+                pls, ppicks = self.run_stream(stream, plain)
+                hls, hpicks = self.run_stream(stream, hidden)
+                self.assertEqual(ppicks, hpicks)
+                self.assertEqual(plain.applied, hidden.applied)
+                self.assertTrue(pls.log.records)
+                self.assertEqual(json.dumps([ranked_part(r) for r in hls.log.records], sort_keys=True),
+                                 json.dumps(pls.log.records, sort_keys=True))
+                self.assertEqual({k: v for k, v in hls.stats.items() if k != "hidden"},
+                                 {k: v for k, v in pls.stats.items() if k != "hidden"})
+                self.assertTrue(all(hidden_keys(r) for r in hls.log.records))
+                self.assertFalse(any(hidden_keys(r) for r in pls.log.records))
+
+    def test_a_side_without_the_reader_adds_nothing_and_a_lost_lockstep_is_not_looked_at(self):
+        ls, _ = self.run_stream(self.fight(3), FakeEmu(fight_views(3, differ_at=1)))
+        self.assertFalse(any(hidden_keys(r) for r in ls.log.records))
+        self.assertEqual(ls.stats["hidden"]["checked"], 0)
+        emu = HiddenEmu(fight_views(4, differ_at=1), [[BLOCK]])
+        self.run_stream(self.fight(4), emu)
+        self.assertEqual(len(emu.looks), 2)  # decisions 0 and 1; once the lockstep is lost the copy is not compared
+
+    def test_a_reader_that_fails_costs_the_look_and_never_the_record_or_the_run(self):
+        emu = HiddenEmu(fight_views(2, differ_at=1), [[BLOCK], RuntimeError("buffer")])
+        ls, picks = self.run_stream(self.fight(2), emu)
+        (rec,) = ls.log.records
+        self.assertFalse(hidden_keys(rec))
+        self.assertEqual((ls.stats["hidden"]["errors"], ls.stats["hidden"]["checked"]), (1, 1))
+        self.assertEqual(picks, [1, 0])
+
+    def test_a_run_of_differences_that_ended_before_the_record_is_named_by_its_first_and_last_decision(self):
+        emu = HiddenEmu(fight_views(4, differ_at=3), [[BLOCK], [BLOCK], [], []])
+        ls, _ = self.run_stream(self.fight(4), emu)
+        (rec,) = ls.log.records
+        self.assertEqual(rec["hidden_diff"], [])
+        self.assertNotIn("hidden_since", rec)
+        self.assertEqual((rec["hidden_ended"]["decision"], rec["hidden_ended"]["last"], rec["hidden_ended"]["diff"]), (0, 1, [BLOCK]))
+        self.assertEqual(ls.stats["hidden"]["records"], 0)  # the record carries no difference at its own decision
+
+    def test_a_re_anchor_ends_the_run_of_differences(self):
+        a = obs(hp=80)
+        emu = HiddenEmu([view_of(a), view_of(obs(hp=70)), view_of(a), view_of(a)], [[BLOCK]], reanchor_ok=True)
+        ls, _ = self.run_stream([msg("map", a)] * 3, emu)
+        self.assertEqual(ls.log.records[0]["hidden_since"]["decision"], 0)
+        self.assertTrue(ls.log.records[0]["reanchored"])
+        self.assertEqual(ls.hidden_run["decision"], 2)  # the copy was put on the game's record at 1; a new run began after it
+        self.assertEqual(ls.stats["hidden"]["parts_by_field"], {"enemy_block": 2})
+
+    def test_the_second_comparison_is_in_the_json_a_record_is_written_as(self):
+        emu = HiddenEmu(fight_views(2, differ_at=1), [[BLOCK]])
+        ls, _ = self.run_stream(self.fight(2), emu)
+        self.assertEqual(json.loads(json.dumps(ls.log.records))[0]["hidden_diff"], [BLOCK])
+
+
+class HiddenEmuLockTests(unittest.TestCase):
+    """EmuLock's readers over a stub of the native library: the buffer, the two run state lists, the melted flag."""
+
+    NAMES = {0: "Strength", 2: "Vulnerable"}
+
+    @staticmethod
+    def refuses(h, k, n):
+        raise RuntimeError(f"Sts2Run_GetStateList failed with status -3 for list {k}")
+
+    def side(self, phase=FakeRun.COMBAT, hidden=None):
+        buf = [0] * 60
+        buf[2] = 3  # the player's block
+        buf[10], buf[11] = 0, 2  # the player's first buff slot: Strength 2
+        buf[20:25] = [30, 40, 6, 0, 0]  # one enemy: HP, max HP, block
+        buf[25], buf[26] = 2, 1  # its first buff slot: Vulnerable 1
+        run = SimpleNamespace(phase=phase, act_index=0, handle=7, view=lambda: SimpleNamespace(
+            floor=3, hp=70, max_hp=80, gold=9, deck=[], relics=[5], potions=[]))
+        e = stub_emu(run)
+        lists = {24: (6,), 25: (5, 8, 7, 1, 0, 0)}  # melted: SAI; counters: PEN_NIB 8, VAJRA 1, then an empty pair
+        e.native = SimpleNamespace(OBS_PLAYER_BUFF_OFFSET=10, OBS_MAX_PLAYER_BUFFS=3, MAX_ENEMIES=2,
+                                   run_state_list=lambda h, k, n: lists[k] if k in lists else self.refuses(h, k, n))
+        e.ls = SimpleNamespace(_ENEMIES=20, _ENEMY=11, _ENEMY_BUFFS=3, _living_targets=lambda o: [])
+        e._obs = lambda: buf
+        e._buff_names = self.NAMES
+        e.slug = {"cards": {}, "relics": {5: "PEN_NIB", 6: "SAI", 7: "VAJRA"}, "potions": {}}
+        e.ids = {"relics": {v: k for k, v in e.slug["relics"].items()}}
+        e._hidden = hidden
+        return e
+
+    GAME = {"combat": {"player": {"block": 3, "powers": [["STRENGTH_POWER", 2]]},
+                       "enemies": [{"hp": 30, "block": 6, "powers": [["VULNERABLE_POWER", 1]]}]}}
+
+    def test_the_copys_block_and_powers_are_read_from_the_buffer(self):
+        v = self.side().hidden_view()
+        self.assertEqual(v["player"], {"block": 3, "powers": {"STRENGTH": 2}, "full": False})
+        self.assertEqual(v["enemies"], [{"hp": 30, "block": 6, "powers": {"VULNERABLE": 1}, "full": False}])
+        self.assertEqual(self.side().hidden_diff(self.GAME), [])
+
+    def test_a_difference_in_a_fight_is_named_and_outside_a_fight_nothing_is_read(self):
+        game = {"combat": {**self.GAME["combat"], "enemies": [{"hp": 30, "block": 9, "powers": []}]}}
+        self.assertEqual(self.side().hidden_diff(game), [[".combat.enemies[0].block", 9, 6], [".combat.enemies[0].powers.VULNERABLE", None, 1]])
+        self.assertEqual(self.side(phase=FakeRun.ITEMS).hidden_diff(game), [])
+
+    def test_the_relics_counters_and_melted_flag_are_compared_where_the_anchor_state_came(self):
+        anchor = {"rng": {"SENTINEL": {"seed": 1, "counter": 99}},
+                  "relics": [{"id": "PEN_NIB", "ints": {"AttacksPlayed": 7}}, {"id": "SAI", "bools": {"IsMelted": True}}]}
+        got = self.side(hidden=anchor).hidden_diff({})
+        self.assertEqual(got, [[".relics.PEN_NIB.counter", 7, 8]])  # SAI is melted on both sides: no difference
+        self.assertNotIn("SENTINEL", json.dumps(got))  # of the anchor state only the differing counter leaves this side
+        self.assertEqual(self.side().hidden_diff({}), [])  # no anchor state at this decision
+        flag = {"relics": [{"id": "PEN_NIB", "ints": {"AttacksPlayed": 8}}, {"id": "SAI", "bools": {"IsMelted": True}},
+                           {"id": "VAJRA", "bools": {"IsMelted": True}}]}
+        self.assertEqual(self.side(hidden=flag).hidden_diff({}), [[".relics.melted", ["SAI", "VAJRA"], ["SAI"]]])
+
+    def test_a_library_without_the_lists_reads_none_and_compares_no_flag(self):
+        e = self.side(hidden={"relics": [{"id": "SAI", "bools": {"IsMelted": True}}]})
+        e.native.run_state_list = self.refuses
+        self.assertIsNone(e._melted_relics())
+        self.assertEqual(e._relic_state(), {})
+        self.assertEqual(e.hidden_diff({}), [])
+
+    def test_the_view_lists_a_melted_relic_beside_the_relics_in_play(self):
+        e = self.side(phase=FakeRun.ITEMS)
+        self.assertEqual(e.view()["relics"], ["PEN_NIB", "SAI"])  # the game's list keeps the melted relic, and so does the copy's
+        e.native.run_state_list = self.refuses
+        self.assertEqual(e.view()["relics"], ["PEN_NIB"])
+
+    def test_a_relic_the_game_lists_as_melted_is_written_as_its_negative_id(self):
+        game = {"relics": [{"id": "PEN_NIB"}, {"id": "SAI", "bools": {"IsMelted": True}}]}
+        obs_ = {"relics": ["PEN_NIB", "SAI"]}
+        e = self.side(hidden=game)
+        self.assertEqual(e._melted_marked(obs_, [5, 6]), [5, -6])
+        self.assertEqual(e._melted_marked({"relics": ["SAI", "PEN_NIB"]}, [6, 5]), [6, 5])  # not this observation's list
+        self.assertEqual(e._melted_marked({"relics": ["PEN_NIB"]}, [5]), [5])  # another length
+        self.assertEqual(self.side()._melted_marked(obs_, [5, 6]), [5, 6])  # no anchor state: every relic in play, as before
+        old = self.side(hidden=game)
+        old.native.run_state_list = self.refuses
+        self.assertEqual(old._melted_marked(obs_, [5, 6]), [5, 6])  # a library that cannot hold a melted relic is not sent one
+
+
+@unittest.skipUnless(HAVE_NATIVE, "needs the native library")
+class MeltedRelicNativeTests(unittest.TestCase):
+    """A real copy: the relic the game lists as melted is written melted, stays in the list the comparison reads, has no
+    counter in play, and the game's list without the flag brings it back."""
+
+    def side(self):
+        e = lockstep.EmuLock("NXV45HW43K", ascension=10, sims=4)
+        self.addCleanup(e.close)
+        for _ in range(20):
+            d = e.s.decision()
+            if d is not None and d.type == "map":
+                break
+            e.s.apply(d.options[0])
+        return e
+
+    def obs_of(self, e, held, melted):
+        """The game's observation of the run holding `held` and a Sai, and the anchor state's relic list for it."""
+        v = e.view()
+        return {"hp": v["hp"], "max_hp": v["max_hp"], "gold": v["gold"], "deck": v["deck"], "potions": [],
+                "relics": [*held, "SAI"]}, {"relics": [{"id": r} for r in held] + [
+                    {"id": "SAI", **({"bools": {"IsMelted": True}} if melted else {})}]}
+
+    def test_a_set_player_with_the_games_flag_keeps_the_relic_melted(self):
+        e = self.side()
+        held = e.view()["relics"]
+        obs_, game = self.obs_of(e, held, melted=True)
+        e._hidden = game
+        self.assertTrue(e._set_player(obs_))
+        self.assertEqual(e.view()["relics"], held + ["SAI"])  # in the list the lockstep compares
+        self.assertEqual(e._melted_relics(), ["SAI"])
+        self.assertNotIn("SAI", e._relic_state())  # no counter, no effect: not in play
+        # the game's list holds it again (the flag is gone): in play, alive
+        obs_, game = self.obs_of(e, held, melted=False)
+        e._hidden = game
+        self.assertTrue(e._set_player(obs_))
+        self.assertEqual(e._melted_relics(), [])
+        self.assertIn("SAI", e._relic_state())
+        self.assertCountEqual(e.view()["relics"], held + ["SAI"])  # the engine lists the relics in play by id
+
+    def test_without_the_anchor_state_every_relic_is_written_in_play_as_it_was(self):
+        e = self.side()
+        obs_, _ = self.obs_of(e, e.view()["relics"], melted=True)
+        e._hidden = None
+        self.assertTrue(e._set_player(obs_))
+        self.assertEqual(e._melted_relics(), [])
+        self.assertIn("SAI", e._relic_state())
+
+    def test_the_buffers_buff_ids_are_the_engines_buff_names(self):
+        from sts2_gym import names
+
+        self.assertEqual(names.buffs()[0], "Strength")  # id 0 with an amount is Strength; an empty slot reads (0, 0)
+        self.assertEqual(self.side().hidden_view()["enemies"], [])  # on the map the buffer holds no fight

@@ -197,6 +197,16 @@ class NumbersTest(Tmp):
         self.assertEqual((0.003, 4, 99.0), (n["divergence_rate"], n["reanchors"], n["wall_s"]))
         self.assertEqual((None, None), (n["boot_retries"], n["boot_gave_up"]))  # a summary from before the retry of a failed start
 
+    def test_the_second_comparisons_records_and_decisions_are_the_summarys_and_none_for_a_summary_from_before(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
+        (self.tmp / "summary.json").write_text(json.dumps({"hidden": {"records": 7, "diverged_decisions": 31, "checked": 900}}))
+        agent = {"label": "g3", "generation": 3, "role": "incumbent"}
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", agent, "N-2026-10-25", 1, "core2")
+        self.assertEqual((7, 31), (n["hidden_records"], n["hidden_diverged_decisions"]))
+        (self.tmp / "summary.json").write_text(json.dumps({}))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", agent, "N-2026-10-25", 1, "core2")
+        self.assertEqual((None, None), (n["hidden_records"], n["hidden_diverged_decisions"]))
+
     def test_the_starts_retried_and_given_up_are_the_summarys(self):
         (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
         (self.tmp / "summary.json").write_text(json.dumps({"boot_retries": 5, "boot_gave_up": 1}))
