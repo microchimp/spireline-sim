@@ -268,6 +268,49 @@ class ReportBesideTest(unittest.TestCase):
         self.assertEqual(1, len(self.yield_rows(r)))
         self.assertIsNone(r.report)
 
+    def test_a_restart_resumes_the_jobs_whose_rows_were_waiting_for_the_report(self):
+        """The list of finished jobs whose yield row waits for the report is in the state file, so a runner that is killed or restarted
+        (the lab's task restarts it for every landing) loses none of them: the next process puts them back on the report queue."""
+        self.chain(groups="import time; time.sleep(30)")
+        r = self.runner("--report-beside", "on")
+        first = r.new_run("fights", "abc")
+        r.execute(first)
+        self.assertIsNotNone(r.report)  # its groups run; the row waits
+        second = r.new_run("fights", "abc")
+        r.execute(second)  # finished while the first report still runs: queued
+        state = json.loads((r.lab.root / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual([{"name": first.name, "rc": 0}, {"name": second.name, "rc": 0}], state["report_pending"])
+        r.kill_report("test: the process dies here")
+        self.assertEqual([], self.yield_rows(r))
+        # the next process: a new Runner on the same lab, the old one's memory gone
+        self.chain()
+        nxt = self.runner("--report-beside", "on")
+        self.assertEqual([], nxt.report_due)
+        nxt.restore_report_pending()
+        self.assertEqual([first.name, second.name], [x.name for x, _ in nxt.report_due])
+        self.assertIn("left by the last runner process wait for the next report", self.log(nxt))
+        self.wait_report(nxt)
+        self.assertEqual({first.name, second.name}, {row[1] for row in self.yield_rows(nxt)})
+        state = json.loads((nxt.lab.root / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual([], state["report_pending"])  # written, so the list is empty again
+
+    def test_a_restart_drops_a_pending_job_that_has_its_row_or_no_folder_and_writes_the_rows_when_the_report_is_off(self):
+        self.chain()
+        r = self.runner("--report-beside", "on")
+        done, gone, noreport = r.new_run("fights", "abc"), r.new_run("fights", "abc"), r.new_run("fights", "abc")
+        for run in (done, gone, noreport):
+            run.finish(0)
+        r.record_yield(done, 0, groups_ran=False)  # the process died between its row and the state write
+        shutil.rmtree(gone.dir)
+        r.state["report_pending"] = [{"name": n.name, "rc": 0} for n in (done, gone, noreport)] + [{"name": "bad"}, "bad"]
+        r.lab.save_state(r.state)
+        off = self.runner("--report-beside", "off")
+        off.restore_report_pending()
+        self.assertEqual([], off.report_due)
+        self.assertEqual([done.name, noreport.name], [row[1] for row in self.yield_rows(off)])  # one row each; no double row for `done`
+        self.assertEqual([], json.loads((off.lab.root / "state.json").read_text(encoding="utf-8"))["report_pending"])
+        self.assertIn("written without group counts", self.log(off))
+
     def test_the_runner_stopping_writes_the_rows_that_wait(self):
         self.chain()
         r = self.runner("--report-beside", "on")

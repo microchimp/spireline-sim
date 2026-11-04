@@ -57,12 +57,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import clock_report, cores, frozen, guards, jobs, mix, plans, prune, winsys  # noqa: E402
+from tools.lab import clock_report, cores, frozen, guards, jobs, mix, plans, prune, retest, winsys  # noqa: E402
 from tools.lab import stepcache as sc  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
 ROTATION = ("fights", "fights", "probes", "fights", "mutation", "fights", "invariants")  # after presort, by value
 REPORT_JOBS = ("presort", "fights", "runs", "probes", "invariants")  # the jobs that end with groups and kits (plans.report_steps)
+TREE_ONCE_JOBS = ("probes", "mutation", "invariants")  # job types that run once per presorted tree (last_ok_sha); retest, a fights strategy, too
+RAN_ON_TREE = "ran on this tree already"
+SEED_LOOK_BACK = 150  # newest job folders read to seed last_ok_sha for a state file from before it existed
 REPORT_TIMEOUT_S = 2 * 3600.0  # a report command that runs longer is stopped (the longest groups step seen took 65 minutes)
 DEFAULTS = {
     "lab": "D:/spireline/referee/lab", "tree": "D:/spireline/fork/wt-lab", "game": "D:/spireline/referee/game-lab",
@@ -207,6 +210,9 @@ DEFAULT_STATE: dict[str, Any] = {
     "version": 1, "last_presorted_sha": None, "tree_sha": None, "last_presort_end": None, "rotation": 0, "next_start": 1, "next_run_start": 1000, "bad_shas": {},
     "backoff": {}, "strategy_cpu": {},  # strategy -> CPU seconds its finished jobs spent (the mix schedules on it)
     "last_ok": {},  # strategy -> epoch seconds its last job finished with rc 0 (mix.json "_every_h"; yield.tsv rows come later, after the report)
+    "last_ok_sha": {},  # mutation / invariants / probes / retest -> the tree (sha) its last rc 0 job ran on: each runs once per tree
+    "retest_seen": None,  # the group ids marked for a retest when the last retest job finished (None: not known yet)
+    "report_pending": [],  # [{name, rc}] finished jobs whose yield row waits for the report beside the next job: a restart resumes them
     "counters": {"jobs_started": {}, "jobs_done": {}, "fights": 0, "runs": 0, "interrupts": {}, "active_seconds": 0},
 }
 
@@ -384,6 +390,7 @@ class Runner:
         self.defer_sha: str | None = None  # set by choose() when a presort is deferred: the presorted tree's sha the picked job runs on
         self.last_mix_note = ""
         self.last_loop_note = ""
+        self.skip_logged: dict[str, tuple[str, float]] = {}  # name -> (reason, time) of the last "not runnable" line written
         self.code_digest0 = code_digest()  # the lab sources this process loaded; a later change on disk is not in this process
         self.code_stale_logged = ""
         self._mark = (0.0, 0.0)  # (cpu seconds, clock) at the last accounting of the running job
@@ -609,12 +616,16 @@ class Runner:
         if job:
             self.next_strategy = None
             return job, f"ladder: {job} (priority {jobs.PRIORITY[job]})"
+        fights_none = False  # the mix answers the same for every fights slot of one pass: ask once
         for k in range(len(ROTATION)):
             job = ROTATION[(st["rotation"] + k) % len(ROTATION)]
             strategy = None
             if job == "fights":  # the mix says which strategy this slot's job is (a whole run is its own job type)
+                if fights_none:
+                    continue
                 job, strategy = self.pick_fights(sha)
                 if not job:
+                    fights_none = True
                     continue
                 why = None
             else:
@@ -623,7 +634,7 @@ class Runner:
                 st["rotation"] = (st["rotation"] + k + 1) % len(ROTATION)
                 self.next_strategy = strategy if job == "fights" else None
                 return job, "rotation" + (f", {strategy}" if strategy else "")
-            self.log(f"{job}: not runnable ({why})")
+            self.note_skip(job, why)
         if not self.filler_owns_selfplay() and self.kind_ready("selfplay", sha):  # the filler: nothing above it could run
             self.next_strategy = None
             return "selfplay", "ladder: selfplay (filler, nothing else ready)"
@@ -714,7 +725,7 @@ class Runner:
         chosen, skipped = mix.pick(weights, spent, lambda s: self.unavailable("runs" if s == "whole-runs" else "fights", sha, s),
                                    every_h, self.last_ok() if every_h else None)
         for s, why in skipped.items():
-            self.log(f"{s}: not runnable ({why})")
+            self.note_skip(s, why)
         if chosen is None:
             return "", None
         self.log(f"mix: {chosen} is next (share wanted/had: {mix.share_table(weights, spent)})")
@@ -730,10 +741,71 @@ class Runner:
                 got[s] = max(got.get(s, 0.0), float(t))
         return got
 
+    def note_skip(self, name: str, why: str) -> None:
+        """Write "<name>: not runnable (<why>)" unless that very line was written for this name within the last hour: a lab with nothing due
+        looks again every idle poll, and the same reasons said every five minutes bury the lines that change."""
+        now = time.time()
+        last = self.skip_logged.get(name)
+        if last is not None and last[0] == why and now - last[1] < 3600:
+            return
+        self.skip_logged[name] = (why, now)
+        self.log(f"{name}: not runnable ({why})")
+
+    @staticmethod
+    def tree_once_key(job: str, strategy: str | None) -> str | None:
+        """The last_ok_sha key of a job that runs once per presorted tree: mutation, invariants and probes, and the retest strategy."""
+        if job in TREE_ONCE_JOBS:
+            return job
+        return "retest" if job == "fights" and strategy == "retest" else None
+
+    def ran_on_tree(self, key: str, sha: str) -> str | None:
+        """"ran on this tree already (<sha>)" when the last rc 0 job of this kind ran on the tree the pick is for. A retest only means
+        something after the tree changed, except for a group marked for one since the last retest job finished: that one is due."""
+        if not sha or (self.state.get("last_ok_sha") or {}).get(key) != sha:
+            return None
+        if key == "retest" and self.state.get("retest_seen") is not None:
+            if set(retest.marked(self.groups_list())) - set(self.state["retest_seen"]):
+                return None
+        return f"{RAN_ON_TREE} ({sha[:7]})"
+
+    def groups_list(self) -> list:
+        doc = read_json(self.lab.root / "groups.json", None)
+        return doc.get("groups") if isinstance(doc, dict) and isinstance(doc.get("groups"), list) else []
+
+    def seed_last_ok_sha(self) -> None:
+        """A state file from before last_ok_sha: take, for each once-per-tree kind it lacks, the tree of the newest finished (rc 0) job
+        of that kind among the newest job folders, so the first start does not run them again on a tree they already ran on."""
+        have = self.state.setdefault("last_ok_sha", {})
+        want = {*TREE_ONCE_JOBS, "retest"} - set(have)
+        if not want or not self.lab.runs.is_dir():
+            return
+        try:
+            names = sorted((d.name for d in self.lab.runs.iterdir() if d.is_dir()), reverse=True)[:SEED_LOOK_BACK]
+        except OSError:
+            return
+        for name in names:
+            d = self.lab.runs / name
+            if read_rc(d / "done.rc") != 0:
+                continue
+            run = Run.load(d)
+            if run is None:
+                continue
+            key = self.tree_once_key(run.job, (run.data.get("params") or {}).get("strategy"))
+            if key in want and run.data.get("main_sha"):
+                have[key] = run.data["main_sha"]
+                want.discard(key)
+                if not want:
+                    break
+
     def unavailable(self, job: str, sha: str, strategy: str | None = None, tree: Path | None = None) -> str | None:
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
         if time.time() < until:
             return f"backing off after repeated failures until {utc(until)}"
+        key = None if self.a.once else self.tree_once_key(job, strategy)  # a one-shot run is asked for by hand: the cadence is the rotation's
+        if key:
+            why = self.ran_on_tree(key, sha)
+            if why is not None:
+                return why
         if job in jobs.NEW_KINDS:  # the input and the switch first (plans never refuse a job that is resumed)
             why = jobs.unready(job, self.lab.root, jobs.load_config(self.lab.root)[job])
             if why is not None:
@@ -1191,6 +1263,7 @@ class Runner:
         self.status("idle")
         if beside:
             self.report_due.append((run, rc))
+            self.sync_report_pending()
             self.service_report()
 
     def streak(self, run: Run, rc: int) -> None:
@@ -1218,6 +1291,11 @@ class Runner:
                 cpu[strategy] = round(float(cpu.get(strategy, 0.0)) + spent, 1)
                 if rc == 0:
                     self.state.setdefault("last_ok", {})[strategy] = round(time.time())
+            key = self.tree_once_key(run.job, strategy)
+            if key and rc == 0 and data.get("main_sha"):
+                self.state.setdefault("last_ok_sha", {})[key] = data["main_sha"]  # the tree it ran on: the next pick for this tree skips it
+                if key == "retest":
+                    self.state["retest_seen"] = retest.marked(self.groups_list())  # what is marked now is not "newly marked" at the next pick
         except Exception:  # noqa: BLE001  (the record is a convenience; the job's own files are what matters)
             self.log("strategy cpu not recorded: " + traceback.format_exc()[-400:])
         if yield_now:
@@ -1331,6 +1409,7 @@ class Runner:
         rep.run.save()
         for run, rc in rep.covers:
             self.record_yield(run, rc, groups_ran=rep.ok.get("groups", False))
+        self.sync_report_pending()
         self.log(f"report beside: ended after {time.monotonic() - rep.t0:.0f}s ({'failed' if rep.failed else 'ok'}); "
                  f"{len(rep.covers)} job(s) grouped")
 
@@ -1391,6 +1470,47 @@ class Runner:
         due, self.report_due = self.report_due, []
         for run, rc in due:
             self.record_yield(run, rc, groups_ran=False)
+        self.sync_report_pending()
+
+    def pending_report_jobs(self) -> list[dict[str, Any]]:
+        """The finished jobs whose yield row waits for a report: the chain running now covers some, the queue holds the rest."""
+        covered = self.report.covers if self.report is not None else []
+        return [{"name": r.name, "rc": rc} for r, rc in [*covered, *self.report_due]]
+
+    def sync_report_pending(self) -> None:
+        """Keep that list in the state file whenever it changes: a runner killed or restarted loses its memory, and the jobs' rows (their
+        groups and fix-ready counts) would be lost with it; restore_report_pending reads the list back at the next start."""
+        pend = self.pending_report_jobs()
+        if pend != (self.state.get("report_pending") or []):
+            self.state["report_pending"] = pend
+            self.lab.save_state(self.state)
+
+    def restore_report_pending(self) -> None:
+        """At start: the jobs the last process left with a row owed go back on the report queue (their groups and kits run beside the next
+        job); with the report feature off they get their rows now, without group counts. A job that already has its row (killed between the
+        row and the state write), or whose folder is gone, is dropped."""
+        owed = [e for e in (self.state.get("report_pending") or []) if isinstance(e, dict)]
+        if not owed:
+            return
+        have = {str(r.get("job")) for r in mix.read_yield(self.lab.root)}
+        got: list[tuple[Run, int]] = []
+        for e in owed:
+            name, rc = e.get("name"), e.get("rc")
+            run = Run.load(self.lab.runs / name) if isinstance(name, str) and name not in have and isinstance(rc, int) else None
+            if run is not None:
+                got.append((run, rc))
+        self.state["report_pending"] = []
+        if got and self.report_beside:
+            self.report_due = got + self.report_due
+            self.log(f"report beside: {len(got)} job(s) left by the last runner process wait for the next report: "
+                     + ", ".join(r.name for r, _ in got))
+        else:
+            for run, rc in got:
+                self.record_yield(run, rc, groups_ran=False)
+            if got:
+                self.log(f"yield: {len(got)} row(s) left by the last runner process written without group counts (the report beside is off)")
+        self.sync_report_pending()
+        self.lab.save_state(self.state)
 
     def run_step(self, run: Run, step: plans.Step, rec: dict[str, Any], ctx: plans.Ctx) -> guards.Verdict | None:
         while True:
@@ -1715,6 +1835,8 @@ class Runner:
         if rc is not None:
             return rc
         self.log(f"runner started (trial={self.a.trial}, once={self.a.once}, guards off: {self.a.no_guard or 'none'})")
+        self.seed_last_ok_sha()
+        self.restore_report_pending()
         crashes = 0
         while True:
             try:

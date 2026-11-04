@@ -64,6 +64,14 @@ def pending(groups: list[dict], results: dict, limit: int = LIMIT) -> list[dict]
     return [{"id": x["id"], "spec": x["spec"], "fields": x["fields"]} for x in out[:limit]]
 
 
+def marked(groups: object) -> list[str]:
+    """Ids of the groups marked for a retest (they carry a ``retest.spec``), decided or not. The runner plays a retest once per tree and
+    keeps this list at each job that finished, so a group marked since then is the one reason to play again on the same tree."""
+    if not isinstance(groups, list):
+        return []
+    return sorted(g["id"] for g in groups if isinstance(g, dict) and g.get("id") and isinstance(g.get("retest"), dict) and g["retest"].get("spec"))
+
+
 def to_specs(items: list[dict]) -> list[dict]:
     return [{**it["spec"], "tag": TAG + it["id"]} for it in items]
 

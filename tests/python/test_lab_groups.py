@@ -7,6 +7,8 @@ hand-made model features stand in for the referee's outputs and the decompile.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -520,6 +522,33 @@ class StrategyInputsTests(unittest.TestCase):
             self.assertEqual(2, doc["groups"][0]["impact_runs_est"])
             self.assertEqual({"20261015T0300-runs": {"n": 2, "ready": 0, "gap": 0}}, doc["groups"][0]["by_job"])  # located, not traced
             self.assertEqual(4, lg.pool_size("run", job / "runs" / "r.runs.json", 0))  # the runs played, clean ones included
+
+    @unittest.skipUnless(os.name == "nt", "a junction (mklink /J) is the lab's Windows layout")
+    def test_a_runs_folder_that_is_a_junction_to_another_disk_keeps_the_job_in_the_ref(self):
+        """LAB/runs became a junction to the SSD on 2026-11-03: a resolved path is outside the lab, every ref fell back to the file name,
+        and by_job (the yield ledger's per-job groups and fix-ready columns) read no job from any of them."""
+        with tempfile.TemporaryDirectory() as td:
+            lab, hosts = self.lab(td)
+            real = Path(td) / "other-disk" / "runs"
+            real.mkdir(parents=True)
+            lab.mkdir(exist_ok=True)
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(lab / "runs"), str(real)], check=True, capture_output=True)
+            try:
+                job = lab / "runs" / "20261015T0100-fights"
+                specs = [{"seed": "CHOICE0000", "choice_edges": "none",
+                          "setup": [{"cmd": "deck_set", "cards": []}, {"cmd": "relic", "id": "KIFUDA"}, {"cmd": "fight", "id": "SLIMES_WEAK"}]}]
+                write(job / "fights" / "c.json", {"runs": specs})
+                msg = "unsupported: the emulator's selection wants more cards than the game's screen required"
+                write(job / "fights" / "c.verdicts.json", [{"seed": "CHOICE0000", "identical": True, "mirror_gap": [1], "mirror_gap_why": {"1": msg}}])
+                self.assertTrue((real / "20261015T0100-fights" / "fights" / "c.json").exists())  # it is on the other disk
+                got = lg.batch_symptoms(job / "fights" / "c", lab, "w")
+                self.assertEqual("runs/20261015T0100-fights/fights/c#CHOICE0000", got[0]["ref"])
+                self.assertEqual({"20261015T0100-fights": {"n": 1, "ready": 0, "gap": 1}}, lg.by_job(got))
+                self.assertEqual("runs/J/x", lg.rel(lab / "runs" / "J" / "x", lab))
+                self.assertEqual("runs/J/x", lg.rel(Path(td) / "other-disk" / ".." / "lab" / "runs" / "J" / "x", lab))
+                self.assertEqual("elsewhere", lg.rel(Path(td) / "somewhere" / "elsewhere", lab))  # outside every root: the file name, as before
+            finally:
+                os.rmdir(lab / "runs")  # the junction only, not what it points at
 
     def test_by_job_counts_the_symptoms_a_fixer_can_start_from(self):
         mk = lambda ref, ev, gap, field=".hand": {"ref": ref, "first_event": ev, "mirror_gap": gap, "field": field}  # noqa: E731

@@ -76,6 +76,12 @@ and blocks everything on that sha (retry after 30 min, doubling); the checks' ow
 
 After a presort, a rotation by value: `fights, fights, probes, fights, mutation, fights, invariants`. A job type that cannot
 run (tool or input missing, backing off after two failed jobs in a row) is skipped with a log line and the rotation moves on.
+`probes`, `mutation` and `invariants`, and the `retest` strategy, run **once per presorted tree**: `state.json`'s `last_ok_sha` keeps, for
+each, the tree its last rc 0 job ran on, and a pick on that tree skips it ("ran on this tree already (<sha>)", written once an hour at
+most). A retest is due again on the same tree only for a group marked for one since the last retest job finished (`retest_seen` in the
+state). `--once` ignores the rule; a state file from before it is seeded from the newest finished job folders. When no slot of a pass has
+a job the lab is idle: "nothing to do", the filler starts beside idle, and the next look is `--idle-poll` (5 minutes) later. The mix is
+asked once per pass, not once per fights slot.
 
 **A fights slot is one strategy** (`mix.py`), picked when the job is made: the available strategy furthest below its share
 of the CPU time the fights slots have spent (its `strategy` is in `job.json`'s params and in `runner.log`):
@@ -145,7 +151,8 @@ raw recordings a group's examples point to (a kit built before their pruning sta
 runner's *report*: the job is finished at once (done.rc, state), the next job starts, and one chain per time (groups, then kits; a
 failed groups stops the chain) runs in a Job Object of its own beside it, at the runner's BelowNormal priority. The chain covers every
 job that finished since the last one started; each gets its `yield.tsv` row when the chain ends (group columns NA when groups did not
-finish). It stops at once on any guard except a held `main.lock` (user, pause, load, disk, halt: the covered jobs wait for the next
+finish). The list of jobs whose row is owed is kept in `state.json` (`report_pending`) and put back on the queue when the runner starts
+again (a restart for a landing used to drop it, and with it the rows). It stops at once on any guard except a held `main.lock` (user, pause, load, disk, halt: the covered jobs wait for the next
 chain), gives way to a presort (the tools run from the tree the presort checks out, builds and publishes into: the report is stopped at once and its jobs wait for the next one, which starts when the presort ends and reads the new tree; a report is 40 to 70 minutes and nearly always running, so letting it end was most of a presort's wall time. After `--report-cut-cap` stops by presorts in a row (default 2) the next presort waits for the report; `--presort-report wait` is the old way), is never started while a nightly window is open
 (`LAB/nightly/active`) and is stopped when a nightly-real job starts. The report's CPU is kept out of the jobs' CPU accounts (the
 mix schedules on them). A fault in the machinery turns it off for the process and the groups and kits are steps of each job again.

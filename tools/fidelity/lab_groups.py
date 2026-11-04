@@ -97,11 +97,17 @@ def git_sha(tree: Path = ROOT) -> str:
 
 
 def rel(path: Path | str, lab: Path) -> str:
-    p = Path(path).resolve()
+    """The path as the lab, the referee or the fork names it ("runs/<job>/...", "referee/...", "fork/..."), else its file name. The path
+    is taken as given first, symlinks and junctions left alone, and resolved only when that does not fit: LAB/runs is a junction to another
+    disk (since 2026-11-03), so the resolved path is outside the lab and every symptom's ref fell back to the file name, without the
+    "runs/<job>/" head that `by_job` (the yield ledger's per-job group counts) reads the job from."""
+    given = Path(os.path.abspath(path))
+    resolved = given.resolve()
     for b, tag in ((lab, ""), (REFEREE, "referee/"), (ROOT, "fork/")):
-        with contextlib.suppress(ValueError, OSError):
-            return tag + p.relative_to(Path(b).resolve()).as_posix()
-    return p.name
+        for p, base in ((given, Path(os.path.abspath(b))), (resolved, Path(b).resolve())):
+            with contextlib.suppress(ValueError, OSError):
+                return tag + p.relative_to(base).as_posix()
+    return resolved.name
 
 
 def clip(x, n: int = 160) -> str | None:

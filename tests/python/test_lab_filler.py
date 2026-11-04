@@ -541,6 +541,37 @@ class FillerIdleTest(FillerBase):
         self.assertIn("a job needs its cores (10 held, 0 left)", self.log(r))
         self.assertIsNone(r.filler)  # 8 + 6 leave 2, under the floor of 4: none starts beside the job
 
+    def test_a_lab_whose_jobs_all_ran_on_this_tree_idles_and_the_filler_starts(self):
+        """The rotation's jobs run once per presorted tree (last_ok_sha): when each has, nothing is due, the pick says so, the runner takes
+        the idle path (no job folder, one sleep of idle_poll) and the filler has the cores the loop leaves. Before this rule retest,
+        mutation and invariants were due at every pick, and the lab never reached idle."""
+        ok = lambda c: [pl.Step("a", [self.py("one", "pass", core=True)], mode="serial")]  # noqa: E731
+        for j in ("fights", "runs", "probes", "mutation", "invariants"):
+            pl.PLANS[j] = ok
+        (self.lab / "mix.json").write_text(json.dumps({"retest": 1}), encoding="utf-8")
+        (self.lab / "groups.json").write_text(json.dumps({"groups": [
+            {"id": "G1", "retest": {"state": "pending", "spec": {"seed": "S", "setup": []}, "fields": [".hand"]}}]}), encoding="utf-8")
+        r = self.runner("--idle-poll", "0.3")
+        r.main_sha = lambda: "abc"
+        self.loop_stepping(r)
+        job, _, why = r.choose("abc")
+        self.assertEqual(("fights", "retest"), (job, r.next_strategy), why)  # nothing has run on this tree: the slot has a job
+        r.state["last_ok_sha"] = {"probes": "abc", "mutation": "abc", "invariants": "abc", "retest": "abc"}
+        r.state["retest_seen"] = ["G1"]
+        calls = []
+        orig = r.pick_fights
+        r.pick_fights = lambda sha: (calls.append(sha), orig(sha))[1]
+        t0 = time.time()
+        for _ in range(2):  # two passes: no tight loop, one look at the mix each, a sleep of idle_poll in between
+            self.assertIsNone(r.one_pass())
+        self.assertGreaterEqual(time.time() - t0, 0.6)
+        self.assertEqual(2, len(calls))
+        self.assertEqual([], [d.name for d in r.lab.runs.iterdir() if not d.name.endswith("selfplay")])  # no job folder, no yield row
+        self.assertEqual(2, self.log(r).count("nothing to do: no job is runnable"))
+        self.assertEqual(1, self.log(r).count("mutation: not runnable (ran on this tree already (abc))"))
+        self.assertIsNotNone(r.filler, self.log(r))
+        self.assertIn(f"filler: {r.filler.run.name} at 10 cores beside idle", self.log(r))
+
     def test_the_night_margin_holds_the_idle_filler(self):
         t = time.time() - 20 * 3600 + 20 * 60  # the night is due in 20 minutes
         os.utime(self.lab / "nightly" / "last-ok", (t, t))

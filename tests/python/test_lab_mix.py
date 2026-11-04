@@ -589,6 +589,112 @@ class RunnerMixTest(unittest.TestCase):
         once.state["last_ok"]["aimed-bugs"] = time.time()
         self.assertEqual("aimed-bugs", once.pick_fights("abc")[1])  # a one-shot run is asked for by hand: the cadence is the rotation's
 
+    def only_other_jobs(self):
+        """The fights slots give nothing; probes, mutation and invariants can run (trivial plans)."""
+        ok = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "pass"], cwd="{lab}", core=True)])]  # noqa: E731
+        for j in ("probes", "mutation", "invariants"):
+            pl.PLANS[j] = ok
+        pl.PLANS["fights"] = pl.PLANS["runs"] = lambda c: (_ for _ in ()).throw(pl.Unavailable("nothing for the fights slots"))
+
+    def test_mutation_invariants_and_probes_run_once_per_tree(self):
+        self.only_other_jobs()
+        r = self.runner()
+        seen = [self.run_one(r).job for _ in range(3)]
+        self.assertEqual({"probes", "mutation", "invariants"}, set(seen))
+        self.assertEqual({"probes": "abc", "mutation": "abc", "invariants": "abc"}, r.state["last_ok_sha"])
+        job, _, why = r.choose("abc")
+        self.assertEqual(("", "no job is runnable"), (job, why))  # nothing is due: the lab is idle
+        self.assertEqual(1, sum(m == "mutation: not runnable (ran on this tree already (abc))" for m in r.logged), r.logged)
+        r.choose("abc")  # looked at again at the next idle poll: the same reason is not written again
+        self.assertEqual(1, sum(m == "mutation: not runnable (ran on this tree already (abc))" for m in r.logged))
+        r.state["tree_sha"] = r.state["last_presorted_sha"] = "def"  # main moved and was presorted: all three are due on the new tree
+        self.assertIn(r.choose("def")[0], ("probes", "mutation", "invariants"))
+        self.assertEqual({"probes", "mutation", "invariants"}, {self.run_one_on(r, "def").job for _ in range(3)})
+        self.assertEqual({"probes": "def", "mutation": "def", "invariants": "def"}, r.state["last_ok_sha"])
+
+    def run_one_on(self, r, sha):
+        job, run, why = r.choose(sha)
+        self.assertTrue(job, why)
+        run = r.new_run(job, sha)
+        r.execute(run)
+        return run
+
+    def test_a_job_that_failed_or_was_asked_for_by_hand_does_not_count_for_the_tree(self):
+        pl.PLANS["mutation"] = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "import sys; sys.exit(2)"], cwd="{lab}", core=True)])]
+        pl.PLANS["fights"] = pl.PLANS["runs"] = lambda c: (_ for _ in ()).throw(pl.Unavailable("none"))
+        r = self.runner()
+        self.assertEqual("mutation", self.run_one_on(r, "abc").job)
+        self.assertEqual({}, r.state["last_ok_sha"])  # rc 2 is not a run of the tree
+        r.state["last_ok_sha"]["mutation"] = "abc"
+        pl.PLANS["mutation"] = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "pass"], cwd="{lab}", core=True)])]
+        once = self.runner("--once", "mutation")
+        once.state["last_ok_sha"]["mutation"] = "abc"
+        self.assertEqual("mutation", once.choose("abc")[0])  # --once ignores the cadence
+        self.assertIsNone(once.unavailable("mutation", "abc"))
+        self.assertIn("ran on this tree already", r.unavailable("mutation", "abc"))
+
+    def test_a_pass_with_nothing_due_asks_the_mix_once_and_ends_idle(self):
+        self.only_other_jobs()
+        r = self.runner()
+        r.state["last_ok_sha"] = {"probes": "abc", "mutation": "abc", "invariants": "abc", "retest": "abc"}
+        calls = []
+        orig = r.pick_fights
+        r.pick_fights = lambda sha: (calls.append(sha), orig(sha))[1]
+        self.assertEqual(("", "no job is runnable"), r.pick_other("abc"))
+        self.assertEqual(1, len(calls))  # four fights slots in the rotation, one answer
+        job, run, why = r.choose("abc")
+        self.assertEqual("", job)  # choose() gives no job: one_pass takes the idle path (the filler's) and sleeps idle_poll
+
+    def retest_group(self, gid, **kw):
+        return {"id": gid, "first_seen_utc": "2026-11-01T00:00:00Z", "retest": {"state": "pending", "spec": {"seed": gid, "setup": []}, "fields": [".hand"]}, **kw}
+
+    def test_a_retest_runs_once_per_tree_unless_a_group_was_marked_since(self):
+        self.trivial_plans()
+        write(self.tmp / "lab" / "mix.json", {"retest": 1})
+        write(self.tmp / "lab" / "groups.json", {"groups": [self.retest_group("G1")]})
+        r = self.runner()
+        run = self.run_one(r)
+        self.assertEqual("retest", run.data["params"]["strategy"])
+        self.assertEqual("abc", r.state["last_ok_sha"]["retest"])
+        self.assertEqual(("", None), r.pick_fights("abc"))
+        self.assertTrue(any(m.startswith("retest: not runnable (ran on this tree already (abc))") for m in r.logged), r.logged)
+        self.assertEqual(["G1"], r.state["retest_seen"])
+        write(self.tmp / "lab" / "retests.json", {"G1": {"verdict": "unclear", "attempts": 1}})  # tried, not decided: the same tree says the same
+        self.assertEqual(("", None), r.pick_fights("abc"))
+        write(self.tmp / "lab" / "groups.json", {"groups": [self.retest_group("G1"), self.retest_group("G2")]})  # G2 is newly marked
+        self.assertEqual(("fights", "retest"), r.pick_fights("abc"))
+        self.run_one(r)
+        self.assertEqual(["G1", "G2"], r.state["retest_seen"])
+        self.assertEqual(("", None), r.pick_fights("abc"))  # played; only a mark after this job makes another
+        self.assertEqual(("fights", "retest"), r.pick_fights("def"))  # the tree changed
+        once = self.runner("--once", "fights")  # a one-shot run is asked for by hand: the rule is the rotation's
+        once.state["last_ok_sha"]["retest"] = "abc"
+        self.assertEqual(("fights", "retest"), once.pick_fights("abc"))
+
+    def test_a_state_file_from_before_the_marks_is_seeded_from_the_newest_finished_jobs(self):
+        self.only_other_jobs()
+        r = self.runner()
+        runs = r.lab.runs
+
+        def folder(name, job, sha, rc, strategy=None):
+            run = rn.Run.create(r.lab, job, sha, {"strategy": strategy} if strategy else {})
+            (runs / run.name).rename(runs / name)
+            run.dir = runs / name
+            run.data["name"] = name
+            run.finish(rc)
+
+        folder("20261104T1000-mutation", "mutation", "old", 0)
+        folder("20261104T1100-mutation", "mutation", "new", 0)
+        folder("20261104T1200-mutation", "mutation", "failed", 2)  # a failed job is not a run of its tree
+        folder("20261104T1300-invariants", "invariants", "inv", 0)
+        folder("20261104T1400-fights", "fights", "ret", 0, "retest")
+        folder("20261104T1500-fights", "fights", "bugs", 0, "aimed-bugs")  # not a once-per-tree strategy
+        r.seed_last_ok_sha()
+        self.assertEqual({"mutation": "new", "invariants": "inv", "retest": "ret"}, r.state["last_ok_sha"])
+        r.state["last_ok_sha"]["mutation"] = "kept"
+        r.seed_last_ok_sha()
+        self.assertEqual("kept", r.state["last_ok_sha"]["mutation"])  # what the state knows is not overwritten
+
     def test_the_owners_edit_of_the_mix_takes_effect_at_the_next_job_and_a_bad_file_is_logged_once(self):
         self.trivial_plans()
         r = self.runner()
