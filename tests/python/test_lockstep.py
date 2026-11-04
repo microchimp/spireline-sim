@@ -950,6 +950,83 @@ class ReanchorReasonTests(unittest.TestCase):
         self.assertEqual(ls.stats["reanchor_fail_reasons"], {"room_entry:in_fight": 2})
 
 
+REFUSED = "the engine refused action 3 in phase 5"
+
+
+class RefusedCatchupEmu(FakeEmu):
+    """An emulator side whose catch-up step is refused by the engine at the decisions named in `refuse` (by sync call number)."""
+
+    def __init__(self, views, refuse=(0,), **kw):
+        super().__init__(views, **kw)
+        self.refuse, self.calls = set(refuse), 0
+
+    def sync(self, kind, labels, msg=None):
+        n, self.calls = self.calls, self.calls + 1
+        if n in self.refuse:
+            raise RuntimeError(REFUSED)
+        return super().sync(kind, labels, msg)
+
+
+class CatchupRefusalTests(unittest.TestCase):
+    """A step the engine refuses while the copy replays the game's own moves before a decision (the reward flush of 6c42702d)
+    is lost like a refused action at a decision: a record with the engine's words, the copy re-anchored later, the run on."""
+
+    def test_a_refused_catchup_step_is_a_lockstep_lost_record_not_an_exception(self):
+        a = obs()
+        ls = lockstep.Lockstep(RefusedCatchupEmu([view_of(a)]), lambda m: 0)
+        picks = [ls.decide(msg("card_reward", a)), ls.decide(msg("card_reward", a))]
+        self.assertEqual(picks, [0, 0])  # the run's own answers go on
+        rec = ls.log.records[0]
+        self.assertEqual(rec["reason"], "catchup:RuntimeError:" + REFUSED)  # the step (action 3) and the phase (5)
+        self.assertEqual((rec["type"], rec["decision"], rec["gap"], rec["reanchored"]), ("card_reward", 0, True, False))
+        self.assertEqual(ls.lost, rec["reason"])
+        self.assertEqual((ls.stats["gaps"], ls.stats["diverged"], ls.stats["ranked"], ls.stats["not_ranked"]), (1, 0, 0, 2))
+        self.assertEqual(ls.stats["losses"], {"catchup:RuntimeError": 1})
+        self.assertEqual(ls.stats["first_loss"], {"decision": 0, "reason": rec["reason"]})
+        self.assertEqual(rec["not_ranked_span"], {"first": 0, "last": 1, "count": 2})
+        ls.finish({"class": "loss"})
+        self.assertEqual(rec["outcome"], {"class": "loss"})  # the row carries the run's real outcome
+
+    def test_the_next_room_entry_re_anchors_the_copy_and_the_lockstep_resumes(self):
+        a = obs()
+        emu = RefusedCatchupEmu([view_of(a)], reanchor_ok=True)
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        for m in (msg("reward", a), msg("card_reward", a), msg("map", a)):
+            ls.decide(m)
+        self.assertEqual(emu.reanchored, ["room_entry"])
+        self.assertIsNone(ls.lost)
+        self.assertEqual((ls.stats["resumed"], ls.stats["ranked"], ls.stats["not_ranked"]), (1, 1, 2))
+        self.assertEqual(len(ls.log.records), 1)  # the one record of the refusal
+
+    def test_a_refusal_at_a_re_anchor_point_is_recorded_and_the_re_anchor_is_tried_again_at_the_next(self):
+        a = obs()
+        emu = RefusedCatchupEmu([view_of(a)], refuse=(0, 1), reanchor_ok=[True, True])
+        ls = lockstep.Lockstep(emu, lambda m: 0)
+        ls.decide(msg("map", a))  # refused in the comparison itself
+        self.assertEqual(ls.log.records[0]["reason"], "catchup:RuntimeError:" + REFUSED)
+        self.assertEqual(ls.log.records[0]["reanchor_plan"], "room_entry")
+        ls.decide(msg("map", a))  # the re-anchor holds, then the comparison's catch-up is refused again: failed, not a crash
+        self.assertEqual((ls.stats["reanchors"], ls.stats["reanchor_failed"], ls.stats["resumed"]), (0, 1, 0))
+        self.assertEqual(ls.stats["reanchor_fail_reasons"], {"room_entry:catchup:RuntimeError:" + REFUSED: 1})
+        ls.decide(msg("map", a))  # the third decision's catch-up goes through
+        self.assertIsNone(ls.lost)
+        self.assertEqual(ls.stats["resumed"], 1)
+
+    def test_an_engine_refusal_in_the_real_catchup_path_is_a_record(self):
+        # The path itself: EmuLock.sync -> _flush_rewards -> the engine's step, over the stub rewards screen.
+        class RefusingRun(ItemsRun):
+            def _step(self, action):
+                raise RuntimeError(f"the engine refused action {action} in phase {self.phase}")
+
+        a = obs()
+        e = stub_emu(RefusingRun(gold=1, card=1))
+        e.view = lambda: view_of(a)
+        ls = lockstep.Lockstep(e, lambda m: 0)
+        ls.decide({**msg("reward", a), "ctx": {"type": "card"}})
+        self.assertEqual(ls.log.records[0]["reason"], "catchup:RuntimeError:the engine refused action 0 in phase 5")
+        self.assertIsNotNone(ls.lost)
+
+
 class CombatRun(FakeRun):
     """A fight the emulator stands in, on a given floor."""
 

@@ -46,7 +46,8 @@ MAPPED_KINDS = ("neow", "ancient", "map", "card_reward", "rest", "reward", "sele
 # the next decision compares them. The floor, the act and the relic list stay compared.
 TREASURE_PICKUP_PATHS = (".hp", ".max_hp", ".gold", ".deck", ".potions")
 # Reasons that are a gap in this adapter's mapping, not a difference of the emulator's: reported apart.
-GAP_PREFIXES = ("unmapped", "apply:", "choose_error")
+# `catchup:` is a step the copy was refused while it replayed the game's own moves before a decision (`EmuLock.sync`).
+GAP_PREFIXES = ("unmapped", "apply:", "choose_error", "catchup:")
 # The message key under which the referee driver hands the game's hidden state (stream counters, the draw pile in order)
 # to the emulator side of the lockstep (driver spec "anchor_state"). `Lockstep.decide` takes it off the message first.
 ANCHOR_KEY = "anchor_state"
@@ -479,7 +480,7 @@ class Lockstep:
     def _lose(self, i: int, reason: str, kind: str | None = None, msg: dict | None = None,
               rec: dict | None = None) -> None:
         self.lost = reason
-        key = reason.split(":")[0] + (":" + reason.split(":")[1] if reason.startswith(("unmapped", "apply")) else "")
+        key = reason.split(":")[0] + (":" + reason.split(":")[1] if reason.startswith(("unmapped", "apply", "catchup")) else "")
         self.stats["losses"][key] = self.stats["losses"].get(key, 0) + 1
         self.stats["first_loss"] = self.stats["first_loss"] or {"decision": i, "reason": reason}
         if kind is not None and reason.startswith("apply:"):  # an unmirrorable step is logged like a structure gap
@@ -498,7 +499,14 @@ class Lockstep:
 
     def _equal(self, kind: str, labels: list, msg: dict) -> tuple[str | None, list, dict, dict]:
         reason = None if kind in MAPPED_KINDS else f"unmapped:{kind}"
-        reason = reason or self.emu.sync(kind, labels, msg)
+        try:
+            reason = reason or self.emu.sync(kind, labels, msg)
+        except Exception as e:  # noqa: BLE001 -- the engine refused a step of the catch-up: lost like a refused action, not a crash
+            # The copy replays the game's own moves since the last decision (the reward flush, the lone-path walks, the
+            # forced screens) before the views are compared. A refusal there is the same event as a refused action at the
+            # decision (`apply:`): the record carries the engine's own words (the step and the phase), the lockstep is lost
+            # and the next fight start or room entry re-anchors the copy; the run goes on with the real game.
+            reason = f"catchup:{type(e).__name__}:{e}"[:200]
         r, e = ref_view(msg.get("obs", {})), self.emu.view()
         offered: list = []
         if mid_screen_pick(kind, msg):

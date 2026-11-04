@@ -480,6 +480,17 @@ class ApplyOptionTests(unittest.TestCase):
         )
         self.assertEqual((after.gold, after.potions), (60, (BLOCK_POTION, FIRE_POTION)))
 
+    def test_an_upgraded_shop_card_lands_upgraded_and_is_a_different_afterstate_of_the_same_shape(self):
+        # The engine reader takes the shelf's flag from list 22 (`ShopCardUpgraded`): the planner's afterstate holds the upgraded
+        # card, and its encoding differs from the plain card's with no change of shape.
+        view = make_view()
+        plain, up = (option("shop.card", card=CardRef(ANGER, u), price=50) for u in (False, True))
+        self.assertEqual(features.apply_option(view, plain).deck.count(CardRef(ANGER, False)), 1)
+        self.assertEqual(features.apply_option(view, up).deck.count(CardRef(ANGER, True)), 1)
+        a, b = features.encode_afterstate(view, plain), features.encode_afterstate(view, up)
+        self.assertEqual(a.shape, b.shape)
+        self.assertFalse(np.array_equal(a, b))
+
     def test_shop_remove_takes_the_card_and_the_price(self):
         view = make_view()
         index = view.deck.index(CardRef(STRIKE, False))

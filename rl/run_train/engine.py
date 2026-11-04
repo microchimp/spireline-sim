@@ -637,16 +637,19 @@ def _shop(ctx: _Context) -> _Screen:
 
     Cards 0..6, relics 7..9, potions 10..12 (stocked, affordable, a potion only with a
     free usable slot), removal 13, leave 14. The removal is flattened into one option per
-    removable card; one purchase per decision.
+    removable card; one purchase per decision. List 22 (`ShopCardUpgraded`) is the shop
+    cards' own upgrade flags, one per card in list 8's order (the screen shows a "+" on
+    them): a card the shop rolled upgraded is a different card to buy.
     """
     cards = native.run_state_list(ctx.handle, 8, 7)
+    upgraded = native.run_state_list(ctx.handle, 22, 7)
     relics = native.run_state_list(ctx.handle, 9, 3)
     potions = native.run_state_list(ctx.handle, 10, 3)
     costs = native.run_state_list(ctx.handle, 4, 14)
     options: list[Option] = []
     for action in ctx.legal:
         if action < 7:
-            card = CardRef(cards[action], False)
+            card = CardRef(cards[action], action < len(upgraded) and bool(upgraded[action]))
             options.append(Option("shop.card", action, card=card, price=costs[action]))
         elif action < 10:
             options.append(

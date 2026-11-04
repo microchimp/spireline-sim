@@ -917,5 +917,35 @@ class OfferGridUpgradedFlagTests(unittest.TestCase):
         self.assertEqual(cards, [False, False, False])
 
 
+class ShopUpgradedFlagTests(unittest.TestCase):
+    """A shop card keeps what it rolled (list 22, `ShopCardUpgraded`), as the offer grid's cards do (list 23).
+
+    The reader built every `shop.card` with `upgraded` False, so the planner could not tell an upgraded card on the shelf
+    from a plain one (the "+" the screen shows, and the card that lands in the deck).
+    """
+
+    ANGER, TWIN_STRIKE = 8, 7
+    LISTS = {8: (ANGER, TWIN_STRIKE, 3, 0, 0, 0, 0), 4: (50, 60, 70) + (0,) * 11, 22: (0, 1, 0, 0, 0, 0, 0)}
+
+    def _screen(self, lists, legal=(0, 1, 2)):
+        def run_state_list(handle, list_id, capacity=256, **kw):
+            return lists.get(list_id, ())
+
+        ctx = mock.Mock(handle=1, legal=list(legal))
+        with mock.patch.object(engine.native, "run_state_list", run_state_list):
+            return engine._shop(ctx).decision
+
+    def test_a_card_the_shop_rolled_upgraded_is_read_upgraded(self):
+        cards = {o.action: (o.card, o.price) for o in self._screen(self.LISTS).options if o.kind == "shop.card"}
+        self.assertEqual(cards[1], (features.CardRef(self.TWIN_STRIKE, True), 60))
+        self.assertEqual(cards[0], (features.CardRef(self.ANGER, False), 50))
+        self.assertEqual(cards[2], (features.CardRef(3, False), 70))
+
+    def test_a_shop_with_no_flags_listed_reads_every_card_plain(self):
+        decision = self._screen({k: v for k, v in self.LISTS.items() if k != 22})
+        cards = [o.card.upgraded for o in decision.options if o.kind == "shop.card"]
+        self.assertEqual(cards, [False, False, False])
+
+
 if __name__ == "__main__":
     unittest.main()
