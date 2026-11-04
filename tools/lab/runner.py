@@ -21,7 +21,8 @@ The runner makes no AI calls and no network use. It lowers its own priority to B
 it), lives in a Job Object with KILL_ON_JOB_CLOSE (children die with it, however it ends), and gives the machine
 back on user input, on sustained load from other processes, on LAB/PAUSE or backlog/main.lock, and when disk
 runs short (tools/lab/guards.py). With --always-on the groups and kits of a finished job run beside the next job (Report, below),
-one at a time, at the runner's BelowNormal priority; they stop for the guards, for a presort's tree and for a nightly window.
+one at a time, at the runner's BelowNormal priority; they stop for the guards, for a presort's tree (at once; after --report-cut-cap stops in a
+row the presort waits for the report instead) and for a nightly window.
 With --always-on the selfplay kind is the filler when LAB/jobs.json says `selfplay.filler` (D48, tools/lab/cores.py): practice blocks
 run beside the job on the cores it leaves (a Job Object of their own that forces BelowNormal on every process in it, the prior
 server included), with no train marker, shrunk or stopped when a job needs their cores, stopped for the night and for the guards;
@@ -144,6 +145,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--report-beside", choices=("auto", "on", "off"), default="auto",
                     help="run the groups and kits of a finished job beside the next job instead of as its last steps; auto: on with --always-on, "
                          "off with --once, --trial and --dry-run")
+    ap.add_argument("--presort-report", choices=("stop", "wait"), default="stop",
+                    help="a presort checks out, builds and publishes into the tree the running report (groups, kits) reads. stop: the report "
+                         "is stopped at once and its jobs wait for the next one (a report is 40 to 70 minutes and nearly always running, so "
+                         "waiting for it was most of a presort's wall time); wait: the presort waits for the report to end (the way until 2026-11-04)")
+    ap.add_argument("--report-cut-cap", type=int, default=2, metavar="N",
+                    help="with --presort-report stop: after N reports stopped by presorts in a row (none ended in between) the next presort "
+                         "waits for the running report, so a report that keeps being cut still ends")
     ap.add_argument("--filler", choices=("auto", "on", "off"), default="auto",
                     help="run selfplay as the filler beside the jobs when LAB/jobs.json has selfplay.filler (D48); auto: on with --always-on, "
                          "off with --once, --trial and --dry-run")
@@ -376,6 +384,7 @@ class Runner:
         self.report: Report | None = None  # the chain running beside the job
         self.report_cpu_done = 0.0  # CPU seconds of the reports that ended or were stopped
         self.report_due: list[tuple[Run, int]] = []  # finished jobs whose groups and kits have not run yet
+        self.report_cuts = 0  # reports a presort stopped since a report last ended (--report-cut-cap)
         self.running_job: str | None = None  # the type of the job execute() is running
         self.guards_ok = True  # the last guard reading allowed work (a main.lock does not stop the report)
         self.lock_stops = True  # main.lock stops what runs now: only a presort (set by execute); between jobs it holds every pick
@@ -1044,7 +1053,7 @@ class Runner:
         self.make_room(run)
         try:
             if run.job == "presort":
-                self.drain_report("the presort moves the tree the report runs from")
+                self.report_gives_way_to_presort()
             elif run.job == "nightly-real":
                 self.kill_report("a nightly window opens")
             return self._execute(run)
@@ -1273,6 +1282,7 @@ class Runner:
     def end_report(self) -> None:
         rep, self.report = self.report, None
         assert rep is not None
+        self.report_cuts = 0  # a report ended: the next presort may stop one again
         self.report_cpu_done += rep_cpu(rep)
         rep.sj.close()
         rep.run.save()
@@ -1299,6 +1309,28 @@ class Runner:
         rep.run.save()
         self.report_due = rep.covers + self.report_due
         self.log(f"report beside: stopped ({why}); {len(rep.covers)} job(s) wait for the next report")
+
+    def report_gives_way_to_presort(self) -> None:
+        """A presort checks out, builds and publishes into the tree the running report reads (EmuDump's build, the DLL, git), so the two
+        cannot run together, and one of them must give way. A report is 40 to 70 minutes (groups 10 to 36, kits up to 48) and the next
+        starts the moment one ends, so one is nearly always running and a presort that waited for it waited half an hour: 22 of the
+        30 minutes of the presort of 2026-11-04T01:35Z, with the main slot held and only the filler working.
+
+        Default (--presort-report stop): the report is stopped at once; its jobs wait for the next report, which starts when the presort
+        ends and so reads the new tree (the groups and kits that did not change skip themselves, tools/lab/stepcache.py). What a
+        stopped report had done of its running command is lost, so a report cannot be stopped more than --report-cut-cap times in a row
+        by presorts: then the presort waits for it as before, and the count starts again when a report ends."""
+        rep = self.report
+        if rep is None:
+            return
+        a = self.a
+        if a.presort_report == "wait" or self.report_cuts >= max(0, a.report_cut_cap):
+            note = "" if a.presort_report == "wait" else f"; {self.report_cuts} reports were stopped by presorts in a row, this one ends first"
+            self.drain_report("the presort moves the tree the report runs from" + note)
+            return
+        self.report_cuts += 1
+        self.kill_report(f"the presort moves the tree the report runs from; it had run {time.monotonic() - rep.t0:.0f}s, "
+                         f"{self.report_cuts} of {max(0, a.report_cut_cap)} stops allowed in a row")
 
     def drain_report(self, why: str) -> None:
         """Wait for the running report to end (a guard that stops it ends the wait)."""

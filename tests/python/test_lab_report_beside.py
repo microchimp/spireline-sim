@@ -175,14 +175,80 @@ class ReportBesideTest(unittest.TestCase):
         self.assertIsNotNone(proc.poll())
         self.assertIn("a nightly window opens", self.log(r))
 
-    def test_a_presort_waits_for_the_report_to_end_before_it_moves_the_tree(self):
+    def test_a_presort_waits_for_the_report_to_end_before_it_moves_the_tree_with_presort_report_wait(self):
         self.chain(groups="import time; time.sleep(0.8); open('groups-ran', 'w')")
-        r = self.runner("--report-beside", "on")
+        r = self.runner("--report-beside", "on", "--presort-report", "wait")
         r.execute(r.new_run("fights", "abc"))
         self.assertIsNotNone(r.report)
         r.execute(r.new_run("presort", "abc"))
         self.assertTrue((r.lab.root / "groups-ran").exists())  # groups ended before the presort's steps began
         self.assertIn("waiting for it to end", self.log(r))
+
+    def test_a_presort_stops_the_report_at_once_and_the_report_starts_over_after_it(self):
+        """The wait for the report was most of a presort's wall time (22 of 30 minutes on 2026-11-04): the presort now stops it."""
+        self.chain(groups="import time; time.sleep(60)")
+        r = self.runner("--report-beside", "on")
+        first = r.new_run("fights", "abc")
+        r.execute(first)
+        self.assertIsNotNone(r.report)
+        proc = r.report.running.proc
+        t0 = time.time()
+        presort = r.new_run("presort", "abc")
+        self.assertIsNone(r.execute(presort))
+        self.assertLess(time.time() - t0, 20.0)  # it did not wait the minute the groups step would have taken
+        self.assertIsNotNone(proc.poll())  # the report's process is gone
+        self.assertEqual((presort.dir / "done.rc").read_text().strip(), "0")  # the presort ran its steps
+        self.assertNotIn("waiting for it to end", self.log(r))
+        self.assertIn("report beside: stopped (the presort moves the tree the report runs from; it had run", self.log(r))
+        self.assertEqual(1, r.report_cuts)
+        self.assertEqual([first.name, presort.name], [x.name for x, _ in r.report_due])  # the cut report's job first, then the presort's own
+        self.assertEqual("pending", self.steps(first, "groups")["status"])
+        self.assertEqual([], self.yield_rows(r))  # the cut job's row waits for the report that follows
+        self.chain()  # the next report, after the presort: it covers both jobs
+        r.service_report()
+        self.assertIsNotNone(r.report)
+        self.wait_report(r)
+        self.assertEqual([first.name, presort.name], [row[1] for row in self.yield_rows(r)])
+        self.assertEqual(0, r.report_cuts)  # a report ended: the count starts again
+
+    def test_a_presort_with_no_report_running_just_runs(self):
+        self.chain()
+        r = self.runner("--report-beside", "on")
+        self.assertIsNone(r.execute(r.new_run("presort", "abc")))
+        self.assertEqual(0, r.report_cuts)
+        self.assertNotIn("stopped (the presort", self.log(r))
+
+    def test_after_the_cap_of_stops_in_a_row_the_next_presort_waits_for_the_report_to_end(self):
+        """A report cut by every presort would never end: two stops in a row (--report-cut-cap), then the third presort waits."""
+        self.chain(groups="import time; time.sleep(60)")
+        r = self.runner("--report-beside", "on", "--report-cut-cap", "2")
+        for k in (1, 2):
+            r.execute(r.new_run("fights", "abc"))
+            self.assertIsNotNone(r.report)
+            proc = r.report.running.proc
+            r.execute(r.new_run("presort", "abc"))
+            self.assertIsNotNone(proc.poll())
+            self.assertEqual(k, r.report_cuts)
+            r.report_due.clear()  # (the test's own housekeeping: the next fights job brings a fresh one)
+        self.chain(groups="import time; time.sleep(0.8); open('groups-ran', 'w')")
+        r.execute(r.new_run("fights", "abc"))
+        self.assertIsNotNone(r.report)
+        r.execute(r.new_run("presort", "abc"))
+        self.assertTrue((r.lab.root / "groups-ran").exists())  # this one waited: groups ended before the presort's steps began
+        self.assertIn("2 reports were stopped by presorts in a row, this one ends first", self.log(r))
+        self.assertEqual(0, r.report_cuts)  # and the report that ended started the count again
+
+    def test_a_cap_of_zero_never_stops_a_report(self):
+        self.chain(groups="import time; time.sleep(0.5); open('groups-ran', 'w')")
+        r = self.runner("--report-beside", "on", "--report-cut-cap", "0")
+        r.execute(r.new_run("fights", "abc"))
+        r.execute(r.new_run("presort", "abc"))
+        self.assertTrue((r.lab.root / "groups-ran").exists())
+        self.assertEqual(0, r.report_cuts)
+
+    def test_the_flags_default_to_stop_and_two(self):
+        a = rn.parse_args(["--lab", "L"])
+        self.assertEqual(("stop", 2), (a.presort_report, a.report_cut_cap))
 
     def test_a_fault_in_the_report_turns_it_off_and_keeps_the_rows(self):
         def boom(c):

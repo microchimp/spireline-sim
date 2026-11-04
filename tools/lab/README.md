@@ -141,7 +141,7 @@ runner's *report*: the job is finished at once (done.rc, state), the next job st
 failed groups stops the chain) runs in a Job Object of its own beside it, at the runner's BelowNormal priority. The chain covers every
 job that finished since the last one started; each gets its `yield.tsv` row when the chain ends (group columns NA when groups did not
 finish). It stops at once on any guard except a held `main.lock` (user, pause, load, disk, halt: the covered jobs wait for the next
-chain), waits for the tree: a presort first lets it end (the tools run from the tree), is never started while a nightly window is open
+chain), gives way to a presort (the tools run from the tree the presort checks out, builds and publishes into: the report is stopped at once and its jobs wait for the next one, which starts when the presort ends and reads the new tree; a report is 40 to 70 minutes and nearly always running, so letting it end was most of a presort's wall time. After `--report-cut-cap` stops by presorts in a row (default 2) the next presort waits for the report; `--presort-report wait` is the old way), is never started while a nightly window is open
 (`LAB/nightly/active`) and is stopped when a nightly-real job starts. The report's CPU is kept out of the jobs' CPU accounts (the
 mix schedules on them). A fault in the machinery turns it off for the process and the groups and kits are steps of each job again.
 Off for `--once`, `--trial` and `--dry-run`. `corpus-import` stays a step of the fights job (prune checks the groups file's time).
