@@ -369,5 +369,124 @@ class StallNumbersTest(Tmp):
         self.assertEqual([], n["stalls"])
 
 
+
+class PartialCopyArmNumbersTest(Tmp):
+    """The nightly numbers of a night whose copy arm played a prefix of the block (`--emu-runs`)."""
+
+    AGENT = {"label": "g3", "generation": 3, "role": "incumbent"}
+
+    def arms(self, real_seeds: list[str], emu_seeds: list[str]) -> Path:
+        folder = self.tmp / "g3"
+        folder.mkdir()
+        (folder / "runs.jsonl").write_text("\n".join(json.dumps(end(s, 10 + i)) for i, s in enumerate(real_seeds)))
+        emu = self.tmp / "g3-emu"
+        emu.mkdir()
+        rows = [{"seed": s, "win": False, "floor": 9, "end": "death", "decisions": 5, "wall": 1.0} for s in emu_seeds]
+        (emu / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+        return folder
+
+    def test_the_summary_says_how_many_seeds_the_copy_arm_was_to_play_and_how_many_are_paired(self):
+        folder = self.arms(["A", "B", "C", "D", "E"], ["A", "B"])
+        n = nr.nightly_numbers(folder, "2026-11-04", self.AGENT, "N-2026-11-04", 5, "core2", 2)
+        self.assertEqual((5, 2, 2, 2), (n["runs_planned"], n["emu_runs_planned"], n["emu_rows"], n["paired_seeds"]))
+        self.assertEqual(5, n["runs"])  # the real arm's own numbers are over all its seeds
+
+    def test_the_pairs_are_the_seeds_with_a_row_in_both_arms(self):
+        folder = self.arms(["A", "B", "C"], ["B", "C", "Z"])  # a copy-arm row the real arm lacks pairs with nothing
+        (folder / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in [end("A", 5), end("B", 7), {"ev": "crash", "seed": "C", "s": 1.0}, {"ev": "net", "w": 0}]))
+        n = nr.nightly_numbers(folder, "2026-11-04", self.AGENT, "N-2026-11-04", 3, "core2", 3)
+        self.assertEqual((3, 2), (n["emu_rows"], n["paired_seeds"]))  # B (ended) and C (a crash row is a row)
+
+    def test_without_the_option_the_copy_arm_was_to_play_every_seed(self):
+        folder = self.arms(["A", "B", "C"], ["A", "B", "C"])
+        n = nr.nightly_numbers(folder, "2026-11-04", self.AGENT, "N-2026-11-04", 3, "core2")
+        self.assertEqual((3, 3, 3), (n["emu_runs_planned"], n["emu_rows"], n["paired_seeds"]))
+
+    def test_a_night_with_no_copy_arm_rows_has_no_pairs(self):
+        folder = self.tmp / "g3"
+        folder.mkdir()
+        (folder / "runs.jsonl").write_text(json.dumps(end("A", 5)))
+        n = nr.nightly_numbers(folder, "2026-11-04", self.AGENT, "N-2026-11-04", 1, "core2", 1)
+        self.assertEqual((0, 0), (n["emu_rows"], n["paired_seeds"]))
+
+    def test_the_copy_arms_seed_count_is_cut_to_the_block(self):
+        self.assertEqual(200, nr.emu_runs_tonight(200, 500))
+        self.assertEqual(500, nr.emu_runs_tonight(200_000, 500))  # a promotion night's 2,000 or a small block: the whole block
+        self.assertIsNone(nr.emu_runs_tonight(None, 500))
+
+    def test_the_ranking_joins_the_copy_arms_outcome_on_the_seeds_it_has(self):
+        from tools.lab import rank
+
+        folder = self.arms(["A", "B", "C"], ["A", "B"])
+        (folder / "divergences.jsonl").write_text("")
+        doc = rank.rank(folder, self.tmp / "g3-emu")
+        self.assertEqual(2, doc["summary"]["emu_runs_joined"])  # C has no partner and uses the proxy rule
+
+
+class PartialCopyArmDriverTest(Tmp):
+    run_driver = DriverTest.run_driver  # the whole driver with `gen0.py score` replaced; this class adds the copy-arm tests only
+
+    def cmd_value(self, cmd, flag):
+        return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+    def test_the_command_has_no_flag_without_the_option(self):
+        rc, seen, lab, job, lock = self.run_driver()
+        self.assertNotIn("--emu-runs", seen[0])
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual(20, res["emu_runs_per_agent"])
+        nightly = json.loads((lab / "nightly" / "2026-10-25" / "g3" / "summary.json").read_text())["nightly"]
+        self.assertEqual(20, nightly["emu_runs_planned"])
+
+    def test_the_copy_arm_gets_the_prefix_and_the_real_arm_all_the_runs(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--emu-runs", "7")
+        self.assertEqual(0, rc)
+        self.assertEqual(("7", "20"), (self.cmd_value(seen[0], "--emu-runs"), self.cmd_value(seen[0], "--runs")))
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual((20, 7), (res["runs_per_agent"], res["emu_runs_per_agent"]))
+        nightly = json.loads((lab / "nightly" / "2026-10-25" / "g3" / "summary.json").read_text())["nightly"]
+        self.assertEqual((20, 7), (nightly["runs_planned"], nightly["emu_runs_planned"]))
+
+    def test_a_count_past_the_block_is_the_block(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--emu-runs", "50")
+        self.assertEqual("20", self.cmd_value(seen[0], "--emu-runs"))
+
+    def test_a_promotion_night_cuts_to_its_own_block(self):
+        def promote(_folder):
+            agent = self.tmp / "agent"
+            (agent / "gen4" / "c").mkdir(parents=True)
+            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+                                                 f"2026-10-25T01:00:00Z\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "30", "--since", "2026-10-24T00:00:00Z", prepare=promote)
+        self.assertEqual(["30", "30"], [self.cmd_value(c, "--emu-runs") for c in seen])  # 30 of 40 on both agents' blocks
+        self.assertEqual(30, json.loads((job / "result.json").read_text())["emu_runs_per_agent"])
+
+    def test_a_count_under_one_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.run_driver(None, "--emu-runs", "0")
+
+    def test_a_half_finished_block_resumes_both_arms_on_the_same_prefix(self):
+        row = json.dumps(end("A", 20))
+
+        def half(folder):  # the real arm has one row; the copy arm had played two of its seven when the job was stopped
+            (folder / "scratch").mkdir(parents=True)
+            (folder / "runs.jsonl").write_text(row + "\n", encoding="utf-8")
+            (folder / "resume.json").write_text('{"agent_seed": 1}', encoding="utf-8")
+            (folder / "divergences.jsonl").write_text("", encoding="utf-8")
+            emu = folder.with_name(folder.name + "-emu")
+            emu.mkdir()
+            (emu / "runs.jsonl").write_text("".join(json.dumps({"seed": s, "win": False, "floor": 5, "end": "death", "decisions": 3, "wall": 1.0}) + "\n"
+                                                    for s in ("A", "B")), encoding="utf-8")
+
+        rc, seen, lab, job, lock = self.run_driver(None, "--emu-runs", "7", prepare=half)
+        self.assertEqual(0, rc)
+        self.assertIn("--resume", seen[0])  # gen0.py score resumes the real arm and the copy arm
+        self.assertEqual("7", self.cmd_value(seen[0], "--emu-runs"))  # on the prefix the first start used
+        self.assertEqual((row + "\n", '{"agent_seed": 1}'), (self.at_start["runs.jsonl"], self.at_start["resume.json"]))  # not cleared
+        emu_rows = (lab / "nightly" / "2026-10-25" / "g3-emu" / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(2, len(emu_rows))  # the copy arm's rows are left for gen0.run_block's resume
+        nightly = json.loads((lab / "nightly" / "2026-10-25" / "g3" / "summary.json").read_text())["nightly"]
+        self.assertEqual((7, 2, 2), (nightly["emu_runs_planned"], nightly["emu_rows"], nightly["paired_seeds"]))  # the fake block ends on A and B, as the copy arm has
+
+
 if __name__ == "__main__":
     unittest.main()

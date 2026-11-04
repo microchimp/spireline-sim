@@ -134,6 +134,10 @@ def compare(emu: list[dict], real: list[dict], real_summary: dict | None = None)
     e = [r for r in emu if r["seed"] in shared]
     g = [r for r in real if r["seed"] in shared]
     out = {"paired_seeds": len(shared), "emu": engine_block(e), "real": engine_block(g),
+           # the rows each arm holds and those with no partner: a copy arm that plays a prefix of the block (`score --emu-runs`) leaves
+           # the rest of the real arm unpaired, and its tables above are over the paired seeds only
+           "rows": {"emu": len(emu), "real": len(real), "emu_unpaired": len({r["seed"] for r in emu} - shared),
+                    "real_unpaired": len({r["seed"] for r in real} - shared)},
            "G": paired({r["seed"]: float(r["win"]) for r in e}, {r["seed"]: float(r["win"]) for r in g}),
            "floor_gap": paired({r["seed"]: float(r["floor"]) for r in e}, {r["seed"]: float(r["floor"]) for r in g})}
     if real_summary:
@@ -969,13 +973,27 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") 
     return True, "names the scored agent"
 
 
+def emu_arm_seeds(seeds: list[str], runs: int, emu_runs: int | None = None) -> list[str]:
+    """The seeds the copy arm plays: the first `runs` of the block (the real arm's), cut to the first `emu_runs` of those. A fixed
+    prefix, so the set the two arms share is the same on every night, every resume and every reader; each seed keeps its place in
+    the block as its run index (the agent's RNG is [agent seed, index]). `emu_runs` None: every seed the real arm plays; one larger
+    than the block is the whole block; under 1 is refused (a copy arm of no seeds pairs nothing)."""
+    block = list(seeds)[:runs]
+    if emu_runs is None:
+        return block
+    if emu_runs < 1:
+        raise ValueError(f"--emu-runs {emu_runs}: the copy arm plays at least one seed")
+    return block[:emu_runs]
+
+
 def play_emu_arm(a: argparse.Namespace, agent, out: Path) -> dict:
-    """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`."""
+    """Play the scored agent on the emulator over the real block's seeds, config and process count into `out`. With `emu_runs` only
+    the first that many seeds of the block (`emu_arm_seeds`); a resumed arm keeps its rows on those seeds."""
     if a.lib:
         os.environ["STS2_LIB_PATH"] = a.lib
     engine = getattr(a, "engine", "old")
     select_engine(engine)  # the arm's spawn workers load the library on this engine
-    seeds = load_seeds(a.seeds_file)[: a.runs]
+    seeds = emu_arm_seeds(load_seeds(a.seeds_file), a.runs, getattr(a, "emu_runs", None))
     # resume: a stopped arm is rerun into the same folder and keeps its finished seeds (the identity file guards the agent, the
     # config and the engine); run_timeout_s None (not given) is the dispatcher's default, RUN_TIMEOUT_S
     timeout = getattr(a, "run_timeout_s", None)
@@ -1090,6 +1108,10 @@ def play_score(a: argparse.Namespace) -> int:
             play_emu_arm(a, agent, emu_dir)
     arm = {"dir": None if only else emu_dir.name if not ok else str(a.emu_dir).replace("\\", "/"), "played": not ok, "agent": agent.describe(),
            "reason": "played: " + why if not ok else why, "engine": engine}
+    emu_runs = getattr(a, "emu_runs", None)
+    if emu_runs is not None and not only:  # the copy arm played a prefix of the block: the figures pair on the seeds both arms hold
+        arm["emu_runs"] = min(emu_runs, a.runs)
+        arm["partial"] = emu_runs < a.runs
     env = dict(os.environ)
     if a.lib:
         env["STS2_LIB_PATH"] = a.lib
@@ -1300,6 +1322,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --quiet-lock: wait this long for another's line under 2 h old, then play nothing (exit code 75, "
                     "result.json {skipped})")
     sc.add_argument("--lib")
+    sc.add_argument("--emu-runs", type=int, default=None,
+                    help="the emulator (copy) arm plays only the first N of the block's seeds (default: all of --runs); compare.json, "
+                    "the summary and the readers pair on the seeds both arms hold")
     sc.add_argument("--emu-dir", help="an emulator arm to pair with, used only when its summary.json names the agent scored (--gen-dir); otherwise the arm is played first into OUT-emu")
     sc.add_argument("--only", help="play only these seeds of the file (comma-separated), each keeping its place in the full file as its "
                     "run index (the agent's RNG is [agent seed, index]); the game's side only, no emulator arm")

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The nightly real-game block (D33 addendum 2 item 1): the lab job `nightly-real` runs this driver.
 
-    python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--procs 12] [--recycle 60]
+    python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--emu-runs N] [--procs 12]
+                              [--recycle 60]
 
 For the incumbent (agent-root/current.json) and each generation promoted since the last nightly (promotions.tsv rows written after
 LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
@@ -13,6 +14,12 @@ score --resume`): its folder is not cleared and only the seeds without a row are
 
 Runs per agent (owner, 2026-10-30): `--runs-promoted` on a night that scores a generation promoted since the last nightly, else
 `--runs` (the lab's jobs.json: 2,000 on a promotion day, 500 otherwise). Without `--runs-promoted` every night plays `--runs`.
+
+Copy arm on a sample (`--emu-runs N`, 2026-11-04): the emulator arm plays only the first N seeds of each block (a fixed prefix of the
+block's seed file, so the set both arms share is the same every night and on every resume; `gen0.emu_arm_seeds`); the real arm still
+plays them all. compare.json, the rank join (`rank.write`) and the readers that pair the arms work on the seeds both arms hold, and
+`nightly` carries `emu_runs_planned` (the copy arm's seeds), `emu_rows` (rows it holds) and `paired_seeds` (seeds with a row in both
+arms). A block a stopped job left unfinished resumes both arms with the same prefix. Default: every seed of the block.
 
 GPU_OK: `gen0.py score --gpu-ok-tag lab-nightly` keeps the line `lab-nightly` first in the GPU_OK file while the real-game arm plays
 (the GPU lane may fit beside it), never during the emulator arm; every start of this driver first removes any such line.
@@ -177,8 +184,33 @@ def unfinished_night(lab: Path, now: float | None = None, max_age_h: float = RES
 
 # ---------------------------------------------------------------- one agent's block
 
-def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: str, planned: int, engine: str) -> dict[str, Any]:
-    """The block's numbers with a crashed run counted as a loss (gen0.real_runs: floor 0, no win; boss_kill: never)."""
+def emu_runs_tonight(emu_runs: int | None, runs: int) -> int | None:
+    """The copy arm's seed count for a block of `runs` seeds: `emu_runs` cut to the block (None: every seed of the block)."""
+    return None if emu_runs is None else min(int(emu_runs), int(runs))
+
+
+def seeds_with_rows(runs_jsonl: Path) -> set[str]:
+    """The seeds that have a row in a runs.jsonl of either arm (the real arm's end and crash events, the copy arm's rows); a half-written
+    last line is skipped."""
+    out: set[str] = set()
+    try:
+        lines = Path(runs_jsonl).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("seed") is not None and r.get("ev") in (None, "end", "crash"):
+            out.add(str(r["seed"]))
+    return out
+
+
+def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: str, planned: int, engine: str,
+                    emu_planned: int | None = None) -> dict[str, Any]:
+    """The block's numbers with a crashed run counted as a loss (gen0.real_runs: floor 0, no win; boss_kill: never). `emu_planned` is the
+    seeds the copy arm was to play (`--emu-runs`; None: all of `planned`)."""
     import gen0  # noqa: PLC0415
     import gen_loop  # noqa: PLC0415
 
@@ -189,10 +221,14 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
     mean = t["floor"]["mean"]
     from tools.lab import rank  # noqa: PLC0415
 
-    stalls = rank.stalls_of(folder / "runs.jsonl", emu_jsonl=folder.parent / (folder.name + "-emu") / "runs.jsonl")  # the real arm: timeouts and
+    emu_jsonl = folder.parent / (folder.name + "-emu") / "runs.jsonl"
+    emu_seeds = seeds_with_rows(emu_jsonl)  # the copy arm may hold fewer seeds than the real one (--emu-runs): pairs are the seeds in both
+    paired_seeds = len(emu_seeds & seeds_with_rows(folder / "runs.jsonl"))
+    stalls = rank.stalls_of(folder / "runs.jsonl", emu_jsonl=emu_jsonl)  # the real arm: timeouts and
     # runs that answered one screen the same way over 50 times; the sibling emulator arm: its timeouts (the wall cap), L2's run-layer loops
     return {"date": date, "agent": agent["label"], "generation": agent["generation"], "role": agent["role"], "seed_block": seed_block,
-            "engine": engine, "runs_planned": planned, "runs": t["runs"], "wins": t["wins"], "win_rate": t["win_rate"],
+            "engine": engine, "runs_planned": planned, "emu_runs_planned": planned if emu_planned is None else emu_planned,
+            "emu_rows": len(emu_seeds), "paired_seeds": paired_seeds, "runs": t["runs"], "wins": t["wins"], "win_rate": t["win_rate"],
             "mean_floor": None if mean is None else round(mean, 3), "boss_kills": boss,
             "boss_kill_rate": boss / t["runs"] if t["runs"] else None, "crashes": t["crashes"],
             "stalls": stalls, "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
@@ -226,6 +262,9 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
            "--gen-dir", agent["dir"], "--out", str(folder), "--engine", a.engine, "--recycle", str(a.recycle), "--resume",
            # the GPU lane may fit beside the real-game arm (not the emulator arm, which plays through the prior server on the GPU)
            "--gpu-ok-tag", TAG, "--gpu-ok-file", str(getattr(a, "gpu_ok_file", None) or gpu_ok_default())]
+    emu_n = emu_runs_tonight(getattr(a, "emu_runs", None), a.runs)
+    if emu_n is not None:  # the copy arm plays this prefix of the block's seeds; a resumed block gets the same one
+        cmd += ["--emu-runs", str(emu_n)]
     if getattr(a, "sample_machine", 0):  # the one-night sampler of the slow windows: the real arm only (`gen0.py score` hands it to envproto play)
         cmd += ["--sample-machine", f"{a.sample_machine:g}"]
     # a stopped, unfinished block is resumed in its folder, real arm and emulator arm alike: the seeds that already have a row are
@@ -234,7 +273,7 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     print(f"[{utc_now()}] {agent['label']} ({agent['role']}, generation {agent['generation']}): {name}, {len(seeds)} seeds", flush=True)
     rc = subprocess.run(cmd, check=False).returncode
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies
-    nums = nightly_numbers(folder, date, agent, name, len(seeds), a.engine)
+    nums = nightly_numbers(folder, date, agent, name, len(seeds), a.engine, emu_n)
     nums["rc"] = rc
     if (folder / "summary.json").is_file():
         doc = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
@@ -255,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--runs", type=int, default=2000)
     ap.add_argument("--runs-promoted", type=int, default=None,
                     help="runs per agent on a night that scores a generation promoted since the last nightly (default: --runs)")
+    ap.add_argument("--emu-runs", type=int, default=None,
+                    help="the emulator (copy) arm plays only the first N seeds of each block, the real arm all of them (default: all); "
+                    "the pairing and the readers use the seeds both arms hold")
     ap.add_argument("--procs", type=int, default=12)
     ap.add_argument("--recycle", type=int, default=60)
     ap.add_argument("--config", default="a3-v1")
@@ -272,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")
     ap.add_argument("--since", help="UTC time (default: LAB/nightly/last-ok's): promotions after it are scored too")
     a = ap.parse_args(argv)
+    if a.emu_runs is not None and a.emu_runs < 1:
+        ap.error("--emu-runs must be at least 1")
     import gen0  # noqa: PLC0415
 
     a.gpu_ok_file = a.gpu_ok_file or gen0.GPU_OK_FILE
@@ -313,7 +357,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{utc_now()}] {ag['label']}: {agents[ag['label']]['error']}", flush=True)
         good = [v for v in agents.values() if "error" not in v]
         inc = good[0] if good else {}
-        res = {"date": a.date, "engine": a.engine, "runs_per_agent": a.runs, "agents": agents, "wall_s": round(time.time() - t0, 1),
+        res = {"date": a.date, "engine": a.engine, "runs_per_agent": a.runs, "emu_runs_per_agent": emu_runs_tonight(a.emu_runs, a.runs) or a.runs,
+               "agents": agents, "wall_s": round(time.time() - t0, 1),
                # the yield columns (tools/lab/mix.py) are the first agent's
                "runs": inc.get("runs"), "wins": inc.get("wins"), "mean_floor": inc.get("mean_floor"), "crashes": inc.get("crashes"),
                "divergences": inc.get("diverged_decisions")}
