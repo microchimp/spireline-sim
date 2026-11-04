@@ -7,7 +7,8 @@ the `review/input-2026-10-24` branch under `docs/review-input/d24-guard-input.md
 "nearly free of false fires and nearly free of power", and proposed a better one. This document is that guard: the rule
 in words, its power, how to switch it on, and what the PC must check first.
 
-**Status: implemented behind a flag that is off.** The code is `tools/lab/promotion_guard.py` (pure functions, standard
+**Status: implemented behind a flag that is off** (written 2026-10-24; the lab's train job has run with it on since,
+and section 6 says what the guard, the ranking check and the funnel each refuse, with the numbers as landed). The code is `tools/lab/promotion_guard.py` (pure functions, standard
 library plus numpy for the one bootstrap) and the flag-gated call in `rl/gen_loop.py` (`promote`, `rejudge`,
 `mark_ready`). With the flag off the lab decides exactly as before; `tests/python/test_promotion_guard.py` checks that.
 
@@ -155,7 +156,8 @@ of the candidate and of the incumbent), before the flag goes on.
    the arms were not played on different configs or ascensions: `summary.json` of each arm names them). Both arms were
    played on the same engine build (the same tree sha in the job record), since a seed is the same game only under the
    same engine. A crashed run counts as floor 0 and no kill in whichever arm it crashed; the crash counts in
-   `promotion.json`'s two summaries should be small and alike.
+   `promotion.json`'s two summaries should be small and alike. A block the funnel stopped early (section 6.3) holds only
+   the seeds played, the first N of the block: `pairing_check.py` then expects exactly those N, and says so.
 2. **The pairing shows in the discordance.** Under real pairing the arms are positively correlated: the discordant pairs
    `b + c` on the block are *below* `n (p1 + p2 - 2 p1 p2)` from the two arms' kill rates (D24: 53 against 66). Equal
    or above it means the arms behaved as if independent, and the pairing (or the engine's determinism per seed) is in
@@ -186,3 +188,113 @@ guard informative.
 | side finding (a), cap attempts at two and record the attempt | `promotion_guard.retry_cap`; `gen_loop.mark_ready`, `promote`, `attempts_before`; the `attempt` column |
 | appendix A, the power arithmetic | `guard_power`, `coprimary_power`, `seeds_for_power`, `table` (`--table`) |
 | 4.2, rule changes apply from the next block | the flag is read per judgement; `rejudge --review-guard` only on an owner decision |
+
+## 6. What each check refuses, in the order they were landed
+
+Three checks now stand between a trained candidate and `current.json`. They were landed in this order (the guard
+from 2026-10-24, the ranking check 2026-11-03 08:47Z as fork `67ce500a`, the funnel 2026-11-03 22:35Z as fork
+`277e55b2`) and each refuses something the earlier ones could not see. In the pipeline the ranking check comes first
+(it runs when the value head is fitted, before any E-block is played), the funnel plays the E-block in looks, and the
+guard is part of the decision the funnel asks for at an eligible look and at the last. The numbers are those the landings
+reported; where a number is a simulation or a replay it says so.
+
+### 6.1 The guard (sections 1 to 3): a candidate that is not better, or that has lost the boss fight
+
+Refuses, on a finished paired block of the E-block's seeds, any of: the floor primary not above 0 (cluster bootstrap,
+one-sided 0.01); the boss-kill co-primary not met where both arms kill the Act-1 boss in 10% or more of runs; the
+boss-kill not-worse guard firing (exact McNemar, one-sided 0.05, `c > b`); the boss-damage paired guard firing (one-sided
+0.05, the upper bound of candidate minus incumbent below 0); the drift check blocked (twice in a row below the lineage's
+pooled kill rate); a third attempt for the generation (the cap is two, counted as the distinct candidate shas of the
+generation in `promotions.tsv`). A flagged drift alone does not refuse: it marks the promotion for the weekly review.
+Its power is in the tables of section 2 (at 2,000 seeds the 0.05 kill guard stops a halving of a 2% kill rate four times in
+five, and fires falsely in about 4% of equal-arm blocks). The lab's train job runs it on (`--review-guard`).
+
+As landed on real blocks: generation 11 passed it (E11, 2,000 seeds, +1.07 floors, SE 0.17, 99% lower bound +0.67; Act-1
+boss kills 1,026 against 861, 343 against 178 discordant, kill guard clear; damage guard clear at +0.049; drift clear at
+51.3% against a pooled 46.4%). Generation 12 failed it (E12, 2,000 seeds, -5.91 floors, 17.08 against 22.98, 99% lower
+bound -6.44; Act-1 boss kills 541 against 1,033; the kill and damage guards both fired). What it cannot refuse: a
+candidate whose floor gain is real but which ranks options badly in a way the E-block does not show at its sample size
+(6.2), and it spends a whole block to say so (6.3).
+
+### 6.2 The ranking check (`rl/run_train/ranking.py`, D49): a value head that forecasts well and chooses badly
+
+Refuses a V_run fit, at fit time and before any E-block is played, when it fails the keep test (`gen_loop.vrun_keep_passed`):
+the D33 conditions on out-of-fold outcome forecasts (unchanged) and now also the ranking check. The fit is not kept and the
+candidate does not take the V_run macro; it is to be refit, not run through an E-block. The check compares the candidate
+head against the incumbent's on the same states, a fixed set of 11,000 decisions from the finished generation-9 self-play
+shards (3,000 rest sites, 3,000 card rewards, 3,000 map choices that offer a rest site beside another room, 2,000 other
+multi-option map choices; at most 2 per run; seed 20261103, digest `144cc31c4b0c`, rebuilt only if the seed, the pool or the fit window differ), plus the held-out
+human fifth read once for aggregates (a fixed seeded third of the fifth: 1,000 of 2,924 runs, 14,013 decisions). Four
+checks, each failing closed when it cannot run (no incumbent, no corpus, an error):
+
+| check | fails when the candidate is below the incumbent by |
+|---|---|
+| rest rate (map choices that go to the rest site) | more than 5 points |
+| heal rate (rest sites that heal rather than upgrade) | more than 10 points |
+| human agreement at card rewards | more than 2 standard errors of the paired difference |
+| human agreement at rest sites | more than 2 standard errors of the paired difference |
+
+A human measure over fewer than 1,000 decisions is reported and cannot fail. The margins sit just beyond the drops of the
+other heads on disk against generation 9's (heal -8.3 and rest -3.0 for generation 10's refused refit; generation 9
+against generation 8, both promoted: -5.3 and -2.4) and far inside generation 12's. Generation 12's fit failed 3 of 4:
+heal rate 0.200 against 0.464 (-26.4 points), human agreement -2.9 points at card rewards (z -6.0) and -4.9 at rest sites
+(z -4.7); its rest rate (-3.4 points) was inside the margin; it would upgrade at 74% of the held-out fifth's rest sites
+against 45% for generation 9's head. Generation 11's head is byte-identical to generation 9's, so every difference is zero
+and it passes (the equal-head case, not a test of a refit). Other heads against generation 9: generation 10 passes; 10-r1
+(z -2.2 at card rewards, -2.8 at rest sites) and 10-r2 (z -3.6 at rest sites) fail a human check; generation 8 passes; generation 5 fails (heal -24.8,
+rest -11.6). One check costs about 7.3 to 7.9 minutes of one BelowNormal process. What it cannot refuse: a head whose
+choices agree with the humans but whose play is worse for reasons the set does not hold (the set is the generation-9
+fighter's states); and it also refuses refits as close as 10-r1 and 10-r2 (the price of a paired test at this sample).
+Not verified: that the rule would have predicted the earlier E-blocks (it separates one refusal, generation 12;
+generation 10's -1.4 head passes it).
+
+### 6.3 The funnel (`gen_loop.seq_call`, `funnel`, `promote(sequential=True)`, D51): a block that has already decided
+
+Does not add a reason to refuse a candidate on the full block; it ends the block early, either way, when the seeds
+played already decide it. The E-block is played in looks at 200 (the smoke block), 500, 800, 1,100, 1,400, 1,700 and
+2,000 paired seeds (the block's own first seeds in file order, both arms to each look, resumed into the same arm folders).
+At a look before the last it:
+
+- **refuses** when the one-sided 99% upper bound of the mean paired floor difference is below 0 (no other check can then
+  rescue a promotion), and at the smoke look also when the mean is below -1.0 with the one-sided 95% lower bound below 0
+  (the second clause follows from the first; it is kept as D51 specified it). A refusal spends the attempt exactly as a
+  2,000-seed refusal does.
+- **promotes early** only from the second look, when z = mean / SE is at least 3.54 (a tenth of alpha, 0.001, split by
+  Bonferroni over the five interim looks), today's whole decision on the seeds played says promote (floor bootstrap, kill
+  guard or co-primary, damage guard, attempt cap), and the drift check is not flagged. Otherwise it plays on. The smoke
+  look never promotes; the last look is today's decision on all 2,000, unchanged.
+
+Error rates (normal model, per-seed SD 7.74 floors from E11's block, 10^6 paths; `tests/python/test_funnel.py` re-runs
+them): no improvement promotes in 0.0103 of blocks against 0.0101 for the last look alone (the union bound is 0.011); a
+true +0.3 promotes in 0.277 either way, +0.5 in 0.713, +1.07 in 1.000; an early refusal takes a candidate that would have
+passed with probability 0.00003 (mean 0), 0.0006 (+0.3), 0.0010 (+0.5), 0.00007 (+1.07). Mean seeds played: 1,917 at no
+improvement, 1,830 at +0.5, 863 at +1.07, 271 at -1.44, 200 at -5.90.
+
+Replay on the lab's recorded blocks (the guard on, history as of the day): generation 12 (-5.91) refused at the smoke look,
+200 seeds (mean -6.79, 99% upper bound -5.13); generation 11 (+1.069) promoted at 500 seeds (mean +1.51, z 4.34, every
+check holding; the recorded mean at the stop is above the full block's +1.07 and the record says so); generation 10's first
+block (-1.44) refused at 200; generation 10 r1 (+0.23) played all 2,000. Over the 16 judged blocks with arms on disk the
+funnel gives each block's recorded verdict and plays 19,400 of 32,000 seeds (61%): 3 stop on a refusal (E4 at 1,400, E10
+and E12 at 200), 7 on an early promotion, the rest play all 2,000.
+
+**The record of a stop.** `promotion.json` has `n_seeds` the seeds played and a `sequential` key (the looks, the stop,
+`block_seeds`, `played`, and a note that the figures are those at the stop); `promotions.tsv` has one row with `seeds` the
+seeds played and a `guard` cell ending `funnel refuse|promote at N of 2000 seeds`; the decision's checks gain
+`sequential` (false on a refusal). A block that plays all 2,000 differs from today's record by the `sequential` key alone.
+Two tools read that record, so that a stop is not read as a failure:
+
+- `rejudge` on a stopped block judges the seeds that were played (the first N of the block; the arms hold no others),
+  says so (`n_seeds` N, `rejudged.seeds`, the `seeds_judged` line of the command, the tsv `guard` cell), and keeps the
+  funnel's own check as `promote` wrote it (a refusal stays refused). Both arms must hold all N. A block without the
+  record, or one that played every seed, still needs every seed of the file.
+- `tools/lab/pairing_check.py` expects the arms of a stopped block to hold exactly the first N seeds of the seed file
+  (and the file to be the block the record names), and reports the stop; every quantity it prints is then that of the N
+  seeds, which is fewer, so its kills and floors figures are noisier than a full block's. The record is the
+  `--promotion` file, or the candidate's own `promotion.json` when it is for the same block.
+
+What the funnel cannot refuse or promote safely: a guard that would have fired only on the later seeds (the damage and
+kill guards have less power at 500 to 1,700 seeds, the drift check too; an early promotion is covered by the nightly 2,000
+real-game runs the night after); the mean of a block that stopped on a bound is biased away from 0 (the decision's error
+rates hold). Cost: each look restarts the prior server and the pool (14 starts for 7 looks and 2 arms), and a hung run waits
+out its 600 s per look. Not verified: a live block (the emulator path through `run_arm(resume=True)` is tested with a
+stand-in `run_block` and the real pool on fake tasks).

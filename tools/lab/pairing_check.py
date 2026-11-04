@@ -15,6 +15,12 @@ independence assumptions the power tables rest on, re-run with the observed disc
 The engine build (a third condition of section 4.1) is in no runs row; it comes from the job record and is not checked here.
 
     python -I tools/lab/pairing_check.py CAND_ARM_DIR BASE_ARM_DIR [--seeds-file F] [--promotion promotion.json] [--json OUT]
+
+A block the funnel stopped early (D51; promotion.json carries ``sequential`` with a stop before the last look) holds only the
+seeds played, the first N of the block in file order: the arms are then expected to hold exactly those N (the seed set equal to the
+seed file's first N, ``paired_seeds`` equal to N), and the output says so. The record is promotion.json; with ``--seeds-file`` and no
+``--promotion`` the candidate's own ``promotion.json`` (two folders above its arm folder) is used when it is for the same block.
+Every quantity is then that of the seeds played, which is fewer.
 """
 
 from __future__ import annotations
@@ -67,6 +73,19 @@ def _crashed(row: Mapping[str, Any]) -> bool:
     return bool(row.get("crash"))
 
 
+def funnel_stop(promotion: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The funnel's early stop of a promotion.json (`{"action", "played", "block_seeds"}`), or None for a block that played every
+    seed or was not played as the funnel. The same reading as `rl/gen_loop.funnel_stop_record` (a test holds them together); this
+    module reads no repo code beyond the guard's, so it carries its own."""
+    seq = (promotion or {}).get("sequential")
+    if not isinstance(seq, dict) or not isinstance(seq.get("stop"), dict):
+        return None
+    action, played, total = seq["stop"].get("action"), seq.get("played"), seq.get("block_seeds")
+    if action in (None, "final") or not isinstance(played, int) or not isinstance(total, int) or not 0 < played < total:
+        return None
+    return {"action": action, "played": played, "block_seeds": total}
+
+
 def sign_test_two_sided(a: int, b: int) -> float:
     """Two-sided exact sign test on two counts (1 when both are 0)."""
     n = a + b
@@ -109,9 +128,11 @@ def power_with_discordance(factor: float, n: int = 2000, alphas: Sequence[float]
 def check_pair(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *,
                cand_summary: Mapping[str, Any] | None = None, base_summary: Mapping[str, Any] | None = None,
                seed_file: Sequence[str] | None = None, n_seeds: int | None = None, paired_seeds: int | None = None,
-               permutations: int = PERMUTATIONS, rng_seed: int = PERM_SEED) -> dict[str, Any]:
+               early_stop: Mapping[str, Any] | None = None, permutations: int = PERMUTATIONS, rng_seed: int = PERM_SEED) -> dict[str, Any]:
     """Every section 4.1 / 4.2 quantity for one block. `n_seeds` and `paired_seeds` are promotion.json's (default: the seed
-    file's length and the number of seeds both arms played)."""
+    file's length and the number of seeds both arms played). `early_stop` (`funnel_stop` of promotion.json) says the funnel ended
+    the block before its last look: the arms are then expected to hold the first `played` seeds of the seed file, and the seed
+    file must be the block of the record (`block_seeds` long)."""
     c = {r["seed"]: r for r in cand_rows}
     b = {r["seed"]: r for r in base_rows}
     both = sorted(set(c) & set(b))
@@ -119,14 +140,23 @@ def check_pair(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mappi
     out: dict[str, Any] = {}
 
     # 4.1 the seed sets, the counts, the configuration
-    expected_n = n_seeds if n_seeds is not None else (len(seed_file) if seed_file is not None else n)
+    played = int(early_stop["played"]) if early_stop else None
+    expected_n = (n_seeds if n_seeds is not None else played if played is not None
+                  else (len(seed_file) if seed_file is not None else n))
     seeds = {"cand_n": len(c), "base_n": len(b), "paired": n, "only_cand": len(set(c) - set(b)), "only_base": len(set(b) - set(c)),
              "identical": set(c) == set(b), "n_seeds": expected_n,
              "paired_seeds": paired_seeds if paired_seeds is not None else n}
+    if early_stop:  # a stop before the last look: the seeds played, not the block, are what both arms hold
+        seeds["early_stop"] = {"action": early_stop["action"], "played": played, "block_seeds": early_stop["block_seeds"],
+                               "pass": bool(played == expected_n)}
     if seed_file is not None:
-        sf = set(seed_file)
+        sf = set(seed_file[:played] if played is not None else seed_file)
         seeds["equal_to_seed_file"] = set(c) == sf and set(b) == sf
-    seeds["pass"] = bool(seeds["identical"] and seeds["paired_seeds"] == expected_n and seeds.get("equal_to_seed_file", True))
+        if early_stop:
+            seeds["early_stop"]["seed_file_is_the_block"] = len(seed_file) == early_stop["block_seeds"]
+            seeds["early_stop"]["pass"] = bool(seeds["early_stop"]["pass"] and seeds["early_stop"]["seed_file_is_the_block"])
+    seeds["pass"] = bool(seeds["identical"] and seeds["paired_seeds"] == expected_n and seeds.get("equal_to_seed_file", True)
+                         and seeds.get("early_stop", {}).get("pass", True))
     out["seeds"] = seeds
 
     cs, bs = dict(cand_summary or {}), dict(base_summary or {})
@@ -206,9 +236,12 @@ def failing(result: Mapping[str, Any]) -> list[str]:
 
 def _fmt(name: str, r: Mapping[str, Any]) -> str:
     s, k, f, cr = r["seeds"], r.get("kills", {}), r.get("floors", {}), r["crashes"]
+    stop = s.get("early_stop")
+    stopped = (f" [funnel stop on a {stop['action']}: the first {stop['played']} of the block's {stop['block_seeds']} seeds were played, "
+               "and every quantity below is that of those seeds]") if stop else ""
     lines = [f"{name}: {'PASS' if r['pass'] else 'FAIL ' + ','.join(failing(r))}",
              f"  seeds   paired {s['paired']} of {s['n_seeds']} (paired_seeds {s['paired_seeds']}), only-cand {s['only_cand']} only-base {s['only_base']}, "
-             f"identical {s['identical']}, seed file {s.get('equal_to_seed_file', 'n/a')}  {'ok' if s['pass'] else 'FAIL'}",
+             f"identical {s['identical']}, seed file {s.get('equal_to_seed_file', 'n/a')}  {'ok' if s['pass'] else 'FAIL'}{stopped}",
              f"  config  mismatch {r['config']['mismatch'] or 'none'}  {'ok' if r['config']['pass'] else 'FAIL'}",
              f"  crashes cand {cr['cand']} base {cr['base']} (sign p {cr['p_alike']:.2f})  {'ok' if cr['pass'] else 'FAIL'}"]
     if k:
@@ -224,10 +257,20 @@ def check_dirs(cand_dir: str | Path, base_dir: str | Path, *, seeds_file: str | 
                promotion: str | Path | None = None, **kw: Any) -> dict[str, Any]:
     cand_dir, base_dir = Path(cand_dir), Path(base_dir)
     summ = lambda d: json.loads((d / "summary.json").read_text(encoding="utf-8")) if (d / "summary.json").is_file() else {}  # noqa: E731
+    seed_file = load_seed_file(seeds_file) if seeds_file else None
+    if promotion is None and seeds_file:  # the candidate's own record, when it is the record of this block
+        parents = cand_dir.resolve().parents
+        own = parents[1] / "promotion.json" if len(parents) > 1 else None
+        if own is not None and own.is_file():
+            try:
+                same = json.loads(own.read_text(encoding="utf-8")).get("seed_block") == Path(seeds_file).stem
+            except (OSError, ValueError):
+                same = False
+            promotion = own if same else None
     promo = json.loads(Path(promotion).read_text(encoding="utf-8")) if promotion else {}
     return check_pair(read_rows(cand_dir / "runs.jsonl"), read_rows(base_dir / "runs.jsonl"), cand_summary=summ(cand_dir),
-                      base_summary=summ(base_dir), seed_file=load_seed_file(seeds_file) if seeds_file else None,
-                      n_seeds=promo.get("n_seeds"), paired_seeds=promo.get("paired_seeds"), **kw)
+                      base_summary=summ(base_dir), seed_file=seed_file, n_seeds=promo.get("n_seeds"),
+                      paired_seeds=promo.get("paired_seeds"), early_stop=funnel_stop(promo), **kw)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

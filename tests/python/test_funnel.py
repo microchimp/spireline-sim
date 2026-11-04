@@ -4,6 +4,8 @@ The rule and its error rates are in `gen_loop.seq_call`'s docstring; these tests
 (no emulator), check the attempt counter and the record, and replay the lab's recorded E-blocks through the rule (those skip where the
 lab's agent folder is absent: SPIRELINE_REFEREE names it, default D:/spireline/referee)."""
 
+import contextlib
+import io
 import json
 import math
 import os
@@ -26,6 +28,7 @@ os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
 import pool_fakes as pf  # noqa: E402
+from tools.lab import pairing_check as pc  # noqa: E402
 
 LOOKS = [200, 500, 800, 1100, 1400, 1700, 2000]
 SD = 7.74  # the per-seed SD of the paired floor difference on E11's block
@@ -378,6 +381,114 @@ class PromoteFunnelTests(unittest.TestCase):
         seeds, cand_rows, base_rows = self.block(0.3)
         with self.assertRaisesRegex(ValueError, "only 150 of 200 seeds are paired in both arms at look 1 of 7"):
             gen_loop.funnel(seeds, lambda n: (cand_rows[:150], base_rows), lambda c, b: {})
+
+    # -- rejudge on a block the funnel stopped early: the arms hold only the seeds played
+
+    def write_arms(self, cand: Path, name: str, cand_rows: list[dict], base_rows: list[dict], base: Path | None = None) -> None:
+        """The arms as the funnel leaves them on disk: runs.jsonl of the candidate and of the base (generation 0 when none is given)."""
+        base_arms = (base or self.agents / "gen0") / "arms" / f"{name}-a3-v1"
+        for arm_dir, rows in ((cand / "arms" / f"{name}-a3-v1", cand_rows), (base_arms, base_rows)):
+            arm_dir.mkdir(parents=True, exist_ok=True)
+            (arm_dir / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def rejudge(self, cand: Path, base: Path | None = None, **kw):
+        return gen_loop.rejudge(cand, base, self.seed_file, agent_root=self.agents, note="owner", boot=500, review_guard=True, **kw)
+
+    def test_rejudge_reads_the_funnel_stop_from_the_record_and_only_from_a_stop_before_the_last_look(self):
+        stop = {"action": "refuse", "n": 200}
+        seq = {"stop": stop, "played": 200, "block_seeds": 2000}
+        self.assertEqual(gen_loop.funnel_stop_record({"sequential": seq}), {"action": "refuse", "played": 200, "block_seeds": 2000, "sequential": seq})
+        self.assertIsNone(gen_loop.funnel_stop_record(None))
+        self.assertIsNone(gen_loop.funnel_stop_record({"n_seeds": 2000}))  # not played as the funnel
+        self.assertIsNone(gen_loop.funnel_stop_record({"sequential": {**seq, "stop": {"action": "final", "n": 2000}, "played": 2000}}))
+        self.assertIsNone(gen_loop.funnel_stop_record({"sequential": {**seq, "played": 2000}}))  # every seed played: the plain path
+        self.assertIsNone(gen_loop.funnel_stop_record({"sequential": {"stop": stop}}))  # a record that does not say how far it played
+        self.assertEqual(pc.funnel_stop({"sequential": seq}), {"action": "refuse", "played": 200, "block_seeds": 2000})  # pairing_check reads it alike
+
+    def test_a_refused_block_is_rejudged_on_the_seeds_played_and_says_so(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        doc, _ = self.run_promote(cand, -4.0)
+        self.assertEqual(doc["n_seeds"], 200)
+        seeds, cand_rows, base_rows = self.block(-4.0)
+        # the arms on disk: the 200 seeds played, and a few more in the candidate's folder that the rejudge must not take
+        self.write_arms(cand, "Etest-1", cand_rows[:230], base_rows[:200])
+        with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
+            out = self.rejudge(cand)
+        self.assertEqual((out["decision_text"], out["n_seeds"], out["paired_seeds"]), ("rejected", 200, 200))
+        self.assertEqual(out["rejudged"]["seeds"]["judged"], 200)
+        self.assertIn("judged the 200 of 2000 seeds, where the funnel stopped on a refuse", out["rejudged"]["seeds"]["text"])
+        self.assertIn("rejudged on the 200 of 2000 seeds", out["sequential"]["note"])
+        self.assertEqual(out["sequential"]["stop"]["action"], "refuse")
+        self.assertIs(out["decision"]["checks"]["sequential"], False)  # the block ended on a refusal and stays refused
+        self.assertTrue(out["decision"]["rule"].endswith("+D51-funnel"))
+        self.assertEqual((out["cand"]["summary"]["runs"], out["base"]["summary"]["runs"]), (200, 200))  # the 30 extra rows were left out
+        self.assertTrue((cand / "promotion-rejected-" f"{doc['written'][:10]}.json").is_file())  # the earlier record kept beside it
+        rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
+        self.assertEqual([(r["seed_block"], r["seeds"], r["decision"]) for r in rows], [("Etest-1", "200", "rejected")] * 2)
+        self.assertIn("funnel refuse at 200 of 2000 seeds", rows[1]["guard"])
+        self.assertFalse((self.agents / "current.json").exists())
+        again = self.rejudge(cand)  # the record is carried over, so a second rejudge reads the stop again
+        self.assertEqual((again["n_seeds"], again["rejudged"]["seeds"]["judged"]), (200, 200))
+        day = doc["written"][:10]  # the promote's record and the first rejudge's both stay, the second under a name of its own
+        self.assertTrue((cand / f"promotion-rejected-{day}.json").is_file() and (cand / f"promotion-rejected-{day}-r2.json").is_file())
+
+    def test_an_early_promotion_is_rejudged_on_the_seeds_played_and_promotes_with_the_funnel_check_holding(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        lab = self.root / "lab"
+        doc, _ = self.run_promote(cand, 3.0)
+        n = doc["n_seeds"]
+        self.assertLess(n, 2000)
+        seeds, cand_rows, base_rows = self.block(3.0)
+        base = stub_candidate(self.root, "base", "sha-base", generation=4)  # the promotion wrote current.json, so the incumbent is named
+        self.write_arms(cand, "Etest-1", cand_rows[:n], base_rows[:n], base)
+        out = self.rejudge(cand, base, lab=lab)
+        self.assertEqual((out["decision_text"], out["n_seeds"], out["rejudged"]["seeds"]["judged"]), ("promoted", n, n))
+        self.assertIs(out["decision"]["checks"]["sequential"], True)
+        self.assertEqual(json.loads((self.agents / "current.json").read_text())["note"], "owner")
+        self.assertTrue((lab / "score" / "pending").is_file())
+        self.assertIn(f"funnel promote at {n} of 2000 seeds", gen_loop.read_promotions(self.agents / "promotions.tsv")[-1]["guard"])
+
+    def test_a_stopped_blocks_arms_must_still_hold_every_seed_played(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        self.run_promote(cand, -4.0)
+        seeds, cand_rows, base_rows = self.block(-4.0)
+        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:150])
+        with self.assertRaisesRegex(ValueError, "only 150 of 200 seeds are paired in both cached arms"):
+            self.rejudge(cand)
+        self.assertTrue((cand / "promotion.json").is_file())  # nothing renamed or written by the refused rejudge
+        self.assertEqual(len(gen_loop.read_promotions(self.agents / "promotions.tsv")), 1)
+
+    def test_a_block_that_was_not_stopped_by_the_funnel_still_needs_every_seed(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        doc, _ = self.run_promote(cand, 0.3, sequential=False)
+        self.assertEqual(doc["n_seeds"], 2000)
+        seeds, cand_rows, base_rows = self.block(0.3)
+        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:200])
+        with self.assertRaisesRegex(ValueError, "only 200 of 2000 seeds are paired in both cached arms"):
+            self.rejudge(cand)
+
+    def test_the_seed_file_must_be_the_block_the_funnel_stopped(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        self.run_promote(cand, -4.0)
+        seeds, cand_rows, base_rows = self.block(-4.0)
+        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:200])
+        self.seed_file.write_text(json.dumps({"seeds": seeds[:1500]}))  # not the 2,000-seed block the record names
+        with self.assertRaisesRegex(ValueError, "stopped block Etest-1 at 200 of 2000 seeds, but the seed file is Etest-1 with 1500"):
+            self.rejudge(cand)
+
+    def test_the_command_says_which_seeds_were_judged(self):
+        cand = stub_candidate(self.root, "c1", "sha-a")
+        self.run_promote(cand, -4.0)
+        seeds, cand_rows, base_rows = self.block(-4.0)
+        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:200])
+        args = SimpleNamespace(cand=str(cand), base=None, seeds_file=str(self.seed_file), agent_root=str(self.agents), config="a3-v1",
+                               note="owner", lab=None, review_guard=True)
+        buf = io.StringIO()
+        with mock.patch.object(gen0, "_setup"), contextlib.redirect_stdout(buf):
+            self.assertEqual(gen0.rejudge_cmd(args), 0)
+        printed = json.loads(buf.getvalue())
+        self.assertEqual(printed["n_seeds"], 200)
+        self.assertIn("judged the 200 of 2000 seeds", printed["seeds_judged"])
 
 
 class RunArmResumeTests(unittest.TestCase):

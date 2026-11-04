@@ -114,6 +114,84 @@ class PairingCheck(unittest.TestCase):
             rows = pc.read_rows(t / "real" / "runs.jsonl")
             self.assertEqual([(x["seed"], x["floor"]) for x in rows], [("S00000", 7)])
 
+    # -- a block the funnel stopped before its last look holds only the seeds played (promotion.json `sequential`)
+
+    STOP = {"action": "refuse", "played": 300, "block_seeds": N}
+
+    def stopped(self):
+        seeds, cand, base = arms(True)
+        return seeds, cand[:300], base[:300]
+
+    def test_an_early_stop_is_read_as_short_without_the_record_and_as_the_seeds_played_with_it(self):
+        seeds, cand, base = self.stopped()
+        summ = {"config": "a3-v1", "ascension": 10}
+        short = pc.check_pair(cand, base, seed_file=seeds, cand_summary=summ, base_summary=summ, permutations=50)
+        self.assertFalse(short["seeds"]["pass"])  # what it did before: 300 paired of 1500
+        r = pc.check_pair(cand, base, seed_file=seeds, early_stop=self.STOP, cand_summary=summ, base_summary=summ, permutations=50)
+        self.assertTrue(r["seeds"]["pass"], r["seeds"])
+        self.assertEqual((r["seeds"]["n_seeds"], r["seeds"]["paired"], r["seeds"]["paired_seeds"]), (300, 300, 300))
+        self.assertEqual(r["seeds"]["early_stop"], {"action": "refuse", "played": 300, "block_seeds": N, "seed_file_is_the_block": True, "pass": True})
+        self.assertIn("funnel stop on a refuse: the first 300 of the block's 1500 seeds were played", pc._fmt("b", r))
+
+    def test_an_early_stop_does_not_excuse_a_wrong_seed_set(self):
+        seeds, cand, base = self.stopped()
+        # the arms hold seeds past the first 300 of the file: not what the record says was played
+        r = pc.check_pair(cand + arms(True)[1][300:350], base + arms(True)[2][300:350], seed_file=seeds, early_stop=self.STOP, permutations=50)
+        self.assertFalse(r["seeds"]["pass"])
+        # the arms hold 300 seeds but not the first 300 of the file
+        r = pc.check_pair(arms(True)[1][200:500], arms(True)[2][200:500], seed_file=seeds, early_stop=self.STOP, permutations=50)
+        self.assertFalse(r["seeds"]["pass"])
+        # one arm short of the seeds played
+        r = pc.check_pair(cand, base[:290], seed_file=seeds, early_stop=self.STOP, permutations=50)
+        self.assertFalse(r["seeds"]["pass"])
+        # a seed file that is not the block the record names
+        r = pc.check_pair(cand, base, seed_file=seeds[:1200], early_stop=self.STOP, permutations=50)
+        self.assertFalse(r["seeds"]["early_stop"]["pass"])
+        self.assertFalse(r["seeds"]["pass"])
+        # promotion.json's own paired_seeds below the seeds played still fails
+        r = pc.check_pair(cand, base, seed_file=seeds, early_stop=self.STOP, paired_seeds=299, permutations=50)
+        self.assertFalse(r["seeds"]["pass"])
+
+    def test_the_record_is_taken_from_promotion_json_given_or_found_beside_the_candidates_arm(self):
+        seeds, cand, base = self.stopped()
+        promo = {"seed_block": "Eblock", "n_seeds": 300, "paired_seeds": 300,
+                 "sequential": {"stop": {"action": "refuse", "n": 300}, "played": 300, "block_seeds": N}}
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            arm = t / "cand-gen" / "arms" / "Eblock-a3-v1"
+            base_arm = t / "base-gen" / "arms" / "Eblock-a3-v1"
+            for d, rows in ((arm, cand), (base_arm, base)):
+                d.mkdir(parents=True)
+                (d / "runs.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+                (d / "summary.json").write_text(json.dumps({"config": "a3-v1", "ascension": 10}), encoding="utf-8")
+            (t / "Eblock.json").write_text(json.dumps({"seeds": seeds}), encoding="utf-8")
+            (t / "cand-gen" / "promotion.json").write_text(json.dumps(promo), encoding="utf-8")
+            # no --promotion: the candidate's own record is found, because it is the record of this block
+            r = pc.check_dirs(arm, base_arm, seeds_file=t / "Eblock.json", permutations=50)
+            self.assertTrue(r["seeds"]["pass"], r["seeds"])
+            self.assertEqual(r["seeds"]["early_stop"]["played"], 300)
+            # a record of another block is not taken: the arms then read as short, as before
+            (t / "cand-gen" / "promotion.json").write_text(json.dumps({**promo, "seed_block": "Eother"}), encoding="utf-8")
+            self.assertFalse(pc.check_dirs(arm, base_arm, seeds_file=t / "Eblock.json", permutations=50)["seeds"]["pass"])
+            # given explicitly, it is taken as given; the command line prints the stop
+            (t / "p.json").write_text(json.dumps(promo), encoding="utf-8")
+            r = pc.check_dirs(arm, base_arm, seeds_file=t / "Eblock.json", promotion=t / "p.json", permutations=50)
+            self.assertTrue(r["seeds"]["pass"])
+            out = t / "out.json"
+            pc.main([str(arm), str(base_arm), "--seeds-file", str(t / "Eblock.json"), "--promotion", str(t / "p.json"), "--json", str(out)])
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["seeds"]["early_stop"]["played"], 300)
+
+    def test_a_block_that_played_everything_is_checked_as_before(self):
+        seq = {"stop": {"action": "final", "n": N}, "played": N, "block_seeds": N}
+        self.assertIsNone(pc.funnel_stop({"sequential": seq}))
+        self.assertIsNone(pc.funnel_stop({"n_seeds": N}))
+        self.assertIsNone(pc.funnel_stop(None))
+        seeds, cand, base = arms(True)
+        r = pc.check_pair(cand, base, seed_file=seeds, early_stop=pc.funnel_stop({"sequential": seq}), cand_summary={"config": "a3-v1"},
+                          base_summary={"config": "a3-v1"}, permutations=50)
+        self.assertNotIn("early_stop", r["seeds"])
+        self.assertTrue(r["seeds"]["pass"])
+
 
 if __name__ == "__main__":
     unittest.main()

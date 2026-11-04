@@ -884,7 +884,10 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
                            review_guard=True if a.review_guard else None)
-    print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins", "decision")}, indent=1))
+    out = {k: doc[k] for k in ("decision_text", "n_seeds", "floor", "boss_kill", "wins", "decision")}
+    if "seeds" in doc["rejudged"]:  # a block the funnel stopped early: say which seeds were judged
+        out["seeds_judged"] = doc["rejudged"]["seeds"]["text"]
+    print(json.dumps(out, indent=1))
     return 0
 
 

@@ -1990,13 +1990,30 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     return doc
 
 
+def funnel_stop_record(doc: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The funnel's early stop recorded in a promotion.json: `{"action", "played", "block_seeds", "sequential"}` (`sequential` the
+    whole `sequential` key, to be carried forward), or None for a block that was not played as the funnel, or that played every seed
+    (stop action "final": judged exactly as without the funnel). A document that does not say how far it played is read as none."""
+    seq = (doc or {}).get("sequential")
+    if not isinstance(seq, dict) or not isinstance(seq.get("stop"), dict):
+        return None
+    action, played, total = seq["stop"].get("action"), seq.get("played"), seq.get("block_seeds")
+    if action in (None, "final") or not isinstance(played, int) or not isinstance(total, int) or not 0 < played < total:
+        return None
+    return {"action": action, "played": played, "block_seeds": total, "sequential": seq}
+
+
 def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, config: str = "a3-v1", note: str,
             lab: Path | None = None, boot: int = BOOT_B, review_guard: bool | None = None) -> dict[str, Any]:
     """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
-    decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block. The
-    earlier promotion.json is kept beside the new one; the tsv gets a second row for the same candidate and block.
-    `review_guard` as in `promote` (a re-read is not a new attempt: the attempt number is reported against the cap,
-    never applied here; the other checks decide)."""
+    decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block, except a block
+    the funnel stopped early (the earlier promotion.json carries `sequential` with a stop before the last look,
+    `funnel_stop_record`): its arms hold only the seeds played, the first N of the block in file order, so those are the seeds
+    judged, and both arms must hold all N. The document says so (`n_seeds` N, `rejudged.seeds` the N, the block's length and the
+    stop, `sequential` carried over with a note), the decision carries the funnel's own check as `promote` writes it (a refusal
+    stays refused: the block ended on it) and the tsv `guard` cell ends with the stop. The earlier promotion.json is kept
+    beside the new one; the tsv gets a second row for the same candidate and block. `review_guard` as in `promote` (a re-read is
+    not a new attempt: the attempt number is reported against the cap, never applied here; the other checks decide)."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -2005,25 +2022,50 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     base_agent = load_agent(base, agent_root=None if base else agent_root)
     arm = f"{name}-{config}"
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
+    old = Path(cand) / "promotion.json"
+    before = json.loads(old.read_text(encoding="utf-8")) if old.is_file() else None
+    stop = funnel_stop_record(before)
+    if stop is not None and (before.get("seed_block") != name or stop["block_seeds"] != len(seeds)):
+        raise ValueError(f"the funnel stopped block {before.get('seed_block')} at {stop['played']} of {stop['block_seeds']} seeds, "
+                         f"but the seed file is {name} with {len(seeds)}")
+    played = stop["played"] if stop is not None else len(seeds)
     cand_rows, base_rows = arm_rows(Path(cand) / "arms" / arm), arm_rows(base_dir / "arms" / arm)
+    if stop is not None:  # the arms of a stopped block hold the seeds played and no others; judge those, by place in the block
+        part = set(seeds[:played])
+        cand_rows, base_rows = [r for r in cand_rows if r["seed"] in part], [r for r in base_rows if r["seed"] in part]
     cand_sha = cand_agent.describe()["prior_sha256"] or "none"
     rows = read_promotions(Path(agent_root) / "promotions.tsv")
     attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
                                   apply_cap=False) if review_guard_on(review_guard) else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
-    if res["paired_seeds"] != len(seeds):
-        raise ValueError(f"only {res['paired_seeds']} of {len(seeds)} seeds are paired in both cached arms")
-    old = Path(cand) / "promotion.json"
-    before = json.loads(old.read_text(encoding="utf-8")) if old.is_file() else None
-    if before is not None:
-        old.rename(Path(cand) / f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}.json")
-    doc = {"written": utc_now(), "seed_block": name, "n_seeds": len(seeds), "config": config, "alpha": ALPHA,
+    if res["paired_seeds"] != played:
+        raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both cached arms")
+    if stop is not None:  # the funnel's own check joins the others, as `promote` writes it for the same stop
+        d = res["decision"]
+        d["checks"]["sequential"] = stop["action"] != "refuse"
+        d["promote"] = all(d["checks"].values())
+        d["rule"] = f"{d['rule']}+{SEQ_RULE}"
+    if before is not None:  # the earlier record stays beside the new one, under a name not yet taken (a second rejudge of a day)
+        stem = f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}"
+        kept, j = Path(cand) / f"{stem}.json", 1
+        while kept.exists():
+            j += 1
+            kept = Path(cand) / f"{stem}-r{j}.json"
+        old.rename(kept)
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "alpha": ALPHA,
            "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
            "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
            "f7": "not run", "matched_wall_clock": False}
+    cells = guard_cells(guard, attempt)
+    if stop is not None:
+        said = f"{played} of {len(seeds)} seeds, where the funnel stopped on a {stop['action']}"
+        doc["rejudged"]["seeds"] = {"judged": played, "block": len(seeds), "funnel_stop": stop["action"],
+                                    "text": f"judged the {said}; the arms hold no others"}
+        doc["sequential"] = {**stop["sequential"], "note": f"rejudged on the {said}: floor, boss_kill and wins are the figures at the stop"}
+        cells["guard"] = f"{cells['guard']} | funnel {stop['action']} at {played} of {len(seeds)} seeds".replace("\t", " ")
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     append_promotion(Path(agent_root) / "promotions.tsv",
@@ -2031,7 +2073,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                       "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
                       "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                       "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
-                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name, **guard_cells(guard, attempt)})
+                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name, **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name, "note": note})
