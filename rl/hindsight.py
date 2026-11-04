@@ -1057,14 +1057,16 @@ def pilot_cmd(a: argparse.Namespace) -> int:
         return None
 
     print(f"hindsight: {len(tasks)} runs to replay, K {plan.k}, quota {quota or 'none'}, {a.procs} processes", flush=True)
-    hold(True)
+    if not a.no_hold:
+        hold(True)
     try:
         reason = fight_gym.run_tasks(tasks, run_task, tf, a.procs, hard_of=lambda t: a.task_cap_s, capped_of=capped_row, init=_init_worker,
                                      init_args=(str(out), str(agent_dir), a.config, str(judge) if judge else "", bool(a.doors),
                                                 dataclasses.asdict(plan), str(lib) if lib else ""),
-                                     stop=stop, refresh=lambda: hold(True) if _beat() else None)
+                                     stop=stop, refresh=lambda: hold(True) if (_beat() and not a.no_hold) else None)
     finally:
-        hold(False)
+        if not a.no_hold:
+            hold(False)
     print(f"hindsight: stopped ({reason or 'all runs replayed'})", flush=True)
     (out / "report.json").write_text(json.dumps(report(out), indent=1), encoding="utf-8")
     return 0
@@ -1101,6 +1103,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--judge", default="", help="the fight judge's checkpoint: its estimate of the boss fight is recorded at each boss door")
     pl.add_argument("--doors", action="store_true", help="keep the combat snapshot at each boss door (large)")
     pl.add_argument("--lib", default="", help="the native build the exploring runs were played with (STS2_LIB_PATH)")
+    pl.add_argument("--no-hold", action="store_true", help="do not write the QUIET.lock line (a caller that holds one for the whole session)")
     pl.set_defaults(fn=pilot_cmd)
     rp = sub.add_parser("report", help="the aggregates of the label files under --out")
     rp.add_argument("--out", required=True)
