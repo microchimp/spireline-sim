@@ -399,17 +399,21 @@ _J_IN_ID = re.compile(r"\|j(\d+)\|")
 
 
 def preloss_rank(rec: dict, file_ns: int = 0) -> tuple:
-    """The total order of "newest" among pre-loss starts: (write sequence, parent start, game number, id). Every part is in the
-    record, so the order does not depend on the file system's time resolution or on the order a directory lists its files.
+    """The total order of "newest" among pre-loss starts: (write sequence, parent start, game number, writer, id). Every part is
+    in the record, so the order does not depend on the file system's time resolution or on the order a directory lists its files.
     Two writer processes can still draw the same sequence number; the rest of the key then breaks the tie the same way on every
-    merge (the game number as a number, so j2 comes before j10). A record written before the sequence existed has no `seq`: the
-    modification time of its file (the same clock, ns since the epoch) stands in for it."""
+    merge (the game number as a number, so j2 comes before j10). Two writers can also play the same game of the same start in
+    the same tick and write the same id; the writer token (the writing process's pid) then says which record comes first, and so
+    which one the merge keeps. One process draws strictly rising sequence numbers, so its records never reach the writer: its
+    order is the same with or without it. A record written before the sequence existed has no `seq`: the modification time of its
+    file (the same clock, ns since the epoch) stands in for it; before the token existed, no `writer`: 0."""
     seq = rec.get("seq")
     j = rec.get("j")
     if j is None:
         m = _J_IN_ID.search(str(rec.get("id", "")))
         j = int(m.group(1)) if m else -1
-    return (int(seq) if seq is not None else int(file_ns), str(rec.get("parent", "")), int(j), str(rec.get("id", "")))
+    return (int(seq) if seq is not None else int(file_ns), str(rec.get("parent", "")), int(j), int(rec.get("writer") or 0),
+            str(rec.get("id", "")))
 
 
 def preloss_start(parent: dict, sid: str, j: int, k: int, doc: dict, root: float | None, player: str, made: str) -> dict:
@@ -421,7 +425,7 @@ def preloss_start(parent: dict, sid: str, j: int, k: int, doc: dict, root: float
     return {"id": f"preloss:{sid}|j{j}|k{k}", "cat": parent["cat"], "kind": parent["kind"], "act": parent["act"],
             "floor": parent["floor"], "seed": parent["seed"], "run": parent.get("run") or parent["seed"], "ix": parent.get("ix", -1),
             "night": "preloss", "source": "preloss", "parent": sid, "parent_player": player, "j": int(j), "k": int(k),
-            "seq": next_seq(),
+            "seq": next_seq(), "writer": os.getpid(),
             "node_type": parent["node_type"], "hp": pl.get("hp"), "max_hp": pl.get("max_hp"), "deck_size": len(doc_cards(doc)),
             "potions": held, "relics": len(doc.get("relics") or []), "encounter_id": doc.get("encounter_id"),
             "turn": int(doc.get("turn", 0)), "kind_same": True, "replay_same": None, "split": parent.get("split"),

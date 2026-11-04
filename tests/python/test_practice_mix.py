@@ -573,6 +573,31 @@ class PrelossTests(unittest.TestCase):
                 pm.merge_preloss(root, max_keep=100)
                 self.assertEqual(self._lite_ids(root), want)
 
+    def test_two_writers_that_tie_on_sequence_parent_and_game_come_out_in_writer_order_whatever_the_file_names(self):
+        pid = "run:A|f17"
+        # The same game of the same start, played by writers 11 and 5 in one clock tick. The old key tied on (seq, parent, j) and
+        # fell to the id text, where "k10" sorts before "k2" whichever writer wrote it; a repeated id fell to the directory order.
+        a = self._hand_record(pid, 3, seq=777, writer=11)
+        b = self._hand_record(pid, 3, seq=777, writer=5)
+        a["id"], b["id"] = f"preloss:{pid}|j3|k10", f"preloss:{pid}|j3|k2"
+        twin_hi = self._hand_record(pid, 4, seq=777, writer=11, made="by-11")  # one id, two records
+        twin_lo = self._hand_record(pid, 4, seq=777, writer=5, made="by-5")
+        for names in (lambda i: f"a{i:02d}", lambda i: f"z{9 - i:02d}"):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                inbox = self._inbox(root)
+                for i, rec in enumerate((a, b, twin_hi, twin_lo)):
+                    (inbox / f"{names(i)}.json").write_text(json.dumps(rec), encoding="utf-8")
+                self.assertEqual(pm.merge_preloss(root, max_keep=100)["merged"], 3)
+                self.assertEqual(self._lite_ids(root), [b["id"], a["id"], f"preloss:{pid}|j4|k8"])  # writer 5 first
+                lite = json.loads((root / "starts" / "preloss-starts.lite.json").read_text())
+                self.assertEqual(lite[-1]["made"], "by-5")  # the lower writer's record is the one kept
+        # a record from this process carries its pid, and inside one process the rank still follows the sequence alone
+        mine = self._hand_record(pid, 1)
+        self.assertEqual(mine["writer"], os.getpid())
+        later = self._hand_record(pid, 0)
+        self.assertLess(pm.preloss_rank(mine), pm.preloss_rank(later))
+
     def test_a_start_written_before_sequence_numbers_existed_is_ranked_by_its_files_time_then_game_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
