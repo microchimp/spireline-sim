@@ -1479,10 +1479,12 @@ class ParallelSearcherTests(unittest.TestCase):
 
     def test_workers_start_once_are_reused_and_run_niced(self):
         pids = self.pids()
-        # Ten above this process, as far as the system allows: 19 is the lowest priority
-        # everywhere (macOS goes to 20).
-        # On Windows the same ten reads as the BelowNormal class (procutil.niceness).
-        niced = min(19, procutil.niceness() + 10)
+        # A worker runs at the pool's level (`nice=10`) or at this process's own niceness, whichever
+        # is lower in priority: `procutil.lower_priority` lowers to a level and never raises, so a
+        # test process that is already niced (a gate run at BelowNormal reads 10 on Windows, and
+        # BelowNormal is the lowest class `lower_priority` asks for) starts workers no higher than
+        # itself, not ten steps lower again. On Windows the level reads as BelowNormal (procutil.niceness).
+        niced = max(procutil.niceness(), 10)
         for pid in pids:
             self.assertGreaterEqual(procutil.niceness(pid), niced)
         for _ in range(2):

@@ -573,7 +573,9 @@ class ExploringWindowTests(unittest.TestCase):
 
         base = ["vrun-fit", "--shards-root", str(self.root), "--prior-sha", PRIOR_SHA, "--out", str(Path(self.tmp.name) / "o"),
                 "--incumbent", "x"]
-        with mock.patch.object(gen_loop, "fit_run_value_matched", fake_fit):
+        # `vrun_fit_cmd` lowers the process it runs in; in a test that is the test runner, and every
+        # later test in the process would run (and start its workers) at BelowNormal.
+        with mock.patch.object(gen_loop, "fit_run_value_matched", fake_fit), mock.patch("sts2_gym.procutil.lower_priority"):
             self.assertEqual(0, gen0.main(base + ["--exploring-only"]))
             self.assertTrue(seen["exploring_only"])
             self.assertEqual(0, gen0.main(base))

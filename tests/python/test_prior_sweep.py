@@ -318,7 +318,7 @@ class FitTests(unittest.TestCase):
     def test_the_search_refuses_while_a_quiet_lock_exists(self):
         lock = self.root / "QUIET.lock"
         lock.write_text("w4-x 2026-10-28T00:00:00Z\n", encoding="utf-8")
-        with mock.patch("sys.stderr"):
+        with mock.patch("sys.stderr"), mock.patch("sts2_gym.procutil.lower_priority"):  # main lowers the process it runs in
             code = ps.main(["search", "--out", str(self.out), "--arms", "visits-16-128-2", "--quiet-lock", str(lock)])
         self.assertEqual(code, 2)
         lock.unlink()
