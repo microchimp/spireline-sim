@@ -486,6 +486,101 @@ class FillerRunnerTest(FillerBase):
         self.assertAlmostEqual(60.0, r.cpu_secs())
 
 
+# ---------------------------------------------------------------- generation 12's plumbing: stopping the filler asks first
+
+# A stand-in block that reads the stop file the way gen0.py emu does: says so (stop-honored), works until STOP appears, then "writes its
+# finished runs" (flushed.txt) and ends. MODE 'ignore': says so but never reads it (sleeps until killed).
+HONOR = ("import json, os, sys, time\n"
+         "out = sys.argv[sys.argv.index('--out') + 1]\n"
+         "json.dump(dict(argv=sys.argv[1:], pids=[os.getpid()], cwd=os.getcwd()), open(os.path.join(out, 'argv.json'), 'w'))\n"
+         "open(os.path.join(out, 'stop-honored'), 'w').write('1')\n"
+         "t = time.time()\n"
+         "while 'MODE' == 'honor' and not os.path.exists(os.path.join(out, 'STOP')) and time.time() - t < 120:\n"
+         "    time.sleep(0.05)\n"
+         "time.sleep(120 if 'MODE' == 'ignore' else 0.3)\n"
+         "open(os.path.join(out, 'flushed.txt'), 'w').write('x')\n")
+
+
+def honor_cmd(mode: str) -> list[str]:
+    return ["{python}", "-c", HONOR.replace("MODE", mode), "emu", "--agent-root", "A", "--procs", "16", "--out", "{job}"]
+
+
+@unittest.skipUnless(winsys.IS_WIN, "Job Objects and priority classes are Windows")
+class FillerStopRequestTest(FillerBase):
+    """Stopping the filler writes STOP in the block's folder first and waits for a block that says it reads it, so the runs it finished
+    are in its shards (1,828 of the filler's 4,496 runs were lost to the plain kill by 2026-11-04)."""
+
+    def setUp(self):
+        super().setUp()
+        grace = rn.FILLER_STOP_GRACE_S
+        self.addCleanup(lambda: setattr(rn, "FILLER_STOP_GRACE_S", grace))
+        rn.FILLER_STOP_GRACE_S = 20.0
+
+    def block_up(self, r: rn.Runner) -> Path:
+        self.started(r)
+        d = r.filler.run.dir
+        end = time.time() + 20
+        while not (d / "stop-honored").exists() and time.time() < end:
+            time.sleep(0.05)
+        return d
+
+    def test_a_block_that_reads_the_stop_file_writes_its_runs_and_ends_before_the_kill(self):
+        self.jobs({}, cmd=honor_cmd("honor"))
+        r = self.runner()
+        d = self.block_up(r)
+        t0 = time.monotonic()
+        r.stop_filler("a job needs its cores", retry=False)
+        took = time.monotonic() - t0
+        self.assertTrue((d / "STOP").exists())
+        self.assertTrue((d / "flushed.txt").exists())  # it ran to its end: the finished runs were written first
+        self.assertLess(took, 15)
+        self.assertIn("ended in", self.log(r))
+        self.assertEqual("0", (d / "done.rc").read_text().strip())
+
+    def test_a_block_that_never_wrote_the_honored_file_is_killed_at_once_as_before(self):
+        r = self.runner()  # the default stand-in block does not read STOP
+        self.started(r)
+        d = r.filler.run.dir
+        t0 = time.monotonic()
+        r.stop_filler("test", retry=False)
+        self.assertLess(time.monotonic() - t0, 10)
+        self.assertFalse((d / "STOP").exists())
+        self.assertNotIn("ended in", self.log(r))
+
+    def test_a_block_that_does_not_end_within_the_grace_is_killed(self):
+        rn.FILLER_STOP_GRACE_S = 1.0
+        self.jobs({}, cmd=honor_cmd("ignore"))
+        r = self.runner()
+        d = self.block_up(r)
+        pid = json.loads((d / "argv.json").read_text())["pids"][0]
+        t0 = time.monotonic()
+        r.stop_filler("test", retry=False)
+        self.assertGreaterEqual(time.monotonic() - t0, 1.0)
+        self.assertTrue((d / "STOP").exists())
+        self.assertFalse((d / "flushed.txt").exists())
+        self.assertIn("killed", self.log(r))
+        end = time.time() + 20
+        while winsys.parent_alive(pid) and time.time() < end:
+            time.sleep(0.05)
+        self.assertFalse(winsys.parent_alive(pid))
+
+    def test_a_grace_of_zero_is_the_old_kill(self):
+        rn.FILLER_STOP_GRACE_S = 0.0
+        self.jobs({}, cmd=honor_cmd("honor"))
+        r = self.runner()
+        d = self.block_up(r)
+        r.stop_filler("test", retry=False)
+        self.assertFalse((d / "STOP").exists())
+
+    def test_the_stop_file_names_are_the_ones_gen0_reads(self):
+        sys.path.insert(0, str(ROOT / "rl"))
+        try:
+            import gen0  # noqa: PLC0415
+        finally:
+            sys.path.remove(str(ROOT / "rl"))
+        self.assertEqual((gen0.STOP_FILE, gen0.STOP_HONORED_FILE), (rn.FILLER_STOP_FILE, rn.FILLER_HONORED))
+
+
 # ---------------------------------------------------------------- D52: the frozen copy
 
 def put(path: Path, text: str) -> Path:

@@ -213,7 +213,11 @@ marker. Its Job Object forces BelowNormal on every process in it (the prior serv
 main.lock; it stops for every guard but main.lock, for a live QUIET.lock line whose tag is not in `selfplay.quiet_ignore`
 (`gym-loop`, `lab-score`), when `LAB/nightly/active` appears, two minutes before the night is due (`LAB/nightly/last-ok` + `every_h`, or the retry
 after a skipped try) and when a nightly-real job starts; it does not start within `selfplay.night_margin_min` (30) of the due time,
-within 120 s of a stop, near the disk limits, or on a tree that is not a presorted build. A stopped block is closed with done.rc 0 and
+within 120 s of a stop, near the disk limits, or on a tree that is not a presorted build. A stopped block is asked first: the runner writes `STOP` in the block's folder and waits up to 25 s
+(`runner.FILLER_STOP_GRACE_S`) for a block that wrote `stop-honored` (a `gen0.py emu --record` that reads the file) to put its finished
+runs in the shards and end, then kills the Job Object; only the runs in flight are lost (before, every run since the last 50-run flush
+was: 1,828 of the filler's 4,496 by 2026-11-04). A block that is killed hard still loses at most `gen_loop.FLUSH_AGE_S` (120 s) of finished
+runs, since a part is also written when its oldest run has waited that long. A stopped block is closed with done.rc 0 and
 the reason (its finished runs are in its shards); a block left by a runner that died is closed (done.rc 3), never resumed. Its CPU stays
 out of the jobs' accounts. The load guard counts neither the filler (it is in the runner's Job Object) nor the always-on loop's
 process tree (`--loop-status`), so neither pauses a job.

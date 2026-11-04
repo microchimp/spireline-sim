@@ -72,6 +72,13 @@ DEFAULTS = {
 }
 FILLER_RETRY_S = 120.0  # after a guard, the night, a QUIET.lock line or a failure stopped the filler, it waits this long to start again
 FILLER_TICK_S = 5.0  # the filler's rules are read at most this often (jobs.json, the night's markers, QUIET.lock)
+# Stopping the filler asks first: STOP in the block's folder makes `gen0.py emu` write its finished runs to the shards, start no new run and
+# end when the runs in flight have; the runner waits this long for that, then kills the Job Object as before. Only a block that wrote
+# FILLER_HONORED (a gen0.py that reads STOP) is waited for; an older one is killed at once. A hard kill used to lose every run finished
+# since the last 50-run flush (1,828 of the filler's 4,496 by 2026-11-04). rl/gen0.py STOP_FILE and STOP_HONORED_FILE are the same names.
+FILLER_STOP_FILE = "STOP"
+FILLER_HONORED = "stop-honored"
+FILLER_STOP_GRACE_S = 25.0
 FORBIDDEN = ("D:/spireline/src",)  # the reviewed upstream checkout: never a lab, tree or game path
 RESUME_HOURS = 24.0
 CLOCK_EVERY_S = 24 * 3600.0  # LAB/clock.md (tools/lab/clock_report.py over runner.log) is written again after this long
@@ -957,7 +964,9 @@ class Runner:
         if f is None:
             return
         rec = f.run.rec(f.step.name)
+        flushed = ""
         try:
+            flushed = self.ask_block_to_finish(f)
             self.kill_group(f.ctx, f.sj, [f.running], rec)
         finally:
             self.close_filler(f)
@@ -966,7 +975,25 @@ class Runner:
         f.run.finish(0, f"filler block stopped: {why}")
         if retry:
             self.filler_next = self.clock() + FILLER_RETRY_S
-        self.log(f"filler: {f.run.name} stopped ({why})")
+        self.log(f"filler: {f.run.name} stopped ({why})" + (f"; {flushed}" if flushed else ""))
+
+    def ask_block_to_finish(self, f: Filler) -> str:
+        """Before the kill: write STOP in the block's folder and wait up to FILLER_STOP_GRACE_S for it to end, so the runs it finished
+        are in its shards. "" when the block does not read the file (it never wrote FILLER_HONORED), has ended or the grace is 0;
+        else what happened, for the log."""
+        d = f.run.dir
+        if FILLER_STOP_GRACE_S <= 0 or not (d / FILLER_HONORED).exists() or f.running.proc.poll() is not None:
+            return ""
+        try:
+            (d / FILLER_STOP_FILE).write_text(utc() + "\n", encoding="utf-8")
+        except OSError:
+            return ""
+        t0 = time.monotonic()
+        while f.running.proc.poll() is None and time.monotonic() - t0 < FILLER_STOP_GRACE_S:
+            time.sleep(0.2)
+        took = time.monotonic() - t0
+        return (f"the block wrote its finished runs and ended in {took:.1f} s" if f.running.proc.poll() is not None
+                else f"the block was still running after {FILLER_STOP_GRACE_S:.0f} s, killed")
 
     def close_filler(self, f: Filler) -> None:
         cpu = f.sj.cpu_time() / 1e7  # read after the end or the kill, so none of it lands in the job's account

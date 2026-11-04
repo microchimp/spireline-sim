@@ -204,8 +204,12 @@ Refuses, on a finished paired block of the E-block's seeds, any of: the floor pr
 one-sided 0.01); the boss-kill co-primary not met where both arms kill the Act-1 boss in 10% or more of runs; the
 boss-kill not-worse guard firing (exact McNemar, one-sided 0.05, `c > b`); the boss-damage paired guard firing (one-sided
 0.05, the upper bound of candidate minus incumbent below 0); the drift check blocked (twice in a row below the lineage's
-pooled kill rate); a third attempt for the generation (the cap is two, counted as the distinct candidate shas of the
-generation in `promotions.tsv`). A flagged drift alone does not refuse: it marks the promotion for the weekly review.
+pooled kill rate); a third attempt for the generation (the cap is two, counted as the distinct candidates of the
+generation in `promotions.tsv`: a candidate is its combat prior's sha and its run head's sha, columns `cand_sha` and
+`run_head_sha`; a row from before the second column reads as its prior alone, so no old row is rewritten. Generation 12's second
+attempt keeps generation 11's fight player and changes the head: by the prior alone it read as attempt 1 on attempt 1's refused block).
+A second attempt at a generation number is placed beside the first, `gen<N>/candidate-a2` with the marker
+`ready-<base>-g<N>-a2` (`gen0.py build --attempt 2`), and judged on a block of its own. A flagged drift alone does not refuse: it marks the promotion for the weekly review.
 Its power is in the tables of section 2 (at 2,000 seeds the 0.05 kill guard stops a halving of a 2% kill rate four times in
 five, and fires falsely in about 4% of equal-arm blocks). The lab's train job runs it on (`--review-guard`).
 

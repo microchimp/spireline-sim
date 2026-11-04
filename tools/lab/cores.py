@@ -30,6 +30,10 @@ It takes no QUIET.lock line, so the night's and the score's drivers (rl/quiet_lo
 wait for it; it yields itself to any live line whose tag is not in `quiet_ignore` (the loop's own and the daytime score's, which it
 runs beside), so another session's measurement window still has the machine.
 
+Stopping: the runner writes `STOP` in the block's folder and waits up to `runner.FILLER_STOP_GRACE_S` for the block to write its
+finished runs to the shards and end (only a block that wrote `stop-honored` is waited for), then kills its Job Object; the runs
+still in flight are lost, nothing else.
+
 Night: it does not start while LAB/nightly/active is fresh or within `night_margin_min` of the time the night is due
 (LAB/nightly/last-ok + nightly-real.every_h, or the retry after a skipped attempt when that is later), and a running block is
 stopped two minutes before the night is due, when its marker is up, or when the runner starts the nightly-real job (a block lasts

@@ -37,6 +37,10 @@ REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promot
                      "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
 SEQUENTIAL_HELP = ("play the E-block as the funnel (D51, gen_loop.seq_call): a 200-seed smoke block, then 300 seeds at a time, stopping at a "
                    "look that refuses (or promotes early); a block not stopped plays every seed and is judged as without this flag")
+# The lab asks a running block to finish by writing STOP_FILE in the block's folder (tools/lab/runner.py FILLER_STOP_FILE; a test keeps the
+# names equal). A block that reads it says so by writing STOP_HONORED_FILE first, so a runner never waits for one that cannot.
+STOP_FILE = "STOP"
+STOP_HONORED_FILE = "stop-honored"
 WORKER_RECYCLE = 20  # a worker process is replaced after this many finished runs (between runs only)
 Z = 1.959964
 
@@ -426,7 +430,7 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
               block_min: float | None = None, start_ix: int = 0, agent=None, record: bool = False,
               prior_server=None, server_procs: int | None = None, latency_p99_ms: float = 20.0,
               run_timeout_s: float | None = RUN_TIMEOUT_S, recycle: int = WORKER_RECYCLE, resume: bool = False,
-              resume_key: dict | None = None, task=None, initializer=_init_worker) -> dict:
+              resume_key: dict | None = None, task=None, initializer=_init_worker, stop_file: Path | str | None = None) -> dict:
     """Play the seeds on a spawn pool of `procs` single-emulator processes (`spawn_pool.SupervisedPool`). With `block_min`, stop
     starting runs after that many minutes (the seeds are then a stream) and let the ones in flight finish. Each run is appended
     to runs.jsonl.
@@ -440,7 +444,13 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     summary then has `resumed_rows`. `resume_key` adds to the identity a resumed file must match (the engine). `task` and
     `initializer` are what a worker runs and starts with (tests replace them; both must be importable in the worker).
     With `record`, the finished runs' records and combat samples go to `out/shards` (`gen_loop.ShardSink`), tagged with the
-    agent's generation.
+    agent's generation. The sink writes a part when it is full or its oldest run has waited `gen_loop.FLUSH_AGE_S`.
+
+    With `stop_file`, a file of that name appearing is a request to finish (the lab's filler is stopped for a job's cores, a QUIET.lock
+    line or the night): the finished runs are written to the shards at once, no new run starts, the runs in flight finish (written as
+    each ends) and the block returns as after its time limit, with `stopped` in the summary. A kill that follows loses only the runs
+    still in flight. A stop file left from an earlier block is removed at the start; `STOP_HONORED_FILE` beside it says this block
+    reads it.
 
     With `prior_server` (a started `prior_launch.ServerHandle`, see `run_block_served`) the workers' combat prior is that
     server: the pool has `server_procs` workers (default `procs`), a dead server is restarted once on the same endpoint, and the
@@ -468,6 +478,11 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         sink = gen_loop.ShardSink(out, agent.generation, config=cfg0.name, base_sims=cfg0.sims, ascension=ascension,
                                   agent=agent.describe())
     out.mkdir(parents=True, exist_ok=True)
+    stop_path = Path(stop_file) if stop_file else None
+    if stop_path is not None:
+        stop_path.unlink(missing_ok=True)
+        (stop_path.parent / STOP_HONORED_FILE).write_text(f"{os.getpid()}\n", encoding="utf-8")
+    stopped: dict | None = None
     ctx = mp.get_context("spawn")
     rows: list[dict] = []
     t0 = time.time()
@@ -545,6 +560,14 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
 
             nxt = 0
             while nxt < len(todo) or retry or pool.inflight():
+                if stop_path is not None and stopped is None and stop_path.exists():
+                    stopped = {"at_run": len(rows), "in_flight": pool.inflight(), "after_s": round(time.time() - t0, 1)}
+                    nxt = len(todo)  # nothing new starts; a run that died is not run again
+                    retry.clear()
+                    if sink is not None:
+                        sink.flush()  # the runs finished so far reach the shards before anything else can go wrong
+                    print(f"stop requested: {stopped['at_run']} runs done, {stopped['in_flight']} in flight, finishing them",
+                          file=sys.stderr, flush=True)
                 if prior_server is not None and not gave_up and not prior_server.alive() and not prior_server.restart_once():
                     gave_up = True  # the second death: drain, then go on with plain CPU-path workers
                     print("prior-server: the server is gone and cannot be restarted; the block drains its runs in flight and goes "
@@ -573,6 +596,12 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
                     nxt = len(todo)
                 for d in pool.collect():
                     settle(d)
+                if sink is not None:
+                    if stopped is not None:
+                        if sink.pending:
+                            sink.flush()  # draining: every run that ends is written at once
+                    else:
+                        sink.tick()
                 pool.wait(0.5)
         pools_stats.append(pool.stats)
     finally:
@@ -593,6 +622,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
         summary["timed_out"] = timed_out
     if held:
         summary["resumed_rows"] = len(held)
+    if stopped is not None:
+        summary["stopped"] = {**stopped, "runs_written": len(rows) - len(held), "by": STOP_FILE}
     if shard_doc is not None:
         summary["shards"] = {"runs": shard_doc["runs"], "samples": shard_doc["samples"], "generation": shard_doc["generation"]}
     if resumed is not None:
@@ -711,7 +742,7 @@ def train_cmd(a: argparse.Namespace) -> int:
     _setup()
     import gen_loop  # noqa: PLC0415
 
-    gen, retrain, target = a.gen, 0, getattr(a, "candidate_generation", None)
+    gen, retrain, target, attempt = a.gen, 0, getattr(a, "candidate_generation", None), 1
     if a.marker_dir:
         marks = gen_loop.ready_markers(Path(a.marker_dir))
         if not marks:
@@ -723,6 +754,7 @@ def train_cmd(a: argparse.Namespace) -> int:
             print(f"--candidate-generation {target} contradicts the marker {marks[0][1].name}", file=sys.stderr)
             return 2
         target = named if named is not None else target
+        attempt = gen_loop.marker_attempt(marks[0][1])  # ready-<gen>-g<target>-a<n>: the built candidate gen<target>/candidate-a<n>
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
@@ -736,7 +768,11 @@ def train_cmd(a: argparse.Namespace) -> int:
               f"{gen_loop.review_guard_module().ATTEMPT_CAP}), so a further candidate could not be judged"
               + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
         return 0
-    built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain)  # `gen0.py build` assembled it: judged as it is, never trained over
+    built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt)  # `gen0.py build` assembled it: judged as it is, never trained over
+    if attempt > 1 and built is None:  # an attempt marker is written by `build`; training would write over the first attempt's folder
+        print(f"{marks[0][1].name} names attempt {attempt} of generation {cand_gen}, but gen{cand_gen}/"
+              f"{gen_loop.candidate_dirname(0, attempt)} is not a built candidate: nothing trained", file=sys.stderr)
+        return 2
     if built is not None and (built / "promotion.json").is_file():
         from tools.lab import jobs  # noqa: PLC0415
 
@@ -761,8 +797,8 @@ def train_cmd(a: argparse.Namespace) -> int:
         if not (a.emu_python and a.seeds_file):
             print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
             return 2
-        seeds_file = gen_loop.resolve_e_block(a.seeds_file, target, tsv=Path(a.agent_root) / "promotions.tsv",
-                                                cand_sha=json.loads((cand / "model.json").read_text())["policy_sha256"]) \
+        sha, head = gen_loop.candidate_identity(gen_loop.load_agent(cand))  # the prior's sha and the run head's: attempt 2 changes only the head
+        seeds_file = gen_loop.resolve_e_block(a.seeds_file, target, tsv=Path(a.agent_root) / "promotions.tsv", cand_sha=sha, head_sha=head) \
             if "{k}" in a.seeds_file else Path(a.seeds_file)
         import prior_launch  # noqa: PLC0415
 
@@ -776,22 +812,25 @@ def train_cmd(a: argparse.Namespace) -> int:
 def build_cmd(a: argparse.Namespace) -> int:
     """`build`: generation N's candidate assembled from a combat prior export and a generation's V_run fit and macro, nothing trained
     (`gen_loop.build_candidate`); with --marker-dir it then writes `ready-<base generation>-g<N>`, so the lab's train job judges it
-    on the promotion path (`train` sees the `built` candidate and skips training)."""
+    on the promotion path (`train` sees the `built` candidate and skips training). With `--attempt K` (K > 1) the same generation
+    number is tried again beside the earlier attempts: gen<N>/candidate-a<K> and the marker `ready-<base generation>-g<N>-a<K>`
+    (their `done-` form once consumed); the first attempt's folder, promotion.json and markers are never touched."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
     base = a.base or str(Path(a.agent_root) / "current.json")
+    attempt = int(getattr(a, "attempt", 1) or 1)
     marker = None
     if a.marker_dir:  # checked before anything is written: a marker that already exists (or was consumed) is not written again
         base_gen = gen_loop.load_agent(base).generation
-        name = f"ready-{base_gen}-g{a.candidate_generation}"
+        name = f"ready-{base_gen}-g{a.candidate_generation}" + (f"-a{attempt}" if attempt > 1 else "")
         taken = [p.name for p in (Path(a.marker_dir) / name, Path(a.marker_dir) / ("done-" + name.removeprefix("ready-"))) if p.exists()]
         if taken:
             print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
             return 2
         marker = Path(a.marker_dir) / name
     cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export,
-                                    vrun_fit=getattr(a, "vrun_fit", None) or None)
+                                    vrun_fit=getattr(a, "vrun_fit", None) or None, attempt=attempt)
     meta = gen_loop.read_json(cand / "agent.json")
     out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
            "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
@@ -828,10 +867,12 @@ def vrun_fit_cmd(a: argparse.Namespace) -> int:
         gens = [int(x) for x in a.gens.split(",")] if a.gens else None
         doc = gen_loop.fit_run_value_matched(Path(a.shards_root), sha, Path(a.out), gens=gens,
                                              beta=gen_loop.MATCHED_BETA if a.beta is None else a.beta, threads=a.threads,
-                                             device=a.device, seed_dirs=seed_dirs, incumbent=incumbent)
+                                             device=a.device, seed_dirs=seed_dirs, incumbent=incumbent,
+                                             exploring_only=bool(getattr(a, "exploring_only", False)))
     head = ((doc["keep"].get("heads") or {}).get("act1_boss_kill") or {}).get("brier_skill_vs_base_rate") or {}
     rk = doc["keep"].get("ranking") or {}
-    print(json.dumps({"out": Path(a.out).name, "window": doc["window"]["runs_by_generation"], "beta": doc["beta"], "kept": doc["kept"],
+    print(json.dumps({"out": Path(a.out).name, "window": doc["window"]["runs_by_generation"], "blocks": doc["window"].get("blocks"),
+                      "exploring_only": doc["window"].get("exploring_only", False), "beta": doc["beta"], "kept": doc["kept"],
                       "brier_skill": head.get("value"), "ci": head.get("ci"), "wall_min": doc["run_value"].get("wall_min"),
                       "ranking": {"status": rk.get("status"), "pass": rk.get("pass"), "why": rk.get("why"),
                                   "checks": [{k: c.get(k) for k in ("name", "candidate", "incumbent", "diff", "pass")}
@@ -1181,7 +1222,9 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--agent-root", required=True)
     bd.add_argument("--candidate-generation", type=int, required=True, help="the candidate's generation number (gen<N>/candidate)")
     bd.add_argument("--why", required=True, help="the decision the candidate is built for (agent.json and train.json record it)")
-    bd.add_argument("--marker-dir", help="LAB/train: write ready-<base generation>-g<N> once the candidate is complete")
+    bd.add_argument("--marker-dir", help="LAB/train: write ready-<base generation>-g<N> (-a<K> from the second attempt) once the candidate is complete")
+    bd.add_argument("--attempt", type=int, default=1, help="the candidate's attempt at this generation number: from 2 it is written as "
+                    "gen<N>/candidate-a<K> with the marker ready-<base generation>-g<N>-a<K>, beside the first attempt, which stays as it is")
     bd.add_argument("--no-export", action="store_true", help="no ONNX files (they need torch's exporter and the onnx package)")
     bd.add_argument("--vrun-fit", help="a fighter-matched V_run fit (`vrun-fit`'s OUT) to carry instead of the base's; it must "
                     "have passed the keep test")
@@ -1192,6 +1235,8 @@ def build_parser() -> argparse.ArgumentParser:
     who.add_argument("--prior-sha", help="the combat prior's policy sha256 whose runs make the window")
     who.add_argument("--gen-dir", help="a generation directory (or a current.json): its prior's runs make the window")
     vf.add_argument("--gens", help="comma list: only these generations' blocks of that prior")
+    vf.add_argument("--exploring-only", action="store_true", help="only the blocks an exploring agent played (tau or eps in the manifest's "
+                    "agent block; D47's rule for generation 12's second attempt); default: every block of that prior, argmax ones too")
     vf.add_argument("--beta", type=float, default=None, help="the bootstrap blend (default: 0, pure Monte Carlo)")
     vf.add_argument("--out", required=True)
     vf.add_argument("--incumbent", help="the head the fit would replace, for the ranking check (D47, D49): a run_value.npz, a generation "
@@ -1339,13 +1384,14 @@ def main(argv: list[str] | None = None) -> int:
         import prior_launch  # noqa: PLC0415
 
         opts = prior_launch.ServerOpts.from_args(a)
+        stop_file = Path(a.out) / STOP_FILE if a.record else None  # recorded self-play: the lab may ask the block to finish (the filler)
         if opts.mode == "off":
             summ = run_block(seeds, a.config or a.sims, a.procs, Path(a.out), ascension=a.ascension, character=a.character,
-                             block_min=a.block_min, agent=agent, record=a.record, run_timeout_s=a.run_timeout_s)
+                             block_min=a.block_min, agent=agent, record=a.record, run_timeout_s=a.run_timeout_s, stop_file=stop_file)
         else:
             summ = run_block_served(seeds, a.config or a.sims, a.procs, Path(a.out), opts=opts, ascension=a.ascension,
                                     character=a.character, block_min=a.block_min, agent=agent, record=a.record,
-                                    run_timeout_s=a.run_timeout_s)
+                                    run_timeout_s=a.run_timeout_s, stop_file=stop_file)
         if a.record and a.lab and a.shards_root:
             gen_loop.mark_ready(Path(a.lab), agent.generation if agent else 0, Path(a.shards_root), a.budget_runs,
                                 tsv=Path(a.agent_root) / "promotions.tsv" if a.agent_root else None,

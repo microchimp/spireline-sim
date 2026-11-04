@@ -56,6 +56,10 @@ BUDGET_RUNS = 2000  # self-play runs per generation before its train marker
 # ends near 248 min, 82 min inside the slot.
 MAX_FIGHTS = 32000
 PART_RUNS = 50
+# A run that finished waits in the sink for the rest of its part. A block the lab stops writes nothing after its last flush, so a part
+# that fills slowly (the filler plays a few runs a minute beside the jobs) would lose up to PART_RUNS - 1 finished runs at every stop:
+# 1,828 of the filler's 4,496 runs by 2026-11-04. A part is also written when its oldest run has waited this long.
+FLUSH_AGE_S = 120.0
 ACT1_LAST_FLOOR = 17  # the Act 1 boss is floor 17; a run past it killed the boss
 ALPHA = 0.01
 WIN_GATE = 0.10  # wins join the co-primaries once both arms reach this rate
@@ -463,15 +467,21 @@ class ShardSink:
     a record of a `done` seed, `gen0.run_block` does not play it, the combat parts that cover them are kept and the new
     parts are numbered on from them, and `runs`, `samples` and `prior_paths` start from what is on disk. A flush writes the
     combat part, then the run shard, then the manifest, so a kill leaves either nothing of a part's runs in the shards
-    (they are replayed) or the part beside them (it is adopted here)."""
+    (they are replayed) or the part beside them (it is adopted here).
+
+    A flush also happens when the oldest pending run has waited `flush_age_s` (`tick`, which the block's loop calls; None: only full
+    parts), so a hard kill loses at most that long's finished runs; `gen0.run_block` flushes at once on a stop request, so a stop the
+    lab asks for loses only the runs still in flight."""
 
     def __init__(self, out_dir: Path, generation: int, *, config: str, base_sims: int, ascension: int, agent: dict,
-                 part_runs: int = PART_RUNS) -> None:
+                 part_runs: int = PART_RUNS, flush_age_s: float | None = FLUSH_AGE_S, clock: Callable[[], float] = time.monotonic) -> None:
         from run_train import shards  # noqa: PLC0415
 
         self.dir = Path(out_dir) / "shards"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.generation, self.part_runs = generation, part_runs
+        self.flush_age_s, self.clock = flush_age_s, clock
+        self._oldest: float | None = None  # when the first run now pending was added
         self.meta = {"kind": "selfplay-shards", "generation": generation, "config": config, "base_sims": base_sims,
                      "ascension": ascension, "agent": agent}
         self.writer = shards.ShardWriter(self.dir, 1 << 30)  # only `flush` writes a run shard, after the combat part
@@ -519,6 +529,8 @@ class ShardSink:
             return
         self.done.add(str(record["seed"]))
         self.writer.add(record)
+        if not self.pending:
+            self._oldest = self.clock()
         self.pending.append((record["seed"], arrays))
         tag = record.get("prior_path")
         self.pending_paths.append(tag)
@@ -526,8 +538,18 @@ class ShardSink:
         self.runs += 1
         if len(self.pending) >= self.part_runs:
             self.flush()
+        else:
+            self.tick()
+
+    def tick(self) -> bool:
+        """Write the pending runs as a part when the oldest has waited `flush_age_s`; whether it did. Cheap when there is nothing to write."""
+        if self.flush_age_s is not None and self.pending and self._oldest is not None and self.clock() - self._oldest >= self.flush_age_s:
+            self.flush()
+            return True
+        return False
 
     def flush(self) -> None:
+        self._oldest = None
         if self.pending:
             name = f"combat-g{self.generation}-{len(self.parts):04d}.npz"
             self.samples += write_part(self.dir / name, self.pending, self.generation, self.pending_paths)
@@ -768,33 +790,48 @@ MATCHED_RECIPE = ("V_run fit only on the runs played by one combat prior (the ca
                   "(docs/diagnostics/2026-11-02-recipe.md in the Spireline repo)")
 
 
-def fighter_manifests(root: Path, prior_sha256: str, gens: Sequence[int] | None = None) -> list[tuple[Path, dict]]:
+def exploring_manifest(manifest: dict) -> bool:
+    """Whether a self-play block's runs were played by an exploring agent (`exploring_agent`): its manifest's agent block names a
+    softmax temperature or a uniform share (`Agent.describe` leaves both out for an argmax agent)."""
+    agent = manifest.get("agent") or {}
+    return bool(agent.get("tau") or agent.get("eps"))
+
+
+def fighter_manifests(root: Path, prior_sha256: str, gens: Sequence[int] | None = None, *,
+                      exploring_only: bool = False) -> list[tuple[Path, dict]]:
     """The self-play shard manifests under `root` whose runs were played by the combat prior `prior_sha256` (the manifest's
-    agent block names it), optionally only of the generations `gens`. A manifest without a prior sha is never matched."""
+    agent block names it), optionally only of the generations `gens`, and with `exploring_only` only the blocks an exploring agent
+    played (D47 counts and fits on those: an argmax run carries no outcome for an option the head never ranks first). A manifest
+    without a prior sha is never matched."""
     if not prior_sha256:
         return []
     want = None if gens is None else {int(g) for g in gens}
     return [(d, m) for d, m in find_manifests(root)
             if ((m.get("agent") or {}).get("prior_sha256") or None) == prior_sha256
-            and (want is None or int(m["generation"]) in want)]
+            and (want is None or int(m["generation"]) in want)
+            and (not exploring_only or exploring_manifest(m))]
 
 
 def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, gens: Sequence[int] | None = None,
                           beta: float = MATCHED_BETA, threads: int = 4, device: str | None = None,
                           seed_dirs: Sequence[Path | str] = (), seed_dir: Path | None = None,
-                          incumbent: Path | str | None = None, ranking_check: Any = None) -> dict[str, Any]:
+                          incumbent: Path | str | None = None, ranking_check: Any = None,
+                          exploring_only: bool = False) -> dict[str, Any]:
     """A V_run fit (FightNet, the value head and the D33 keep record) on the runs one combat prior played, into `out`
     (run_value.pt, run_value.npz, vrun_fit.json): the fighter-matched recipe of the reset order's step C. The window is every
     self-play block of that prior (`fighter_manifests`), all of its generations in V's buffer; no E-block seed may be among its
     runs (the train job's rule). `build_candidate(vrun_fit=out)` puts the fit into a candidate when its keep record passes.
+    With `exploring_only` the window is the blocks an exploring agent played (D47's rule for generation 12's second attempt); the
+    record's `window.exploring_only` says so, and `fit_window_seeds` reads the same window back.
 
     The keep record also carries the ranking check (D47, D49): the fit's options ranked against `incumbent`'s head (a run_value.npz,
     a generation directory or a current.json) on the fixed set of held-out decisions in the self-play shards under `shards_root`,
     the fit window's runs left out. A fit is `kept` only when the D33 conditions and the ranking check both pass; with no
     `incumbent` the check cannot run and the fit is not kept."""
-    mans = fighter_manifests(shards_root, prior_sha256, gens)
+    mans = fighter_manifests(shards_root, prior_sha256, gens, exploring_only=exploring_only)
     if not mans:
-        raise ValueError(f"no self-play shards of prior {prior_sha256[:12]} under {Path(shards_root).name}")
+        raise ValueError(f"no {'exploring ' if exploring_only else ''}self-play shards of prior {prior_sha256[:12]} under "
+                         f"{Path(shards_root).name}")
     window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
     check_disjoint(window_seeds, known_seed_sets(seed_dir or COMMITTED_SEEDS, None, "", seed_dirs))
     configs = {(str(m.get("config")), int(m["base_sims"]), int(m["ascension"])) for _, m in mans}
@@ -812,7 +849,7 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
     if (out / "run_value.npz").is_file():
         keep_doc["ranking"] = ranking_block(out / "run_value.npz", incumbent, shards_root, out, exclude_seeds=window_seeds, check=ranking_check)
     doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta,
-           "window": {"blocks": len(mans), "generations": generations,
+           "window": {"blocks": len(mans), "generations": generations, "exploring_only": bool(exploring_only),
                       "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
                                              for g in generations},
                       "jobs": sorted(d.parent.name for d, _ in mans)},
@@ -825,7 +862,8 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
 
 def fit_window_seeds(fit_doc: dict[str, Any], shards_root: Path | str) -> list[str]:
     """The run seeds of the window a `fit_run_value_matched` record (`vrun_fit.json`) was fitted on."""
-    mans = fighter_manifests(shards_root, fit_doc["prior_sha256"], fit_doc["window"]["generations"])
+    mans = fighter_manifests(shards_root, fit_doc["prior_sha256"], fit_doc["window"]["generations"],
+                             exploring_only=bool(fit_doc["window"].get("exploring_only")))  # fits before the key was written took every block
     return [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in read_part(d / name)["seeds"]]
 
 
@@ -1253,16 +1291,27 @@ BUILT_PRIOR_FILES = ("combat_policy.pt", "combat_net.pt")  # the prior export's 
 BUILT_BASE_FILES = ("run_value.npz", "run_value.pt")  # the base generation's V_run fit, copied unchanged
 
 
-def built_candidate(agent_root: Path | str, target: int, retrain: int = 0) -> Path | None:
-    """AGENT/gen<target>/candidate (candidate-r<n> for a retrain index) when `build_candidate` wrote it (agent.json has `built`),
-    else None: `gen0.py train` judges such a candidate as it is and never trains over it."""
-    cand = Path(agent_root) / f"gen{int(target)}" / ("candidate" if retrain == 0 else f"candidate-r{retrain}")
+def candidate_dirname(retrain: int = 0, attempt: int = 1) -> str:
+    """The folder a candidate of generation <target> sits in: `candidate` (a first attempt), `candidate-r<n>` (the n-th retrain of a
+    trained one) or `candidate-a<n>` (the n-th attempt of a built one: the same target number tried again, beside the earlier
+    attempts' folders, which stay as they are)."""
+    if attempt > 1 and retrain:
+        raise ValueError("an attempt folder is not a retrain folder")
+    if attempt > 1:
+        return f"candidate-a{int(attempt)}"
+    return "candidate" if retrain == 0 else f"candidate-r{retrain}"
+
+
+def built_candidate(agent_root: Path | str, target: int, retrain: int = 0, attempt: int = 1) -> Path | None:
+    """AGENT/gen<target>/candidate (candidate-r<n> for a retrain index, candidate-a<n> for an attempt) when `build_candidate` wrote it
+    (agent.json has `built`), else None: `gen0.py train` judges such a candidate as it is and never trains over it."""
+    cand = Path(agent_root) / f"gen{int(target)}" / candidate_dirname(retrain, attempt)
     meta = cand / "agent.json"
     return cand if meta.is_file() and BUILT_KEY in read_json(meta) else None
 
 
 def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
-                    export: bool = True, vrun_fit: Path | str | None = None) -> Path:
+                    export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1276,7 +1325,11 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
 
     `vrun_fit` (a folder `fit_run_value_matched` wrote) replaces the base's V_run fit with that one, which must have passed the
     keep test (`read_vrun_fit`); the base must play the vrun macro. agent.json's `vrun_fit` then names source "fit", the folder,
-    its recipe and whether its runs were played by this candidate's prior (`matched`)."""
+    its recipe and whether its runs were played by this candidate's prior (`matched`).
+
+    `attempt` (default 1: gen<target>/candidate) places a further attempt at the same generation number in gen<target>/candidate-a<n>
+    (`candidate_dirname`), so the earlier attempt's folder, its promotion.json and its markers stay as they are; the lab's train job
+    takes it by the `ready-<base>-g<target>-a<n>` marker."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1301,9 +1354,11 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     missing = [n for n in BUILT_PRIOR_FILES if not (prior_dir / n).is_file()]
     if missing:
         raise FileNotFoundError(f"{prior_dir.name} has no {', '.join(missing)}")
-    cand = agent_root / f"gen{target}" / "candidate"
+    if int(attempt) < 1:
+        raise ValueError(f"attempt {attempt}: attempts count from 1")
+    cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt))
     if cand.exists() and any(cand.iterdir()):
-        raise FileExistsError(f"gen{target}/candidate exists; a built candidate never writes over one")
+        raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
     cand.mkdir(parents=True, exist_ok=True)
     for name in BUILT_PRIOR_FILES:
         shutil.copyfile(prior_dir / name, cand / name)
@@ -1325,7 +1380,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     base_meta = read_json(base_dir / "agent.json") if (base_dir / "agent.json").is_file() else {}
     source_train = read_json(prior_dir / "train.json") if (prior_dir / "train.json").is_file() else None
     prior = {"dir": prior_dir.as_posix(), "policy_sha256": model["policy_sha256"], "net_sha256": file_sha256(cand / "combat_net.pt")}
-    built = {"why": why, "written": utc_now(), "trained": False,
+    built = {"why": why, "written": utc_now(), "trained": False, **({"attempt": int(attempt)} if int(attempt) > 1 else {}),
              "rule": "the prior's files and the base's V_run fit are copied unchanged; `gen0.py train` judges the candidate as it is",
              "prior": {**prior, "model_json": read_json(prior_dir / "model.json")},
              "base": {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro,
@@ -1346,7 +1401,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     meta = {"generation": target, "macro": base_agent.macro, "built_on": base_agent.generation, "written": utc_now(),
             **({"lineage": lineage} if lineage else {}), "mask_version": base_agent.mask_version,
             **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
-            "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"]},
+            "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"],
+                                         **({"attempt": int(attempt)} if int(attempt) > 1 else {})},
             "note": (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
                      f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone" if fit_doc is None else
                      f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
@@ -1355,7 +1411,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
     got = load_agent(cand)
     if (got.generation, got.macro, got.describe()["prior_sha256"]) != (target, base_agent.macro, champ.policy_sha256):
-        raise ValueError(f"gen{target}/candidate does not load as built: {got.describe()}")
+        raise ValueError(f"gen{target}/{cand.name} does not load as built: {got.describe()}")
     return cand
 
 
@@ -1363,12 +1419,14 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
 
 
 _MARKER = re.compile(r"(ready|done)-(\d+)(?:-r(\d+))?")
-_MARKER_TARGET = re.compile(r"(ready|done)-(\d+)-g(\d+)")  # names the candidate generation; not counted as a budget by mark_ready
+# names the candidate generation (and, with `-a<n>`, the attempt: the candidate sits in gen<target>/candidate-a<n>); not counted as a budget by mark_ready
+_MARKER_TARGET = re.compile(r"(ready|done)-(\d+)-g(\d+)(?:-a(\d+))?")
 
 
 def marker_parts(path: Path | str) -> tuple[int, int] | None:
-    """(generation, retrain index) of `ready-<gen>` (index 0), `ready-<gen>-r<n>` or `ready-<gen>-g<target>` (index 0: it is
-    written as gen<target>/candidate); None for anything else. `marker_target` gives the `-g` form's target."""
+    """(generation, retrain index) of `ready-<gen>` (index 0), `ready-<gen>-r<n>` or `ready-<gen>-g<target>[-a<n>]` (index 0: it is
+    written as gen<target>/candidate, or candidate-a<n>); None for anything else. `marker_target` gives the `-g` form's target and
+    `marker_attempt` its attempt."""
     name = Path(path).name
     m = _MARKER.fullmatch(name)
     if m and m[1] == "ready":
@@ -1383,17 +1441,24 @@ def marker_target(path: Path | str) -> int | None:
     return int(t[3]) if t and t[1] == "ready" else None
 
 
-def marker_key(path: Path | str) -> tuple[int, int, int] | None:
-    """Marker order: generation, then the plain and `-r<n>` forms by retrain index, then the `-g<target>` forms by target."""
+def marker_attempt(path: Path | str) -> int:
+    """The attempt a `ready-<gen>-g<target>[-a<n>]` marker names (1 for the form without `-a`, and for every other form)."""
+    t = _MARKER_TARGET.fullmatch(Path(path).name)
+    return int(t[4]) if t and t[1] == "ready" and t[4] else 1
+
+
+def marker_key(path: Path | str) -> tuple[int, int, int, int] | None:
+    """Marker order: generation, then the plain and `-r<n>` forms by retrain index, then the `-g<target>` forms by target and attempt."""
     parts = marker_parts(path)
     if parts is None:
         return None
     target = marker_target(path)
-    return (parts[0], 0, parts[1]) if target is None else (parts[0], 1, target)
+    return (parts[0], 0, parts[1], 0) if target is None else (parts[0], 1, target, marker_attempt(path))
 
 
 def ready_markers(train_dir: Path) -> list[tuple[int, Path]]:
-    """`LAB/train/ready-<gen>[-r<n>|-g<target>]` markers, lowest generation first, within one: the plain, the `-r<n>`, the `-g<target>`."""
+    """`LAB/train/ready-<gen>[-r<n>|-g<target>[-a<n>]]` markers, lowest generation first, within one: the plain, the `-r<n>`, the
+    `-g<target>` (by target, then attempt)."""
     d = Path(train_dir)
     found = [(marker_key(p), p) for p in (d.glob("ready-*") if d.is_dir() else [])]
     return [(k[0], p) for k, p in sorted(((k, p) for k, p in found if k), key=lambda x: x[0])]
@@ -1531,14 +1596,36 @@ def lineage_blocks(rows: list[dict[str, str]], blocks: int = 3) -> list[tuple[in
     return list(by_block.values())[-blocks:]
 
 
-def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str) -> int:
-    """Other candidates of generation `cand_gen` judged so far (distinct shas; a row without a sha counts as one)."""
-    return len({r.get("cand_sha", "") for r in rows if r.get("cand_gen") == str(cand_gen) and r.get("cand_sha", "") != cand_sha})
+def run_head_sha(agent: Agent) -> str:
+    """The sha256 of the run head (run_value.npz) an agent chooses its run-level options by; "" for an agent with none (macro rules)."""
+    npz = agent.macro_npz if agent.macro == "vrun" else None
+    return file_sha256(npz) if npz and Path(npz).is_file() else ""
+
+
+def candidate_identity(agent: Agent) -> tuple[str, str]:
+    """A candidate's identity in promotions.tsv: (its combat prior's sha, its run head's sha). The prior's sha alone named a candidate
+    until generation 12's second attempt, which keeps generation 11's fight player and changes only the run head (D47): by the prior
+    alone it would have read as the first attempt again and been judged on the first attempt's refused block."""
+    return agent.describe()["prior_sha256"] or "none", run_head_sha(agent)
+
+
+def row_identity(row: dict[str, str]) -> tuple[str, str]:
+    """The identity a promotions.tsv row records: `cand_sha` and `run_head_sha`. Rows written before the second column existed read ""
+    there, so each old row stands for one attempt of its combat prior with no head named (no migration of the file)."""
+    return row.get("cand_sha", ""), row.get("run_head_sha", "")
+
+
+def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str, head_sha: str = "") -> int:
+    """Other candidates of generation `cand_gen` judged so far: distinct identities (combat prior sha, run head sha; `row_identity`)
+    other than (`cand_sha`, `head_sha`). A row without a prior sha counts as one candidate; a row without a head sha is the candidate
+    of its prior alone (a pair with the head "")."""
+    me = (cand_sha, head_sha)
+    return len({row_identity(r) for r in rows if r.get("cand_gen") == str(cand_gen) and row_identity(r) != me})
 
 
 def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = None) -> int | None:
     """With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable) and `cand_gen` already judged at the
-    guard's cap (distinct candidate shas in `promotions.tsv`, `attempts_before` with no sha): that count, the number `promote` would
+    guard's cap (distinct candidates in `promotions.tsv` by prior sha and run head sha, `attempts_before` with no sha): that count, the number `promote` would
     refuse a further candidate at. None otherwise (guard off, or attempts left). `train` asks before it trains, so a round that
     could not be judged costs no training."""
     if not review_guard_on(review_guard):
@@ -1553,14 +1640,14 @@ def previous_drift_flagged(rows: list[dict[str, str]]) -> bool:
 
 
 def review_guard_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
-                         block: str, boot: int = BOOT_B, apply_cap: bool = True) -> dict[str, Any]:
+                         block: str, boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "") -> dict[str, Any]:
     """The review's guard (promotion_guard.judge) on two arms, with the lineage, the drift history and the attempt count
     from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage).
     With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap but allowed."""
     pg = review_guard_module()
     kills_c, kills_b, dmg_c, dmg_b = pg.from_rows(cand_rows, base_rows, kill=boss_kill)
     history = [r for r in rows if r.get("seed_block") != block]
-    prior = attempts_before(rows, cand_gen, cand_sha)
+    prior = attempts_before(rows, cand_gen, cand_sha, head_sha)
     cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
     verdict = pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
                        prior_attempts=prior, cap=cap, boot=boot)
@@ -1763,7 +1850,9 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
 TSV_COLUMNS = ("written", "cand_gen", "base_gen", "seed_block", "seeds", "d_floor", "floor_lower", "p_floor", "boss_cand",
                "boss_base", "p_boss", "wins_cand", "wins_base", "decision", "cand_sha", "cand_dir",
                # the review's guard: the attempt of the generation (always), the drift verdict and the guard line (empty / "off" when off)
-               "attempt", "drift", "guard")
+               "attempt", "drift", "guard",
+               # the second half of the candidate's identity (`candidate_identity`); empty in rows written before it existed
+               "run_head_sha")
 
 
 def guard_cells(guard: dict[str, Any] | None, attempt: int) -> dict[str, Any]:
@@ -1793,9 +1882,10 @@ def append_promotion(tsv: Path, values: dict[str, Any]) -> None:
         fh.write("\t".join(str(values.get(c, "")) for c in TSV_COLUMNS) + "\n")
 
 
-def block_used_by_another(tsv: Path | None, block: str, cand_sha: str) -> bool:
-    """Whether `block` already judged a candidate other than `cand_sha` (a row without a sha counts as another one)."""
-    return any(r.get("seed_block") == block and r.get("cand_sha", "") != cand_sha for r in read_promotions(tsv))
+def block_used_by_another(tsv: Path | None, block: str, cand_sha: str, head_sha: str = "") -> bool:
+    """Whether `block` already judged a candidate other than (`cand_sha`, `head_sha`): another combat prior, or the same prior with
+    another run head (a row without a sha counts as another one; a row without a head sha is its prior alone, `row_identity`)."""
+    return any(r.get("seed_block") == block and row_identity(r) != (cand_sha, head_sha) for r in read_promotions(tsv))
 
 
 def check_disjoint(seeds: list[str], others: dict[str, list[str]]) -> None:
@@ -1904,8 +1994,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     (or promotes early); a block that is not stopped plays every seed and is judged exactly as without `sequential`. A stop is
     recorded like any verdict: promotion.json (`n_seeds` the seeds played, `sequential` the looks and the stop), a promotions.tsv row
     (`seeds` the seeds played, the `guard` cell ending with the stop) and, on a refusal, the attempt spent as for a block refusal:
-    the attempt is the number of distinct candidate shas of the generation in promotions.tsv (`attempts_before`), counted from this
-    row on; nothing else holds it. A killed job resumes into the same arm folders at the first look it has not finished."""
+    the attempt is the number of distinct candidates (combat prior sha, run head sha) of the generation in promotions.tsv
+    (`attempts_before`), counted from this row on; nothing else holds it. A killed job resumes into the same arm folders at the first look it has not finished."""
     import gen0  # noqa: PLC0415
 
     seeds = gen0.load_seeds(seeds_file)
@@ -1915,13 +2005,13 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     check_disjoint(seeds, known_seed_sets(Path(seeds_file).parent, lab_runs, name, [lab_seed_dir(lab)] if lab else ()))
     cand_agent = load_agent(cand)
     base_agent = load_agent(base, agent_root=None if base else agent_root)
-    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
+    cand_sha, head_sha = candidate_identity(cand_agent)
     tsv = Path(agent_root) / "promotions.tsv"
-    if block_used_by_another(tsv, name, cand_sha):  # a second look at one block is a look the alpha does not pay for
+    if block_used_by_another(tsv, name, cand_sha, head_sha):  # a second look at one block is a look the alpha does not pay for
         raise ValueError(f"E-block {name} already judged another candidate; make a fresh one (resolve_e_block)")
     rows = read_promotions(tsv)
     guard_on = review_guard_on(review_guard)
-    attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha) + 1
     if guard_on and attempt > review_guard_module().ATTEMPT_CAP:
         raise ValueError(f"generation {cand_agent.generation} already had {attempt - 1} promotion attempts "
                          f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
@@ -1931,8 +2021,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     seq: dict[str, Any] | None = None
     if sequential:
         def verdict(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
-            return (review_guard_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
-                    if guard_on else None)
+            return (review_guard_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
+                                         head_sha=head_sha) if guard_on else None)
 
         def rows_at(n: int) -> tuple[list[dict], list[dict]]:
             part = seeds[:n]
@@ -1945,8 +2035,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
         base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
         played = len(seeds)
-    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot)
-             if guard_on else None)
+    guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
+                                  head_sha=head_sha) if guard_on else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != played:  # a partial arm must not promote on fewer pairs than the block
         raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both arms")
@@ -1960,6 +2050,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
+           "run_head_sha": head_sha,
            # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
            "f7": "not run", "matched_wall_clock": False}
     if seq is not None:
@@ -1979,7 +2070,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                            "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                            "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
                            "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
-                           **cells})
+                           "run_head_sha": head_sha, **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
@@ -2033,11 +2124,11 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if stop is not None:  # the arms of a stopped block hold the seeds played and no others; judge those, by place in the block
         part = set(seeds[:played])
         cand_rows, base_rows = [r for r in cand_rows if r["seed"] in part], [r for r in base_rows if r["seed"] in part]
-    cand_sha = cand_agent.describe()["prior_sha256"] or "none"
+    cand_sha, head_sha = candidate_identity(cand_agent)
     rows = read_promotions(Path(agent_root) / "promotions.tsv")
-    attempt = attempts_before(rows, cand_agent.generation, cand_sha) + 1
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha) + 1
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
-                                  apply_cap=False) if review_guard_on(review_guard) else None)
+                                  apply_cap=False, head_sha=head_sha) if review_guard_on(review_guard) else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != played:
         raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both cached arms")
@@ -2056,7 +2147,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "alpha": ALPHA,
            "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
-           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
+           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha, "run_head_sha": head_sha,
            "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
            "f7": "not run", "matched_wall_clock": False}
     cells = guard_cells(guard, attempt)
@@ -2073,7 +2164,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                       "seed_block": name, "seeds": doc["n_seeds"], "d_floor": f"{f['mean']:.4f}", "floor_lower": f"{f['lower']:.4f}",
                       "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                       "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
-                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name, **cells})
+                      "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
+                      "run_head_sha": head_sha, **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name, "note": note})
@@ -2085,11 +2177,12 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
 
 
 def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = None, cand_sha: str | None = None,
-                    also_dirs: Sequence[Path | str] | None = None) -> Path:
+                    also_dirs: Sequence[Path | str] | None = None, head_sha: str = "") -> Path:
     """The E-block for candidate generation `k`: `template` with {k} for the generation and {date} for today (UTC).
     An existing `E<k>-*.json` that has not judged another candidate (per `promotions.tsv`) is used as it is
     (E1-2026-10-23 is committed). If every such block did, a new `E<k>-<date>-r<n>` is created by the seed rule, so a
-    candidate is never judged on a block that already judged a different one. A new block is written to the template's
+    candidate is never judged on a block that already judged a different one; a candidate is its combat prior and its run head
+    (`candidate_identity`, `head_sha`), so a second attempt that keeps the prior and changes the head gets a block of its own. A new block is written to the template's
     folder (the lab's `seeds` folder, outside the checkout); existing blocks are looked for there and in `also_dirs`
     (default: the checkout's committed folder), and a new name is free in all of them."""
     import gen0  # noqa: PLC0415
@@ -2101,7 +2194,7 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
             found.setdefault(p.stem, p)
     existing = [found[name] for name in sorted(found)]
     for p in existing:
-        if not block_used_by_another(tsv, p.stem, cand_sha or "none"):
+        if not block_used_by_another(tsv, p.stem, cand_sha or "none", head_sha):
             return p
     if existing:
         j = 1
