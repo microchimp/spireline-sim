@@ -441,6 +441,31 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(s["block_end"], 17.0)
         self.assertEqual(s["dealt"], 8.0 + 2.0 + 26.0)  # 40 -> 32, 32 -> 30 over the enemy phase, 30 -> 4 in the last step
 
+    def test_an_unkillable_phase_and_an_unreadable_position_do_not_count_or_end_the_game(self):
+        d = fe.digest(self.doc(40, 0, 3, 1, [{"hp": 1_000_000_000, "intent": {"type": 0, "magnitude": 1, "hits": 1}},
+                                             {"hp": 25, "intent": {"type": 1, "magnitude": 0, "hits": 1}}]))
+        self.assertEqual(d["ehp"], 25)
+
+        class Best:
+            kind = "card"
+
+        reads = iter([{"hp": 50, "block": 0, "energy": 3, "turn": 1, "ehp": 40, "incoming": 0}, RuntimeError("stopped_step"),
+                      {"hp": 50, "block": 0, "energy": 0, "turn": 1, "ehp": 31, "incoming": 0}])
+
+        def look(world):
+            r = next(reads)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        obs = fe.Observer()
+        with mock.patch.object(fe.Observer, "look", staticmethod(look)):
+            for _ in range(3):
+                obs(None, 0, Best())
+        s = obs.summary()
+        self.assertEqual((s["looks"], s["look_misses"]), (2, 1))
+        self.assertEqual((s["dealt"], s["energy"]), (9.0, 3.0))  # the change across the unreadable decision is carried to the next reading
+
     def test_a_won_fight_removes_what_the_enemies_had_left(self):
         class Best:
             kind = "card"

@@ -99,6 +99,7 @@ LOOP_ROOT = gl.DEFAULT_ROOT
 # Names for display only (the env's encounter table, copied: the pure parts load no library).
 ENCOUNTER_NAMES = {74: "ceremonial-beast", 77: "lagavulin-matriarch", 79: "soul-fysh", 82: "kin", 83: "vantom",
                    84: "waterfall-giant", 75: "kaiser-crab", 76: "knowledge-demon", 81: "insatiable"}
+SENTINEL_HP = 100_000  # an enemy standing for a phase nothing can damage (a billion HP in the game's data) is not counted as HP to remove
 MEASURES = ("won", "L0", "hp_lost", "potions_used", "turns", "dealt", "energy", "wasted")
 CELL_ORDER = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")
 
@@ -529,7 +530,9 @@ def build_exam(loop_root: Path = LOOP_ROOT, out: Path = EXAM_DIR, *, per_cell: i
 class Observer:
     """`play_steps`'s grader hook: reads the position before each decision (HP, block, energy, the enemies' HP and announced
     attack) and from the step between two decisions takes the enemy HP removed and the energy spent on a card; at each end of turn
-    the block held above the announced attack is wasted block. It returns an empty grade and never changes the move."""
+    the block held above the announced attack is wasted block. It returns an empty grade and never changes the move. A position the
+    engine will not write out (a card's choice screen in the middle of a step) is skipped, counted in `misses`, and the next reading
+    carries the change over the gap; an enemy of a billion HP (an unkillable phase) is not counted. Nothing it does can end a game."""
 
     def __init__(self) -> None:
         self.prev: tuple | None = None
@@ -539,6 +542,7 @@ class Observer:
         self.block_end = 0.0
         self.ends = 0
         self.looks = 0
+        self.misses = 0
 
     @staticmethod
     def look(world) -> dict:
@@ -555,7 +559,11 @@ class Observer:
             self.energy += max(0.0, prev["energy"] - cur["energy"])
 
     def __call__(self, world, k: int, best) -> dict:
-        cur = self.look(world)
+        try:
+            cur = self.look(world)
+        except Exception:  # noqa: BLE001 -- a position the engine will not write out (a card's choice screen mid-step): no reading
+            self.misses += 1
+            return {}
         self.looks += 1
         self.account(cur)
         if best.kind == "end_turn":
@@ -577,7 +585,7 @@ class Observer:
 
     def summary(self) -> dict:
         return {"dealt": round(self.dealt, 1), "energy": round(self.energy, 1), "wasted": round(self.wasted, 1),
-                "block_end": round(self.block_end, 1), "end_turns": self.ends}
+                "block_end": round(self.block_end, 1), "end_turns": self.ends, "looks": self.looks, "look_misses": self.misses}
 
 
 def digest(doc: dict) -> dict:
@@ -591,7 +599,7 @@ def digest(doc: dict) -> dict:
         if int(it.get("type", -1)) == 0 or it.get("carries_damage"):
             inc += int(it.get("magnitude") or 0) * max(1, int(it.get("hits") or 1))
     return {"hp": int(p.get("hp", 0)), "block": int(p.get("block", 0)), "energy": int(p.get("energy", 0)), "turn": int(doc.get("turn", 0)),
-            "ehp": sum(max(0, int(e.get("hp", 0))) for e in enemies), "incoming": inc}
+            "ehp": sum(int(e.get("hp", 0)) for e in enemies if 0 < int(e.get("hp", 0)) < SENTINEL_HP), "incoming": inc}
 
 
 _ENGINE: list = [None]
@@ -1114,10 +1122,13 @@ def cmd_select(a: argparse.Namespace) -> int:
 
 def cmd_baseline(a: argparse.Namespace) -> int:
     d = Path(a.exam_dir)
+    starts = load_exam(d)
+    if a.limit:
+        starts = dict(sorted(starts.items(), key=lambda kv: order_key(SELECT_SEED, kv[0]))[: a.limit])
     prepare_process()
     try:
         with ExamLock(until=a.until or None, stop_file=d / "STOP"):
-            n = make_baseline(d, a.judge_path)
+            n = make_baseline(d, a.judge_path, starts, draws=a.draws)
     except Blocked as why:
         print(f"not started: {why}")
         return 3
