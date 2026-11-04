@@ -81,6 +81,12 @@ Turn and potions keep the weight every measurement gave them, `W_OTHER`. What is
             driver answers with the judge's raw row (see `_drive`); its death counts as its
             probability in the move's statistics. The confirmation always rolls out.
 
+  lethal    With `lethal_check=True` (a config's option, `search_configs.SearchConfig.lethal_check`), the search first
+            looks for a kill with this turn's cards (rl/lethal.py: a bounded enumeration on a resampled copy, each kill
+            replayed in other resampled copies before it counts). A verified kill is answered at once, with no
+            simulations: `best` is the kill's first move, `line` the whole sequence, and `kill_check` says so. With no
+            kill the search runs as it always did, and `kill_check` records the look. Off by default.
+
 No hidden information is used. Every simulation starts from a resampling clone. The one
 faithful clone is read for the observation the player can see, then destroyed.
 
@@ -137,6 +143,8 @@ from combat_mcts import (
     incoming_damage,
 )
 from combat_tokens import MAX_POTIONS, POTION_OFFSET
+
+import lethal
 
 from sts2_gym import names, native, procutil
 from sts2_gym.live.potions import ENEMY_TARGETED_POTIONS
@@ -285,6 +293,10 @@ class SearchResult:
     # Some resampled fork kept the true hidden enemy moves because they could not be rolled
     # again (a loaded or imported fight, or none matched; DESIGN.md 1.1): the search saw them.
     ai_state_assumed: bool = False
+    # The kill check's record for this decision (`lethal.Report.record()`): None when the check was off. "fired" says the answer is
+    # the kill's first move and no simulation ran; with `SPIRELINE_LETHAL_SHADOW=1` a fired record also carries the search's own
+    # move ("search_move") and whether it is another move ("differs"), for measuring the check.
+    kill_check: dict | None = None
 
 
 class _Move(NamedTuple):
@@ -532,6 +544,38 @@ def _world_moves(world: Combat) -> list[_Move]:
 
 def _step(world: Combat, action: int, target: int) -> None:
     world.done = native.step(world.handle, action, world.obs, world.reward, target)
+
+
+class _LiveRules:
+    """The emulator's side of `lethal.find_lethal`: the same distinct moves the search collapses to, stepped the same way."""
+
+    @staticmethod
+    def moves(world: Combat) -> list[_Move]:
+        return _distinct(_world_moves(world))
+
+    @staticmethod
+    def play(world: Combat, move: _Move) -> None:
+        _step(world, move.action, move.target)
+
+    @staticmethod
+    def enemy_hp(world: Combat) -> float:
+        obs = world.obs
+        return float(sum(max(0, obs[_ENEMIES + index * _ENEMY]) for index in range(native.MAX_ENEMIES)))
+
+    @staticmethod
+    def state_key(world: Combat) -> bytes:
+        """Everything the player can see, as the observation holds it: two worlds that read alike have the same moves ahead."""
+        return bytes(world.obs)
+
+    @staticmethod
+    def match(world: Combat, move: _Move) -> _Move | None:
+        """The move in another world of the position by what it plays (its key): a hand card is at the same index everywhere, a
+        draw-pile candidate is not, and the key finds either."""
+        return next((m for m in _distinct(_world_moves(world)) if m.key == move.key), None)
+
+
+_LIVE_RULES = _LiveRules()
+LETHAL_SHADOW_ENV = "SPIRELINE_LETHAL_SHADOW"  # "1": a fired kill check also runs the search and records its move (a measurement)
 
 
 def _action_in(world: Combat, key: tuple, action: int) -> int | None:
@@ -1296,6 +1340,13 @@ class _Search:
         clock: Callable[[], float] = time.perf_counter,
         leaf: str = "rollout",
     ):
+        self.handle = handle
+        self._ctor = {
+            "time_budget_s": time_budget_s, "min_child_sims": min_child_sims, "c": c, "potion_value": potion_value, "seed": seed,
+            "max_sims": max_sims, "prior_fn": prior_fn, "c_puct": c_puct, "confirm_pairs": confirm_pairs, "lane": lane,
+            "prior_min_visits": prior_min_visits, "clock": clock, "leaf": leaf,
+        }
+        self.kill_check: dict | None = None  # the kill check's record, once it has looked
         # The search's clock: the wall clock, or (`gym_lockstep`) the time its own fight
         # has run, so that a search sharing a process with other fights gets its budget.
         self.clock = clock
@@ -1335,6 +1386,52 @@ class _Search:
 
     def run(self, leaf_fn: Callable | None = None) -> SearchResult:
         return _drive(self.steps(), self.policy.prior_fn, leaf_fn)
+
+    def twin(self) -> _Search:
+        """The same search again, from the same arguments: what a search that never looked for a kill would have done."""
+        return _Search(self.handle, **self._ctor)
+
+    def lethal(self) -> SearchResult | None:
+        """Look for a kill with this turn's cards. A verified one is the answer (a result with no simulations, whose best is the
+        kill's first move and whose line is the whole sequence); otherwise None, and `kill_check` holds the look."""
+        if len(self.children) < 2:  # nothing to choose between: the single move is played with no simulations anyway
+            return None
+        try:
+            report = lethal.find_lethal(self.root, _LIVE_RULES)
+        except Exception as error:  # noqa: BLE001 -- the check only saves time: a failure in it (a full handle pool, say) is not the search's
+            self.kill_check = {"fired": False, "reason": "error", "error": f"{type(error).__name__}: {error}"[:200]}
+            _LOG.warning("kill check failed, searching instead: %s", self.kill_check["error"])
+            return None
+        self.kill_check = report.record()
+        if report.kill is None:
+            return None
+        first = report.kill.path[0]
+        child = next((c for c in self.children if c.key == first.key and c.node.action == first.action and c.simulable), None)
+        if child is None:  # the kill's first move is not one the search would play: not trusted, the search runs
+            self.kill_check.update(fired=False, reason="unmapped")
+            return None
+        self.children = [child]
+        result = self._result()
+        result.line = [(m.action, m.target, m.kind) for m in report.kill.path]
+        result.kill_check = self.kill_check
+        if os.environ.get(LETHAL_SHADOW_ENV) == "1":  # a measurement: does the kill hold on the true position (the draw order the check never read)?
+            self.kill_check["true_world_kill"] = self._holds_on_true_world(report.kill.path)
+        return result
+
+    def _holds_on_true_world(self, path: list[_Move]) -> bool:
+        """Replay the kill's moves on a faithful copy of the position (its real draw order and rolls): whether the fight ends won."""
+        world = self.root.fork(None)
+        try:
+            for move in path:
+                if world.done:
+                    break
+                here = _LIVE_RULES.match(world, move)
+                if here is None:
+                    return False
+                _LIVE_RULES.play(world, here)
+            return bool(world.done and world.won())
+        finally:
+            world.close()
 
     def steps(self):
         """The search as steps: a generator that yields `(handle, legal)` wherever it needs
@@ -1529,6 +1626,7 @@ def search_live(
     resample: bool = True,
     leaf: str = "rollout",
     leaf_fn: Callable[[int], Any] | None = None,
+    lethal_check: bool = False,
     _lane: tuple[int, int] = (0, 1),
 ) -> SearchResult:
     """Search the combat on `handle` and grade every root move.
@@ -1552,6 +1650,9 @@ def search_live(
     `leaf="judge"` values each simulation's leaf with the fight judge instead of a rollout:
     `leaf_fn(handle)` returns the judge's raw row there (rl/judge_client.py).
 
+    `lethal_check` first looks for a kill with this turn's cards (rl/lethal.py); a verified one is
+    answered at once with no simulations, and `SearchResult.kill_check` records the look either way.
+
     `_lane` is for `ParallelSearcher`: a search in lane (i, n) plays only seeds that are
     i modulo n, so searches in different lanes never share an imagined world.
 
@@ -1564,14 +1665,29 @@ def search_live(
     try:
         return _search_live(
             handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn,
+            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn, lethal_check,
         )
     finally:
         _ORACLE = saved
 
 
+def _same_move(first: ChildStat, second: ChildStat) -> bool:
+    """Whether two root moves are the same thing to do: one action (or copies of it that were merged) at one target."""
+    if (first.kind, first.target) != (second.kind, second.target):
+        return False
+    return first.action == second.action or second.action in first.merged_actions or first.action in second.merged_actions
+
+
+def _shadow_note(result: SearchResult, plain: SearchResult) -> None:
+    """Put the plain search's move beside a fired kill check's (a measurement: `LETHAL_SHADOW_ENV`)."""
+    mv = plain.best
+    result.kill_check["search_move"] = [mv.action, mv.target, mv.kind]
+    result.kill_check["differs"] = not _same_move(result.best, mv)
+    result.kill_check["search_sims"] = plain.sims
+
+
 def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-                 confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None) -> SearchResult:
+                 confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None, lethal_check=False) -> SearchResult:
     search = _Search(
         handle,
         time_budget_s=time_budget_s,
@@ -1591,7 +1707,15 @@ def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, m
         raise ValueError("the position has no legal move to search")
     if leaf == "judge" and leaf_fn is None:
         raise ValueError('leaf="judge" needs a leaf_fn')
-    return search.run(leaf_fn)
+    if lethal_check:
+        killed = search.lethal()
+        if killed is not None:
+            if os.environ.get(LETHAL_SHADOW_ENV) == "1":
+                _shadow_note(killed, search.twin().run(leaf_fn))
+            return killed
+    result = search.run(leaf_fn)
+    result.kill_check = search.kill_check
+    return result
 
 
 def search_steps(
@@ -1610,6 +1734,7 @@ def search_steps(
     resample: bool = True,
     clock: Callable[[], float] | None = None,
     leaf: str = "rollout",
+    lethal_check: bool = False,
 ):
     """`search_live` as steps, for a driver that plays many fights in one process.
 
@@ -1648,7 +1773,15 @@ def search_steps(
     )
     if not search.children:
         raise ValueError("the position has no legal move to search")
-    return (yield from search.steps())
+    if lethal_check:
+        killed = search.lethal()  # no yield: the check asks nothing of the prior
+        if killed is not None:
+            if os.environ.get(LETHAL_SHADOW_ENV) == "1":
+                _shadow_note(killed, (yield from search.twin().steps()))
+            return killed
+    result = yield from search.steps()
+    result.kill_check = search.kill_check
+    return result
 
 
 # What `ParallelSearcher.search` may pass on to `search_live`.
@@ -1659,6 +1792,7 @@ _SEARCH_SETTINGS = frozenset(inspect.signature(search_live).parameters) - {
     "resample",
     "leaf",
     "leaf_fn",
+    "lethal_check",
 }
 
 

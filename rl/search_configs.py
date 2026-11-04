@@ -14,6 +14,7 @@ is pure so it can be tested without native code. `position_of` reads them from a
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 
@@ -64,6 +65,9 @@ class SearchConfig:
     time_budget_s: float = 120.0  # a safety cap; the budget is the simulation count
     schedule: Schedule | None = None
     leaf: str = "rollout"  # how a simulation's leaf is valued: a rollout to the fight's end, or the fight judge ("judge")
+    # Before the search, look for a kill with this turn's cards (rl/lethal.py) and play its first move if one is verified; with no
+    # kill found the search runs as it always did. Off in every config that existed before the option.
+    lethal_check: bool = False
 
     def high_stakes(self, pos: Position) -> bool:
         s = self.schedule
@@ -86,6 +90,8 @@ class SearchConfig:
               "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s, "resample": True}
         if self.leaf != "rollout":  # a rollout config's arguments stay what they always were
             kw["leaf"] = self.leaf
+        if self.lethal_check:  # likewise: a config without the option passes nothing new
+            kw["lethal_check"] = True
         if env_prior and os.environ.get("SPIRELINE_GEN_DIR"):  # score-real's lockstep player: the promoted generation's combat prior
             import gen_loop  # noqa: PLC0415
 
@@ -112,10 +118,15 @@ JUDGE_V0 = SearchConfig("judge-v0", 30 * JUDGE_SIMS_X, min_child_sims=1, c=0.2, 
                         schedule=Schedule(high=30 * JUDGE_SIMS_X, many_moves=99, kind_mult={"target": 4, "select": 4}, lo=1,
                                           hi=2000 * JUDGE_SIMS_X))
 
+# a3-v1-k (2026-11-04): a3-v1 with the kill check at the root (rl/lethal.py). Not the night's or self-play's config until a board
+# measurement says so.
+A3_V1_K = dataclasses.replace(A3_V1, name="a3-v1-k", lethal_check=True)
+
 CONFIGS: dict[str, SearchConfig] = {
     "gen0-60": flat(60),
     "gen0-120": flat(120),
     "a3-v1": A3_V1,
+    "a3-v1-k": A3_V1_K,
     "judge-v0": JUDGE_V0,
 }
 SELFPLAY = "a3-v1"  # the config self-play runs

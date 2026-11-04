@@ -655,6 +655,10 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
 
     t0 = clock()
     k = sims = potions_used = end_turns = exhausted = assumed = 0
+    search_s = lethal_s = 0.0  # the searches' own seconds (the kill check's included), and the kill check's share
+    lethal_checked = lethal_fired = 0
+    lethal_differs: list = []
+    lethal_wrong: list = []  # fired kills that did not hold on the true position (recorded in the shadow measurement only)
     first: dict = {}
     leaf = None
     max_search = 0.0
@@ -671,6 +675,17 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
         exhausted += bool(res.budget_exhausted)
         assumed += bool(res.ai_state_assumed)
         max_search = max(max_search, res.elapsed_s)
+        search_s += res.elapsed_s
+        kc = getattr(res, "kill_check", None)  # the kill check's record (a config with `lethal_check`): looked, fired, and where it differed
+        if kc is not None:
+            lethal_checked += 1
+            lethal_fired += bool(kc.get("fired"))
+            lethal_s += kc.get("seconds") or 0.0
+            if kc.get("fired") and kc.get("true_world_kill") is False:
+                lethal_wrong.append({"k": k, "turn": end_turns + 1, "line": kc.get("line")})
+            if kc.get("differs"):
+                lethal_differs.append({"k": k, "turn": end_turns + 1, "kill": [res.best.action, res.best.target, res.best.kind],
+                                       "search": kc.get("search_move"), "plays": kc.get("plays")})
         if k == 0:
             vis = sum(c.visits for c in res.children)
             dead = sum(c.deaths for c in res.children)
@@ -701,9 +716,12 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
     held = int(round((out.value - out.hp) / POTION_VALUE)) if not out.died else 0
     row = {"won": won, "end_hp": world.hp() if won else 0, "max_hp": world.max_hp(), "potions_used": potions_used,
            "potions_held": held, "turns": end_turns + 1, "decisions": k, "sims": sims, "capped": not world.done,
-           "budget_exhausted": exhausted, "ai_assumed": assumed, "max_search_s": round(max_search, 3),
+           "budget_exhausted": exhausted, "ai_assumed": assumed, "max_search_s": round(max_search, 3), "search_s": round(search_s, 3),
            "L0": l0(won, world.hp(), held, world.max_hp()), "seconds": round(clock() - t0, 2), "moves_sha": moves_sha(moves),
            **first}
+    if cfg.lethal_check:  # only a kill-checking config's rows carry the check's counts
+        row.update(lethal_checked=lethal_checked, lethal_fired=lethal_fired, lethal_s=round(lethal_s, 4), lethal_differs=lethal_differs,
+                   lethal_wrong=lethal_wrong)
     if not world.done:
         row["cap_reason"] = "decision cap" if k >= DECISION_CAP else "deadline"
     if grader is not None:
