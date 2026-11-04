@@ -42,7 +42,6 @@ reset	CombatState.ExtraCardsDrawnThisTurn	CombatFactory.Reset on a reused combat
 reset	CombatState.FatGremlinEscaped	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.FurCoatBites	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.GamblingChipDiscarded	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
-reset	CombatState.IsEliteRoom	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.LethalAttackPlay	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.LightningOrbsChanneledThisCombat	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode
 reset	CombatState.MercGoldWasStolen	CombatFactory.Reset on a reused combat (NativeCombat episodes) leaves it from the last episode

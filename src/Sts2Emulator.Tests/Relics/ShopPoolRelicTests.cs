@@ -258,14 +258,21 @@ public class SlingOfCourageTests
     [Fact]
     public void TwoStrengthInAnEliteRoom()
     {
-        var elite = new CombatState { IsEliteRoom = true };
+        // The room is handed to the reset, which runs the combat-start hooks (a run passes its own).
+        var elite = new CombatState();
         CombatFactory.Reset(
             elite,
             new Random(0),
-            TestDeck.StarterDeckIds,
+            [.. TestDeck.StarterDeckIds.ToArray().Select(id => new CardInstance(id, false))],
             1,
-            [RelicEffects.SlingOfCourage]
+            [RelicEffects.SlingOfCourage],
+            80,
+            80,
+            [],
+            0,
+            eliteRoom: true
         );
+        Assert.True(elite.IsEliteRoom);
         Assert.Equal(2, BuffSystem.Get(elite.PlayerBuffs, BuffId.Strength));
     }
 
