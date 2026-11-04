@@ -206,6 +206,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 DEFAULT_STATE: dict[str, Any] = {
     "version": 1, "last_presorted_sha": None, "tree_sha": None, "last_presort_end": None, "rotation": 0, "next_start": 1, "next_run_start": 1000, "bad_shas": {},
     "backoff": {}, "strategy_cpu": {},  # strategy -> CPU seconds its finished jobs spent (the mix schedules on it)
+    "last_ok": {},  # strategy -> epoch seconds its last job finished with rc 0 (mix.json "_every_h"; yield.tsv rows come later, after the report)
     "counters": {"jobs_started": {}, "jobs_done": {}, "fights": 0, "runs": 0, "interrupts": {}, "active_seconds": 0},
 }
 
@@ -694,7 +695,7 @@ class Runner:
     def pick_fights(self, sha: str) -> tuple[str, str | None]:
         """(job type, strategy) for a fights slot: the available strategy furthest below its share of CPU time in LAB/mix.json;
         ("", None) when none can run."""
-        weights, notes = mix.load_mix(self.lab.root, create=not self.a.dry_run)
+        weights, every_h, notes = mix.load_mix_cadence(self.lab.root, create=not self.a.dry_run)
         note = "; ".join(n for n in notes if not mix.is_idle_note(n))
         if note != self.last_mix_note:
             self.last_mix_note = note
@@ -708,13 +709,26 @@ class Runner:
             self.code_stale_logged = stale
             self.log(f"runner code on disk changed since this runner started ({stale}); this process still runs the old code: restart it")
         spent = self.state["strategy_cpu"]
-        chosen, skipped = mix.pick(weights, spent, lambda s: self.unavailable("runs" if s == "whole-runs" else "fights", sha, s))
+        if self.a.once:
+            every_h = {}  # a one-shot run is asked for by hand: the cadence is the rotation's
+        chosen, skipped = mix.pick(weights, spent, lambda s: self.unavailable("runs" if s == "whole-runs" else "fights", sha, s),
+                                   every_h, self.last_ok() if every_h else None)
         for s, why in skipped.items():
             self.log(f"{s}: not runnable ({why})")
         if chosen is None:
             return "", None
         self.log(f"mix: {chosen} is next (share wanted/had: {mix.share_table(weights, spent)})")
         return ("runs" if chosen == "whole-runs" else "fights"), chosen
+
+    def last_ok(self) -> dict[str, float]:
+        """Strategy -> epoch seconds its last job finished with rc 0, for mix.json's "_every_h": the rows of LAB/yield.tsv, and the
+        times `record` kept in the state, which cover a job whose row waits for the report beside the next job (or was lost with a
+        restart): without them the pick right after a job would find no row and run the strategy again."""
+        got = mix.last_ok(self.lab.root)
+        for s, t in (self.state.get("last_ok") or {}).items():
+            if isinstance(t, (int, float)) and not isinstance(t, bool):
+                got[s] = max(got.get(s, 0.0), float(t))
+        return got
 
     def unavailable(self, job: str, sha: str, strategy: str | None = None, tree: Path | None = None) -> str | None:
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
@@ -934,7 +948,7 @@ class Runner:
         rec["status"], rec["started_utc"] = "running", utc()
         run.save()
         self.filler = Filler(run, ctx, step, sj, running, size, self.clock(), sha if self.filler_root is not None else "")
-        self.log(f"filler: {run.name} at {size} cores beside {self.running_job or 'no job'}"
+        self.log(f"filler: {run.name} at {size} cores beside {self.running_job or 'idle'}"
                  + (f" (frozen copy of {sha[:7]})" if self.filler_root is not None else ""))
 
     def end_filler(self, rc: int) -> None:
@@ -1202,6 +1216,8 @@ class Runner:
             if strategy:
                 cpu = self.state.setdefault("strategy_cpu", {})
                 cpu[strategy] = round(float(cpu.get(strategy, 0.0)) + spent, 1)
+                if rc == 0:
+                    self.state.setdefault("last_ok", {})[strategy] = round(time.time())
         except Exception:  # noqa: BLE001  (the record is a convenience; the job's own files are what matters)
             self.log("strategy cpu not recorded: " + traceback.format_exc()[-400:])
         if yield_now:
@@ -1820,11 +1836,11 @@ class Runner:
         end = self.clock() + (self.a.idle_poll if seconds is None else seconds)
         while self.clock() < end:
             time.sleep(min(self.a.wait_poll, 5.0))
-            self.service_report()
-            self.service_filler()
-            v = self.poll()
+            v = self.poll()  # first: a pause or a guard that came during the wait holds the filler before it starts, not after
             if v.leave:
                 return True
+            self.service_report()
+            self.service_filler()  # the lab's idle time is the filler's (start=True): the cores the loop and the report leave
             self.heartbeat("idle")
         return False
 

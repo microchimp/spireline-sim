@@ -94,6 +94,11 @@ of the CPU time the fights slots have spent (its `strategy` is in `job.json`'s p
 `{"aimed-bugs": 30, ...}`; 0 or absent never runs; a bad file falls back to the defaults and says so once in the log.
 A strategy whose tool, input or driver key is missing on the tree (`--aim`, `choices`, `choice_edges`, `batch.py`, a
 backlog for aimed-bugs, ...) is passed over with the reason, and one that fails twice in a row backs off alone.
+An optional `"_every_h": {"aimed-bugs": 24}` gives a strategy a cadence (the only `_` key that is not a note): while its last
+job that finished rc 0 ended less than that many hours ago it is passed over as "ran within the last 24 h (due again ...)", and the
+slot goes to the others or, with none due, the lab idles and the filler has the machine. The time is the newest of `yield.tsv`'s
+rows (columns `utc`, `strategy`, `rc`) and `state.json`'s `last_ok` (set when the job finishes: the row of a fights job waits for
+the report beside the next job). A strategy with no finished job is due; `--once` runs ignore the cadence.
 
 - A `fights` job: `lab_targets.py` for the aimed ones, then `ceil(--fights/--batch)` batches, one call each (with
   the batch's shrink and trace), so there is a safe point every minute or two. A batch's `summary.txt` is parsed: any
@@ -206,6 +211,8 @@ presort 4, its codex shards, since D52). The filler's size is `cores.total`
 less the job's cores, the report's (`cores.report`, 2) while one runs, and the always-on loop's (`cores.loop`, 6) while its status file
 says it is stepping; it runs only at `selfplay.floor` (4) or more. Before a job runs, the filler gives up the cores the job needs at once
 (stopped through its Job Object, then started again at what is left); a block that ends starts the next at whatever is free then.
+When the runner has no job to run (the ladder and the mix give nothing) the filler starts in the idle wait, on the cores the loop and
+the report leave ("filler: <name> at N cores beside idle"), under the same holds; the first job to become ready takes its cores first.
 Each block is a `LAB/runs/<UTC>-selfplay` job folder (`params.filler`), its command the selfplay command without `--lab`,
 `--shards-root`, `--budget-runs`, `--review-guard`, `--gen-dir` and exploring flags, with `--record` and `--procs` / `--server-procs`
 set to its size, plus `selfplay.explore` when given: it plays `agent/current.json`, writes shards to its own folder and never a train

@@ -13,9 +13,14 @@ Strategies (what a fights-slot job spends the CPU on), with the default weights 
   retest        the smallest example of each group judged host-suspect only by a fixed host gap, on the current tree  3
 
 ``LAB/mix.json`` holds the weights, an object of strategy to number (a missing strategy weighs 0 and never runs; keys
-starting with "_" are notes). The owner edits it between jobs; it is read at every choice. The weights are shares of
-the CPU time the fights slots of the rotation spend: the next job is the available strategy furthest below its
+starting with "_" are notes, except "_every_h"). The owner edits it between jobs; it is read at every choice. The weights are
+shares of the CPU time the fights slots of the rotation spend: the next job is the available strategy furthest below its
 share (least CPU seconds spent per unit of weight; a tie goes to the heavier, then to the name).
+
+An optional ``"_every_h": {"aimed-bugs": 24}`` gives a strategy a cadence: it is skipped ("ran within the last 24 h") while its
+last finished job (rc 0: a row of ``LAB/yield.tsv``, or the runner's ``last_ok`` in state.json for a job whose row waits for its
+report) ended less than that many hours ago, so the slot goes to the other strategies
+and, when none can run, the lab is idle and the practice filler has the machine. A strategy with no finished job is due.
 
 ``LAB/yield.tsv`` has one row per finished job (tab separated, header first):
 
@@ -65,6 +70,40 @@ def is_idle_note(note: str) -> bool:
     return " is idle (" in note
 
 
+EVERY_H_KEY = "_every_h"
+
+
+def parse_every_h(raw: object) -> tuple[dict[str, float], list[str]]:
+    """({strategy: hours}, notes) from the value of mix.json's "_every_h". A strategy it names with a number above 0 is due again that
+    many hours after its last finished job; 0 means no cadence. Anything else is a note and that entry (or the whole key) is ignored."""
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, dict):
+        return {}, [f"mix.json: {EVERY_H_KEY} is not an object of strategy to hours; no cadence applies"]
+    out: dict[str, float] = {}
+    notes: list[str] = []
+    for k, v in raw.items():
+        if k not in STRATEGIES:
+            notes.append(f"mix.json: {EVERY_H_KEY} names unknown strategy {k!r}; ignored")
+        elif isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v < 0 or v == float("inf"):
+            notes.append(f"mix.json: {EVERY_H_KEY} of {k} is not a number of hours of at least 0; {k} has no cadence")
+        elif v > 0:
+            out[k] = float(v)
+    return out, notes
+
+
+def parse_mix_cadence(text: str) -> tuple[dict[str, float], dict[str, float], list[str]]:
+    """(weights, every_h, notes) from the text of mix.json. `every_h` (the "_every_h" key, read before the rule that every other key
+    starting with "_" is a note) is {} when the file has none or cannot be used."""
+    try:
+        doc = json.loads(text.lstrip("\ufeff").replace("\x00", ""))
+    except ValueError:
+        doc = None
+    every_h, every_notes = parse_every_h(doc.get(EVERY_H_KEY)) if isinstance(doc, dict) else ({}, [])
+    weights, notes = parse_mix(text)
+    return weights, every_h, notes + every_notes
+
+
 def parse_mix(text: str) -> tuple[dict[str, float], list[str]]:
     """(weights, notes) from the text of mix.json; the defaults and a note when it cannot be used."""
     notes: list[str] = []
@@ -97,9 +136,9 @@ def parse_mix(text: str) -> tuple[dict[str, float], list[str]]:
     return weights, notes
 
 
-def load_mix(lab: Path, create: bool = True) -> tuple[dict[str, float], list[str]]:
-    """The mix from LAB/mix.json; the file is written with the defaults when it is missing (the owner edits it), unless
-    `create` is off (a dry run changes nothing)."""
+def load_mix_cadence(lab: Path, create: bool = True) -> tuple[dict[str, float], dict[str, float], list[str]]:
+    """(weights, every_h, notes) from LAB/mix.json; the file is written with the defaults when it is missing (the owner edits it),
+    unless `create` is off (a dry run changes nothing)."""
     p = Path(lab) / "mix.json"
     try:
         text = p.read_bytes().decode("utf-8", errors="replace")
@@ -110,23 +149,57 @@ def load_mix(lab: Path, create: bool = True) -> tuple[dict[str, float], list[str
                 p.write_text(default_text(), encoding="utf-8")
             except OSError:
                 pass
-        return dict(DEFAULT_MIX), []
+        return dict(DEFAULT_MIX), {}, []
     except OSError as e:
-        return dict(DEFAULT_MIX), [f"mix.json unreadable ({type(e).__name__}); using the default mix"]
-    return parse_mix(text)
+        return dict(DEFAULT_MIX), {}, [f"mix.json unreadable ({type(e).__name__}); using the default mix"]
+    return parse_mix_cadence(text)
 
 
-def pick(weights: dict[str, float], spent: dict[str, float], unavailable: Callable[[str], str | None]
+def load_mix(lab: Path, create: bool = True) -> tuple[dict[str, float], list[str]]:
+    """The mix from LAB/mix.json: (weights, notes); see load_mix_cadence."""
+    weights, _, notes = load_mix_cadence(lab, create)
+    return weights, notes
+
+
+def last_ok(lab: Path) -> dict[str, float]:
+    """Strategy -> epoch seconds the last job of that strategy that finished with rc 0 was recorded, from LAB/yield.tsv (`utc`,
+    `strategy`, `rc`). A row with another rc, or one that cannot be read, is not a run; a strategy with no row is absent."""
+    out: dict[str, float] = {}
+    for r in read_yield(lab):
+        try:
+            if str(r.get("rc", "")).strip() != "0":
+                continue
+            t = dt.datetime.strptime(r["utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC).timestamp()
+        except (KeyError, ValueError):
+            continue
+        s = r.get("strategy") or "?"
+        out[s] = max(out.get(s, 0.0), t)
+    return out
+
+
+def too_soon(strategy: str, every_h: dict[str, float] | None, last: dict[str, float] | None, now: float) -> str | None:
+    """"ran within the last N h (due again <utc>)" when the strategy has a cadence and its last finished job is younger than it."""
+    h = (every_h or {}).get(strategy, 0.0)
+    t = (last or {}).get(strategy)
+    if h <= 0 or t is None or now - t >= h * 3600:
+        return None
+    return f"ran within the last {h:g} h (due again {dt.datetime.fromtimestamp(t + h * 3600, dt.UTC).strftime('%Y-%m-%dT%H:%MZ')})"
+
+
+def pick(weights: dict[str, float], spent: dict[str, float], unavailable: Callable[[str], str | None],
+         every_h: dict[str, float] | None = None, last: dict[str, float] | None = None, now: float | None = None
          ) -> tuple[str | None, dict[str, str]]:
     """The strategy to run next: of those with weight whose `unavailable(strategy)` is None, the one with the least CPU
-    seconds spent per unit of weight (ties: heavier, then name). Also {strategy: why not} for the others."""
+    seconds spent per unit of weight (ties: heavier, then name). Also {strategy: why not} for the others. A strategy with a cadence
+    in `every_h` (mix.json "_every_h") whose last finished job in `last` (see last_ok) is younger than that is not available."""
     skipped: dict[str, str] = {}
     best: tuple[float, float, str] | None = None
+    now = time.time() if now is None else now
     for s in STRATEGIES:
         w = weights.get(s, 0.0)
         if w <= 0:
             continue
-        why = unavailable(s)
+        why = too_soon(s, every_h, last, now) or unavailable(s)
         if why is not None:
             skipped[s] = why
             continue

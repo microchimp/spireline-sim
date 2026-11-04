@@ -486,6 +486,98 @@ class FillerRunnerTest(FillerBase):
         self.assertAlmostEqual(60.0, r.cpu_secs())
 
 
+@unittest.skipUnless(winsys.IS_WIN, "Job Objects and priority classes are Windows")
+class FillerIdleTest(FillerBase):
+    """The filler runs in the lab's idle time: with no job to run (the ladder and the fights mix give nothing) the runner starts a block
+    on the cores the fight loop and the report leave, and a job that becomes ready takes its cores first."""
+
+    def idle_runner(self, *extra: str) -> rn.Runner:
+        def unavailable(c):
+            raise pl.Unavailable("nothing to do")
+        for j in ("fights", "probes", "mutation", "invariants"):
+            pl.PLANS[j] = unavailable
+        r = self.runner("--idle-poll", "0.3", *extra)
+        r.main_sha = lambda: "abc"
+        return r
+
+    def loop_stepping(self, r: rn.Runner) -> None:
+        s = self.tmp / "loop-status"
+        s.write_text(json.dumps({"pid": os.getpid(), "phase": "generate"}))
+        r.a.loop_status = str(s)
+
+    def test_an_idle_runner_starts_the_filler_on_the_cores_the_loop_leaves(self):
+        r = self.idle_runner()
+        self.loop_stepping(r)
+        self.assertIsNone(r.one_pass())
+        self.assertIsNotNone(r.filler, self.log(r))
+        self.assertEqual(16 - 6, r.filler.cores)  # the whole machine less the stepping loop's 6; no job, no report
+        self.assertIn("nothing to do: no job is runnable", self.log(r))
+        self.assertIn(f"filler: {r.filler.run.name} at 10 cores beside idle", self.log(r))
+
+    def test_without_the_loop_an_idle_runner_gives_the_filler_the_whole_machine(self):
+        r = self.idle_runner()
+        self.assertIsNone(r.one_pass())
+        self.assertIsNotNone(r.filler, self.log(r))
+        self.assertEqual(16, r.filler.cores)
+
+    def test_the_report_beside_keeps_its_cores_from_the_idle_filler(self):
+        r = self.idle_runner()
+        r.report = object()  # a chain running: its 2 cores are not the filler's
+        self.assertEqual(14, r.filler_room(cores.load_doc(r.lab.root)))
+        r.report = None
+
+    def test_a_job_that_becomes_ready_stops_the_idle_filler_before_it_starts(self):
+        r = self.idle_runner()
+        self.loop_stepping(r)
+        self.assertIsNone(r.one_pass())
+        block = r.filler.running.proc
+        self.assertIsNone(block.poll())
+        seen = []
+        pl.PLANS["fights"] = lambda c: [pl.Step("a", [self.py("one", "import time; time.sleep(0.5)", core=True)], mode="serial")]
+        orig = r._execute
+        r._execute = lambda run: (seen.append(block.poll()), orig(run))[1]
+        self.assertIsNone(r.one_pass())
+        self.assertIsNotNone(seen[0])  # the block was already stopped when the job's first step began
+        self.assertIn("a job needs its cores (10 held, 0 left)", self.log(r))
+        self.assertIsNone(r.filler)  # 8 + 6 leave 2, under the floor of 4: none starts beside the job
+
+    def test_the_night_margin_holds_the_idle_filler(self):
+        t = time.time() - 20 * 3600 + 20 * 60  # the night is due in 20 minutes
+        os.utime(self.lab / "nightly" / "last-ok", (t, t))
+        r = self.idle_runner()
+        self.assertIsNone(r.one_pass())
+        self.assertIsNone(r.filler)
+        self.assertIn("filler: not started (the night is due at", self.log(r))
+        self.assertIn("no start within 30 min", self.log(r))
+
+    def test_a_running_night_holds_the_idle_filler(self):
+        (self.lab / "nightly" / "active").write_text("1\n")
+        r = self.idle_runner()
+        self.assertIsNone(r.one_pass())
+        self.assertIsNone(r.filler)
+        self.assertIn("filler: not started (a nightly block is running", self.log(r))
+
+    def test_a_pause_that_comes_during_the_idle_wait_is_seen_before_the_filler_starts(self):
+        r = self.idle_runner()
+        (self.lab / "PAUSE").write_text("now\n")  # up since the last pick: the wait's first slice reads it before it starts anything
+        self.assertFalse(r.sleep_idle(0.3))
+        self.assertIsNone(r.filler)
+        self.assertNotIn(" cores beside ", self.log(r))
+        self.assertIn("filler: not started (a guard holds the lab)", self.log(r))
+
+    def test_a_quiet_line_holds_the_idle_filler_and_the_loops_own_does_not(self):
+        q = self.tmp / "QUIET.lock"
+        q.write_text(f"reset-x {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} pid=1\n")
+        r = self.idle_runner()
+        self.assertIsNone(r.one_pass())
+        self.assertIsNone(r.filler)
+        self.assertIn("QUIET.lock is held by reset-x", self.log(r))
+        q.write_text(f"gym-loop {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} pid=1\n")
+        r.filler_next = 0.0
+        self.assertIsNone(r.one_pass())
+        self.assertIsNotNone(r.filler, self.log(r))
+
+
 # ---------------------------------------------------------------- generation 12's plumbing: stopping the filler asks first
 
 # A stand-in block that reads the stop file the way gen0.py emu does: says so (stop-honored), works until STOP appears, then "writes its

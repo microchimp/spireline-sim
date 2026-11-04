@@ -110,6 +110,89 @@ class PickTest(unittest.TestCase):
         self.assertIn("random 8%/0%", mix.share_table(w, spent))
 
 
+class CadenceTest(unittest.TestCase):
+    """mix.json's optional "_every_h": {strategy: hours}: a strategy whose last finished job (rc 0, a row of yield.tsv) is younger than that
+    is skipped with the reason "ran within the last N h"."""
+
+    NOW = 1_800_000_000.0  # fixed clock for the picks
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    @staticmethod
+    def utc(t: float) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+    def row(self, strategy: str, ago_h: float, rc: object = 0) -> None:
+        mix.append_yield(self.tmp, {"utc": self.utc(self.NOW - ago_h * 3600), "job": f"j-{strategy}", "strategy": strategy, "main": "abc", "rc": rc})
+
+    def test_the_map_parses_and_is_not_a_note(self):
+        text = json.dumps({"_note": "x", "_every_h": {"aimed-bugs": 24, "retest": 6.5}, "_other": 1, "aimed-bugs": 30, "retest": 5})
+        weights, every_h, notes = mix.parse_mix_cadence(text)
+        self.assertEqual({"aimed-bugs": 30.0, "retest": 5.0}, weights)
+        self.assertEqual({"aimed-bugs": 24.0, "retest": 6.5}, every_h)
+        self.assertEqual([], notes)  # neither "_every_h" nor any other "_" key makes a note
+        self.assertEqual(({"aimed-bugs": 30.0, "retest": 5.0}, []), mix.parse_mix(text))  # the old reader is unchanged
+        self.assertEqual(({}, []), mix.parse_mix_cadence('{"aimed-bugs": 30}')[1:])  # none given: no cadence, no note
+
+    def test_the_map_is_read_from_the_file_whoever_saved_it(self):
+        lab = self.tmp / "lab"
+        lab.mkdir()
+        (lab / "mix.json").write_bytes(b'\xef\xbb\xbf{"aimed-bugs": 1, "_every_h": {"aimed-bugs": 24}}\x00')
+        self.assertEqual(({"aimed-bugs": 1.0}, {"aimed-bugs": 24.0}, []), mix.load_mix_cadence(lab))
+        self.assertEqual(({"aimed-bugs": 1.0}, []), mix.load_mix(lab))
+        self.assertEqual((mix.DEFAULT_MIX, {}, []), mix.load_mix_cadence(self.tmp / "none", create=False))
+
+    def test_a_cadence_that_cannot_be_used_is_a_note_and_changes_nothing(self):
+        text = json.dumps({"aimed-bugs": 30, "_every_h": {"ghost": 3, "dense": "x", "random": -1, "retest": True, "aimed-gaps": 0}})
+        weights, every_h, notes = mix.parse_mix_cadence(text)
+        self.assertEqual({"aimed-bugs": 30.0}, weights)
+        self.assertEqual({}, every_h)  # 0 is "no cadence", the rest are refused
+        self.assertEqual(4, len(notes), notes)
+        self.assertTrue(any("unknown strategy 'ghost'" in n for n in notes))
+        self.assertEqual({}, mix.parse_mix_cadence('{"aimed-bugs": 30, "_every_h": [24]}')[1])
+        self.assertTrue(any("_every_h is not an object" in n for n in mix.parse_mix_cadence('{"aimed-bugs": 30, "_every_h": [24]}')[2]))
+        self.assertEqual({}, mix.parse_mix_cadence("{")[1])  # a file that is not JSON falls back as before, with its own note
+
+    def test_a_strategy_with_no_row_is_due(self):
+        self.row("retest", 1)
+        last = mix.last_ok(self.tmp)
+        self.assertEqual("aimed-bugs", mix.pick({"aimed-bugs": 30, "retest": 5}, {}, lambda s: None, {"aimed-bugs": 24.0}, last, self.NOW)[0])
+        self.assertEqual("aimed-bugs", mix.pick({"aimed-bugs": 30}, {}, lambda s: None, {"aimed-bugs": 24.0}, {}, self.NOW)[0])  # no yield.tsv at all
+
+    def test_a_strategy_inside_its_window_is_skipped_with_the_reason_and_is_due_after_it(self):
+        self.row("aimed-bugs", 5)
+        last = mix.last_ok(self.tmp)
+        w = {"aimed-bugs": 30, "retest": 5}
+        got, skipped = mix.pick(w, {}, lambda s: None, {"aimed-bugs": 24.0}, last, self.NOW)
+        self.assertEqual("retest", got)  # the slot goes to what is due
+        self.assertEqual(["aimed-bugs"], list(skipped))
+        self.assertTrue(skipped["aimed-bugs"].startswith("ran within the last 24 h"), skipped)
+        self.assertIn(self.utc(self.NOW + 19 * 3600)[:16], skipped["aimed-bugs"])  # and when it is due again
+        self.assertEqual((None, {"aimed-bugs": skipped["aimed-bugs"]}), mix.pick({"aimed-bugs": 30}, {}, lambda s: None, {"aimed-bugs": 24.0}, last, self.NOW))
+        self.assertEqual("aimed-bugs", mix.pick(w, {}, lambda s: None, {"aimed-bugs": 24.0}, last, self.NOW + 19 * 3600 + 1)[0])  # 24 h after its row
+        self.assertEqual("aimed-bugs", mix.pick(w, {}, lambda s: None, {"aimed-bugs": 4.0}, last, self.NOW)[0])  # a shorter cadence
+        self.assertEqual("aimed-bugs", mix.pick(w, {}, lambda s: None, None, last, self.NOW)[0])  # no cadence: as before
+
+    def test_a_row_that_is_not_a_finished_job_does_not_count(self):
+        self.row("aimed-bugs", 30)
+        self.row("aimed-bugs", 2, rc=1)  # failed
+        self.row("aimed-bugs", 1, rc=3)  # closed, superseded
+        self.row("aimed-bugs", 0.5, rc="")
+        last = mix.last_ok(self.tmp)
+        self.assertEqual({"aimed-bugs": self.NOW - 30 * 3600}, last)
+        self.assertEqual("aimed-bugs", mix.pick({"aimed-bugs": 30}, {}, lambda s: None, {"aimed-bugs": 24.0}, last, self.NOW)[0])  # only the 30 h old run counts
+        self.row("aimed-bugs", 3, rc=0)
+        self.assertIsNone(mix.pick({"aimed-bugs": 30}, {}, lambda s: None, {"aimed-bugs": 24.0}, mix.last_ok(self.tmp), self.NOW)[0])
+
+    def test_the_cadence_asks_before_the_plan_does(self):
+        self.row("aimed-bugs", 1)
+        asked = []
+        mix.pick({"aimed-bugs": 30}, {}, lambda s: asked.append(s), {"aimed-bugs": 24.0}, mix.last_ok(self.tmp), self.NOW)
+        self.assertEqual([], asked)  # a strategy that is not due costs no plan
+
+
 class YieldTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -471,6 +554,40 @@ class RunnerMixTest(unittest.TestCase):
         self.assertEqual(["1.7"] * 8, [x["cpu_min"] for x in rows])
         self.assertEqual({"aimed-bugs": 400.0, "aimed-gaps": 200.0, "whole-runs": 200.0}, r.state["strategy_cpu"])
         self.assertEqual(["NA"] * 8, [x["groups"] for x in rows])  # no groups step ran in these plans
+
+    def test_a_cadence_holds_the_next_job_before_the_yield_row_exists_and_across_a_restart(self):
+        self.trivial_plans()
+        write(self.tmp / "lab" / "mix.json", {"aimed-bugs": 30, "aimed-gaps": 5, "_every_h": {"aimed-bugs": 24}})
+        r = self.runner()
+        first = self.run_one(r)
+        self.assertEqual("aimed-bugs", first.data["params"]["strategy"])
+        self.assertAlmostEqual(time.time(), r.state["last_ok"]["aimed-bugs"], delta=60)
+        (r.lab.root / "yield.tsv").unlink()  # the row of a fights job waits for the report beside the next job: not there yet
+        self.assertEqual({}, mix.last_ok(r.lab.root))
+        job, strategy = r.pick_fights("abc")
+        self.assertEqual(("fights", "aimed-gaps"), (job, strategy))  # the slot goes to what is due
+        self.assertTrue(any(m.startswith("aimed-bugs: not runnable (ran within the last 24 h") for m in r.logged), r.logged)
+        r.lab.save_state(r.state)
+        again = self.runner()  # a restart: the state file remembers it
+        self.assertEqual("aimed-gaps", again.pick_fights("abc")[1])
+        again.state["last_ok"]["aimed-bugs"] -= 25 * 3600  # a day later
+        again.state["strategy_cpu"] = {}  # (the share would otherwise favour aimed-gaps, which has had none)
+        self.assertEqual("aimed-bugs", again.pick_fights("abc")[1])
+
+    def test_a_job_that_did_not_finish_ok_leaves_no_mark_and_a_one_shot_run_ignores_the_cadence(self):
+        bad = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "import sys; sys.exit(2)"], cwd="{lab}", core=True)])]  # noqa: E731
+        pl.PLANS["fights"] = bad
+        write(self.tmp / "lab" / "mix.json", {"aimed-bugs": 30, "_every_h": {"aimed-bugs": 24}})
+        r = self.runner()
+        self.run_one(r)
+        self.assertEqual("1", mix.read_yield(r.lab.root)[0]["rc"])
+        self.assertNotIn("aimed-bugs", r.state["last_ok"])
+        self.assertEqual("aimed-bugs", r.pick_fights("abc")[1])  # a failed run does not count as the day's run
+        r.state["last_ok"]["aimed-bugs"] = time.time()
+        self.assertEqual(("", None), r.pick_fights("abc"))
+        once = self.runner("--once", "fights")
+        once.state["last_ok"]["aimed-bugs"] = time.time()
+        self.assertEqual("aimed-bugs", once.pick_fights("abc")[1])  # a one-shot run is asked for by hand: the cadence is the rotation's
 
     def test_the_owners_edit_of_the_mix_takes_effect_at_the_next_job_and_a_bad_file_is_logged_once(self):
         self.trivial_plans()
