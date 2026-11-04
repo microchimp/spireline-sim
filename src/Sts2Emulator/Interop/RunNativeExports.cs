@@ -545,6 +545,10 @@ public static class RunNativeExports
             // cards on an open offer grid rolled an upgrade.
             22 => WriteBoolArray(run.State.ShopCardUpgraded, output),
             23 => WriteBoolArray(run.State.PendingOfferUpgraded, output),
+            // 24: the relic ids the run has lost to a melt (Toy Box's wax relics), which the game keeps in the player's
+            // list with its melted flag and the copy keeps out of list 1 so that no effect reads them. Additive: no
+            // existing list or layout moved, and a library without it answers -3 (the lockstep treats that as none).
+            24 => WriteRelicList(run.State.MeltedRelics, output),
             _ => -3,
         };
     }

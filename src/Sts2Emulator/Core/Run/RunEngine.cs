@@ -1899,6 +1899,7 @@ public sealed class RunEngine : Core2.ICombatEndHost
     /// relic and puts its <see cref="RelicInstance.Counter" /> on the run's copy and, while a
     /// fight is open, on the fight's copy too (the game has one relic object for both); a relic
     /// not held is skipped. It applies after the relic list, so it reaches a relic new to the run.
+    /// A negative id in <paramref name="relics" /> is a melted relic (the game's IsMelted), kept out of play.
     /// <paramref name="gold" /> is put on the open fight's copy as well.
     /// </remarks>
     public void DebugSetPlayer(
@@ -1956,20 +1957,24 @@ public sealed class RunEngine : Core2.ICombatEndHost
 
         if (relics is not null)
         {
-            var held = State.Relics.ToList();
+            // A relic the game's list names as melted comes as its NEGATIVE id (no relic id is negative): it is filed
+            // in MeltedRelics, out of the list every effect reads, as the game keeps it in the list with the flag set
+            // and skips it everywhere. A relic held already, melted or not, keeps its counter.
+            var held = State.Relics.Concat(State.MeltedRelics).ToList();
             State.Relics.Clear();
-            foreach (int relicId in relics)
+            State.MeltedRelics.Clear();
+            foreach (int listed in relics)
             {
+                bool melted = listed < 0;
+                int relicId = melted ? -listed : listed;
                 int at = held.FindIndex(relic => relic.DefId == relicId);
+                var relic = at >= 0 ? held[at] : new RelicInstance(relicId);
                 if (at >= 0)
                 {
-                    State.Relics.Add(held[at]);
                     held.RemoveAt(at);
                 }
-                else
-                {
-                    State.Relics.Add(new RelicInstance(relicId));
-                }
+
+                (melted ? State.MeltedRelics : State.Relics).Add(relic);
             }
         }
 

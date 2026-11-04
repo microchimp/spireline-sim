@@ -1254,8 +1254,10 @@ public static class RunNonCombatEffects
 
     /// <summary>
     /// `ToyBox.AfterCombatEnd`: count the fight, and on every third one melt the first wax
-    /// relic still held. `RelicCmd.Melt` takes it away -- the box lends four relics for
-    /// twelve fights, it does not give four.
+    /// relic still held. `RelicCmd.Melt` takes it out of play -- the box lends four relics
+    /// for twelve fights, it does not give four -- but the relic stays in the player's list
+    /// with its melted flag, so the copy files it in <see cref="RunState.MeltedRelics" />
+    /// (out of <see cref="RunState.Relics" />, which every effect reads) rather than dropping it.
     /// </summary>
     public static void MeltAToyBoxRelic(RunState state)
     {
@@ -1279,6 +1281,8 @@ public static class RunNonCombatEffects
         {
             int relicId = state.WaxRelics[melting];
             state.WaxRelics.RemoveAt(melting);
+            int held = state.Relics.FindIndex(relic => relic.DefId == relicId);
+            state.MeltedRelics.Add(state.Relics[held]);
             state.Relics.RemoveAll(relic => relic.DefId == relicId);
         }
     }

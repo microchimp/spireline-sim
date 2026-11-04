@@ -585,6 +585,7 @@ public static class StateCloning
             RewardEnchantment = state.RewardEnchantment,
             PendingBonusRelicRewards = [.. state.PendingBonusRelicRewards],
             WaxRelics = [.. state.WaxRelics],
+            MeltedRelics = [.. state.MeltedRelics],
             FurCoatRooms = [.. state.FurCoatRooms],
             FurCoatAct = state.FurCoatAct,
             GoldenPathAct = state.GoldenPathAct,

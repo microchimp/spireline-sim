@@ -656,6 +656,18 @@ public sealed class RunState
     public List<int> WaxRelics = [];
 
     /// <summary>
+    /// The relics the run has lost to a melt (the game's <c>RelicModel.IsMelted</c>: Toy Box's wax relics, taken back
+    /// one by one). The game keeps a melted relic in the player's relic list with that flag, and every hook, counter
+    /// and offer skips it. The copy keeps the same relic here, out of <see cref="Relics" />: every reader of that list
+    /// (the effects, the counters, the owned-relic checks, the observation and the fight's relic list) sees the active
+    /// relics only, so a melted relic has no effect by construction and no reader needs a check of its own. The list
+    /// export (state list 24) and the lockstep's relic comparison put it back beside the active ones, and
+    /// <c>DebugSetPlayer</c> files a relic the game's list names as melted here. It keeps the relic's counter, as the
+    /// game's melted relic keeps its saved properties.
+    /// </summary>
+    public List<RelicInstance> MeltedRelics = [];
+
+    /// <summary>
     /// The map coordinates Fur Coat marked, and the act it marked them in. Entering one of
     /// these rooms puts every enemy in the fight on ONE hp.
     /// </summary>
