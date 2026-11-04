@@ -11,7 +11,11 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
 
 1. **Generation.** A segment of fights (about `--segment-min` minutes of six processes) from the start mix: every fight kind of
    Acts 1 and 2 from every finished night's emulator arm (`nights_available`: the newest `--max-nights`, `--runs-per-night` runs of
-   each), sampled by kind in proportion to where the runs lose HP (`kind_weights`), then uniformly within the kind. The mix follows
+   each), sampled by kind in proportion to where the runs lose HP (`kind_weights`), then by source and by regret within the kind
+   (`practice_mix`: a share of each kind's draws from fights rebuilt from human runs, `rl/human_starts.py`, the rest from the nights'
+   AI runs and from the positions three decisions before the AI's own losses; within a kind and side the rank of the start's regret,
+   the teacher's root value at the opening less the outcome, mixed with a staleness term; the exam's `exam/exclude_runs.json` is
+   never drawn from; the segment's log line says what was drawn). The mix follows
    the nights: between steps the daemon rebuilds the start set when a night has finished since it was built (`starts_stale`; only the
    new night's runs are replayed), and recomputes the kind weights when the set or the incumbent has changed (`weights_stale`; the
    incumbent's weight games are kept and only topped up). The player is the newest checkpoint (the incumbent before the first
@@ -43,13 +47,14 @@ QUIET.lock line; main.lock lets it finish (as the lab's guards treat a running j
 Job Object, so nothing it started outlives it; it is stopped by its STOP file or by its own PID. Everything is resumable: the buffer,
 the checkpoints, the gate's games and the promotion state are on disk, and a restart carries on from them.
 
-Lab code: nothing here changes the engine, the search or the solver. The human corpus's exam fifth (D38, H0) is never read: the
-start set comes from the AI's own nightly runs only.
+Lab code: nothing here changes the engine, the search or the solver. The human corpus's exam fifth (D38 addendum 1) is never a
+start: `rl/human_starts.py` leaves it out of the set it writes, and `practice_mix` leaves out whatever the fight exam lists.
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import datetime as dt
 import hashlib
@@ -72,6 +77,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 import fight_gym as fg  # noqa: E402
+import practice_mix as pmix  # noqa: E402
 
 # Nothing here loads the emulator library at import (gym_lockstep's rule): a spawned process selects its engine first.
 
@@ -310,6 +316,8 @@ class Loop:
         self.state = read_json(self.state_path, {}) or {}
         self.state.setdefault("segment", 0)
         self.state.setdefault("next_j", {})
+        self.state.setdefault("last_seg", {})  # start id -> the segment it was last drawn in (the sampler's staleness term)
+        self.mix: dict = {}  # what the last `sample_tasks` drew (kind and source counts, the regret quartiles)
         self.state.setdefault("kind_s", {})
         self.state.setdefault("gated", {})
         self.state.setdefault("versions", {"v0": {"dir": str(INCUMBENT0), "source": "agent gen7/candidate-r1 (M2's)", "n": 0}})
@@ -600,12 +608,15 @@ class Recorder:
     """`play_steps`'s grader: records each decision's training sample, and grades it with the exact solver where asked. It never
     changes the move: it reads the position and the search's result only."""
 
-    def __init__(self, probe: bool, exact_wall_s: float = 0.0) -> None:
+    def __init__(self, probe: bool, exact_wall_s: float = 0.0, keep_states: int = 0) -> None:
         import gym_lockstep  # noqa: PLC0415
 
         self.probe = probe
         self.grader = gym_lockstep.Grader(exact_wall_s) if exact_wall_s else None
         self.rows: list[dict] = []
+        # The last `keep_states` decision positions as snapshot documents, with the teacher's root value there: when the fight
+        # is lost, the oldest of them is the pre-loss start (see `write_preloss`). A position the copy refuses to export is None.
+        self.states: collections.deque | None = collections.deque(maxlen=keep_states) if keep_states else None
 
     def __call__(self, world, k: int, best) -> dict:
         import gen_loop  # noqa: PLC0415
@@ -633,6 +644,12 @@ class Recorder:
                           "exact": exact, "exact_value": float(g["value"]) if exact else float("nan"),
                           "q_played": float(g["q_played"]) if exact and g.get("q_played") is not None else float("nan"),
                           "solver_best": int(sb) if exact and sb is not None else -1, "played": int(best.action)})
+        if self.states is not None:
+            try:
+                doc = native.get_state_json(world.handle)
+            except Exception as error:  # noqa: BLE001 -- ExportRefused (a step stopped on a screen) or any other: no start from here
+                doc = f"{type(error).__name__}: {str(error)[:80]}"
+            self.states.append((k, doc, pmix.root_value(visits, q)))
         return g
 
 
@@ -693,7 +710,9 @@ def gen_game_steps(task: tuple, clock, game, ctx):
     if info.get("record", True):
         _install_capture()
         prior = ctx.extra.get("prior_fn")
-        rec = Recorder(bool(getattr(prior, "probe", False)), float(info.get("exact_wall_s") or 0.0))
+        pre = info.get("preloss") or {}
+        rec = Recorder(bool(getattr(prior, "probe", False)), float(info.get("exact_wall_s") or 0.0),
+                       keep_states=int(pre["back"]) + 1 if pre else 0)
     world = fg._fresh_world(start["doc"], sid, j, info["ns"])  # noqa: SLF001
     try:
         row = yield from fg.play_steps(world, start, j, player_config(info["config"]), ctx.extra, info["ns"],
@@ -707,6 +726,11 @@ def gen_game_steps(task: tuple, clock, game, ctx):
     if rec is not None:
         import gym_lockstep  # noqa: PLC0415
 
+        if rec.states is not None:
+            out["preloss"] = write_preloss(info["preloss"], start, sid, j, row, rec, info["player"])
+            if out["preloss"] is None:
+                del out["preloss"]
+
         if rec.grader is not None and grades:
             out["graded"] = gym_lockstep.grade_summary(grades)
         if rec.rows:
@@ -715,12 +739,37 @@ def gen_game_steps(task: tuple, clock, game, ctx):
             meta = {k: out.get(k) for k in ("start", "j", "cat", "player", "config", "split", "seed", "won", "end_hp", "max_hp",
                                             "L0", "capped", "potions_used", "turns", "decisions", "start_hp", "start_potions")}
             meta.update(encounter=start.get("encounter_id"), deck=start.get("deck_size"), relics=start.get("relics"),
-                        label=int(row["end_hp"]) if won else 0, value_ok=not row.get("capped"))
+                        label=int(row["end_hp"]) if won else 0, value_ok=not row.get("capped"),
+                        potions_held=row.get("potions_held"), source=start.get("source", "night"))
             arrays["meta"] = np.array(json.dumps(meta))
             name = fight_key(sid, j, info["player"]) + ".npz"
             save_npz(Path(info["incoming"]) / name, arrays)
             out["samples"], out["sample_file"] = len(rec.rows), name
     return out
+
+
+def write_preloss(cfg: dict, start: dict, sid: str, j: int, row: dict, rec: Recorder, player: str) -> str | None:
+    """The pre-loss start of a lost practice fight (memo section 5): the position `cfg["back"]` decisions before the fight's last
+    decision, exported by the copy as a snapshot document, with the parent's kind, run and split and a score0 (the teacher's value
+    there against the death). Written as one atomic file under `cfg["dir"]`; `pmix.merge_preloss` moves it into the set after the
+    segment. Returns None for a fight that was not lost, else a word the segment counts: ok; short (fewer decisions than needed);
+    refused (the copy would not export that position: no start is made from it); chained (the parent is itself a pre-loss start)."""
+    if row.get("won") or row.get("capped"):
+        return None
+    if start.get("source") == "preloss":
+        return "chained"
+    if len(rec.rows) < int(cfg["min_decisions"]) or len(rec.states) < int(cfg["back"]) + 1:
+        return "short"
+    k, doc, root = rec.states[0]
+    if not isinstance(doc, dict):
+        return "refused"
+    out = pmix.preloss_start(start, sid, j, k, doc, root, player, stamp())
+    path = Path(cfg["dir"]) / (fight_key(sid, j, player) + ".json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    tmp.write_text(json.dumps(out, separators=(",", ":")), encoding="utf-8")
+    os.replace(tmp, path)
+    return "ok"
 
 
 # ---------------------------------------------------------------------------------------------------------- the buffer
@@ -984,30 +1033,49 @@ def play_tasks(loop: Loop, tasks: list, target: Path, player_dir: Path, procs: i
 # ---------------------------------------------------------------------------------------------------------- generation
 
 
-def sample_tasks(loop: Loop, player: str, budget_s: float, teacher: str, exact_wall_s: float, rnd: random.Random) -> list:
-    """A segment's fights: kinds by the start mix's weights, a start uniformly within the kind, game j the start's next unplayed
-    one; until the estimated own seconds reach `budget_s`. Long fights first, so the segment's tail is the short ones."""
+def sample_tasks(loop: Loop, player: str, budget_s: float, teacher: str, exact_wall_s: float, rnd: random.Random,
+                 preloss: bool = True) -> list:
+    """A segment's fights, until the estimated own seconds reach `budget_s`: a kind by the start mix's weights (`weights.json`),
+    a source by the kind's human share, a start by the regret rule (`practice_mix`: the rank of the start's score among its kind
+    and side, with a staleness term so starts not drawn lately come up), game j the start's next unplayed one. Starts of the exam
+    (`exam/exclude_runs.json`) are never drawn. Long fights first, so the segment's tail is the short ones. What was drawn is left
+    in `loop.mix` for the log; `preloss`: the games keep the position three decisions before a loss (`write_preloss`)."""
     weights = (read_json(loop.starts / "weights.json", {}) or {}).get("weights") or {}
-    lite = read_json(loop.starts / "starts.lite.json", [])
-    by: dict[str, list[str]] = defaultdict(list)
-    for s in lite:
-        by[s["cat"]].append(s["id"])
-    cats = [c for c in KINDS if by.get(c) and weights.get(c, 0) > 0]
-    if not cats:
-        raise RuntimeError("no start mix: run `gym_loop.py starts` and `weights` first")
-    w = [weights[c] for c in cats]
-    info = {"starts": str(loop.starts / "starts.jsonl"), "incoming": str(loop.incoming), "player": player, "config": teacher,
-            "exact_wall_s": exact_wall_s, "record": True, "ns": NS_GEN}
+    cfg = pmix.config(loop.starts)
+    ex = pmix.read_exclusion(loop.root)
+    pools, dropped = pmix.load_pools(loop.root, ex)
+    plays = pmix.sync_plays(loop.root, loop.log)
+    score = pmix.scores(plays, int(cfg["regret"]["n_last"]), cfg["regret"]["mode"])
+    seg = int(loop.state["segment"])
+    last_seg = loop.state["last_seg"]
+    known = {s["id"] for items in pools.values() for s in items}
+    if len(last_seg) > 2 * len(known) + 1000:  # starts no longer in any pool leave the staleness record
+        for sid in [x for x in last_seg if x not in known]:
+            del last_seg[sid]
+    sampler = pmix.Sampler(pools, weights, cfg, score, last_seg, seg)
+    drawn: list[dict] = []
+    spent = 0.0
+    while spent < budget_s and len(drawn) < 5000:
+        d = sampler.draw(rnd)
+        drawn.append(d)
+        spent += est_seconds(loop, d["cat"])
+    for d in drawn:
+        last_seg[d["id"]] = seg
+    base = {"incoming": str(loop.incoming), "player": player, "config": teacher, "exact_wall_s": exact_wall_s, "record": True,
+            "ns": NS_GEN}
+    if preloss:
+        base["preloss"] = {"dir": str(loop.starts / "preloss-new"), "back": int(cfg["preloss"]["back"]),
+                           "min_decisions": int(cfg["preloss"]["min_decisions"])}
+    infos: dict[str, dict] = {}
     nj = loop.state["next_j"]
-    tasks, spent = [], 0.0
-    while spent < budget_s and len(tasks) < 5000:
-        c = rnd.choices(cats, w)[0]
-        sid = rnd.choice(by[c])
-        j = int(nj.get(sid, 0))
-        nj[sid] = j + 1
-        tasks.append((teacher, sid, j, c, info))
-        spent += est_seconds(loop, c)
+    tasks = []
+    for d in drawn:
+        info = infos.setdefault(d["file"], {**base, "starts": d["file"]})
+        j = int(nj.get(d["id"], 0))
+        nj[d["id"]] = j + 1
+        tasks.append((teacher, d["id"], j, d["cat"], info))
     tasks.sort(key=lambda t: -est_seconds(loop, t[3]))
+    loop.mix = {**pmix.mix_summary(drawn), "left_out": dict(dropped), "excluded_ids": len(ex), "scored_starts": len(score)}
     return tasks
 
 
@@ -1701,23 +1769,32 @@ class Daemon:
         loop.state["segment"] += 1
         seg = loop.state["segment"]
         player, pdir = loop.generation_player()
-        tasks = sample_tasks(loop, player, self.a.procs * self.a.segment_min * 60, self.a.teacher, self.a.exact_wall_s, self.rnd)
+        tasks = sample_tasks(loop, player, self.a.procs * self.a.segment_min * 60, self.a.teacher, self.a.exact_wall_s, self.rnd,
+                             preloss=not getattr(self.a, "no_preloss", False))
         loop.save()
         target = loop.games / f"seg{seg:06d}.jsonl"
         self.status("generate", player=player, tasks=len(tasks))
-        loop.log(f"segment {seg}: {len(tasks)} fights by {player} under {self.a.teacher}")
+        loop.log(f"segment {seg}: {len(tasks)} fights by {player} under {self.a.teacher}; {pmix.mix_line(loop.mix)}")
         t0 = time.time()
         stopped = play_tasks(loop, tasks, target, pdir, self.a.procs, self.a.k, self.a.prior, f"seg{seg}", daemon=self)
         rows = fg.read_jsonl(target)
         learn_seconds(loop, rows)
         entry = compact(loop, seg, value_labels=stopped is None)
+        pre: dict = {}
+        if not getattr(self.a, "no_preloss", False):
+            pre = pmix.merge_preloss(loop.root, int(pmix.config(loop.starts)["preloss"]["max"]))
+            if pre["merged"] or pre["dropped"]:
+                loop.log(f"preloss: {pre['merged']} new starts from lost fights, {pre['kept']} kept, {pre['dropped']} dropped")
         loop.save()
         with open(loop.games / "segments.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), "segment": seg, "player": player, "fights": len(rows), "tasks": len(tasks),
                                  "wall_s": round(time.time() - t0, 1), "stopped": stopped,
                                  "capped": sum(1 for r in rows if r.get("capped")), "samples": entry["rows"] if entry else 0,
                                  "cats": dict(Counter(r["cat"] for r in rows)),
-                                 "won": dict(Counter(r["cat"] for r in rows if r.get("won")))}) + "\n")
+                                 "won": dict(Counter(r["cat"] for r in rows if r.get("won"))),
+                                 "mix": loop.mix.get("by_kind"), "regret_quartiles": loop.mix.get("regret_quartiles"),
+                                 "preloss": dict(Counter(r["preloss"] for r in rows if r.get("preloss"))),
+                                 **({"preloss_set": pre} if pre else {})}) + "\n")
         retain(loop, self.a.buffer_rows, self.a.buffer_days, self.a.buffer_gb)
         prune_checkpoints(loop)
 
@@ -1753,6 +1830,9 @@ class Daemon:
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
+        mcfg = pmix.config(self.loop.starts)
+        self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
+                      f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")
@@ -1793,7 +1873,7 @@ class Daemon:
                 else:
                     self.segment()
                 self.wait_free()
-        except Exception as error:  # noqa: BLE001 -- logged; the state on disk stays for the restart
+        except Exception:  # noqa: BLE001 -- logged; the state on disk stays for the restart
             import traceback  # noqa: PLC0415
 
             self.loop.log("daemon: " + traceback.format_exc()[-1500:])
@@ -1880,6 +1960,8 @@ def main(argv=None) -> int:
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
             p.add_argument("--no-gate", action="store_true")
+            p.add_argument("--no-preloss", action="store_true",
+                           help="do not keep the position three decisions before a lost practice fight as a start")
             p.add_argument("--prefilter", choices=("best", "incumbent", "off"), default=PREFILTER["mode"],
                            help="who enters the gate (D49): best, a checkpoint whose held-out policy CE is below the incumbent's "
                                 "and below every rejected checkpoint's; incumbent, below the incumbent's only; off, every one")

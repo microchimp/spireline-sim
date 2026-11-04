@@ -67,8 +67,29 @@ candidate reaches it).
   it), the loss from 50 training starts per kind x 2 games at a3-v1 with the incumbent (`weights.json`). They are computed again
   when the set is rebuilt or the incumbent changes (`weights_stale`); the incumbent's games are kept across sets, so a rebuilt set
   plays no new game and a new incumbent plays its own (a kind is topped up from its starts in a fixed order). A segment draws kinds by
-  these weights, then a start uniformly in the kind, then the start's next unplayed game j (seed namespace `L`, so no generation
-  game is a board game).
+  these weights, then a source, then a start (next bullet), then the start's next unplayed game j (seed namespace `L`, so no
+  generation game is a board game).
+- **Sources and regret** (2026-11-04, `rl/practice_mix.py`; settings in `starts/mix.json`, read every segment). Three sources:
+  `night` (the AI runs above), `human` (`starts/human-starts.jsonl`, rebuilt by `rl/human_starts.py` from the four training fifths
+  of the human corpus; coverage in [HUMAN_STARTS.md](HUMAN_STARTS.md)) and `preloss` (below). A kind's draw is human with the
+  kind's share: 0.5 for Act 2 hallway, elite and boss and for the Act 1 boss, 0.25 for the Act 1 hallway and elite (a kind with
+  starts on one side only draws from it). Within a kind and side, a start's probability is `0.9` x the rank weight of its regret
+  score + `0.1` x its staleness weight (prioritized level replay: either term alone did worse than uniform). The score is the mean,
+  over the start's latest four plays in the buffer, of `max(0, root - played)`: the teacher's visit-weighted root value at the
+  fight's first searched decision less the outcome, both in the search's currency (end HP plus ten a potion held; a death is -100);
+  the rank weight is `(1 / rank) ** (1 / 1.4)` (equal scores share a rank); the staleness weight is the segments since the start was
+  last drawn (`state.json` `last_seg`). A start nobody has played takes the mean score of those played; plays come from the buffer's
+  shards through `starts/plays.jsonl` (each shard read once, kept after retention removes it). Never drawn: any start whose id,
+  run or seed is in `exam/exclude_runs.json` under the loop folder (the fight exam's file; read at every segment; absent: nothing
+  excluded). Each segment's log line carries `mix <kind> <source> <n> ...` and the quartiles of the drawn starts' scores, and
+  `games/segments.jsonl` the same as data.
+- **Pre-loss starts.** When a practice fight is lost (not capped), the position three decisions before its last decision is exported
+  with `native.get_state_json` (the public state; never the draw order) and kept as a start of the same kind, run and split, with
+  the loss as its first score (`score0`: the teacher's value there against the death), until it has been played. The copy can
+  export any position a decision is asked at; it refuses only a step stopped on a screen (`ExportRefused`), and then no start is
+  made (counted as `refused` in `segments.jsonl`'s `preloss`). A fight shorter than five decisions, and a fight that began at a
+  pre-loss start, make none. Files are written one a start under `starts/preloss-new/` by the game processes and merged after the
+  segment into `starts/preloss-starts.jsonl` (index and lite list beside it); the newest 4,000 are kept. `--no-preloss` turns it off.
 - **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 2 a process,
   six processes, the prior on the card through P1's server when allowed). The x16 rate is P1's: about 55 s of a process's own time
   per Act-1 boss game.
