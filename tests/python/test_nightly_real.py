@@ -195,6 +195,13 @@ class NumbersTest(Tmp):
         self.assertEqual(10.0, n["mean_floor"])  # (20 + 10 + 0) / 3: the crash counts at floor 0
         self.assertEqual(1, n["boss_kills"])  # floor 20 is past the Act 1 boss; the crash is not a kill
         self.assertEqual((0.003, 4, 99.0), (n["divergence_rate"], n["reanchors"], n["wall_s"]))
+        self.assertEqual((None, None), (n["boot_retries"], n["boot_gave_up"]))  # a summary from before the retry of a failed start
+
+    def test_the_starts_retried_and_given_up_are_the_summarys(self):
+        (self.tmp / "runs.jsonl").write_text(json.dumps(end("A", 20)))
+        (self.tmp / "summary.json").write_text(json.dumps({"boot_retries": 5, "boot_gave_up": 1}))
+        n = nr.nightly_numbers(self.tmp, "2026-10-25", {"label": "g3", "generation": 3, "role": "incumbent"}, "N-2026-10-25", 1, "core2")
+        self.assertEqual((5, 1), (n["boot_retries"], n["boot_gave_up"]))
 
 
 class DriverTest(Tmp):

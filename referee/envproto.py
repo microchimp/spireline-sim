@@ -17,6 +17,7 @@ check every few seconds over every game process tree (the session fails on any c
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import faulthandler
 import json
@@ -45,6 +46,88 @@ BELOW_NORMAL = 0x4000
 
 class GameDied(Exception):
     pass
+
+
+BOOT_TIMEOUT_S = 180  # GameEnv's wait for the game's `ready` message, one try
+BOOT_SAMPLE_S = 30.0  # a start still waiting after this long takes a reading of its process, and again each time
+BOOT_BUDGET_S = 1200.0  # --boot-budget-s default: a start that fails is retried on a fresh process for this long in all, before its seed gets a row
+BOOT_PAUSE_S = 5.0  # between a failed start and the next try
+BOOT_TRIES_MAX = 12  # no more tries than this for one seed, whatever the budget
+BOOT_SLOW_S = 30.0  # a first try that worked but took longer than this is reported too
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_ulonglong) for n in ("read_ops", "write_ops", "other_ops", "read_bytes", "write_bytes", "other_bytes")]
+
+
+def process_probe(pid: int) -> dict:
+    """What process `pid` has used so far: `cpu_s` (kernel plus user seconds), `read_mb`, `read_ops`, `write_mb` (what it has read and written,
+    all devices). {} off Windows or when the process cannot be opened. It tells a start that is working (CPU and reads rising) from one
+    that is waiting (neither), which is what a stalled start needs to be read by."""
+    if sys.platform != "win32":
+        return {}
+    try:
+        from ctypes import wintypes  # noqa: PLC0415
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4]
+        k32.GetProcessIoCounters.argtypes = [wintypes.HANDLE, ctypes.POINTER(_IoCounters)]
+        h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return {}
+        out: dict = {}
+        try:
+            ft = [wintypes.FILETIME() for _ in range(4)]
+            if k32.GetProcessTimes(h, *[ctypes.byref(x) for x in ft]):
+                out["cpu_s"] = round(sum((x.dwHighDateTime << 32) | x.dwLowDateTime for x in ft[2:]) / 1e7, 2)
+            io = _IoCounters()
+            if k32.GetProcessIoCounters(h, ctypes.byref(io)):
+                out.update(read_mb=round(io.read_bytes / 1e6, 1), read_ops=io.read_ops, write_mb=round(io.write_bytes / 1e6, 1))
+        finally:
+            k32.CloseHandle(h)
+        return out
+    except Exception:  # noqa: BLE001 -- a reading that fails is no reading, never the start's failure
+        return {}
+
+
+def boot_game(make, budget_s: float, *, pause_s: float = BOOT_PAUSE_S, max_tries: int = BOOT_TRIES_MAX,
+              clock=None, sleep=None, say=None):
+    """Start a game process; a start that fails is retried on a fresh process, not charged to the run that wanted it.
+
+    `make(k)` starts try `k` (0-based) and returns the GameEnv, or raises (GameEnv has killed the process of a start that failed by then).
+    After a failed try the next begins `pause_s` later while fewer than `budget_s` seconds have passed since the first began and fewer
+    than `max_tries` have run; a `budget_s` of 0 or less is the one try. `say(line)` gets a dict for every try that failed
+    (`try`, `ok` False, `final` whether it was the last, `s` its seconds, `error`, and the exception's `boot_probe`: the process's cpu
+    seconds and bytes read when it was given up, a reading every BOOT_SAMPLE_S before that, the bytes its stdout log and its scratch
+    profile held) and for a try that worked after a failure or took over BOOT_SLOW_S. Returns (env or None, tries, the last error or
+    None). Only Exception is caught: a SystemExit (an unknown build) ends the worker as it always did. `clock` and `sleep` default to
+    time.time and time.sleep (looked up at the call)."""
+    clock = clock or time.time
+    sleep = sleep or time.sleep
+    t0 = clock()
+    k = 0
+    while True:
+        t_try = clock()
+        try:
+            env = make(k)
+        except Exception as e:  # noqa: BLE001 -- a start that failed in any way
+            again = budget_s > 0 and clock() - t0 < budget_s and k + 1 < max_tries
+            if say is not None:
+                say({"try": k + 1, "ok": False, "final": not again, "s": round(clock() - t_try, 1), "error": repr(e)[:200],
+                     **getattr(e, "boot_probe", {})})
+            if not again:
+                return None, k + 1, e
+            sleep(pause_s)
+            k += 1
+            continue
+        s = clock() - t_try
+        if say is not None and (k > 0 or s > BOOT_SLOW_S):
+            say({"try": k + 1, "ok": True, "final": True, "s": round(s, 1), "boot_s": round(getattr(env, "boot_s", s), 1),
+                 "waited_s": round(clock() - t0, 1)})
+        return env, k + 1, None
 
 
 def below_normal_self() -> None:
@@ -85,7 +168,7 @@ class GameEnv:
     """One headless game. reset(seed) -> first decision message; step(a) -> (message, done)."""
 
     def __init__(self, game: Path, scratch: Path, *, fixed_fps: int = 60, install: bool = True, stall_s: int = 300,
-                 trace: bool = False, boot_timeout: float = 180, command: list[str] | None = None):
+                 trace: bool = False, boot_timeout: float = BOOT_TIMEOUT_S, command: list[str] | None = None):
         self.game = Path(game).resolve()
         self.digest = rr.check_build(self.game)
         if install:
@@ -101,20 +184,83 @@ class GameEnv:
         job = self.scratch / "job.json"
         job.write_text(json.dumps(jopts), encoding="utf-8")
         args = command or [*rr.game_command(self.game), *serve.engine_args(fixed_fps)]
-        self.proc = rr.popen_no_wer(args, cwd=self.game, env=rr.game_env(self.scratch, job), stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
-        self.pid = self.proc.pid
-        self._q: queue.Queue = queue.Queue()
-        self._log = open(self.scratch / "game-stdout.log", "wb")
-        self._thread = threading.Thread(target=self._reader, daemon=True)
-        self._thread.start()
-        self.t_boot = time.time()
-        m = self._recv(boot_timeout)
-        if m.get("t") != "ready":
-            raise GameDied(f"expected ready, got {m}")
-        self.boot_s = time.time() - self.t_boot
         self.last: dict | None = None
+        self.proc = None
+        self.boot_trace: list[dict] = []
+        try:
+            self.proc = rr.popen_no_wer(args, cwd=self.game, env=rr.game_env(self.scratch, job), stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+            self.pid = self.proc.pid
+            self._q: queue.Queue = queue.Queue()
+            self._log = open(self.scratch / "game-stdout.log", "wb")
+            self._thread = threading.Thread(target=self._reader, daemon=True)
+            self._thread.start()
+            self.t_boot = time.time()
+            m = self._wait_ready(boot_timeout)
+            if m.get("t") != "ready":
+                raise GameDied(f"expected ready, got {m}")
+            self.boot_s = time.time() - self.t_boot
+        except BaseException as e:
+            self._boot_failed(e)  # a start that failed leaves no game process behind
+            raise
+
+    def _wait_ready(self, timeout: float) -> dict:
+        """The game's first message, waited for in slices of BOOT_SAMPLE_S; every slice that passes without one adds a reading of the
+        process to `boot_trace`. The error after `timeout` is the one `_recv` gives for the whole wait."""
+        t_end = self.t_boot + timeout
+        while True:
+            try:
+                return self._recv(max(0.0, min(t_end - time.time(), BOOT_SAMPLE_S)))
+            except TimeoutError:
+                if time.time() >= t_end - 0.05:
+                    raise TimeoutError(f"no message in {timeout} s") from None
+                self.boot_trace.append({"s": round(time.time() - self.t_boot, 1), **process_probe(self.pid)})
+
+    def _boot_failed(self, e: BaseException) -> None:
+        """The readings of a start that failed go on the exception as `boot_probe` (what the process had used when it was given up, the
+        trace of readings, the bytes its stdout log and its scratch profile hold, its exit code if it had one), then its process tree is
+        killed, its reader joined and its log closed. A process that never started has nothing to kill."""
+        probe: dict = {"trace": list(getattr(self, "boot_trace", []))}
+        proc = getattr(self, "proc", None)
+        try:
+            if proc is not None:
+                probe.update(process_probe(proc.pid))
+                code = proc.poll()
+                if code is None and isinstance(e, GameDied):  # the pipe closed before the exit was reaped
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        code = proc.wait(2)
+                probe["exit"] = code
+            with contextlib.suppress(OSError):
+                probe["log_b"] = (self.scratch / "game-stdout.log").stat().st_size
+            with contextlib.suppress(OSError):  # the game's own files in its profile: more than the settings file means its engine got going
+                probe["scratch_files"] = sum(len(f) for _r, _d, f in os.walk(self.scratch / "appdata")) + sum(
+                    len(f) for _r, _d, f in os.walk(self.scratch / "localappdata"))
+            if proc is not None and proc.poll() is None:
+                self._kill_tree()
+            thread = getattr(self, "_thread", None)
+            if thread is not None:
+                thread.join(10)
+            log = getattr(self, "_log", None)
+            if log is not None and (thread is None or not thread.is_alive()):
+                log.close()
+            if proc is not None and (thread is None or not thread.is_alive()):  # the process is dead and its reader done: release the pipes
+                for pipe in (proc.stdin, proc.stdout):
+                    with contextlib.suppress(OSError, ValueError):
+                        pipe.close()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(5)
+        except Exception:  # noqa: BLE001 -- the report of a failed start never replaces the failure
+            pass
+        with contextlib.suppress(AttributeError, TypeError):
+            e.boot_probe = probe
+
+    def _kill_tree(self) -> None:
+        try:
+            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True, check=False, timeout=60)
+        except (subprocess.TimeoutExpired, OSError):
+            with contextlib.suppress(OSError):
+                self.proc.kill()
 
     def _reader(self) -> None:
         for raw in iter(self.proc.stdout.readline, b""):
@@ -172,7 +318,7 @@ class GameEnv:
             self._send({"cmd": "quit"})
             self.proc.wait(30)
         except (GameDied, subprocess.TimeoutExpired, OSError):
-            subprocess.run(["taskkill", "/PID", str(self.pid), "/T", "/F"], capture_output=True, check=False)
+            self._kill_tree()
         self._thread.join(10)
         if not self._thread.is_alive():
             self._log.close()
@@ -607,7 +753,8 @@ def _row_extra(env, restarts: int, timed: _Timed | None = None) -> dict:
 
 def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_timeout: float, ascension: int,
                 agent_seed: int = 0, run_ids: list | None = None, stop_at: float = 0.0, character: str = "IRONCLAD",
-                recycle: int = 0, run_deadline_s: float = 0.0, wrapup_deadline_s: float = 0.0) -> None:
+                recycle: int = 0, run_deadline_s: float = 0.0, wrapup_deadline_s: float = 0.0,
+                boot_budget_s: float = BOOT_BUDGET_S) -> None:
     """One game process plays its seeds under the PLAY agent in lockstep (referee/lockstep.py). `recycle` > 0 restarts the game
     after that many runs (a long block's game process otherwise grows; 0: never). `run_deadline_s` > 0 (the main loop's
     --run-deadline-s): every run arms faulthandler to write the stack of all threads to `out/scratch/worker-<wid>.stack` two minutes
@@ -615,7 +762,13 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
     native call or a loop leaves the frame it sat in there. `wrapup_deadline_s` > 0 (--wrapup-deadline-s): the same for the wrap-up
     (a `wrapup` event starts the main loop's clock for it; the dump comes at `max(60, limit - 60)` s into it into the same file and
     is cancelled once `done` is put): the stale path's cleanup after a run and everything after the last run, which no run clock
-    covers."""
+    covers.
+
+    A game process that does not come up (no `ready` in BOOT_TIMEOUT_S, or the process gone first) is killed and started again on a fresh
+    scratch folder (`boot_game`), for `boot_budget_s` seconds in all; the seed is charged a crash row (where: boot) only when every try
+    failed, and then the worker's next seed gets one try, not the budget, until a start works (a game that cannot start at all costs a
+    try per seed, not the budget per seed). Each failed try puts a `boot` event (see `boot_game`); the run clock is started again once a
+    retried start works, so the minutes spent starting do not come out of the run's deadline."""
     below_normal_self()
     import lockstep  # noqa: PLC0415
     stack = None
@@ -633,6 +786,7 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
     env = None
     restarts = 0
     runs_here = 0
+    boot_failed = False  # the last seed's start used up its tries: the next seed gets one
     for n_seed, seed in enumerate(seeds):
         if stop_at and time.time() > stop_at:  # the block's time limit: no new run; a worker's seeds go in order, so the
             break  # runs done are a prefix of each worker's share and stay paired with the emulator's
@@ -646,14 +800,27 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             env, restarts, runs_here = None, restarts + 1, 0
         if env is None:
             runs_here = 0
-            try:
-                env = GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{restarts}", install=False)
-            except Exception as e:  # boot failure
-                q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(e)[:300], **_row_extra(None, restarts)})
+            first = restarts  # try k boots in scratch folder p<wid>r<first + k>
+
+            def say(line, _first=first, _seed=seed):
+                q.put({"ev": "boot", "w": wid, "seed": _seed, "restarts": _first + line["try"] - 1, "t": time.time(), **line})
+
+            env, tries, err = boot_game(lambda k: GameEnv(Path(game), Path(out) / "scratch" / f"p{wid:02d}r{first + k}", install=False),
+                                        0.0 if boot_failed else boot_budget_s, pause_s=BOOT_PAUSE_S, max_tries=BOOT_TRIES_MAX, say=say)
+            restarts = first + tries - 1  # the folder of the last try
+            if env is None:  # every try failed: this seed's crash row, and the next seed one try
+                boot_failed = True
+                q.put({"ev": "crash", "w": wid, "seed": seed, "where": "boot", "error": repr(err)[:300], "boot_tries": tries,
+                       **_row_extra(None, restarts)})
                 restarts += 1
                 if arm_run:
                     faulthandler.cancel_dump_traceback_later()
                 continue
+            boot_failed = False
+            if tries > 1:  # minutes were spent starting: the run's own clocks begin again
+                q.put({"ev": "start", "w": wid, "seed": seed, "t": time.time()})
+                if arm_run:
+                    faulthandler.dump_traceback_later(max(60, run_deadline_s - 120), repeat=False, file=stack)
         runs_here += 1
         t0 = time.time()
         timed = _Timed(env, step_timeout, character)
@@ -1063,9 +1230,12 @@ def play(a) -> int:
     wids = [w for w in range(a.procs) if not resume or seeds[w::a.procs]]
     deadline_s = getattr(a, "run_deadline_s", RUN_DEADLINE_S)
     wrapup_s = getattr(a, "wrapup_deadline_s", WRAPUP_DEADLINE_S)
+    boot_budget_s = getattr(a, "boot_budget_s", BOOT_BUDGET_S)
+
     def make_proc(w, w_seeds, w_ids):
         return ctx.Process(target=play_worker, args=(w, a.game, str(out), w_seeds, a.sims, q, a.step_timeout, a.ascension,
-                                                     agent_seed, w_ids, stop_at, a.character, getattr(a, "recycle", 0), deadline_s, wrapup_s))
+                                                     agent_seed, w_ids, stop_at, a.character, getattr(a, "recycle", 0), deadline_s, wrapup_s,
+                                                     boot_budget_s))
 
     share = {w: (seeds[w::a.procs], run_ids[w::a.procs]) for w in wids}  # worker -> (seeds, run ids) it was handed
     procs = [make_proc(w, *share[w]) for w in wids]
@@ -1086,6 +1256,8 @@ def play(a) -> int:
         p.start()
     events, done, nets = list(held), 0, set()
     wrapup_terminated = 0
+    boots: list[dict] = []  # the `boot` events of this session: every start that failed, and a retried or slow one that worked
+    boot_file: Any = None
 
     def stop(w):  # the one way a stuck worker is stopped: through its own Process object, never by name or pid
         proc_of[w].terminate()
@@ -1113,12 +1285,19 @@ def play(a) -> int:
         print(f"replacement worker {new_w} for worker {w} ({kind}; slot {slot}, {respawns[slot]} of {respawn_cap}): {len(rest_seeds)} remaining seeds", flush=True)
 
     def handle(e):  # one event of the queue
-        nonlocal done
+        nonlocal done, boot_file
         fresh = watch.seen(e, time.time())
         if e["ev"] == "net":
             nets.update(e["conns"])
         elif not fresh or e["ev"] in ("start", "wrapup"):
             return  # a closed worker's late row, or the run and wrap-up clocks' own events
+        elif e["ev"] == "boot":  # a start's timing line: boot.jsonl and the log, never a row of the block
+            boots.append(e)
+            if boot_file is None:
+                boot_file = open(out / "boot.jsonl", "a" if resume else "w", encoding="utf-8")
+            boot_file.write(json.dumps(e) + chr(10))
+            boot_file.flush()
+            print("boot " + json.dumps(e)[:600], flush=True)
         elif e["ev"] == "done":
             done += 1
         else:
@@ -1208,6 +1387,8 @@ def play(a) -> int:
     session = time.time() - t0
     wall = session + wall_before  # the block's wall: the sessions' sum (wall_before: 0.0 without --resume)
     live.close()
+    if boot_file is not None:
+        boot_file.close()
     (out / "runs.jsonl").write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
     ends = [e for e in events if e["ev"] == "end"]
     dec = sum(e["stats"]["decisions"] for e in ends)
@@ -1217,7 +1398,8 @@ def play(a) -> int:
     for d in divs:
         first.setdefault(d["type"], []).append((d["decision"], d["floor"], d.get("reason") or d["diff"][:2]))
     summary = {"agent_seed": agent_seed, "character": a.character, "engine": getattr(a, "engine", "old"), "sims": a.sims, "runs": len(ends), "crashes": sum(e["ev"] == "crash" for e in events), "wrapup_terminated": wrapup_terminated,
-               "deadline_respawns": respawned["deadline"], "died_respawns": respawned["died"], "unplayed_after_cap": unplayed_after_cap, "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
+               "deadline_respawns": respawned["deadline"], "died_respawns": respawned["died"], "unplayed_after_cap": unplayed_after_cap,
+               "boot_retries": sum(1 for b in boots if not b["ok"] and not b["final"]), "boot_gave_up": sum(1 for b in boots if not b["ok"] and b["final"]), "wins": sum(1 for e in ends if e["end"] in ("win", "victory")),
                "ends": sorted({str(e["end"]) for e in ends}),
                "mean_floor": round(sum(e["floor"] or 0 for e in ends) / max(1, len(ends)), 2), "decisions": dec,
                "decisions_per_s": round(dec / max(wall, 1e-9), 2), "wall_s": round(wall, 1), "ranked_share": round(rank / max(1, dec), 3),
@@ -1236,6 +1418,9 @@ def play(a) -> int:
                "decisions_per_s_per_proc": round(dec / max(1e-9, sum(e["s"] for e in ends)), 2),
                "ranked_decisions_per_s_per_proc": round(rank / max(1e-9, sum(e["s"] for e in ends)), 3),
                "network_connections": sorted(nets), "errors": [e for e in events if e["ev"] == "crash"][:10]}
+    if boots:  # the starts that failed or were slow, with their readings (the full lines are in boot.jsonl)
+        summary["boot"] = {"failed_tries": sum(not b["ok"] for b in boots), "failed_s": round(sum(b["s"] for b in boots if not b["ok"]), 1),
+                           "slowest_s": max(b["s"] for b in boots), "lines": boots[:20]}
     if resume:
         summary.update(resumed_rows=len(held), wall_s_before=round(wall_before, 1), wall_s_session=round(session, 1))  # wall_s: both
         write_wall(out, wall)
@@ -1315,6 +1500,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--ascension", type=int, default=10)
     ap.add_argument("--character", default="IRONCLAD", help="the run's character (the game's character id)")
     ap.add_argument("--step-timeout", type=float, default=180)
+    ap.add_argument("--boot-budget-s", type=float, default=BOOT_BUDGET_S,
+                    help="play: a game process that does not come up (no ready in 180 s, or the process gone first) is killed and started "
+                         "again on a fresh scratch folder for this many seconds in all before its seed gets a crash row (where: boot); "
+                         "0: one try. Each failed try is a line of boot.jsonl and the log (summary: boot_retries, boot_gave_up)")
     ap.add_argument("--engine", choices=["old", "core2"], default="old",
                     help="play: the emulator's engine in the lockstep (docs/rebuild/NATIVE_KERNEL.md); every other mode runs old")
     ap.add_argument("--extra-actions", action="store_true", help="record: record with the extra actions on (replay uses the stored flag)")

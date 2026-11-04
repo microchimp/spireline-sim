@@ -19,7 +19,10 @@ GPU_OK: `gen0.py score --gpu-ok-tag lab-nightly` keeps the line `lab-nightly` fi
 
 summary.json keeps the envproto summary and gains `nightly`: the numbers counted with a crashed run as a loss. That is
 gen0.real_runs(): a crash row becomes {win: False, floor: 0, crash: True}, which gen0.engine_block counts as a run with floor 0 and
-no win, and gen_loop.boss_kill never as a boss kill.
+no win, and gen_loop.boss_kill never as a boss kill. A game process that does not come up is not a crash row at once: referee/envproto.py
+kills it and starts another on a fresh folder for 20 minutes (`--boot-budget-s`); `nightly` carries `boot_retries` (starts retried) and
+`boot_gave_up` (seeds whose every try failed, a crash row each), and the block folder's boot.jsonl has a line for each failed start with the
+process's CPU seconds and bytes read when it was given up (what a stalled start was waiting on).
 
 The job takes LAB's neighbour QUIET.lock with the line `lab-nightly <UTC>` before the first game process, rewrites the line while it
 runs (so another's 2 h staleness rule never reads a live block as stale), removes it after the last process, and waits up to 2 h while
@@ -194,6 +197,9 @@ def nightly_numbers(folder: Path, date: str, agent: dict[str, Any], seed_block: 
             "boss_kill_rate": boss / t["runs"] if t["runs"] else None, "crashes": t["crashes"],
             "stalls": stalls, "divergence_rate": summ.get("divergence_rate"), "diverged_decisions": summ.get("diverged_decisions"),
             "reanchors": summ.get("reanchors"), "reanchor_failed": summ.get("reanchor_failed"), "wall_s": summ.get("wall_s"),
+            # game processes that did not come up: starts retried on a fresh process, and seeds whose tries all failed (a crash row each);
+            # the lines are in the block folder's boot.jsonl (referee/envproto.py boot_game). None: a summary from before the retry
+            "boot_retries": summ.get("boot_retries"), "boot_gave_up": summ.get("boot_gave_up"),
             "counted": "a crashed run is a loss: floor 0, no win, no boss kill"}
 
 

@@ -71,6 +71,115 @@ class EnvProtoTest(unittest.TestCase):
 
 
 
+class FailedStartTest(unittest.TestCase):
+    """A start that fails leaves no game process behind (the night of 2026-11-03 left one per timed-out start, 13 to 17 game processes for
+    12 workers) and carries what the process had used on the exception (`boot_probe`)."""
+
+    SILENT = "import time\nwhile True:\n    time.sleep(0.1)\n"  # never says ready
+    EXITS = "import sys\nsys.exit(3)\n"  # gone before ready
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        dll = self.tmp / "game" / "data_sts2_windows_x86_64" / "sts2.dll"
+        dll.parent.mkdir(parents=True)
+        dll.write_bytes(b"fake")
+        from unittest import mock
+
+        patcher = mock.patch.dict(os.environ, {"SPIRELINE_REFEREE_KNOWN_SHA256": hashlib.sha256(b"fake").hexdigest()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.procs = []
+
+    def start(self, script, timeout):
+        from unittest import mock
+
+        (self.tmp / "fake.py").write_text(script, encoding="utf-8")
+        real = envproto.rr.popen_no_wer
+
+        def record(*a, **k):
+            p = real(*a, **k)
+            self.procs.append(p)
+            return p
+
+        with mock.patch.object(envproto.rr, "popen_no_wer", record), mock.patch.object(envproto, "BOOT_SAMPLE_S", 0.4):
+            try:
+                envproto.GameEnv(self.tmp / "game", self.tmp / "scratch", install=False, boot_timeout=timeout,
+                                 command=[sys.executable, str(self.tmp / "fake.py")])
+            except Exception as e:  # noqa: BLE001
+                return e
+        self.fail("the start should have failed")
+
+    def test_a_start_that_times_out_is_killed_and_reports_what_it_had_used(self):
+        e = self.start(self.SILENT, 1.5)
+        self.assertIsInstance(e, TimeoutError)
+        self.assertEqual("no message in 1.5 s", str(e))  # the message of the whole wait, as before
+        (proc,) = self.procs
+        self.assertIsNotNone(proc.poll())  # the process is gone, not left to finish starting
+        probe = e.boot_probe
+        self.assertIsNone(probe["exit"])  # it had not exited when it was given up
+        self.assertGreaterEqual(len(probe["trace"]), 2)  # a reading every slice of the wait
+        self.assertEqual(0, probe["log_b"])
+        self.assertIn("scratch_files", probe)
+        if sys.platform == "win32":
+            self.assertGreaterEqual(probe["cpu_s"], 0.0)
+            self.assertIn("read_ops", probe)
+            self.assertTrue(all("cpu_s" in t for t in probe["trace"]))
+
+    def test_a_process_that_exits_before_ready_is_a_game_died_with_its_exit_code(self):
+        e = self.start(self.EXITS, 30)
+        self.assertIsInstance(e, envproto.GameDied)
+        self.assertIn("game exited", str(e))
+        (proc,) = self.procs
+        self.assertEqual(3, proc.poll())
+        self.assertEqual(3, e.boot_probe["exit"])
+
+    def test_a_silent_start_is_retried_on_a_fresh_process_and_the_failed_one_is_gone(self):
+        """boot_game over real processes: the first start never says ready (the stall), the second does. Nothing of the first is left."""
+        from unittest import mock
+
+        flaky = ("import json, os, sys, time\nM = sys.argv[1]\nif not os.path.exists(M):\n    open(M, 'w').close()\n"
+                 "    while True:\n        time.sleep(0.1)\n"
+                 "sys.stdout.write('\\x1eENV ' + json.dumps({'t': 'ready'}) + '\\n')\nsys.stdout.flush()\n"
+                 "for line in sys.stdin:\n    if json.loads(line).get('cmd') == 'quit':\n        break\n")
+        (self.tmp / "flaky.py").write_text(flaky, encoding="utf-8")
+        real = envproto.rr.popen_no_wer
+
+        def record(*a, **k):
+            proc = real(*a, **k)
+            self.procs.append(proc)
+            return proc
+
+        def make(k):
+            return envproto.GameEnv(self.tmp / "game", self.tmp / f"scratch{k}", install=False, boot_timeout=1.5,
+                                    command=[sys.executable, str(self.tmp / "flaky.py"), str(self.tmp / "marker")])
+
+        lines: list[dict] = []
+        with mock.patch.object(envproto.rr, "popen_no_wer", record), mock.patch.object(envproto, "BOOT_SAMPLE_S", 0.4):
+            env, tries, err = envproto.boot_game(make, 60.0, pause_s=0.0, say=lines.append)
+        try:
+            self.assertEqual((tries, err), (2, None))
+            self.assertEqual(2, len(self.procs))
+            self.assertIsNotNone(self.procs[0].poll())  # the silent one was killed, not left running
+            self.assertIsNone(self.procs[1].poll())  # the second is the game
+            self.assertEqual([(x["try"], x["ok"], x["final"]) for x in lines], [(1, False, False), (2, True, True)])
+            self.assertIn("no message in 1.5 s", lines[0]["error"])
+            self.assertTrue(lines[0]["trace"])
+            self.assertLess(env.boot_s, 5.0)
+        finally:
+            if env is not None:
+                env.close()
+
+    def test_process_probe_reads_this_process_and_nothing_for_a_pid_that_does_not_exist(self):
+        if sys.platform != "win32":
+            self.assertEqual({}, envproto.process_probe(os.getpid()))
+            return
+        mine = envproto.process_probe(os.getpid())
+        self.assertGreater(mine["cpu_s"], 0.0)
+        self.assertGreater(mine["read_ops"], 0)
+        self.assertEqual({}, envproto.process_probe(0x7FFFFFF0))
+
+
 class ProvenanceSummaryTest(unittest.TestCase):
     """Review 1.6: the play summary says what the block's re-anchors were seeded from, so a block that ran on observation
     anchoring does not read like one that ran on the game's hidden state."""
@@ -178,6 +287,39 @@ class PlayOnlyTest(unittest.TestCase):
         self.assertEqual(shares, [(["S2", "S5"], [2, 5]), (["S3"], [3])])
 
 
+    def test_the_workers_are_handed_the_boot_budget_and_the_parser_takes_it(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        seen = []
+
+        class Stop(Exception):
+            pass
+
+        class FakeProc:
+            def __init__(self, target=None, args=()):
+                seen.append(args)
+
+            def start(self):
+                raise Stop
+
+        fake_ctx = SimpleNamespace(Queue=lambda: None, Process=FakeProc)
+        f = Path(tempfile.mkdtemp()) / "block.json"
+        f.write_text(json.dumps({"name": "x", "seeds": self.SEEDS}), encoding="utf-8")
+        for over, want in (({}, envproto.BOOT_BUDGET_S), ({"boot_budget_s": 0.0}, 0.0), ({"boot_budget_s": 90.0}, 90.0)):
+            seen.clear()
+            a = SimpleNamespace(out=tempfile.mkdtemp(), game="G", character="IRONCLAD", runs=3, seeds_file=str(f), agent_seed=1,
+                                stop_after_h=0, procs=1, sims=1, step_timeout=1, ascension=10, only=None, **over)
+            with mock.patch.object(envproto.rr, "check_build", lambda g: None), mock.patch.object(envproto.rr, "install", lambda g, d: None), \
+                    mock.patch.object(envproto.mp, "get_context", lambda _k: fake_ctx):
+                with self.assertRaises(Stop):
+                    envproto.play(a)
+            self.assertEqual(want, seen[0][15])  # the last argument of play_worker
+        base = ["play", "--game", "G", "--out", "O"]
+        self.assertEqual(1200.0, envproto.parser().parse_args(base).boot_budget_s)
+        self.assertEqual(0.0, envproto.parser().parse_args([*base, "--boot-budget-s", "0"]).boot_budget_s)
+
+
 class PlayResumeTest(unittest.TestCase):
     """N3: `play --resume` keeps the finished rows of an earlier session and plays only the missing seeds, each with the run id and
     agent seed it has in a fresh block. The game workers are replaced by a function that puts the events a real worker puts."""
@@ -195,6 +337,7 @@ class PlayResumeTest(unittest.TestCase):
         self.seeds_file.write_text(json.dumps({"name": "x", "seeds": self.SEEDS}), encoding="utf-8")
         self.calls: list[tuple] = []
         self.during: dict = {}
+        self.extra: dict[int, list[dict]] = {}  # worker -> events its fake puts before its rows
 
     def stamp(self, **over):
         s = {"agent": self.AGENT, "sims": "a3-v1", "ascension": 10, "character": "IRONCLAD", "engine": "core2", "agent_seed": self.AS}
@@ -228,13 +371,15 @@ class PlayResumeTest(unittest.TestCase):
 
         test = self
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0, boot_budget_s=0.0):
             if not test.calls and (Path(out) / "divergences.jsonl").is_file():  # what the files hold while the first worker plays
                 runs = [json.loads(x) for x in (Path(out) / "runs.jsonl").read_text(encoding="utf-8").splitlines()]
                 divs = (Path(out) / "divergences.jsonl").read_text(encoding="utf-8").splitlines()
                 test.during = {"runs": [r["seed"] for r in runs], "divs": [json.loads(x)["seed"] for x in divs if x.strip()]}
             __import__("time").sleep(0.03)  # the clock of Windows ticks every 15 ms: a block has a wall
             test.calls.append((wid, list(seeds), list(run_ids), agent_seed, stop_at))
+            for ev in test.extra.get(wid, []):
+                q.put(dict(ev, w=wid))
             for s, ix in zip(seeds, run_ids):
                 q.put(test.row(s, ix, agent_seed=agent_seed, w=wid, divergences=[{"type": "state", "decision": 9, "floor": 2,
                                                                                     "diff": [["hp", 3, 4]], "reason": f"new-{s}"}]))
@@ -277,7 +422,7 @@ class PlayResumeTest(unittest.TestCase):
         self.assertEqual("\n".join(json.dumps(e) for e in events), (self.out / "runs.jsonl").read_text(encoding="utf-8"))  # no trailing newline
         self.assertEqual("\n".join(json.dumps(dict(e["divergences"][0], seed=e["seed"])) for e in events),
                          (self.out / "divergences.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wrapup_terminated", "deadline_respawns", "died_respawns", "unplayed_after_cap", "wins", "ends", "mean_floor", "decisions",
+        self.assertEqual(["agent_seed", "character", "engine", "sims", "runs", "crashes", "wrapup_terminated", "deadline_respawns", "died_respawns", "unplayed_after_cap", "boot_retries", "boot_gave_up", "wins", "ends", "mean_floor", "decisions",
                           "decisions_per_s", "wall_s", "ranked_share", "diverged_decisions", "divergence_rate", "reanchors", "reanchor_failed",
                           "first_loss_by_reason", "first_divergences_by_type", "gaps", "resumed", "losses_by_reason", "reanchor_fail_reasons",
                           "reanchor_by_plan", "anchored_with", "streams_named", "streams_moved", "streams_unmoved_names", "walk",
@@ -319,6 +464,29 @@ class PlayResumeTest(unittest.TestCase):
         self.write([self.row("S1")])
         self.AGENT = dict(self.AGENT, prior_sha256="cd")
         self.assertEqual(0, self.play()["resumed_rows"])
+
+    def test_boot_lines_go_to_boot_jsonl_and_the_summary_not_to_the_rows(self):
+        """A worker's `boot` events (a start that failed, a retried one that worked) are no rows of the block: boot.jsonl keeps them whole,
+        the summary counts the retries and the seeds given up, and runs.jsonl holds the rows alone."""
+        fail = {"ev": "boot", "seed": "S0", "try": 1, "ok": False, "final": False, "s": 181.2, "error": "TimeoutError('no message in 180 s')",
+                "cpu_s": 0.1, "read_mb": 2.0, "trace": [{"s": 30.0, "cpu_s": 0.1, "read_mb": 2.0}]}
+        self.extra = {0: [fail, {**fail, "try": 2},
+                          {"ev": "boot", "seed": "S0", "try": 3, "ok": True, "final": True, "s": 30.0, "boot_s": 29.5, "waited_s": 400.0}],
+                      1: [{"ev": "boot", "seed": "S1", "try": 1, "ok": False, "final": True, "s": 180.5, "error": "GameDied('x')"}]}
+        summary = self.play(resume=False)
+        lines = [json.loads(x) for x in (self.out / "boot.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(b["w"], b["try"], b["ok"]) for b in lines], [(0, 1, False), (0, 2, False), (0, 3, True), (1, 1, False)])
+        self.assertEqual((summary["boot_retries"], summary["boot_gave_up"]), (2, 1))
+        self.assertEqual((summary["boot"]["failed_tries"], summary["boot"]["failed_s"], summary["boot"]["slowest_s"]), (3, 542.9, 181.2))
+        self.assertEqual(len(summary["boot"]["lines"]), 4)
+        self.assertEqual(sorted(r["seed"] for r in self.final_rows()), sorted(self.SEEDS))  # the rows are the block's alone
+        self.assertTrue(all(r["ev"] == "end" for r in self.final_rows()))
+
+    def test_a_block_with_no_boot_trouble_writes_no_boot_file_and_counts_zero(self):
+        summary = self.play(resume=False)
+        self.assertFalse((self.out / "boot.jsonl").exists())
+        self.assertEqual((summary["boot_retries"], summary["boot_gave_up"]), (0, 0))
+        self.assertNotIn("boot", summary)
 
     def test_a_file_with_rows_and_no_identity_is_kept_only_when_every_seed_is_in_the_list(self):
         self.write([self.row("S1"), self.row("S2")], identity=False)
@@ -378,7 +546,7 @@ class RunRowTest(unittest.TestCase):
     """L3: the end and crash rows of a play worker say when the run ended, how long its game process took to boot, how often the worker
     has restarted its game, and the longest run of identical consecutive (screen kind, action) pairs (a stalled run-layer loop)."""
 
-    def play(self, scripts, boots=(1.5, 2.5), recycle=0, deadline=0.0, wrapup=0.0, stale=()):
+    def play(self, scripts, boots=(1.5, 2.5), recycle=0, deadline=0.0, wrapup=0.0, stale=(), boot_budget=0.0):
         """Run play_worker over the seeds of `scripts` ({seed: ([(screen kind, action)...], exception or None)}) with a fake game
         process and a fake lockstep; the end and crash rows it queues."""
         import queue as queue_mod
@@ -386,12 +554,15 @@ class RunRowTest(unittest.TestCase):
         import types
         from unittest import mock
 
+        test = self
         booted = []
+        self.scratches = []  # the scratch folder of every start, failed or not
 
         class FakeEnv:
             def __init__(self, game, scratch, install=True):
                 n = len(booted)
                 booted.append(self)
+                test.scratches.append(Path(scratch).name)
                 if n >= len(boots) or boots[n] is None:
                     raise envproto.GameDied("no ready")
                 self.boot_s, self.pid, self.last, self.screens = boots[n], 100 + n, None, iter(())
@@ -439,8 +610,9 @@ class RunRowTest(unittest.TestCase):
         self.t0 = time.time()
         with mock.patch.dict(sys.modules, {"lockstep": lock}), mock.patch.object(envproto, "GameEnv", FakeEnv), \
                 mock.patch.object(envproto, "faulthandler", FakeFaulthandler), \
-                mock.patch.object(envproto, "below_normal_self", lambda: None), mock.patch.object(envproto.rr, "connections", lambda pid: []):
-            envproto.play_worker(0, "G", str(self.out_dir), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle, deadline, wrapup)
+                mock.patch.object(envproto, "below_normal_self", lambda: None), mock.patch.object(envproto.rr, "connections", lambda pid: []),                 mock.patch.object(envproto, "BOOT_PAUSE_S", 0.0):
+            envproto.play_worker(0, "G", str(self.out_dir), list(scripts), 1, q, 1, 10, 7, None, 0.0, "IRONCLAD", recycle, deadline, wrapup,
+                                 boot_budget)
         self.t1 = time.time()
         rows = []
         while not q.empty():
@@ -509,6 +681,76 @@ class RunRowTest(unittest.TestCase):
         rows = self.play({"S1": ([], None)}, boots=(None,))
         self.assertEqual(("crash", "boot", 0), (rows[0]["ev"], rows[0]["where"], rows[0]["restarts"]))
         self.assertTrue(rows[0]["t_end"] > 0)
+
+    def test_a_start_that_fails_is_retried_on_a_fresh_folder_and_the_seed_is_not_charged(self):
+        """The night of 2026-11-03: seven starts timed out in a stall and each took its seed's row. A failed start is now tried again."""
+        (row,) = self.play({"S1": ([("map", 0)], None)}, boots=(None, None, 2.5), boot_budget=100.0, deadline=1800.0)
+        self.assertEqual(("end", 2.5, 2), (row["ev"], row["boot_s"], row["restarts"]))  # the run was played by the third start
+        self.assertEqual(["p00r0", "p00r1", "p00r2"], self.scratches)  # each try its own folder
+        boots = [r for r in self.all_events if r["ev"] == "boot"]
+        self.assertEqual([(b["try"], b["ok"], b["final"], b["restarts"]) for b in boots], [(1, False, False, 0), (2, False, False, 1), (3, True, True, 2)])
+        self.assertTrue(all(b["seed"] == "S1" and b["w"] == 0 and b["t"] > 0 for b in boots))
+        self.assertIn("GameDied", boots[0]["error"])
+        self.assertEqual(["start", "boot", "boot", "boot", "start", "end"], [r["ev"] for r in self.all_events if r["ev"] not in ("wrapup", "net", "done")])
+        self.assertEqual(["arm", "arm", "cancel"], [c[0] for c in self.fh])  # the stack dump is armed again once the start worked
+
+    def test_a_first_try_that_works_adds_no_event_so_the_normal_path_is_as_it_was(self):
+        self.play({"S1": ([("map", 0)], None)}, boots=(1.5,), boot_budget=100.0)
+        self.assertEqual([], [r for r in self.all_events if r["ev"] == "boot"])
+
+    def test_a_slow_first_start_that_worked_is_reported(self):
+        lines: list[dict] = []
+        ticks = iter([0.0, 0.0, 45.0, 45.0])  # the first try's start twice (the budget's and the try's), its end, the wait in all
+        env, tries, err = envproto.boot_game(lambda k: type("E", (), {"boot_s": 44.0})(), 100.0, clock=lambda: next(ticks), say=lines.append)
+        self.assertEqual((tries, err), (1, None))
+        self.assertEqual([(x["try"], x["ok"], x["s"], x["boot_s"]) for x in lines], [(1, True, 45.0, 44.0)])
+
+    def test_every_try_failing_gives_the_seed_a_boot_row_and_the_next_seed_one_try_not_the_budget(self):
+        from unittest import mock
+
+        scripts = {"S1": ([], None), "S2": ([], None), "S3": ([("map", 0)], None)}
+        # S1: 3 tries, all fail (the cap); S2: one try, fails; S3: one try, the game starts
+        with mock.patch.object(envproto, "BOOT_TRIES_MAX", 3):
+            rows = self.play(scripts, boots=(None, None, None, None, 2.0), boot_budget=100.0)
+        self.assertEqual(["crash", "crash", "end"], [r["ev"] for r in rows])
+        c1, c2, e3 = rows
+        self.assertEqual(("S1", "boot", 3, 2), (c1["seed"], c1["where"], c1["boot_tries"], c1["restarts"]))
+        self.assertEqual(("S2", "boot", 1, 3), (c2["seed"], c2["where"], c2["boot_tries"], c2["restarts"]))
+        self.assertEqual(["p00r0", "p00r1", "p00r2", "p00r3", "p00r4"], self.scratches)
+        self.assertEqual((4, 2.0), (e3["restarts"], e3["boot_s"]))
+        boots = [(b["seed"], b["try"], b["ok"], b["final"]) for b in self.all_events if b["ev"] == "boot"]
+        self.assertEqual(boots, [("S1", 1, False, False), ("S1", 2, False, False), ("S1", 3, False, True), ("S2", 1, False, True)])
+
+    def test_the_budget_ends_the_tries_before_the_cap(self):
+        ticks = [0.0]
+
+        def now():
+            return ticks[0]
+
+        def sleep(s):
+            ticks[0] += s
+
+        def make(k):
+            ticks[0] += 181.0  # each try waits out its 180 s
+            raise TimeoutError("no message in 180 s")
+
+        lines: list[dict] = []
+        env, tries, err = envproto.boot_game(make, 400.0, pause_s=5.0, clock=now, sleep=sleep, say=lines.append)
+        # 181 s and a pause, 181 s and a pause (372 s in, under 400), a third try; 553 s in, no fourth
+        self.assertEqual((env, tries), (None, 3))
+        self.assertIsInstance(err, TimeoutError)
+        self.assertEqual([(x["try"], x["final"]) for x in lines], [(1, False), (2, False), (3, True)])
+        self.assertEqual(ticks[0], 181.0 * 3 + 5.0 * 2)
+        ticks[0] = 0.0  # a budget of 0 is the one try
+        env, tries, err = envproto.boot_game(make, 0.0, clock=now, sleep=sleep, say=None)
+        self.assertEqual((env, tries), (None, 1))
+
+    def test_a_system_exit_is_not_a_start_that_failed(self):
+        def make(k):
+            raise SystemExit(2)  # an unknown sts2.dll: the worker ends, as it always did
+
+        with self.assertRaises(SystemExit):
+            envproto.boot_game(make, 100.0, sleep=lambda s: None)
 
     def test_the_worker_says_wrapup_after_its_last_result_and_before_the_final_close_and_done(self):
         """N5B: the main loop's wrap-up clock (--wrapup-deadline-s) starts at the worker's wrapup event."""
@@ -731,7 +973,7 @@ class RunDeadlineTest(unittest.TestCase):
         test = self
         behave = behave or (lambda wid, seeds, run_ids, q: test.normal(wid, seeds, run_ids, q))
 
-        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0):
+        def fake_worker(wid, game, out, seeds, sims, q, step_timeout, ascension, agent_seed, run_ids, stop_at, character, recycle, run_deadline_s=0.0, wrapup_deadline_s=0.0, boot_budget_s=0.0):
             test.handed.append((wid, list(seeds)))
             test.deadline_seen.append(run_deadline_s)
             test.wrapup_seen.append(wrapup_deadline_s)
