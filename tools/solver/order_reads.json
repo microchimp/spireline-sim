@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
- "sources_sha256": "e6283fa98c47beeb068d786f8d2ba76d9de4bd4fe81f974163243fa78de9f088",
+ "sources_sha256": "99ebc166e02976bb2fea67932985307357bbc1f616408299dd0616acbc3d1f33",
  "scope": {
   "src/Sts2Emulator/Core/CardUid.cs": 4,
   "src/Sts2Emulator/Core/CombatEngine.cs": 164,
@@ -39752,6 +39752,18 @@
   },
   {
    "file": "EnemyAI",
+   "method": "EnsureOvicopterSlots",
+   "pile": "Enemies",
+   "kind": "walk",
+   "read": "for Enemies",
+   "line": 5248,
+   "holders": [
+    "engine"
+   ],
+   "id": "EnemyAI:EnsureOvicopterSlots:for Enemies"
+  },
+  {
+   "file": "EnemyAI",
    "method": "ExecuteIntent",
    "pile": "Enemies",
    "kind": "fixed",
@@ -39768,7 +39780,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FindIndex",
-   "line": 5786,
+   "line": 5818,
    "holders": [
     "engine"
    ],
@@ -39780,7 +39792,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FindIndex",
-   "line": 5342,
+   "line": 5374,
    "holders": [
     "engine"
    ],
@@ -39840,7 +39852,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.IndexOf",
-   "line": 5236,
+   "line": 5268,
    "holders": [
     "engine"
    ],
@@ -39852,7 +39864,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.IndexOf",
-   "line": 5761,
+   "line": 5793,
    "holders": [
     "engine"
    ],
@@ -39864,7 +39876,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 5856,
+   "line": 5888,
    "holders": [
     "engine"
    ],
@@ -39876,7 +39888,7 @@
    "pile": "Enemies",
    "kind": "fixed",
    "read": "Enemies.FindIndex",
-   "line": 5192,
+   "line": 5214,
    "holders": [
     "engine"
    ],
@@ -39886,49 +39898,25 @@
    "file": "EnemyAI",
    "method": "SummonToughEggs",
    "pile": "Enemies",
-   "kind": "fixed",
-   "read": "Enemies.IndexOf",
-   "line": 5195,
+   "kind": "index",
+   "read": "Enemies[corpse]",
+   "line": 5217,
    "holders": [
     "engine"
    ],
-   "id": "EnemyAI:SummonToughEggs:Enemies.IndexOf"
-  },
-  {
-   "file": "EnemyAI",
-   "method": "SummonToughEggs",
-   "pile": "Enemies",
-   "kind": "fixed",
-   "read": "Enemies.IndexOf",
-   "line": 5214,
-   "holders": [
-    "engine"
-   ],
-   "id": "EnemyAI:SummonToughEggs:Enemies.IndexOf#2"
-  },
-  {
-   "file": "EnemyAI",
-   "method": "SummonToughEggs",
-   "pile": "Enemies",
-   "kind": "fixed",
-   "read": "Enemies[0]",
-   "line": 5211,
-   "holders": [
-    "engine"
-   ],
-   "id": "EnemyAI:SummonToughEggs:Enemies[0]"
+   "id": "EnemyAI:SummonToughEggs:Enemies[corpse]"
   },
   {
    "file": "EnemyAI",
    "method": "SummonToughEggs",
    "pile": "Enemies",
    "kind": "index",
-   "read": "Enemies[state.Enemies.IndexOf(corpse)]",
-   "line": 5214,
+   "read": "Enemies[corpse]",
+   "line": 5218,
    "holders": [
     "engine"
    ],
-   "id": "EnemyAI:SummonToughEggs:Enemies[state.Enemies.IndexOf(corpse)]"
+   "id": "EnemyAI:SummonToughEggs:Enemies[corpse]#2"
   },
   {
    "file": "EnemyAI",

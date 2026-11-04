@@ -2631,7 +2631,7 @@
     "F10"
    ],
    "file": "Core/EnemyAI.cs",
-   "line": 5579
+   "line": 5611
   },
   "EnemyAI.TriggerPlowIfWounded": {
    "hooks": [
@@ -4412,7 +4412,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 2752
+   "line": 2818
   },
   "RunEngine.FinishCombat": {
    "hooks": [
@@ -4443,7 +4443,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 3073
+   "line": 3139
   },
   "RunEngine.RestHealAmount": {
    "hooks": [
@@ -4457,7 +4457,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 6145
+   "line": 6216
   },
   "RunEngine.RollUnknownMapPointNodeType": {
    "hooks": [
@@ -4493,7 +4493,7 @@
     "F16"
    ],
    "file": "Core/Run/RunEngine.cs",
-   "line": 3094
+   "line": 3160
   },
   "RunEngine.WritePhaseActionMask": {
    "hooks": [
@@ -4521,7 +4521,7 @@
     "F16"
    ],
    "file": "Core/Run/RunMapGenerator.cs",
-   "line": 1690
+   "line": 1697
   },
   "RunMapGenerator.GenerateGoldenPath": {
    "hooks": [
@@ -4563,7 +4563,7 @@
     "F16"
    ],
    "file": "Core/Run/RunMapGenerator.cs",
-   "line": 870
+   "line": 873
   },
   "RunMapGenerator.MarkSpoilsQuest": {
    "hooks": [
@@ -4611,7 +4611,7 @@
     "F17"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 3607
+   "line": 3608
   },
   "RunNonCombatEffects.CloseMawBank": {
    "hooks": [
@@ -4641,7 +4641,7 @@
     "F11"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 3479
+   "line": 3480
   },
   "RunNonCombatEffects.CountEliteVictoryForSwordOfStone": {
    "hooks": [
@@ -4705,7 +4705,7 @@
     "F17"
    ],
    "file": "Core/Run/RunNonCombatEffects.cs",
-   "line": 2814
+   "line": 2815
   },
   "RunNonCombatEffects.UpgradedByEggs": {
    "hooks": [
