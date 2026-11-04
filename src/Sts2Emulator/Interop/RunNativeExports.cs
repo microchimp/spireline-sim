@@ -549,6 +549,13 @@ public static class RunNativeExports
             // list with its melted flag and the copy keeps out of list 1 so that no effect reads them. Additive: no
             // existing list or layout moved, and a library without it answers -3 (the lockstep treats that as none).
             24 => WriteRelicList(run.State.MeltedRelics, output),
+            // 25: (relic id, counter) pairs of the relics in play, the open fight's copy while there is one (the game has
+            // one relic object for the run and the fight; the run's list holds the value from before the fight until it
+            // ends, so Pen Nib's count, a Pendulum's turns and the like read stale there). Melted relics are not in it.
+            25 => WriteRelicCounters(
+                run.State.Phase == RunPhase.Combat && run.State.ActiveCombat is { } fight ? fight.Relics : run.State.Relics,
+                output
+            ),
             _ => -3,
         };
     }
@@ -1107,6 +1114,18 @@ public static class RunNativeExports
         }
 
         return relics.Count;
+    }
+
+    private static int WriteRelicCounters(IReadOnlyList<RelicInstance> relics, Span<int> output)
+    {
+        int count = Math.Min(relics.Count, output.Length / 2);
+        for (int i = 0; i < count; i++)
+        {
+            output[2 * i] = relics[i].DefId;
+            output[2 * i + 1] = relics[i].Counter;
+        }
+
+        return 2 * relics.Count;
     }
 
     private static int WriteRewardList(RunState state, Span<int> output)

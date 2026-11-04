@@ -161,6 +161,33 @@ public class MeltedRelicTests
         }
     }
 
+    /// <summary>
+    /// List 25 reads the relics' counters from the open fight's copy: the run's own list holds the value from before the fight
+    /// until the fight ends, so a counter that moves in the fight (Pen Nib's attacks) would read stale there.
+    /// </summary>
+    [Fact]
+    public unsafe void TheCounterListReadsTheOpenFightsRelicsAndOutsideAFightTheRuns()
+    {
+        int handle = RunNativeExports.Sts2Run_Create();
+        try
+        {
+            Assert.True(RunNativeExports.TryGetRun(handle, out var run));
+            run.Reset(Seed);
+            int starter = run.State.Relics[0].DefId;
+            Assert.Equal(new[] { starter, 0 }, StateList(handle, 25));
+
+            var fight = FirstFight(run);
+            fight.Relics[0] = fight.Relics[0] with { Counter = 7 };
+
+            Assert.Equal(new[] { starter, 7 }, StateList(handle, 25));
+            Assert.Equal(0, run.State.Relics[0].Counter);
+        }
+        finally
+        {
+            RunNativeExports.Sts2Run_Destroy(handle);
+        }
+    }
+
     private static unsafe int[] StateList(int handle, int listId)
     {
         var buffer = new int[16];
