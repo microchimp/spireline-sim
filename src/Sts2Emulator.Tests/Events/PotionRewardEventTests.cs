@@ -262,6 +262,11 @@ public class PotionRewardEventTests
 
         Assert.Equal(0, engine.Step(attack, -1, out _, out _, out _));
         Assert.Equal(Enchantment.Vigorous, engine.State.Deck[attack].Enchantment);
+        // The event's PushVigorousAmount, 8: what the card's first attack in a fight adds.
+        // The amount went unset and the card was enchanted at 1 (the nights of 2026-11-03
+        // to 11-05: the game's enemy 7 lower, 11 on a Vulnerable one, after the card).
+        Assert.Equal(RunConstants.StoneOfAllTimeVigorousAmount, engine.State.Deck[attack].EnchantAmount);
+        Assert.Equal(8, RunConstants.StoneOfAllTimeVigorousAmount);
     }
 
     /// <summary>Vigorous only takes Attacks, so a deck of Skills refuses Push outright.</summary>

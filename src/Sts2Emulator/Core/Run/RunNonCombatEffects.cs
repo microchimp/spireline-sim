@@ -1919,8 +1919,9 @@ public static class RunNonCombatEffects
                 state.Deck[deckIndex] = card with
                 {
                     Enchantment = (Enchantment)state.PendingSelectionArg,
-                    // Self-Help Book applies at 2 (its Enchantment*Amount vars); every
-                    // event enchantment is CardCmd.Enchant<T>(card, 1m).
+                    // An event that names its amount passes it (the Stone of All Time's
+                    // Vigorous 8); Self-Help Book applies at 2 (its Enchantment*Amount vars);
+                    // the other events' enchantments are CardCmd.Enchant<T>(card, 1m).
                     EnchantAmount =
                         state.PendingSelectionEnchantAmount > 0
                             ? state.PendingSelectionEnchantAmount

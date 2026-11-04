@@ -4411,11 +4411,16 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 }
                 else if (action == 1)
                 {
+                    // Push enchants at the event's PushVigorousAmount, 8, which is what
+                    // Vigorous adds to the card's first attack. The amount went unset, so
+                    // the selection's default of 1 applied and the card hit 7 short on its
+                    // first play in every later fight.
                     if (
                         !RunNonCombatEffects.BeginDeckSelection(
                             State,
                             DeckSelection.Enchant,
-                            (int)Enchantment.Vigorous
+                            (int)Enchantment.Vigorous,
+                            enchantAmount: RunConstants.StoneOfAllTimeVigorousAmount
                         )
                     )
                     {
@@ -6486,10 +6491,9 @@ public sealed class RunEngine : Core2.ICombatEndHost
                 break;
             case RunConstants.EventStoneOfAllTime:
                 // Lift needs a potion to drink; Push needs a card Vigorous can enchant,
-                // which Vigorous.CanEnchantCardType limits to Attacks. The emulator does
-                // not model Vigorous itself, so "already enchanted" is not checked --
-                // pinned approximation, and it only ever over-offers a card the game
-                // would have skipped past.
+                // which Vigorous.CanEnchantCardType limits to Attacks. "Already enchanted"
+                // is not checked here -- pinned approximation, and it only ever over-offers
+                // a card the game would have skipped past.
                 if (State.PotionSlots.Any(potion => potion != 0))
                 {
                     SetMask(mask, 0);

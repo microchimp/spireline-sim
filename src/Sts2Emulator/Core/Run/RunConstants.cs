@@ -753,6 +753,12 @@ public static class RunConstants
     /// <summary>Fur Coat's `DynamicVar("Combats", 7m)`: seven rooms marked.</summary>
     public const int FurCoatCombats = 7;
 
+    /// <summary>
+    /// The Stone of All Time's `DynamicVar("PushVigorousAmount", 8m)`: Push enchants the chosen
+    /// Attack with Vigorous at 8, so its first play in a fight deals 8 more.
+    /// </summary>
+    public const int StoneOfAllTimeVigorousAmount = 8;
+
     public const int RelicPaelsWing = 184;
     public const int RelicToyBox = 271;
     public const int RelicLordsParasol = 139;
