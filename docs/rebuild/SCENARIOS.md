@@ -105,6 +105,7 @@ setters' own cover (an enemy set to 8 HP and 4 block takes two Strikes: the firs
 | family | scenarios | old | core2 (F08+F10 on, as checked in) |
 |---|---|---|---|
 | `exhaust-order/` (ExhaustListenerOrderTests) | juggernaut-from-feel-no-pain-kills-before-forgotten-soul, juggernaut-picks-before-charons-ashes-kills | xfail (2) | xfail (2) |
+| `play-order/` | curl-up-blocks-charons-ashes-after-the-card (the played card's after-play listeners before its pile: Curl Up's block before Charon's Ashes' hit) | xfail (1) | xfail (1) |
 | `victory-heal/` (VictoryHealOrderTests) | meat-at-threshold-then-burning-blood, ...-black-blood (xfail); meat-above-threshold-does-not-heal, meat-below-threshold-then-burning-blood (pass) | 2 xfail, 2 pass | 2 xfail, 2 pass |
 | `rounding-order/` (RoundingOrderTests) | slow-joins-the-multiplicative-chain, slow-is-decimal-exact-90x3, intangible-caps-a-halved-30-to-1 and -3-to-1, intangible-colossus-halves-a-vulnerable-4-to-1 (xfail); slow-is-decimal-exact-30x9, hard-to-kill-cap-runs-after-slow, diadem-halves-15-to-7, intangible-cap-leaves-a-halved-1-at-0, intangible-colossus-halves-a-vulnerable-1-to-0, halving-truncates-once (pass) | 5 xfail, 6 pass | 11 pass (the F08+F10 switch fixes them) |
 | `regression/` | strike-damages-the-enemy-and-costs-1, vulnerable-multiplies-by-1-5, strength-adds-before-vulnerable-multiplies, weak-truncates-once, feel-no-pain-blocks-per-exhaust, burning-blood-heals-6-after-victory, block-absorbs-first-and-zero-hp-kills | pass (7) | pass (7) |

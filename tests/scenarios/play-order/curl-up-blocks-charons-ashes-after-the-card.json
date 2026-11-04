@@ -1,0 +1,24 @@
+{
+  "name": "play-order/curl-up-blocks-charons-ashes-after-the-card",
+  "source": "game: CardModel's play (the card's AfterCardPlayed listeners run before the card moves to its result pile); CurlUpPower.AfterCardPlayed, CharonsAshes.AfterCardExhausted",
+  "doc": "FEED hits the Louse Progenitor (100 HP, Curl Up 18 at A10) for 10. The card's AfterCardPlayed listeners run before it moves to its exhaust pile, so the curl's 18 block is up when FEED exhausts, and CHARONS_ASHES's 3 to every enemy lands on that block: 90 HP and 15 block. The copy moves the played card to its pile first, so the 3 reach HP (87) and the curl's 18 come after. Seen on the night of 2026-11-05 (run DYYNTREEES, a Louse Progenitor 123 in the game and 120 in the copy after Neow's Fury exhausted under Charon's Ashes).",
+  "xfail_engines": {
+    "old": "old places the played card on its result pile (exhaust: Charon's Ashes, Feel No Pain, Dark Embrace) before the card's AfterCardPlayed listeners (Curl Up, Rupture, Serpent Form ...); the game runs them the other way round. Diagnosis: Spireline docs/diagnostics/2026-11-05-enemy-health.md.",
+    "core2": "core2 runs old's play tail for this (the placement is not migrated), so it fails the same way."
+  },
+  "setup": {
+    "character": "IRONCLAD",
+    "ascension": 10,
+    "seed": "SCENARIO01",
+    "encounter": {"id": "LOUSE_PROGENITOR", "act": "HIVE", "kind": "normal", "index": 4},
+    "relics": ["CHARONS_ASHES"],
+    "deck": ["FEED"],
+    "enemy_hp": [{"slot": 0, "current": 100}]
+  },
+  "actions": [{"do": "play", "card": "FEED", "target": 0, "name": "feed"}],
+  "expect": [
+    {"at": "start", "path": "snapshot.enemies[0].hp", "equals": 100},
+    {"path": "snapshot.enemies[0].hp", "equals": 90, "why": "FEED's 10; Charon's 3 land on the curl's block"},
+    {"path": "snapshot.enemies[0].block", "equals": 15, "why": "the curl's 18 less Charon's 3"}
+  ]
+}

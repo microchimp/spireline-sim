@@ -71,8 +71,10 @@ class CheckedInScenarios(unittest.TestCase):
         fixed = {n for n in old if old[n] == "xfail" and core2[n] == "pass"}
         self.assertEqual(fixed, SWITCH_FIXES)
         self.assertEqual({n: s for n, s in old.items() if n not in fixed}, {n: s for n, s in core2.items() if n not in fixed})
-        self.assertEqual(len(S.by_status(self.reports["old"], "xfail")), 9)
-        self.assertEqual(len(S.by_status(self.reports["core2"], "xfail")), 4)
+        # play-order/curl-up-blocks-charons-ashes-after-the-card is the tenth old xfail and the fifth core2 one (neither engine
+        # has the game's play tail yet).
+        self.assertEqual(len(S.by_status(self.reports["old"], "xfail")), 10)
+        self.assertEqual(len(S.by_status(self.reports["core2"], "xfail")), 5)
 
     def test_with_no_switch_chosen_core2_fails_what_old_fails(self):
         """core2 built with migrated_families.json `{"migrated": []}` (a scratch build, whatever the repository lists) runs old's
