@@ -856,8 +856,10 @@ class HiddenInformationTests(unittest.TestCase):
 
     # 1-10: deck, relics, belt, Neow options, shop prices, card-reward flags, reward
     # screen, map options, shop stock; 14-18: act summary, map nodes and edges, offer
-    # grid, bundles; 20: card-select purpose; 21: map position (RunNativeExports.cs).
-    VISIBLE_LISTS = frozenset({*range(1, 11), *range(14, 19), 20, 21})
+    # grid, bundles; 20: card-select purpose; 21: map position; 22 and 23: the upgrade flags
+    # of the shop's cards and of an open offer grid's cards, which the screen shows as a "+"
+    # on the card (RunNativeExports.cs).
+    VISIBLE_LISTS = frozenset({*range(1, 11), *range(14, 19), 20, 21, 22, 23})
     MODULES = ("features.py", "engine.py")
 
     @staticmethod
