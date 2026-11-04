@@ -601,6 +601,18 @@ def _room(obs: dict) -> str:
     return "combat" if obs.get("combat") else "non_combat"
 
 
+def reward_items(gold: int, potion: int, relic: int, cards: int, special: int) -> list[str]:
+    """The rewards screen's items in the engine's mask order (engine._rewards' layout): an item's action is its index here.
+
+    Native list 6 is (gold amount, potion id, relic id, card item count, special row count): the first three are values,
+    0 when absent, never counts, so a position is counted from their presence, one item each. Adding the ids as counts
+    put the Thieving Hopper's returned card at the potion's id plus one when a potion was left on the screen (a full belt,
+    which the driver skips without asking, or a skipped potion): "the engine refused action N in phase 5", 12 crash rows
+    on the real-game nights of 2026-10-30 to 11-05 (docs/diagnostics/2026-11-05-refused-move.md in the Spireline repo)."""
+    return (["gold"] * bool(gold) + ["potion"] * bool(potion) + ["relic"] * bool(relic)
+            + ["card"] * max(0, int(cards)) + ["special"] * max(0, int(special)))
+
+
 # ------------------------------------------------------------------ the emulator side
 
 
@@ -758,19 +770,18 @@ class EmuLock:
         for _ in range(20):
             ph = self.s.phase
             if ph == rc.PHASE_RELIC_REWARD:
-                gold, potion, relic, cards, special = self.native.run_state_list(self.s.handle, 6, 5)
-                if gold:
-                    self.s._step(0)  # gold is taken before any question on both sides
+                items = reward_items(*self.native.run_state_list(self.s.handle, 6, 5))
+                if "gold" in items:
+                    self.s._step(items.index("gold"))  # gold is taken before any question on both sides
                     continue
-                if special and self._asking_card():
-                    self.s._step(potion + relic + cards)  # the special rows follow every other item in the mask
+                if "special" in items and self._asking_card():
+                    self.s._step(items.index("special"))  # the special rows follow every other item in the mask
                     continue
                 if not self.rq:
                     return
                 t, take = self.rq.pop(0)
-                present = [k for k, n in (("potion", potion), ("relic", relic), ("card", cards)) if n]
-                if take and t in present:
-                    self.s._step(present.index(t))
+                if take and t in items:
+                    self.s._step(items.index(t))
                 continue
             if ph != rc.PHASE_CARD_REWARD:
                 return

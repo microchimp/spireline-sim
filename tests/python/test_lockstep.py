@@ -467,6 +467,25 @@ class MappingTests(unittest.TestCase):
         self.assertIsNone(e.sync("map", [[1, 2], [3, 2]], {}))
         self.assertEqual(run.deck, rec[61]["deck"])
 
+    def test_a_returned_special_card_is_claimed_past_a_potion_left_on_the_screen(self):
+        # The 12 "the engine refused action N in phase 5" crash rows of the real-game nights 2026-10-30 to 11-05: a Hopper kill
+        # whose screen kept a potion nobody asked about (the driver skips a potion unasked when the belt is full). List 6
+        # carries the gold amount and the potion's id, not counts: the row's action was the id plus the card items (Duplicator,
+        # 17, plus 1 = 18 on 11-05), which the engine refused. The row's action is its position: past the potion and the card.
+        rec, run = self._hopper_screen()
+        run.items.update(gold=7, potion=17)  # as the engine's list 6 gives them
+        e = stub_emu(run)
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}))
+        self.assertEqual(run.taken, ["step:0", "step:2"])
+        self.assertEqual(run.deck, rec[61]["deck"])
+        self.assertEqual(run.items["potion"], 17)  # left where it was: the game did not take it either
+
+    def test_reward_items_counts_the_gold_potion_and_relic_by_presence(self):
+        self.assertEqual(lockstep.reward_items(7, 17, 0, 1, 1), ["gold", "potion", "card", "special"])
+        self.assertEqual(lockstep.reward_items(0, 54, 33, 2, 1).index("special"), 4)
+        self.assertEqual(lockstep.reward_items(0, 0, 0, 1, 2), ["card", "special", "special"])
+        self.assertEqual(lockstep.reward_items(0, 0, 0, 0, 0), [])
+
     def test_skipped_items_leave_the_screen_and_a_lone_path_enters_the_fight(self):
         # The 14 "phase:5" losses: the referee left the rewards screen and took a lone map node without asking.
         screens = {"items": ("rewards", (_opt("reward.relic", 1), _opt("reward.proceed", 9))),
@@ -1079,6 +1098,64 @@ class FightStartAnchorNativeTests(unittest.TestCase):
         self.assertTrue(e.reanchor("fight_start", {"obs": {"floor": view.floor, "combat": record}}), e.fail)
         self.assertEqual(e._hand(), [[c[0], int(c[1])] for c in pile(hand)])
         self.assertIsNone(e.fail)
+
+
+@unittest.skipUnless(HAVE_NATIVE, "needs the native emulator library")
+class HopperReturnedCardNativeTests(unittest.TestCase):
+    """The copy's own rewards screen after a Thieving Hopper kill with a potion item left on it (a full belt): the lockstep
+    claims the returned card at the referee's card ask and the engine takes the step. Before the fix the step was the potion's
+    id plus the card items and the engine refused it, the 12 crash rows of 2026-10-30 to 11-05."""
+
+    HOPPER_WEAK = 35  # RunConstants.HiveWeakEncounters: ThievingHopperWeak
+    DECK = [47] * 4 + [519] * 4 + [472] * 4  # Bludgeon, Twin Strike, Strike Ironclad: the Hopper dies before it flees
+    BELT = [5, 5]  # two Block Potions: the A10 belt is full
+
+    def _step(self, e, action, target):
+        env = e.s.env
+        return e.native.run_step(e.s.handle, action, target, env._run_obs_buf, env._run_rew_buf, env._run_terminal_buf,
+                                 env._run_truncated_buf)
+
+    def _fight(self, e):
+        """Pass turn one (the Hopper's first move is the theft), then play the first card that goes, until the fight ends."""
+        obs, turn = e.s.env._run_obs_buf, 0
+        for _ in range(400):
+            if e.s.phase != e.E.rc.PHASE_COMBAT:
+                return
+            n, mask, acted = e.ls._hand_size(obs), e.native.run_action_mask(e.s.handle, 32), False
+            if turn:
+                living = e.ls._living_targets(obs)
+                for a in (a for a in range(n) if mask[a]):
+                    if any(self._step(e, a, t) == 0 for t in [*living[:1], -1]):
+                        acted = True
+                        break
+            if not acted:
+                self._step(e, n, -1)
+                turn += 1
+
+    def test_the_returned_card_is_claimed_past_a_potion_the_full_belt_left(self):
+        e = lockstep.EmuLock("RFSD000000", sims=2)
+        self.addCleanup(e.close)
+        found = None
+        for k in range(40):
+            if k:
+                e.s.close()
+                e.s = e.E.RunSession(f"RFSD{k:06d}", 10, e.E.CombatBudget(1, 1), mask_version=lockstep.MASK_VERSION)
+            st = e.native.run_start_combat(e.s.handle, self.DECK, self.HOPPER_WEAK, [], 80, 80, self.BELT, 99, 0,
+                                           e.s.env._run_obs_buf)
+            self.assertEqual(st, 0)
+            self._fight(e)
+            if e.s.phase == e.E.rc.PHASE_RELIC_REWARD:
+                gold, potion, relic, cards, special = e.native.run_state_list(e.s.handle, 6, 5)
+                if potion and special:
+                    found = (potion, cards, len(e.s.view().deck))
+                    break
+        self.assertIsNotNone(found, "no seed of 40 left a potion and a returned card on the Hopper's screen")
+        potion, cards, deck = found
+        self.assertIsNone(e.sync("reward", ["take", "skip"], {"ctx": {"type": "card"}}))
+        after = list(e.native.run_state_list(e.s.handle, 6, 5))
+        self.assertEqual((after[0], after[1], after[4]), (0, potion, 0))  # gold and the row claimed, the potion left
+        self.assertEqual(len(e.s.view().deck), deck + 1)
+        self.assertEqual(e.s.phase, e.E.rc.PHASE_RELIC_REWARD)
 
 
 class AgentSeedTests(unittest.TestCase):
