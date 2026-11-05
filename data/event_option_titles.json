@@ -1,0 +1,2965 @@
+{
+ "record": "Spire Codex public run export for v0.107.1",
+ "release": "v0.107.1",
+ "_comment": "Event option pages: the human run record's option names (Spire Codex public run export for v0.107.1) to the copy's option index. Built by scripts/build_event_option_titles.py from the live captures in tests/fixtures/events, the engine's event code and the record's own keys and outcomes (aggregates; counts under 20 are not shown). mapping: exact = the name's words are in a captured title of that page; inferred = engine order or outcomes, evidence in the row; unresolved = no index (dynamic = the index depends on the options the visit offered).",
+ "events": {
+  "ABYSSAL_BATHS": {
+   "engine_id": 20,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "IMMERSE",
+       "title": "Immerse",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 347,
+       "evidence": "words of the name are in captured title 'Immerse' (equal)",
+       "description": "Gain 2 Max HP. Take 3 damage."
+      },
+      {
+       "index": 1,
+       "key": "ABSTAIN",
+       "title": "Abstain",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 448,
+       "evidence": "words of the name are in captured title 'Abstain' (equal)",
+       "description": "Heal 10 HP."
+      }
+     ]
+    },
+    {
+     "page": "ALL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "LINGER",
+       "title": "Linger",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1351,
+       "evidence": "capture page after Immerse: Linger 0, Exit Baths 1"
+      },
+      {
+       "index": 1,
+       "key": "EXIT_BATHS",
+       "title": "Exit Baths",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 345,
+       "evidence": "capture page after Immerse"
+      }
+     ]
+    }
+   ],
+   "visits": 795,
+   "sources": [
+    "capture"
+   ]
+  },
+  "AMALGAMATOR": {
+   "engine_id": 42,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "COMBINE_STRIKES",
+       "title": "Combine Strikes",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 302,
+       "evidence": "words of the name are in captured title 'Combine Strikes' (equal)",
+       "description": "Remove 2 Strikes. Add Ultimate Strike to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "COMBINE_DEFENDS",
+       "title": "Combine Defends",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 251,
+       "evidence": "words of the name are in captured title 'Combine Defends' (equal)",
+       "description": "Remove 2 Defends. Add Ultimate Defend to your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 553,
+   "sources": [
+    "capture"
+   ]
+  },
+  "AROMA_OF_CHAOS": {
+   "engine_id": 2,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "LET_GO",
+       "title": "Let Go",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 413,
+       "evidence": "words of the name are in captured title 'Let Go' (equal)",
+       "description": "Transform a card in your Deck."
+      },
+      {
+       "index": 1,
+       "key": "MAINTAIN_CONTROL",
+       "title": "Maintain Control",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 352,
+       "evidence": "words of the name are in captured title 'Maintain Control' (equal)",
+       "description": "Upgrade a card in your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 765,
+   "sources": [
+    "capture"
+   ]
+  },
+  "BATTLEWORN_DUMMY": {
+   "engine_id": 52,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "SETTING_1",
+       "title": "Setting 1",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "title_pattern": "Setting\\ \\d+",
+       "n": 52,
+       "evidence": "words of the name are in captured title 'Setting 1' (equal)",
+       "description": "Fight a 75 HP dummy. Procure 1 random Potion."
+      },
+      {
+       "index": 1,
+       "key": "SETTING_2",
+       "title": "Setting 2",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "title_pattern": "Setting\\ \\d+",
+       "n": 325,
+       "evidence": "words of the name are in captured title 'Setting 2' (equal)",
+       "description": "Fight a 150 HP dummy. Upgrade 2 random cards."
+      },
+      {
+       "index": 2,
+       "key": "SETTING_3",
+       "title": "Setting 3",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "title_pattern": "Setting\\ \\d+",
+       "n": 120,
+       "evidence": "words of the name are in captured title 'Setting 3' (equal)",
+       "description": "Fight a 300 HP dummy. Obtain a random Relic."
+      }
+     ]
+    }
+   ],
+   "visits": 496,
+   "sources": [
+    "capture"
+   ]
+  },
+  "BRAIN_LEECH": {
+   "engine_id": 6,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "SHARE_KNOWLEDGE",
+       "title": "Share Knowledge",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1052,
+       "evidence": "words of the name are in captured title 'Share Knowledge' (equal)",
+       "description": "Choose 1 of 5 random cards to add to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "RIP",
+       "title": "Rip the Leech Off",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1040,
+       "evidence": "words of the name are in captured title 'Rip the Leech Off' (words)",
+       "description": "Lose 5 HP. Gain a Colorless card reward."
+      }
+     ]
+    }
+   ],
+   "visits": 2092,
+   "sources": [
+    "capture"
+   ]
+  },
+  "BUGSLAYER": {
+   "engine_id": 43,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EXTERMINATION",
+       "title": "Learn Extermination Technique",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 314,
+       "evidence": "words of the name are in captured title 'Learn Extermination Technique' (words)",
+       "description": "Add Exterminate to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "SQUASH",
+       "title": "Learn Squash Technique",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 318,
+       "evidence": "words of the name are in captured title 'Learn Squash Technique' (words)",
+       "description": "Add Squash to your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 632,
+   "sources": [
+    "capture"
+   ]
+  },
+  "BYRDONIS_NEST": {
+   "engine_id": 10,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EAT",
+       "title": "Eat the Egg",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 562,
+       "evidence": "words of the name are in captured title 'Eat the Egg' (words)",
+       "description": "Gain 7 Max HP."
+      },
+      {
+       "index": 1,
+       "key": "TAKE",
+       "title": "Take the Egg",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 241,
+       "evidence": "words of the name are in captured title 'Take the Egg' (words)",
+       "description": "Add Byrdonis Egg to your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 803,
+   "sources": [
+    "capture"
+   ]
+  },
+  "COLORFUL_PHILOSOPHERS": {
+   "engine_id": 44,
+   "captured": false,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "dynamic": true,
+     "options": [
+      {
+       "index": null,
+       "key": "SILENT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 265,
+       "evidence": "one option per other character's pool, at most three, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "DEFECT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 130,
+       "evidence": "one option per other character's pool, at most three, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "NECROBINDER",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 109,
+       "evidence": "one option per other character's pool, at most three, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "REGENT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 73,
+       "evidence": "one option per other character's pool, at most three, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "IRONCLAD",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "unresolved",
+       "n": "<20",
+       "evidence": "one visit; the Ironclad's own pool is not offered to an Ironclad"
+      }
+     ]
+    }
+   ],
+   "visits": 580,
+   "sources": []
+  },
+  "COLOSSAL_FLOWER": {
+   "engine_id": 45,
+   "captured": false,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EXTRACT_CURRENT_PRIZE_1",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 259,
+       "evidence": "engine action 0 pays the rung's gold (35, 75, 135); in the record this option pays 35 gold in every visit"
+      },
+      {
+       "index": 1,
+       "key": "REACH_DEEPER_1",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 334,
+       "evidence": "engine action 1 digs deeper for 5, 6, 7 damage"
+      }
+     ]
+    },
+    {
+     "page": "REACH_DEEPER_1",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EXTRACT_CURRENT_PRIZE_2",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 39,
+       "evidence": "second rung, see above"
+      },
+      {
+       "index": 1,
+       "key": "REACH_DEEPER_2",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 295,
+       "evidence": "second rung, see above"
+      }
+     ]
+    },
+    {
+     "page": "REACH_DEEPER_2",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EXTRACT_INSTEAD",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 66,
+       "evidence": "third rung: action 0 extracts for 135, action 1 takes Pollinous Core"
+      },
+      {
+       "index": 1,
+       "key": "POLLINOUS_CORE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 229,
+       "evidence": "third rung, see above"
+      }
+     ]
+    }
+   ],
+   "visits": 593,
+   "sources": [
+    "engine"
+   ]
+  },
+  "CRYSTAL_SPHERE": {
+   "engine_id": 27,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "UNCOVER_FUTURE",
+       "title": "Uncover Future",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 363,
+       "evidence": "words of the name are in captured title 'Uncover Future' (equal)",
+       "description": "Pay 79 Gold. Divine 3 times."
+      },
+      {
+       "index": 1,
+       "key": "PAYMENT_PLAN",
+       "title": "Payment Plan",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 369,
+       "evidence": "words of the name are in captured title 'Payment Plan' (equal)",
+       "description": "Gain a Debt. Divine 6 times."
+      }
+     ]
+    }
+   ],
+   "visits": 732,
+   "sources": [
+    "capture"
+   ]
+  },
+  "DENSE_VEGETATION": {
+   "engine_id": 12,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "TRUDGE_ON",
+       "title": "Trudge On",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 478,
+       "evidence": "words of the name are in captured title 'Trudge On' (equal)",
+       "description": "Gain 76 Gold. Lose 8 HP."
+      },
+      {
+       "index": 1,
+       "key": "REST",
+       "title": "Rest",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 243,
+       "evidence": "words of the name are in captured title 'Rest' (equal)",
+       "description": "Heal 24 HP. Fight some enemies."
+      }
+     ]
+    },
+    {
+     "page": "REST",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "FIGHT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 243,
+       "evidence": "the engine's Rest page offers the fight only (action 0); the capture of that page was taken before it changed and still shows the first page"
+      }
+     ]
+    }
+   ],
+   "visits": 721,
+   "sources": [
+    "capture",
+    "engine"
+   ]
+  },
+  "DOLL_ROOM": {
+   "engine_id": 28,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "RANDOM",
+       "title": "Pick at Random",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 190,
+       "evidence": "words of the name are in captured title 'Pick at Random' (words)",
+       "description": "Obtain a random Doll Relic."
+      },
+      {
+       "index": 1,
+       "key": "TAKE_SOME_TIME",
+       "title": "Take Some Time",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 302,
+       "evidence": "words of the name are in captured title 'Take Some Time' (equal)",
+       "description": "Lose 5 HP. Choose 1 of 2 Doll Relics."
+      },
+      {
+       "index": 2,
+       "key": "EXAMINE",
+       "title": "Examine Each and Make the Best Choice",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 71,
+       "evidence": "words of the name are in captured title 'Examine Each and Make the Best Choice' (words)",
+       "description": "Lose 15 HP. Choose 1 of 3 Doll Relics."
+      }
+     ]
+    },
+    {
+     "page": "DOLLS",
+     "page_pattern": false,
+     "dynamic": true,
+     "options": [
+      {
+       "index": null,
+       "key": "DAUGHTER_OF_THE_WIND",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 195,
+       "evidence": "the offered dolls (two or all three) are a shuffle from the event's own stream",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "MR_STRUGGLES",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 105,
+       "evidence": "see DAUGHTER_OF_THE_WIND",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "BING_BONG",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 73,
+       "evidence": "see DAUGHTER_OF_THE_WIND",
+       "dynamic": true
+      }
+     ]
+    }
+   ],
+   "visits": 564,
+   "sources": [
+    "capture"
+   ]
+  },
+  "DOORS_OF_LIGHT_AND_DARK": {
+   "engine_id": 8,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "LIGHT",
+       "title": "Light Door",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 606,
+       "evidence": "words of the name are in captured title 'Light Door' (words)",
+       "description": "Upgrade 2 random cards."
+      },
+      {
+       "index": 1,
+       "key": "DARK",
+       "title": "Dark Door",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 291,
+       "evidence": "words of the name are in captured title 'Dark Door' (words)",
+       "description": "Remove 1 card from your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 897,
+   "sources": [
+    "capture"
+   ]
+  },
+  "DROWNING_BEACON": {
+   "engine_id": 21,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BOTTLE",
+       "title": "Bottle",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 316,
+       "evidence": "words of the name are in captured title 'Bottle' (equal)",
+       "description": "Procure Glowwater Potion."
+      },
+      {
+       "index": 1,
+       "key": "CLIMB",
+       "title": "Climb",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 516,
+       "evidence": "words of the name are in captured title 'Climb' (equal)",
+       "description": "Obtain Fresnel Lens. Lose 13 Max HP."
+      }
+     ]
+    }
+   ],
+   "visits": 832,
+   "sources": [
+    "capture"
+   ]
+  },
+  "ENDLESS_CONVEYOR": {
+   "engine_id": 22,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": null,
+       "title": "Grab Fried Eel off the Belt",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "unresolved",
+       "evidence": "no record name is matched to this captured option",
+       "description": "Pay 40 Gold. Add a random Colorless Card to your Deck. Continue feasting!"
+      },
+      {
+       "index": 1,
+       "key": "OBSERVE_CHEF",
+       "title": "Observe the Chef",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 126,
+       "evidence": "capture page 1: 'Observe the Chef' 1"
+      }
+     ]
+    },
+    {
+     "page": "ALL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "FRIED_EEL",
+       "title": "Grab Fried Eel off the Belt",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 140,
+       "evidence": "capture page 1: 'Grab Fried Eel off the Belt' 0",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "JELLY_LIVER",
+       "title": "Grab Jelly Liver off the Belt",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 150,
+       "evidence": "capture page after Grab: 'Grab Jelly Liver off the Belt' 0",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "CAVIAR",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 279,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "CLAM_ROLL",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 234,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "GOLDEN_FYSH",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 45,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "SEAPUNK_SALAD",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 105,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "SPICY_SNAPPY",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 147,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      },
+      {
+       "index": 0,
+       "key": "SUSPICIOUS_CONDIMENT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 76,
+       "evidence": "the belt's grab is option 0 whatever dish it carries (captured for Fried Eel and Jelly Liver, title 'Grab <dish> off the Belt')",
+       "title_pattern": "Grab .+ off the Belt"
+      }
+     ]
+    },
+    {
+     "page": "GRAB_SOMETHING_OFF_THE_BELT",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 1,
+       "key": "LEAVE",
+       "title": "Leave",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 264,
+       "evidence": "capture page after Grab: Leave 1"
+      }
+     ]
+    }
+   ],
+   "visits": 390,
+   "sources": [
+    "capture"
+   ]
+  },
+  "FAKE_MERCHANT": {
+   "engine_id": 29,
+   "captured": false,
+   "pages": [],
+   "no_option_choice": "the stall is its own screen; the record keeps the purchases, not an option",
+   "visits": 751,
+   "sources": []
+  },
+  "FIELD_OF_MAN_SIZED_HOLES": {
+   "engine_id": 46,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "RESIST",
+       "title": "Resist",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 170,
+       "evidence": "words of the name are in captured title 'Resist' (equal)",
+       "description": "Remove 2 cards from your Deck. Add Normality to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "ENTER_YOUR_HOLE",
+       "title": "Enter Your Hole",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 451,
+       "evidence": "words of the name are in captured title 'Enter Your Hole' (equal)",
+       "description": "Enchant a card with Perfect Fit."
+      }
+     ]
+    }
+   ],
+   "visits": 621,
+   "sources": [
+    "capture"
+   ]
+  },
+  "GRAVE_OF_THE_FORGOTTEN": {
+   "engine_id": 53,
+   "captured": false,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "CONFRONT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 279,
+       "evidence": "engine action 0 is Confront (adds Decay, then a card to enchant); in the record CONFRONT adds one card and enchants one in every visit"
+      },
+      {
+       "index": 1,
+       "key": "ACCEPT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 200,
+       "evidence": "engine action 1 takes Forgotten Soul; the record shows one relic and no card"
+      }
+     ]
+    }
+   ],
+   "visits": 479,
+   "sources": [
+    "engine"
+   ]
+  },
+  "HUNGRY_FOR_MUSHROOMS": {
+   "engine_id": 54,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BIG_MUSHROOM",
+       "title": "Big Mushroom",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 140,
+       "evidence": "words of the name are in captured title 'Big Mushroom' (equal)",
+       "description": "Draw 2 fewer cards at the start of each combat. Raise your Max HP by 20."
+      },
+      {
+       "index": 1,
+       "key": "FRAGRANT_MUSHROOM",
+       "title": "Fragrant Mushroom",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 363,
+       "evidence": "words of the name are in captured title 'Fragrant Mushroom' (equal)",
+       "description": "Lose 15 HP. Upgrade 2 random cards."
+      }
+     ]
+    }
+   ],
+   "visits": 504,
+   "sources": [
+    "capture"
+   ]
+  },
+  "INFESTED_AUTOMATON": {
+   "engine_id": 47,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "STUDY",
+       "title": "Study",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 391,
+       "evidence": "words of the name are in captured title 'Study' (equal)",
+       "description": "Obtain a random Power."
+      },
+      {
+       "index": 1,
+       "key": "TOUCH_CORE",
+       "title": "Touch the Core",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 254,
+       "evidence": "words of the name are in captured title 'Touch the Core' (words)",
+       "description": "Obtain a random 0 cost card."
+      }
+     ]
+    }
+   ],
+   "visits": 645,
+   "sources": [
+    "capture"
+   ]
+  },
+  "JUNGLE_MAZE_ADVENTURE": {
+   "engine_id": 4,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "SOLO_QUEST",
+       "title": "Solo Quest",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 341,
+       "evidence": "words of the name are in captured title 'Solo Quest' (equal)",
+       "description": "Gain 158 Gold. Lose 18 HP."
+      },
+      {
+       "index": 1,
+       "key": "JOIN_FORCES",
+       "title": "Join Forces",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 365,
+       "evidence": "words of the name are in captured title 'Join Forces' (equal)",
+       "description": "Gain 51 Gold."
+      }
+     ]
+    }
+   ],
+   "note": "the plain options capture holds another event's page; the first page is read from the -opt captures",
+   "visits": 706,
+   "sources": [
+    "capture"
+   ]
+  },
+  "LOST_WISP": {
+   "engine_id": 48,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "CLAIM",
+       "title": "Capture the Wisp",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 102,
+       "evidence": "capture index 0 is 'Capture the Wisp' (adds Decay, gives the Lost Wisp); in the record CLAIM leaves one card and one relic in every visit, SEARCH about 60 gold"
+      },
+      {
+       "index": 1,
+       "key": "SEARCH",
+       "title": "Search the Nearby Area",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 476,
+       "evidence": "words of the name are in captured title 'Search the Nearby Area' (words)",
+       "description": "Gain 70 Gold."
+      }
+     ]
+    }
+   ],
+   "visits": 578,
+   "sources": [
+    "capture",
+    "record-inferred"
+   ]
+  },
+  "LUMINOUS_CHOIR": {
+   "engine_id": 13,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "REACH_INTO_THE_FLESH",
+       "title": "Reach into the Flesh",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 48,
+       "evidence": "words of the name are in captured title 'Reach into the Flesh' (equal)",
+       "description": "Remove 2 cards from your Deck. Add Spore Mind to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "OFFER_TRIBUTE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 88,
+       "evidence": "capture index 1 is the option locked by 'Requires N Gold'; the engine opens action 1 on the tribute price (RunEngine event mask); the record shows a relic taken"
+      }
+     ]
+    }
+   ],
+   "visits": 136,
+   "sources": [
+    "capture",
+    "engine"
+   ]
+  },
+  "MORPHIC_GROVE": {
+   "engine_id": 5,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "GROUP",
+       "title": "Group",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 241,
+       "evidence": "words of the name are in captured title 'Group' (equal)",
+       "description": "Lose ALL of your Gold. Transform 2 cards."
+      },
+      {
+       "index": 1,
+       "key": "LONER",
+       "title": "Loner",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 275,
+       "evidence": "words of the name are in captured title 'Loner' (equal)",
+       "description": "Gain 5 Max HP."
+      }
+     ]
+    }
+   ],
+   "visits": 516,
+   "sources": [
+    "capture"
+   ]
+  },
+  "POTION_COURIER": {
+   "engine_id": 30,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "GRAB_POTIONS",
+       "title": "Grab Potions",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 455,
+       "evidence": "words of the name are in captured title 'Grab Potions' (equal)",
+       "description": "Procure 3 Foul Potions."
+      },
+      {
+       "index": 1,
+       "key": "RANSACK",
+       "title": "Ransack",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 630,
+       "evidence": "words of the name are in captured title 'Ransack' (equal)",
+       "description": "Procure 1 random Uncommon Potion."
+      }
+     ]
+    }
+   ],
+   "visits": 1085,
+   "sources": [
+    "capture"
+   ]
+  },
+  "PUNCH_OFF": {
+   "engine_id": 23,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "NAB",
+       "title": "Nab",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 180,
+       "evidence": "words of the name are in captured title 'Nab' (equal)",
+       "description": "Add Injury to your Deck. Obtain a random Relic."
+      },
+      {
+       "index": 1,
+       "key": "I_CAN_TAKE_THEM",
+       "title": "I Can Take Them",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 129,
+       "evidence": "words of the name are in captured title 'I Can Take Them' (equal)",
+       "description": "Fight them for Greater Rewards."
+      }
+     ]
+    },
+    {
+     "page": "I_CAN_TAKE_THEM",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "FIGHT",
+       "title": "Fight",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 129,
+       "evidence": "capture page after 'I Can Take Them': Fight 0"
+      }
+     ]
+    }
+   ],
+   "visits": 309,
+   "sources": [
+    "capture"
+   ]
+  },
+  "RANWID_THE_ELDER": {
+   "engine_id": 31,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "POTION",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 275,
+       "evidence": "capture index 0 is locked with 'no Potions that can be given'; the engine mask orders potion, gold, relic"
+      },
+      {
+       "index": 1,
+       "key": "GOLD",
+       "title": "Give 100 Gold",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "title_pattern": "Give\\ \\d+\\ Gold",
+       "n": 152,
+       "evidence": "words of the name are in captured title 'Give 100 Gold' (words)",
+       "description": "Obtain a random Relic."
+      },
+      {
+       "index": 2,
+       "key": "RELIC",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 253,
+       "evidence": "capture index 2 is locked with 'no Relics that can be given'"
+      }
+     ]
+    }
+   ],
+   "visits": 680,
+   "sources": [
+    "capture"
+   ]
+  },
+  "REFLECTIONS": {
+   "engine_id": 55,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "TOUCH_A_MIRROR",
+       "title": "Touch a Mirror",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 367,
+       "evidence": "words of the name are in captured title 'Touch a Mirror' (equal)",
+       "description": "Downgrade 2 random cards. Upgrade 4 random cards."
+      },
+      {
+       "index": 1,
+       "key": "SHATTER",
+       "title": "Shatter",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 131,
+       "evidence": "words of the name are in captured title 'Shatter' (equal)",
+       "description": "Duplicate your Deck. Receive Bad Luck."
+      },
+      {
+       "index": null,
+       "key": "STARE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "unresolved",
+       "n": "<20",
+       "evidence": "one visit in the record; no capture or engine option of that name"
+      }
+     ]
+    }
+   ],
+   "visits": 499,
+   "sources": [
+    "capture"
+   ]
+  },
+  "RELIC_TRADER": {
+   "engine_id": 32,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "TOP",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 222,
+       "evidence": "the offers (up to three of the player's relics, shuffled) are named by their place on the page, top to bottom"
+      },
+      {
+       "index": 1,
+       "key": "MIDDLE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 233,
+       "evidence": "second place, see TOP"
+      },
+      {
+       "index": 2,
+       "key": "BOTTOM",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 288,
+       "evidence": "third place, see TOP"
+      }
+     ]
+    }
+   ],
+   "visits": 743,
+   "sources": [
+    "record-inferred"
+   ]
+  },
+  "ROOM_FULL_OF_CHEESE": {
+   "engine_id": 33,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "GORGE",
+       "title": "Gorge",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1310,
+       "evidence": "words of the name are in captured title 'Gorge' (equal)",
+       "description": "Choose 2 of 8 random Common cards to add to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "SEARCH",
+       "title": "Search",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 849,
+       "evidence": "words of the name are in captured title 'Search' (equal)",
+       "description": "Lose 14 HP. Obtain the Chosen Cheese."
+      }
+     ]
+    }
+   ],
+   "visits": 2159,
+   "sources": [
+    "capture"
+   ]
+  },
+  "ROUND_TEA_PARTY": {
+   "engine_id": 56,
+   "captured": false,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "ENJOY_TEA",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 76,
+       "evidence": "engine action 0 takes Royal Poison and heals to full; in the record ENJOY_TEA heals about 45 and gives one relic"
+      },
+      {
+       "index": 1,
+       "key": "PICK_FIGHT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 396,
+       "evidence": "engine action 1 opens the warning page whose one option charges 11 HP for a relic; the record shows about 11 damage and one relic"
+      }
+     ]
+    },
+    {
+     "page": "CONTINUE_FIGHT",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "CONTINUE_FIGHT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": "<20",
+       "evidence": "the warning page's one option; the record does not list it",
+       "recorded": false,
+       "after_key": "PICK_FIGHT"
+      }
+     ]
+    }
+   ],
+   "visits": 472,
+   "sources": [
+    "engine"
+   ]
+  },
+  "SAPPHIRE_SEED": {
+   "engine_id": 14,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "EAT",
+       "title": "Consume",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 376,
+       "evidence": "capture index 0 is 'Consume' (heal 9, upgrade a card); in the record EAT heals about 9 and upgrades one card in every visit, PLANT enchants a card"
+      },
+      {
+       "index": 1,
+       "key": "PLANT",
+       "title": "Plant and Nourish",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 417,
+       "evidence": "words of the name are in captured title 'Plant and Nourish' (words)",
+       "description": "Enchant a card with Sown."
+      }
+     ]
+    }
+   ],
+   "visits": 793,
+   "sources": [
+    "capture",
+    "record-inferred"
+   ]
+  },
+  "SELF_HELP_BOOK": {
+   "engine_id": 11,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "READ_THE_BACK",
+       "title": "Read the Back",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1217,
+       "evidence": "words of the name are in captured title 'Read the Back' (equal)",
+       "description": "Choose an Attack to Enchant with Sharp 2."
+      },
+      {
+       "index": 1,
+       "key": "READ_PASSAGE",
+       "title": "Read a Random Passage",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 638,
+       "evidence": "words of the name are in captured title 'Read a Random Passage' (words)",
+       "description": "Choose a Skill to Enchant with Nimble 2."
+      },
+      {
+       "index": 2,
+       "key": "READ_ENTIRE_BOOK",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 615,
+       "evidence": "capture index 2 is locked with 'no Powers that can be Enchanted'; the engine's pages are Attack 0, Skill 1, Power 2; READ_THE_BACK and READ_PASSAGE take 0 and 1"
+      }
+     ]
+    }
+   ],
+   "visits": 2470,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SLIPPERY_BRIDGE": {
+   "engine_id": 34,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "OVERCOME",
+       "title": "Overcome",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1500,
+       "evidence": "capture page after Hold On: Overcome 0, Hold On 1; the record keeps the INITIAL page name for Overcome on every later page"
+      },
+      {
+       "index": 1,
+       "key": "HOLD_ON_0",
+       "title": "Hold On",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "key_pattern": "HOLD_ON_\\d+",
+       "n": 1181,
+       "evidence": "words of the name are in captured title 'Hold On' (equal)",
+       "description": "Lose 3 HP. The card in the above option is randomized."
+      }
+     ]
+    },
+    {
+     "page": "HOLD_ON_(?:\\d+|LOOP)",
+     "page_pattern": true,
+     "options": [
+      {
+       "index": 1,
+       "key": "HOLD_ON_(?:\\d+|LOOP)",
+       "title": "Hold On",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "key_pattern": "HOLD_ON_(?:\\d+|LOOP)",
+       "n": 1122,
+       "evidence": "capture page after Hold On: Hold On is index 1; the record counts the holds in the names"
+      }
+     ]
+    }
+   ],
+   "visits": 1505,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SPIRALING_WHIRLPOOL": {
+   "engine_id": 24,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "OBSERVE",
+       "title": "Observe",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 531,
+       "evidence": "words of the name are in captured title 'Observe' (equal)",
+       "description": "Enchant a Basic Strike or Defend with Spiral."
+      },
+      {
+       "index": 1,
+       "key": "DRINK",
+       "title": "Drink",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 304,
+       "evidence": "words of the name are in captured title 'Drink' (equal)",
+       "description": "Heal 26 HP."
+      }
+     ]
+    }
+   ],
+   "visits": 835,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SPIRIT_GRAFTER": {
+   "engine_id": 49,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "LET_IT_IN",
+       "title": "Let It In",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 249,
+       "evidence": "words of the name are in captured title 'Let It In' (equal)",
+       "description": "Heal 25 HP. Add Metamorphosis to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "REJECTION",
+       "title": "Rejection",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 382,
+       "evidence": "words of the name are in captured title 'Rejection' (equal)",
+       "description": "Lose 10 HP. Upgrade a card."
+      }
+     ]
+    }
+   ],
+   "visits": 631,
+   "sources": [
+    "capture"
+   ]
+  },
+  "STONE_OF_ALL_TIME": {
+   "engine_id": 35,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "LIFT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 237,
+       "evidence": "capture index 0 is locked with 'Requires a Potion'; in the record LIFT heals about 10 and raises max HP by 10"
+      },
+      {
+       "index": 1,
+       "key": "PUSH",
+       "title": "Push",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 338,
+       "evidence": "words of the name are in captured title 'Push' (equal)",
+       "description": "Lose 6 HP. Enchant an Attack with Vigorous 8."
+      }
+     ]
+    }
+   ],
+   "visits": 575,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SUNKEN_STATUE": {
+   "engine_id": 15,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "GRAB_SWORD",
+       "title": "Grab the Sword",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1091,
+       "evidence": "words of the name are in captured title 'Grab the Sword' (words)",
+       "description": "Obtain the Sword of Stone."
+      },
+      {
+       "index": 1,
+       "key": "DIVE_INTO_WATER",
+       "title": "Dive into the Water",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 579,
+       "evidence": "words of the name are in captured title 'Dive into the Water' (words)",
+       "description": "Gain 109 Gold. Lose 7 HP."
+      }
+     ]
+    }
+   ],
+   "visits": 1670,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SUNKEN_TREASURY": {
+   "engine_id": 9,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "FIRST_CHEST",
+       "title": "First Chest",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 444,
+       "evidence": "words of the name are in captured title 'First Chest' (equal)",
+       "description": "Gain 63 Gold."
+      },
+      {
+       "index": 1,
+       "key": "SECOND_CHEST",
+       "title": "Second Chest",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 443,
+       "evidence": "words of the name are in captured title 'Second Chest' (equal)",
+       "description": "Gain 340 Gold. Receive Greed."
+      }
+     ]
+    }
+   ],
+   "visits": 887,
+   "sources": [
+    "capture"
+   ]
+  },
+  "SYMBIOTE": {
+   "engine_id": 36,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "APPROACH",
+       "title": "Approach",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 629,
+       "evidence": "words of the name are in captured title 'Approach' (equal)",
+       "description": "Enchant an Attack with Corrupted."
+      },
+      {
+       "index": 1,
+       "key": "KILL_WITH_FIRE",
+       "title": "Kill with Fire",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 442,
+       "evidence": "words of the name are in captured title 'Kill with Fire' (equal)",
+       "description": "Choose a card to Transform."
+      }
+     ]
+    }
+   ],
+   "visits": 1071,
+   "sources": [
+    "capture"
+   ]
+  },
+  "TABLET_OF_TRUTH": {
+   "engine_id": 16,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "DECIPHER_1",
+       "title": "Decipher",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "key_pattern": "DECIPHER_\\d+",
+       "n": 338,
+       "evidence": "words of the name are in captured title 'Decipher' (equal)",
+       "description": "Lose 3 Max HP. Upgrade a random card."
+      },
+      {
+       "index": 1,
+       "key": "SMASH",
+       "title": "Smash",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 420,
+       "evidence": "words of the name are in captured title 'Smash' (equal)",
+       "description": "Heal 20 HP."
+      }
+     ]
+    },
+    {
+     "page": "DECIPHER(?:_\\d+)?",
+     "page_pattern": true,
+     "options": [
+      {
+       "index": 0,
+       "key": "DECIPHER",
+       "title": "Continue Deciphering",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 378,
+       "evidence": "capture page after Decipher: 'Continue Deciphering' 0, 'Give Up' 1"
+      },
+      {
+       "index": 1,
+       "key": "GIVE_UP",
+       "title": "Give Up",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 324,
+       "evidence": "capture page after Decipher"
+      }
+     ]
+    }
+   ],
+   "visits": 758,
+   "sources": [
+    "capture"
+   ]
+  },
+  "TEA_MASTER": {
+   "engine_id": 37,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BONE_TEA",
+       "title": "Bone Tea",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 218,
+       "evidence": "words of the name are in captured title 'Bone Tea' (equal)",
+       "description": "Pay 50 Gold. At the start of the next combat, Upgrade your starting hand."
+      },
+      {
+       "index": 1,
+       "key": "EMBER_TEA",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 135,
+       "evidence": "capture index 1 is locked with 'Requires 150 Gold'; the engine's price order is Bone Tea 0, Ember Tea 1, Tea of Discourtesy 2"
+      },
+      {
+       "index": 2,
+       "key": "TEA_OF_DISCOURTESY",
+       "title": "Tea of Discourtesy",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 211,
+       "evidence": "words of the name are in captured title 'Tea of Discourtesy' (equal)",
+       "description": "At the start of the next combat, shuffle 2 Dazed into your Draw Pile."
+      }
+     ]
+    }
+   ],
+   "visits": 564,
+   "sources": [
+    "capture"
+   ]
+  },
+  "THE_FUTURE_OF_POTIONS": {
+   "engine_id": 38,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "dynamic": true,
+     "options": [
+      {
+       "index": null,
+       "key": "POTION",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 931,
+       "evidence": "one option per potion held (up to three), shuffled; the record does not say which potion",
+       "dynamic": true
+      }
+     ]
+    }
+   ],
+   "visits": 931,
+   "sources": []
+  },
+  "THE_LANTERN_KEY": {
+   "engine_id": 50,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "RETURN_THE_KEY",
+       "title": "Return the Key",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 337,
+       "evidence": "words of the name are in captured title 'Return the Key' (equal)",
+       "description": "Gain 100 Gold."
+      },
+      {
+       "index": 1,
+       "key": "KEEP_THE_KEY",
+       "title": "Keep the Key",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 306,
+       "evidence": "words of the name are in captured title 'Keep the Key' (equal)",
+       "description": "Fight to obtain the Key."
+      }
+     ]
+    },
+    {
+     "page": "KEEP_THE_KEY",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "FIGHT",
+       "title": "Fight",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 306,
+       "evidence": "capture page after 'Keep the Key': Fight 0"
+      }
+     ]
+    }
+   ],
+   "visits": 643,
+   "sources": [
+    "capture"
+   ]
+  },
+  "THE_LEGENDS_WERE_TRUE": {
+   "engine_id": 7,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "NAB_THE_MAP",
+       "title": "Nab the Map",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 1386,
+       "evidence": "words of the name are in captured title 'Nab the Map' (equal)",
+       "description": "Receive the Spoils Map."
+      },
+      {
+       "index": 1,
+       "key": "SLOWLY_FIND_AN_EXIT",
+       "title": "Slowly Find an Exit",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 254,
+       "evidence": "words of the name are in captured title 'Slowly Find an Exit' (equal)",
+       "description": "Lose 8 HP. Procure 1 random Potion."
+      }
+     ]
+    }
+   ],
+   "visits": 1640,
+   "sources": [
+    "capture"
+   ]
+  },
+  "THIS_OR_THAT": {
+   "engine_id": 39,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "PLAIN",
+       "title": "This",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 697,
+       "evidence": "capture index 0 is 'This' (lose 6 HP, gain gold); in the record PLAIN costs 6 HP and pays about 55 gold in every visit"
+      },
+      {
+       "index": 1,
+       "key": "ORNATE",
+       "title": "That",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "record-inferred",
+       "mapping": "inferred",
+       "n": 1851,
+       "evidence": "capture index 1 is 'That' (add Clumsy, obtain a random relic); in the record ORNATE adds one card and one relic in every visit"
+      }
+     ]
+    }
+   ],
+   "visits": 2548,
+   "sources": [
+    "record-inferred"
+   ]
+  },
+  "TINKER_TIME": {
+   "engine_id": 58,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "CHOOSE_CARD_TYPE",
+       "title": "Accept",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "inferred",
+       "n": 447,
+       "evidence": "the capture shows one option, 'Accept', which only turns the page; the record has one key on this page"
+      }
+     ]
+    },
+    {
+     "page": "CHOOSE_CARD_TYPE",
+     "page_pattern": false,
+     "dynamic": true,
+     "options": [
+      {
+       "index": null,
+       "key": "ATTACK",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 99,
+       "evidence": "two of Attack, Skill, Power are offered, in a rolled order (engine EventRandomOffer)",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "SKILL",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 180,
+       "evidence": "see ATTACK",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "POWER",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 168,
+       "evidence": "see ATTACK",
+       "dynamic": true
+      }
+     ]
+    },
+    {
+     "page": "CHOOSE_RIDER",
+     "page_pattern": false,
+     "dynamic": true,
+     "options": [
+      {
+       "index": null,
+       "key": "CHAOS",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 24,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "CHOKING",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": "<20",
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "CURIOUS",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 60,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "ENERGIZED",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 86,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "EXPERTISE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 94,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "IMPROVEMENT",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": "<20",
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "SAPPING",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 47,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "VIOLENCE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 48,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      },
+      {
+       "index": null,
+       "key": "WISDOM",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "engine",
+       "mapping": "unresolved",
+       "n": 70,
+       "evidence": "two riders of the chosen type are offered, in a rolled order",
+       "dynamic": true
+      }
+     ]
+    }
+   ],
+   "visits": 447,
+   "sources": [
+    "engine"
+   ]
+  },
+  "TRASH_HEAP": {
+   "engine_id": 25,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "DIVE_IN",
+       "title": "Dive In",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 422,
+       "evidence": "words of the name are in captured title 'Dive In' (equal)",
+       "description": "Lose 8 HP. Obtain a random forgotten Relic from the past."
+      },
+      {
+       "index": 1,
+       "key": "GRAB",
+       "title": "Grab Random Junk",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 374,
+       "evidence": "words of the name are in captured title 'Grab Random Junk' (words)",
+       "description": "Gain 100 Gold. Obtain a random forgotten card from the past."
+      }
+     ]
+    }
+   ],
+   "visits": 796,
+   "sources": [
+    "capture"
+   ]
+  },
+  "TRIAL": {
+   "engine_id": 57,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "ACCEPT",
+       "title": "Accept",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 487,
+       "evidence": "words of the name are in captured title 'Accept' (equal)",
+       "description": "Serve as today's Decider."
+      },
+      {
+       "index": 1,
+       "key": "REJECT",
+       "title": "Reject",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": "<20",
+       "evidence": "words of the name are in captured title 'Reject' (equal)",
+       "description": "You are not allowed to Reject."
+      }
+     ]
+    },
+    {
+     "page": "MERCHANT|NOBLE|NONDESCRIPT",
+     "page_pattern": true,
+     "options": [
+      {
+       "index": 0,
+       "key": "GUILTY",
+       "title": "DECIDE: Guilty",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 302,
+       "evidence": "capture page after Accept: 'DECIDE: Guilty' 0, 'DECIDE: Innocent' 1"
+      },
+      {
+       "index": 1,
+       "key": "INNOCENT",
+       "title": "DECIDE: Innocent",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 204,
+       "evidence": "capture page after Accept"
+      }
+     ]
+    },
+    {
+     "page": "REJECT",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "ACCEPT",
+       "title": "Accept",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": "<20",
+       "evidence": "capture page after Reject: Accept 0, Double Down 1"
+      },
+      {
+       "index": 1,
+       "key": "DOUBLE_DOWN",
+       "title": "Double Down",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": "<20",
+       "evidence": "capture page after Reject"
+      }
+     ]
+    }
+   ],
+   "visits": 506,
+   "sources": [
+    "capture"
+   ]
+  },
+  "UNREST_SITE": {
+   "engine_id": 1,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "REST",
+       "title": "Rest Anyways",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 89,
+       "evidence": "words of the name are in captured title 'Rest Anyways' (words)",
+       "description": "Heal to full HP. Receive Poor Sleep."
+      },
+      {
+       "index": 1,
+       "key": "KILL",
+       "title": "Kill the Trees",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 239,
+       "evidence": "words of the name are in captured title 'Kill the Trees' (words)",
+       "description": "Lose 8 Max HP. Obtain a random Relic."
+      }
+     ]
+    }
+   ],
+   "visits": 328,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WAR_HISTORIAN_REPY": {
+   "engine_id": 40,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "UNLOCK_CAGE",
+       "title": "Unlock the Cage",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 160,
+       "evidence": "words of the name are in captured title 'Unlock the Cage' (words)",
+       "description": "Lose Lantern Key. Obtain History Course."
+      },
+      {
+       "index": 1,
+       "key": "UNLOCK_CHEST",
+       "title": "Unlock the Chest",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": "<20",
+       "evidence": "capture 'Unlock the Chest' 1 (a second page offers only the door not yet opened)"
+      }
+     ]
+    }
+   ],
+   "visits": 166,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WATERLOGGED_SCRIPTORIUM": {
+   "engine_id": 26,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BLOODY_INK",
+       "title": "Bloody Ink",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 366,
+       "evidence": "words of the name are in captured title 'Bloody Ink' (equal)",
+       "description": "Gain 6 Max HP."
+      },
+      {
+       "index": 1,
+       "key": "TENTACLE_QUILL",
+       "title": "Tentacle Quill",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 132,
+       "evidence": "words of the name are in captured title 'Tentacle Quill' (equal)",
+       "description": "Pay 55 Gold. Enchant a card with Steady."
+      },
+      {
+       "index": 2,
+       "key": "PRICKLY_SPONGE",
+       "title": "Prickly Sponge",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 157,
+       "evidence": "words of the name are in captured title 'Prickly Sponge' (equal)",
+       "description": "Pay 99 Gold. Enchant 2 cards with Steady."
+      }
+     ]
+    }
+   ],
+   "visits": 655,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WELCOME_TO_WONGOS": {
+   "engine_id": 41,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BARGAIN_BIN",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 294,
+       "evidence": "capture indices 0 to 2 are locked at 'Requires 100 / 200 / 300 Gold'; the engine's price order is bargain bin, featured item, mystery box"
+      },
+      {
+       "index": 1,
+       "key": "FEATURED_ITEM",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 62,
+       "evidence": "second price tag (200 gold), see BARGAIN_BIN"
+      },
+      {
+       "index": 2,
+       "key": "MYSTERY_BOX",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 52,
+       "evidence": "third price tag (300 gold), see BARGAIN_BIN"
+      },
+      {
+       "index": 3,
+       "key": "LEAVE",
+       "title": "Leave",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": "<20",
+       "evidence": "words of the name are in captured title 'Leave' (equal)",
+       "description": "Downgrade a random card."
+      }
+     ]
+    }
+   ],
+   "visits": 421,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WELLSPRING": {
+   "engine_id": 17,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BOTTLE",
+       "title": "Bottle",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 271,
+       "evidence": "words of the name are in captured title 'Bottle' (equal)",
+       "description": "Procure 1 random Potion."
+      },
+      {
+       "index": 1,
+       "key": "BATHE",
+       "title": "Bathe",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 488,
+       "evidence": "words of the name are in captured title 'Bathe' (equal)",
+       "description": "Remove 1 card from your Deck. Add 1 Guilty to your Deck."
+      }
+     ]
+    }
+   ],
+   "visits": 760,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WHISPERING_HOLLOW": {
+   "engine_id": 18,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "GOLD",
+       "title": "Exchange Gold",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 109,
+       "evidence": "words of the name are in captured title 'Exchange Gold' (words)",
+       "description": "Lose 43 Gold. Procure 2 random Potions."
+      },
+      {
+       "index": 1,
+       "key": "HUG",
+       "title": "Hug the Tree",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 450,
+       "evidence": "words of the name are in captured title 'Hug the Tree' (words)",
+       "description": "Lose 9 HP. Choose a card to Transform."
+      }
+     ]
+    }
+   ],
+   "visits": 560,
+   "sources": [
+    "capture"
+   ]
+  },
+  "WOOD_CARVINGS": {
+   "engine_id": 19,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BIRD",
+       "title": "Bird",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 293,
+       "evidence": "words of the name are in captured title 'Bird' (equal)",
+       "description": "Choose 1 starter card to Transform into Peck."
+      },
+      {
+       "index": 1,
+       "key": "SNAKE",
+       "title": "Snake",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 308,
+       "evidence": "words of the name are in captured title 'Snake' (equal)",
+       "description": "Enchant 1 card with Slither."
+      },
+      {
+       "index": 2,
+       "key": "TORUS",
+       "title": "Torus",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 121,
+       "evidence": "words of the name are in captured title 'Torus' (equal)",
+       "description": "Choose 1 starter card to Transform into Toric Toughness."
+      }
+     ]
+    }
+   ],
+   "visits": 722,
+   "sources": [
+    "capture"
+   ]
+  },
+  "ZEN_WEAVER": {
+   "engine_id": 51,
+   "captured": true,
+   "pages": [
+    {
+     "page": "INITIAL",
+     "page_pattern": false,
+     "options": [
+      {
+       "index": 0,
+       "key": "BREATHING_TECHNIQUES",
+       "title": "Breathing Techniques",
+       "is_proceed": false,
+       "is_locked": false,
+       "source": "capture",
+       "mapping": "exact",
+       "n": 78,
+       "evidence": "words of the name are in captured title 'Breathing Techniques' (equal)",
+       "description": "Pay 50 Gold. Add 2 Enlightenment to your Deck."
+      },
+      {
+       "index": 1,
+       "key": "EMOTIONAL_AWARENESS",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 219,
+       "evidence": "capture indices 1 and 2 are locked 'Not enough Gold'; the engine's order is breathing 0, emotional 1, acupuncture 2; in the record EMOTIONAL removes one card, ACUPUNCTURE two"
+      },
+      {
+       "index": 2,
+       "key": "ARACHNID_ACUPUNCTURE",
+       "title": null,
+       "is_proceed": false,
+       "is_locked": true,
+       "source": "capture",
+       "mapping": "inferred",
+       "n": 61,
+       "evidence": "see EMOTIONAL_AWARENESS"
+      }
+     ]
+    }
+   ],
+   "visits": 358,
+   "sources": [
+    "capture"
+   ]
+  }
+ }
+}
