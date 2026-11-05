@@ -308,9 +308,10 @@ class Halted(Exception):
 
 class Running:
     def __init__(self, cmd: plans.Cmd, proc: subprocess.Popen, files: list[Any], t0: float, in_job: bool,
-                 acct: winsys.JobObject | None = None, stamp0: tuple | None = None):
+                 acct: winsys.JobObject | None = None, stamp0: tuple | None = None, cap: winsys.JobObject | None = None):
         self.cmd, self.proc, self.files, self.t0, self.in_job = cmd, proc, files, t0, in_job
         self.acct = acct  # a Job Object of this command alone, inside the step's: its CPU and I/O, children included (clock accounting)
+        self.cap = cap  # the Job Object that holds the command to its memory share (Cmd.mem_share), None for a command with none
         self.stamp0 = stamp0  # the command's skip stamp as it was at the start
 
 
@@ -1651,17 +1652,34 @@ class Runner:
             kw.update(hidden_console_kw())
         in_job = True
         stamp0 = self.stamp_key(cmd.name)
+        cap = None
         try:
-            proc = winsys.suspended_popen(argv, sj, **kw)
+            cap = self.memory_cap(cmd)
+            proc = winsys.suspended_popen(argv, sj, cap, **kw)
         except OSError as e:
-            if isinstance(e, FileNotFoundError):
+            if isinstance(e, FileNotFoundError) or cmd.mem_share > 0:  # a command with a memory cap is never started without it
+                if cap:
+                    cap.close()
                 for f in files:
                     f.close()
                 raise
             in_job = False  # could not nest in a job: a plain start, killed by process tree instead
             kw["creationflags"] = kw.get("creationflags", 0) & ~winsys.CREATE_SUSPENDED
             proc = subprocess.Popen(argv, **kw)
-        return Running(cmd, proc, files, self.clock(), in_job, self.account_job(proc) if in_job else None, stamp0)
+        return Running(cmd, proc, files, self.clock(), in_job, self.account_job(proc) if in_job else None, stamp0, cap)
+
+    @staticmethod
+    def memory_cap(cmd: plans.Cmd) -> winsys.JobObject | None:
+        """The Job Object that holds `cmd`'s processes, children included, to `cmd.mem_share` of the machine's RAM committed together
+        (an allocation past it fails in the process that asks, which is how a runaway ends at the cap and not at the machine's
+        limit). None for a command with no share. Raises OSError where the share cannot be worked out or the limit not set:
+        the caller does not start the command."""
+        if cmd.mem_share <= 0:
+            return None
+        limit = winsys.ram_share(cmd.mem_share)
+        if winsys.IS_WIN and not limit:
+            raise OSError(f"the machine's RAM is unknown: no memory cap for {cmd.name}")
+        return winsys.JobObject(kill_on_close=False, job_memory_limit=limit) if limit else None
 
     @staticmethod
     def account_job(proc: subprocess.Popen) -> winsys.JobObject | None:
@@ -1712,10 +1730,20 @@ class Runner:
             if r.acct:
                 r.acct.close()
                 r.acct = None
-        if not acc:
-            return {}
-        return {"cpu_secs": round(acc["cpu_secs"], 1), "reads": int(acc["read_ops"]), "read_mb": round(acc["read_bytes"] / 1e6, 1),
-                "write_mb": round(acc["write_bytes"] / 1e6, 1)}
+        out: dict[str, Any] = {}
+        if acc:
+            out = {"cpu_secs": round(acc["cpu_secs"], 1), "reads": int(acc["read_ops"]), "read_mb": round(acc["read_bytes"] / 1e6, 1),
+                   "write_mb": round(acc["write_bytes"] / 1e6, 1)}
+        if r.cap:  # the most the command's processes held together, for a command with a memory cap
+            try:
+                peak = r.cap.peak_memory()
+            except Exception:  # noqa: BLE001
+                peak = None
+            r.cap.close()
+            r.cap = None
+            if peak:
+                out["peak_mb"] = round(peak["job"] / 2**20)
+        return out
 
     def finish_cmd(self, run: Run, ctx: plans.Ctx, r: Running, rc: int, rec: dict[str, Any], now: float) -> bool:
         for f in r.files:
@@ -1749,9 +1777,10 @@ class Runner:
     @staticmethod
     def clock_fields(acct: dict[str, Any], out: str) -> str:
         """The accounting part of a step's log line, key=value for tools/lab/clock_report.py: wall is the `in ...s` before it."""
-        if acct:
-            return (f"cpu={acct['cpu_secs']}s reads={acct['reads']} read_mb={acct['read_mb']} write_mb={acct['write_mb']} out={out}")
-        return f"cpu=? reads=? read_mb=? write_mb=? out={out}"
+        peak = f" peak_mb={acct['peak_mb']}" if "peak_mb" in acct else ""  # only a command with a memory cap has one
+        if "cpu_secs" in acct:
+            return (f"cpu={acct['cpu_secs']}s reads={acct['reads']} read_mb={acct['read_mb']} write_mb={acct['write_mb']} out={out}{peak}")
+        return f"cpu=? reads=? read_mb=? write_mb=? out={out}{peak}"
 
     def kill_group(self, ctx: plans.Ctx, sj: winsys.JobObject, running: list[Running], rec: dict[str, Any]) -> None:
         sj.terminate()
@@ -1771,6 +1800,9 @@ class Runner:
             if r.acct:
                 r.acct.close()
                 r.acct = None
+            if r.cap:
+                r.cap.close()
+                r.cap = None
             for g in [*r.cmd.cleanup, *r.cmd.after_cleanup]:
                 self.rm_glob(ctx, g)  # a partial output is worse than none
             rec["cmds"].pop(r.cmd.name, None)

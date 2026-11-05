@@ -8,10 +8,13 @@ apply to the probed copy).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import random
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -250,6 +253,56 @@ EMUDUMP_CSPROJ = r"""<Project Sdk="Microsoft.NET.Sdk">
 
 
 NEW_ITEM = r'<EmbeddedResource Include="..\..\tools\newthing\table.json" />'
+
+
+class HostMemoryCapTest(unittest.TestCase):
+    """A flipped loop bound made one mutant allocate without end; its replay host held tens of GB until a 120 s timer killed it
+    (2026-11-05). Each host now runs under a memory limit of its own."""
+
+    ALLOC = "import sys\ntry:\n    b = bytearray(int(sys.argv[1]) << 20)\n    print('allocated')\nexcept MemoryError:\n    print('refused')\n"
+
+    def run_host(self, ask_mb: int, mem: int | None) -> str:
+        p = mu.popen([sys.executable, "-c", self.ALLOC, str(ask_mb)], mem)
+        out, _ = p.communicate(timeout=60)
+        return out.decode().split()[-1]
+
+    def test_the_cap_is_the_share_over_the_hosts_and_the_parent(self):
+        ram = 32 << 30
+        self.assertEqual(mu.MEM_SHARE, 0.5)
+        self.assertEqual(mu.host_cap(6, ram), (16 << 30) // 7)
+        for hosts in (1, 2, 6, 12, 48):  # every host at its cap, and the parent as large as one, stay in the share
+            self.assertLessEqual((hosts + 1) * mu.host_cap(hosts, ram), int(ram * mu.MEM_SHARE))
+        self.assertEqual(mu.host_cap(0, ram), mu.host_cap(1, ram))
+        self.assertIsNone(mu.host_cap(6, 0))  # a machine whose RAM is unknown: no cap, not a zero one
+
+    def test_hosts_are_started_with_their_cap_where_they_are_started(self):
+        import inspect
+
+        from tools.fidelity import schemata
+        self.assertIn("mem = mu.host_cap(a.shards)", inspect.getsource(schemata.cmd_schemata))
+        self.assertIn("p = mu.popen(args, mem)", inspect.getsource(schemata.cmd_schemata))
+        self.assertIn('"mem": host_cap(a.workers * a.shards * 2)', inspect.getsource(mu.cmd_run))
+        self.assertIn('popen(args, ctx.get("mem"))', inspect.getsource(mu.run_mutant))
+
+    @unittest.skipUnless(sys.platform == "win32", "a Windows Job Object")
+    def test_a_host_that_asks_for_more_than_its_cap_is_refused_and_one_under_it_is_not(self):
+        self.assertEqual("allocated", self.run_host(32, 400 << 20))
+        self.assertEqual("refused", self.run_host(700, 400 << 20))
+
+    @unittest.skipUnless(sys.platform == "win32", "a Windows Job Object")
+    def test_the_cap_holds_after_the_job_handle_is_closed_and_a_host_with_none_runs_as_before(self):
+        # popen closes its handle to the job at once: the limit must be the process's, not the handle's.
+        code = self.ALLOC + "import time\ntime.sleep(0.5)\n" + self.ALLOC
+        p = mu.popen([sys.executable, "-c", code, "700"], 400 << 20)
+        self.assertEqual(["refused", "refused"], p.communicate(timeout=60)[0].decode().split())
+        self.assertEqual("allocated", self.run_host(32, None))
+
+    @unittest.skipUnless(sys.platform == "win32", "a Windows Job Object")
+    def test_a_host_that_cannot_be_put_in_a_job_still_starts_and_says_so(self):
+        err = io.StringIO()
+        with mock.patch.object(mu.winsys, "suspended_popen", side_effect=OSError("no job")), contextlib.redirect_stderr(err):
+            self.assertEqual("allocated", self.run_host(32, 400 << 20))
+        self.assertIn("memory cap not applied", err.getvalue())
 
 
 class ScratchCopyTest(unittest.TestCase):

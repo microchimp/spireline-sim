@@ -137,6 +137,95 @@ class AccountingTests(RunnerClockCase):
         self.assertIsNone(j.accounting())
 
 
+@unittest.skipUnless(WIN, "needs a Windows Job Object")
+class MemoryCapTests(RunnerClockCase):
+    """A command's `mem_share` (the mutation job's runaway mutant, 2026-11-05: one engine process held tens of GB until a timer killed
+    it): its processes, children included, may commit that share of the RAM together, and the line says what they peaked at."""
+
+    ALLOC = "import sys\ntry:\n    b = bytearray(int(sys.argv[1]) << 20)\n    print('allocated')\nexcept MemoryError:\n    print('refused')\n"
+
+    @staticmethod
+    def share_of(mb: int) -> float:
+        """The mem_share that makes `mb` MB of this machine's RAM."""
+        return (mb << 20) / winsys.total_ram_bytes()
+
+    def alloc_cmd(self, name: str, ask_mb: int, cap_mb: int | None) -> pl.Cmd:
+        kw = {"mem_share": self.share_of(cap_mb)} if cap_mb else {}
+        return pl.Cmd(name, ["{py}", "-c", self.ALLOC, str(ask_mb)], cwd="{lab}", **kw)
+
+    def test_ram_share_is_a_fraction_of_the_ram_the_os_reports(self):
+        self.assertEqual(winsys.ram_share(0.5, ram=32 << 30), 16 << 30)
+        self.assertIsNone(winsys.ram_share(0, ram=32 << 30))
+        self.assertIsNone(winsys.ram_share(0.5, ram=0))
+        self.assertGreater(winsys.total_ram_bytes(), 1 << 30)
+
+    def test_a_command_cannot_commit_more_than_its_share_and_one_under_it_runs_as_before(self):
+        r = self.runner()
+        run = self.run_plan(r, [pl.Step("a", [self.alloc_cmd("under", 32, 400), self.alloc_cmd("over", 700, 400),
+                                              self.alloc_cmd("free", 32, None)])])
+        said = {n: (run.dir / "logs" / f"{n}.log").read_text(encoding="utf-8").split()[-1] for n in ("under", "over", "free")}
+        self.assertEqual({"under": "allocated", "over": "refused", "free": "allocated"}, said)
+        got = self.lines(r)
+        for n in ("under", "over"):  # the line stays what clock_report reads, and gains the peak
+            text = [x for x in r.lab.log_path.read_text(encoding="utf-8").splitlines() if f"a/{n}:" in x][0]
+            self.assertRegex(text, r"peak_mb=\d+$")
+            self.assertIsNotNone(got[f"a/{n}"]["cpu"])
+            self.assertEqual("?", got[f"a/{n}"]["out"])
+        entries = run.rec("a")["cmds"]
+        self.assertLessEqual(entries["under"]["peak_mb"], 400)
+        self.assertGreater(entries["under"]["peak_mb"], 30)  # an interpreter and 32 MB
+        self.assertGreater(entries["over"]["peak_mb"], 30)  # (Windows counts the request it refused in the job's peak)
+        self.assertNotIn("peak_mb", entries["free"])
+        self.assertNotIn("peak_mb", [x for x in r.lab.log_path.read_text(encoding="utf-8").splitlines() if "a/free:" in x][0])
+
+    def test_a_childs_memory_counts_against_its_parents_share(self):
+        code = ("import subprocess, sys; "
+                f"print(subprocess.run([sys.executable, '-c', {self.ALLOC!r}, '700'], capture_output=True, text=True).stdout.split()[-1])")
+        r = self.runner()
+        run = self.run_plan(r, [pl.Step("a", [pl.Cmd("parent", ["{py}", "-c", code], cwd="{lab}", mem_share=self.share_of(400))],
+                                        mode="serial")])
+        self.assertEqual("refused", (run.dir / "logs" / "parent.log").read_text(encoding="utf-8").split()[-1])
+
+    def test_a_host_in_its_own_job_nests_inside_the_commands_cap(self):
+        # What mut-schemata does: the command (capped) starts a host with a limit of its own, under the command's.
+        code = textwrap.dedent(f"""
+            import sys
+            sys.path.insert(0, {str(ROOT)!r})
+            from tools.fidelity import mutate as mu
+            for ask in (32, 700):
+                p = mu.popen([sys.executable, '-c', {self.ALLOC!r}, str(ask)], 400 << 20)
+                print(p.communicate()[0].decode().split()[-1], p.returncode)
+        """)
+        r = self.runner()
+        run = self.run_plan(r, [pl.Step("a", [pl.Cmd("parent", ["{py}", "-c", code], cwd="{lab}", mem_share=self.share_of(2000))],
+                                        mode="serial")])
+        self.assertEqual(["allocated", "0", "refused", "0"], (run.dir / "logs" / "parent.log").read_text(encoding="utf-8").split()[-4:])
+
+    def test_a_command_whose_cap_cannot_be_set_is_not_started(self):
+        r = self.runner()
+
+        def refuse(cmd):
+            raise OSError("no job")
+
+        r.memory_cap = refuse  # type: ignore[method-assign]
+        pl.PLANS["fights"] = lambda c: [pl.Step("a", [pl.Cmd("x", ["{py}", "-c", "open('ran.txt', 'w').write('1')"], cwd="{lab}",
+                                                          mem_share=0.5),
+                                                      self.py("y", "print(1)")], mode="serial")]
+        run = r.new_run("fights", "abc")
+        r.execute(run)
+        x = run.rec("a")["cmds"]["x"]
+        self.assertEqual(("failed", 127), (x["status"], x["rc"]))
+        self.assertIn("could not start", x["note"])
+        self.assertFalse((r.lab.root / "ran.txt").exists())
+        self.assertNotIn("y", run.rec("a")["cmds"])  # a serial step stops at its first failure
+
+    def test_a_command_with_no_share_gets_no_cap(self):
+        self.assertIsNone(rn.Runner.memory_cap(pl.Cmd("x", ["a"])))
+        j = rn.Runner.memory_cap(pl.Cmd("x", ["a"], mem_share=0.25))
+        self.addCleanup(j.close)
+        self.assertEqual(j.peak_memory()["job"], 0)  # a limited job nobody has run in yet
+
+
 class OutputVerdictTests(RunnerClockCase):
     """`out=` on the line: from the command's skip stamp, which the command (or its post hook) writes."""
 

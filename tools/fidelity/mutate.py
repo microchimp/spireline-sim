@@ -43,6 +43,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from tools.lab import winsys
+
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = "src/Sts2Emulator"
 TARGETS = ["Core/CombatEngine.cs", "Core/BuffSystem.cs", "Core/EnemyAI.cs",
@@ -70,6 +72,11 @@ public static class MutCov
 }}
 """
 BELOW_NORMAL = 0x00004000  # Windows priority class for every emulator process this tool starts
+# The part of the machine's RAM the replay hosts and this process may commit together. A mutant can loop without end and allocate
+# as it goes (a flipped loop bound): without a limit its host held tens of GB until the stall timer killed it (2026-11-05, the
+# machine's virtual memory). Each host gets its own slice (host_cap) and a mutant that outgrows it fails there, as an error the
+# judge counts like any other crash; tools/lab/plans.py holds the whole mutation step to the same share (MUTATION_MEM_SHARE).
+MEM_SHARE = 0.5
 
 # ---------------------------------------------------------------------------------------------- source text
 
@@ -483,9 +490,32 @@ def emudump(copy: Path) -> str:
     return str(copy / "tools/emudump/bin/Release/net9.0/EmuDump.dll")
 
 
-def popen(args: list) -> subprocess.Popen:
+def host_cap(hosts: int, ram: int | None = None) -> int | None:
+    """Bytes one replay host may commit when `hosts` of them run at once: MEM_SHARE of the machine's RAM (`ram` for a test, else the
+    OS's figure), over the hosts and this process, so that every host at its cap and the parent together stay inside the share.
+    None where the RAM is unknown (no cap)."""
+    share = winsys.ram_share(MEM_SHARE, ram)
+    return share // (max(1, hosts) + 1) if share else None
+
+
+def popen(args: list, mem: int | None = None) -> subprocess.Popen:
+    """An emulator process, BelowNormal, its output piped. With `mem` (bytes) it runs in a Job Object that refuses it more committed
+    memory than that, children included; a job that cannot be made or joined is said so on stderr and the host starts without."""
     kw = {"creationflags": BELOW_NORMAL} if os.name == "nt" else {}
-    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dotnet_env(), **kw)
+    kw.update(stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=dotnet_env())
+    if mem and winsys.IS_WIN:
+        job = None
+        try:
+            job = winsys.JobObject(kill_on_close=False, process_memory_limit=mem)
+            return winsys.suspended_popen(args, job, **kw)
+        except FileNotFoundError:
+            raise
+        except OSError as e:
+            print(f"memory cap not applied to a host: {type(e).__name__} {e}", file=sys.stderr, flush=True)
+        finally:
+            if job is not None:
+                job.close()  # the limit stays with the process; the job goes when it exits
+    return subprocess.Popen(args, **kw)
 
 
 def digest_all(copy: Path, out_json: str, fights: list, shards: int, baseline: str | None = None) -> dict:
@@ -582,7 +612,7 @@ def run_mutant(m: Mutant, copy: Path, ctx: dict, shards: int, stall: float = 120
                 if part:
                     args = ["dotnet", emudump(copy), "digest", mode, ctx["out_json"], "--only", ",".join(map(str, part)),
                             "--baseline", f"{ctx['baseline']}.{mode}.jsonl"]
-                    procs.append({"mode": mode, "part": part, "p": popen(args), "last": 0, "done": 0, "t": time.time()})
+                    procs.append({"mode": mode, "part": part, "p": popen(args, ctx.get("mem")), "last": 0, "done": 0, "t": time.time()})
 
         def drain(pr):
             for raw in pr["p"].stdout:
@@ -751,7 +781,8 @@ def cmd_run(a) -> int:
         random.Random(f"{a.seed}:{m.id}").shuffle(perm)
         return [(p + 1, i) for p, i in enumerate(perm) if m.unit is None or m.unit in cov_sets[i]]
 
-    ctx = {"out_json": prep["out_json"], "baseline": str(d / "baseline"), "judge": judge, "order": order}
+    ctx = {"out_json": prep["out_json"], "baseline": str(d / "baseline"), "judge": judge, "order": order,
+           "mem": host_cap(a.workers * a.shards * 2)}  # a mutant's hosts: both modes, every shard, every worker
     copies = [d / f"w{k}" for k in range(a.workers)]
     for c in copies:
         make_copy(ROOT, c)

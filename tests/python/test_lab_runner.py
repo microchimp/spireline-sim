@@ -475,6 +475,16 @@ class PlansTest(unittest.TestCase):
         with self.assertRaises(pl.Unavailable):
             pl.plan_mutation(self.ctx(mutation_source=None))
 
+    def test_the_mutation_commands_that_run_the_engine_are_held_to_a_share_of_the_ram(self):
+        from tools.fidelity import mutate as mu
+        steps = pl.plan_mutation(self.ctx(mutation_source="runs/20260101T0000-fights/fights/b", mutants=150))
+        cmds = {cmd.name: cmd for s in steps for cmd in s.cmds}
+        self.assertEqual(pl.MUTATION_MEM_SHARE, mu.MEM_SHARE)  # the step's share and the one the hosts divide among themselves
+        self.assertEqual(0.5, pl.MUTATION_MEM_SHARE)
+        self.assertEqual([pl.MUTATION_MEM_SHARE] * 2, [cmds["mut-prepare"].mem_share, cmds["mut-schemata"].mem_share])
+        self.assertEqual(0.0, cmds["mut-report"].mem_share)
+        self.assertEqual(0.0, pl.Cmd("x", ["a"]).mem_share)  # nothing else changes
+
     def test_presort_outputs_use_the_roles_lab_groups_reads(self):
         from tools.fidelity import lab_groups as lg
         by = {cmd.name: cmd for s in pl.plan_presort(self.ctx()) for cmd in s.cmds}

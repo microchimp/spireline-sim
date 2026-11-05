@@ -102,6 +102,7 @@ class Cmd:
     core: bool = False  # real work of its job: a job with no runnable core command is not run at all
     counts: dict[str, int] = dataclasses.field(default_factory=dict)  # added to the lab's counters when it succeeds (fights played)
     append_log: bool = False  # a restarted command adds to its log (after a restart marker line) instead of replacing it
+    mem_share: float = 0.0  # the share of the machine's RAM its processes may commit together (a Job Object limit; an allocation past it fails)
 
     def skip_reason(self, c: Ctx, step: str = "") -> str | None:
         for pre in c.skip:
@@ -646,6 +647,12 @@ def probe_ids(backlog_dir: Path) -> list[str]:
     return out
 
 
+# A mutant can loop without end and allocate as it goes (a flipped loop bound), and the engine it runs in then holds tens of GB
+# until a stall timer kills it: 2026-11-05 that took the machine's virtual memory. The mutation commands share this part of the
+# RAM, each host of tools.fidelity.mutate under its own slice of it (mutate.MEM_SHARE, the same number).
+MUTATION_MEM_SHARE = 0.5
+
+
 def plan_mutation(c: Ctx) -> list[Step]:
     src = c.params.get("mutation_source")
     if not src:
@@ -653,8 +660,9 @@ def plan_mutation(c: Ctx) -> list[Step]:
     o, e, r = (f"{{lab}}/{src}{s}" for s in (".out.json", ".emu.json", ".reanchor.json"))
     mk = lambda n, a, **kw: Cmd(n, ["{py}", "-m", "tools.fidelity.mutate", *a], needs=["{tree}/tools/fidelity/mutate.py", o, e, r], **kw)  # noqa: E731
     return [Step("mutation", [
-        mk("mut-prepare", ["prepare", "--out-json", o, "--emu", e, "--dir", "{job}/mut"], core=True),
-        mk("mut-schemata", ["schemata", "--dir", "{job}/mut", "--reanchor", r, "--mutants", str(c.params["mutants"])], timeout=3 * 3600),
+        mk("mut-prepare", ["prepare", "--out-json", o, "--emu", e, "--dir", "{job}/mut"], core=True, mem_share=MUTATION_MEM_SHARE),
+        mk("mut-schemata", ["schemata", "--dir", "{job}/mut", "--reanchor", r, "--mutants", str(c.params["mutants"])], timeout=3 * 3600,
+           mem_share=MUTATION_MEM_SHARE),
         mk("mut-report", ["report", "--dir", "{job}/mut", "--results", "{job}/mut/schemata/results.jsonl", "--json", "{job}/mutation.json"],
            outputs={"mutation_reach": "mutation.json"}),
     ], mode="serial")]

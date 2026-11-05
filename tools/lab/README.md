@@ -17,7 +17,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `pairing_check.py` | `docs/PROMOTION_GUARD.md` section 4 points 1 and 2 on two arms' `runs.jsonl` (seed sets, config, crashes, discordant kills, floor-difference SD), with a permutation reference; read-only |
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
 | `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |
-| `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects (optionally forcing one priority class on every member), GetSystemTimes, a process tree's CPU, mutex |
+| `winsys.py` | ctypes: GetLastInputInfo, priority class, Job Objects (optionally forcing one priority class on every member, or a memory limit), the machine's RAM, GetSystemTimes, a process tree's CPU, mutex |
 | `stepcache.py` | the skip-by-inputs stamps (`LAB/stamps/<step>.json`): digests of a step's inputs, the engine digest, `skip_reason` / `write_stamp` |
 | `register_task.ps1` | registers "Spireline fix lab" (`-Trigger Idle` or `Logon`, `-WhatIf`, `-Unregister`) |
 
@@ -280,6 +280,15 @@ started (a Job Object of its own inside the step's); `reads`, `read_mb`, `write_
 megabytes read and written; Windows keeps no count of files opened, a small file costs one or two reads); `out` whether the output
 differs from the last run's, from the step's skip stamp (`changed`, `same`, `skipped` when the command found its inputs unchanged and
 ended at once, `?` for a command that keeps no stamp or failed). `cpu=?` marks a command the Job Object could not be attached to.
+
+A command with `mem_share` (plans.Cmd; the mutation job's `mut-prepare` and `mut-schemata` have 0.5) is held to that share of the
+machine's RAM, read from the OS, by a Job Object memory limit on it and everything it starts: an allocation past the limit fails in
+the process that asks (a runaway mutant allocates without end; before the cap its engine host held tens of GB for the 120 s stall
+timer and exhausted the machine's virtual memory, 2026-11-05). The command's line then ends `peak_mb=N`, the most the processes held
+together (a request the limit refused counts in it, so a peak above the share means something was refused), and `job.json` has the
+same figure. A command whose cap cannot be set is not started (rc 127, `could not start`). `tools/fidelity/mutate.py` also puts
+each replay host in a job of its own with `MEM_SHARE / (hosts + 1)` of the RAM (`host_cap`), so one runaway ends in its host as an
+error the judge counts like a crash, and no neighbour is starved.
 
 `python tools/lab/clock_report.py [--lab LAB] [--days 7] [--all] [--json FILE]` reads a week of that log and lists the steps whose wall
 is more than three times their CPU (IDLE: they wait), whose output was the same five runs running (SAME5), or whose mean wall is above

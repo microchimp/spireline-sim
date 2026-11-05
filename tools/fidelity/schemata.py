@@ -361,6 +361,7 @@ def cmd_schemata(a) -> int:
     events = []
     lock = threading.Lock()
     deadline = time.time() + a.minutes * 60
+    mem = mu.host_cap(a.shards)  # what one host may commit: a runaway mutant ends at it, as an error, not at the machine's limit
 
     def kill(g, i, mode, why):
         p = pos[i]
@@ -387,7 +388,7 @@ def cmd_schemata(a) -> int:
                     "--fights", ",".join(f"{i}:{pos[i]}" for i in todo),
                     "--mutants", ",".join(f"{g}:{u}" for g, u in live.items()),
                     "--baseline", str(d / "baseline"), "--kills", str(kills_path)]
-            p = mu.popen(args)
+            p = mu.popen(args, mem)
             state = {"t": time.time(), "cur": None, "fight": None, "done": set()}
 
             def drain():

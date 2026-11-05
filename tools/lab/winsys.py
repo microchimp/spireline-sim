@@ -8,7 +8,9 @@ import on any platform. Nothing here reads another process's memory.
 - ``JobObject``              a Job Object: KILL_ON_JOB_CLOSE (members die with the last handle), optionally one priority class
                              forced on every member (the lab's filler: BelowNormal), TerminateJobObject,
                              the CPU time and the I/O counters (read and write operations and bytes) of every process that ever ran
-                             in it, children included, the pids still in it.
+                             in it, children included, the pids still in it; optionally a cap on the memory each process commits
+                             and on what the whole job commits (the allocation that would pass it fails), and the peaks reached.
+- ``total_ram_bytes``        the machine's physical memory (GlobalMemoryStatusEx); ``ram_share`` a fraction of it, for sizing a cap.
 - ``suspended_popen``        Popen that starts the child suspended, puts it in a job, then resumes it (no grandchild
                              can escape the job in the gap).
 - ``system_times``           GetSystemTimes (idle, kernel, user), for the busy share of the machine.
@@ -33,6 +35,8 @@ CREATE_NO_WINDOW = 0x08000000
 NO_WINDOW = CREATE_NO_WINDOW if os.name == "nt" else 0  # creationflags for helper calls: no console flashes under pythonw
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x00000020
+JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
+JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
 TH32CS_SNAPPROCESS = 0x00000002
 JobObjectBasicAccountingInformation = 1
 JobObjectBasicAndIoAccountingInformation = 8
@@ -79,6 +83,12 @@ if IS_WIN:
     class _FILETIME(ctypes.Structure):
         _fields_ = [("lo", wintypes.DWORD), ("hi", wintypes.DWORD)]
 
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD), ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64), ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
     class _PROCESSENTRY32W(ctypes.Structure):
         _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
                     ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
@@ -118,6 +128,8 @@ if IS_WIN:
     _k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
     _k32.Process32NextW.restype = wintypes.BOOL
     _k32.GetSystemTimes.restype = wintypes.BOOL
+    _k32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(_MEMORYSTATUSEX)]
+    _k32.GlobalMemoryStatusEx.restype = wintypes.BOOL
     _nt.NtResumeProcess.argtypes = [wintypes.HANDLE]
     _nt.NtResumeProcess.restype = ctypes.c_long
 
@@ -241,26 +253,58 @@ def parent_alive(pid: int | None = None) -> bool:
         _k32.CloseHandle(h)
 
 
+def total_ram_bytes() -> int | None:
+    """The machine's physical memory in bytes (Windows); None where it cannot be read (not Windows, the call failed)."""
+    if not IS_WIN:
+        return None
+    st = _MEMORYSTATUSEX()
+    st.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+    if not _k32.GlobalMemoryStatusEx(ctypes.byref(st)):
+        return None
+    return int(st.ullTotalPhys) or None
+
+
+def ram_share(fraction: float, ram: int | None = None) -> int | None:
+    """`fraction` of the machine's physical memory in bytes (`ram` for a test); None when the total is unknown or the fraction is
+    not positive."""
+    ram = total_ram_bytes() if ram is None else ram
+    if not ram or fraction <= 0:
+        return None
+    return int(ram * fraction)
+
+
 class JobObject:
     """A Job Object. With ``kill_on_close`` every member dies when the last handle to it closes, which is also
     what happens when its owner is killed from outside. Jobs nest (Windows 8 and later): a process that is
     already in one (this runner, or a Task Scheduler instance) can be put in a second, child job."""
 
-    def __init__(self, kill_on_close: bool = True, priority_class: int | None = None):
+    def __init__(self, kill_on_close: bool = True, priority_class: int | None = None,
+                 process_memory_limit: int | None = None, job_memory_limit: int | None = None):
         """`priority_class` (e.g. BELOW_NORMAL_PRIORITY_CLASS): every process in the job runs at that class, whatever it asks for
-        itself, and so does everything it starts."""
+        itself, and so does everything it starts.
+
+        `process_memory_limit` / `job_memory_limit` (bytes): the most memory any one process in the job may commit, and the most
+        the processes in it commit together. A process that asks for more than that is refused the allocation (Python raises
+        MemoryError; a .NET process throws OutOfMemoryException, which its own code can catch and go on from), so a runaway
+        ends at the cap while the machine keeps its memory. The two together: a per-process limit under `job / n` keeps n runaways from starving a
+        neighbour; the job limit is the backstop for what no process limit foresaw."""
         self.h = None
         if not IS_WIN:
             return
         self.h = _k32.CreateJobObjectW(None, None)
         if not self.h:
             raise OSError(ctypes.get_last_error(), "CreateJobObject failed")
-        flags = (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE if kill_on_close else 0) | (JOB_OBJECT_LIMIT_PRIORITY_CLASS if priority_class else 0)
+        flags = ((JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE if kill_on_close else 0) | (JOB_OBJECT_LIMIT_PRIORITY_CLASS if priority_class else 0)
+                 | (JOB_OBJECT_LIMIT_PROCESS_MEMORY if process_memory_limit else 0) | (JOB_OBJECT_LIMIT_JOB_MEMORY if job_memory_limit else 0))
         if flags:
             ext = _EXT_LIMIT()
             ext.Basic.LimitFlags = flags
             if priority_class:
                 ext.Basic.PriorityClass = int(priority_class)
+            if process_memory_limit:
+                ext.ProcessMemoryLimit = int(process_memory_limit)
+            if job_memory_limit:
+                ext.JobMemoryLimit = int(job_memory_limit)
             if not _k32.SetInformationJobObject(self.h, JobObjectExtendedLimitInformation, ctypes.byref(ext),
                                                 ctypes.sizeof(ext)):
                 err = ctypes.get_last_error()
@@ -304,6 +348,18 @@ class JobObject:
                 "read_ops": int(info.Io.ReadOps), "read_bytes": int(info.Io.ReadBytes),
                 "write_ops": int(info.Io.WriteOps), "write_bytes": int(info.Io.WriteBytes)}
 
+    def peak_memory(self) -> dict[str, int] | None:
+        """{job, process}: the most memory (bytes committed) the processes in the job ever held together, and the most any one of
+        them held. None where the job cannot be asked (off Windows, a closed job). Read from a job that has a memory limit. On the
+        Windows this was written on, a request the job limit refused still counts in the job's peak (a peak above the limit means
+        something asked for more than it and was refused); the per-process limit's refusals do not."""
+        if not self.h:
+            return None
+        ext = _EXT_LIMIT()
+        if not _k32.QueryInformationJobObject(self.h, JobObjectExtendedLimitInformation, ctypes.byref(ext), ctypes.sizeof(ext), None):
+            return None
+        return {"job": int(ext.PeakJobMemoryUsed), "process": int(ext.PeakProcessMemoryUsed)}
+
     def pids(self) -> list[int]:
         """Process ids still in the job."""
         if not self.h:
@@ -324,15 +380,18 @@ class JobObject:
             self.h = None
 
 
-def suspended_popen(argv: list[str], job: JobObject | None, **kw: Any) -> subprocess.Popen:
+def suspended_popen(argv: list[str], job: JobObject | None, inner: JobObject | None = None, **kw: Any) -> subprocess.Popen:
     """Popen that puts the child in `job` before it runs a single instruction (created suspended, assigned, then
-    resumed), so nothing it starts can be outside the job. Without a job, or off Windows, a plain Popen."""
-    if not (IS_WIN and job and job.h):
+    resumed), so nothing it starts can be outside the job. With `inner` it is put in that one too, after `job`: a second job
+    nested in the first (a memory cap that only this child's tree is under). Without a job, or off Windows, a plain Popen."""
+    jobs = [j for j in (job, inner) if j is not None and j.h]
+    if not (IS_WIN and jobs):
         return subprocess.Popen(argv, **kw)
     kw["creationflags"] = kw.get("creationflags", 0) | CREATE_SUSPENDED
     p = subprocess.Popen(argv, **kw)
     try:
-        job.assign_handle(int(p._handle))  # type: ignore[attr-defined]
+        for j in jobs:
+            j.assign_handle(int(p._handle))  # type: ignore[attr-defined]
     except OSError:
         p.kill()
         raise
