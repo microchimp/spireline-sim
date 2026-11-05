@@ -117,6 +117,9 @@ run-dump	RunState.LastResolvedRoomType	not in RunSnap.Export: run_compare2 canno
 run-dump	RunState.LastingCandyRewardCard	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.LastingCandyRewardUpgraded	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.LavaRockTriggered	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.MeltedRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.MeltedRelics[].Counter	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
+run-dump	RunState.MeltedRelics[].DefId	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.ParasolSweepPending	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.RelicBag._originalRelics	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
 run-dump	RunState.RelicBag._refreshAllowed	not in RunSnap.Export: run_compare2 cannot see it differ until something it drives shows
