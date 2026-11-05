@@ -4,6 +4,8 @@ Written 2026-11-05 for milestones 2 and 3 of the strategy memo (sections 3.1 to 
 public run export for v0.107.1. Aggregates only: no run is named, no cell under 20 runs is shown (every cell below is far over it).
 The shards, donor maps and fitted weights are in the referee's `human-prior` folder, not in any repository.
 
+**v1 (2026-11-05) extends this file**: the real map of each run replaces the donors, routes are a fifth kind, and shop prices the copy vouches for are in the fit; see the section "v1" at the end. The text below is v0 as it was written.
+
 ## What the record teaches
 
 The corpus holds, for 14,974 finished Ironclad Ascension 10 solo standard runs (11,961 vanilla runs outside the exam fifth), the floor
@@ -225,3 +227,207 @@ python rl/human_prior.py agreement --model <folder> --baseline <run_value.npz> -
 
 `tests/python/test_human_prior.py` pins the exam rule, the option sets, a decision's round trip from record to shard to fit step (and
 the numpy export against the torch net), the counts contract and the price rules; it runs in seconds.
+
+## v1 (2026-11-05): the true map, routes, shop prices the copy vouches for, and a win-conditioned variant
+
+Written 2026-11-05 on branch `feat/human-prior-v1`. Everything above is v0 and stays as it was written; where v1 changes a statement, this section says so.
+The files are `rl/human_prior_replay.py` (new: the copy's half), `rl/human_prior.py` (extended; v0's commands and shard format still work),
+`tests/python/test_human_prior.py` (extended). Source of the record: Spire Codex public run export for v0.107.1; aggregates only, no cell under
+20 decisions is shown (the smallest cell below is far over it), the exam fifth is never read (`assert_no_exam` on every chunk, shard, fit and
+agreement), the shards, truth files and fits stay in the referee's `human-prior` folder.
+
+### What v1 changes, in plain words
+
+A human run's seed is a recipe card the copy can cook again: from it the copy draws each act's map, the shelves and prices of every shop, and
+the card offers (the seed-replay probe, `docs/diagnostics/2026-11-05-human-seed-replay.md`). v0 gave every decision a *donor's* map, a stand-in
+taken from the player's own self-play, so it could learn nothing about routes. v1 puts the **real map of the human's own act** into every row
+(what lies ahead of the room they stood on, and how far the boss is), adds a **fifth kind of decision, the route** (which room to go to next, among the
+rooms the node they stood on leads to), and prices the **shop offers with the copy's own prices** where a replay of the run stays in step with
+the record, so those shops are in the fit. Event rows come from the event option table (`build --events`, section "Event rows" above); v1 does not fit them, and with `--truth` they carry the true map like every other row. Potion rewards are still not built.
+
+### The true map (`python rl/human_prior_replay.py run`, then `build --truth`)
+
+* **Regenerated on the copy**: Ironclad, Ascension 10, the record's seed; Act 1's map at start, Acts 2 and 3 by the copy's own act transition, nothing
+  played. Two things the record does not say the copy is told: a Spoils Map card in the deck before Act 2 is drawn (when the record gained one in
+  Act 1; the engine then draws a different Act 2 map) and Winged Boots' three free steps (after the floor they were picked up on). The copy's library is the
+  lockstep worktree's build at the engine source of fork main (native API 39).
+* **The identity check, per run and act**: the record's route (the room types it went through) must be a path of the regenerated map. A run with a
+  Golden Compass (its acts' maps are one column) is left out and counted (`golden_compass`); a run whose route is not a path is `map_mismatch` and left
+  out whole; both are counted, none is patched. 11,961 usable runs outside the exam fifth were read:
+
+| | runs |
+|---|---|
+| read (fifths 1 to 4) | 11,961 |
+| **with a true map (built from)** | **11,764** (fifths 1 / 2 / 3 / 4: 2,952 / 2,948 / 3,016 / 2,848) |
+| left out, Golden Compass | 126 |
+| left out, `map_mismatch` | 71 (first failing act: Act 1 62, Act 2 8, Act 3 1; 2 hold Winged Boots) |
+| left out, map could not be drawn | 0 |
+
+| act | reached | tested (no compass) | route is a path of the map | the only path | region equals the record's | boss equals the record's (where reached) |
+|---|---|---|---|---|---|---|
+| 1 | 11,961 | 11,959 | 11,895 (99.5 in 100) | 11,666 | 11,867 | 8,636 / 8,791 |
+| 2 | 6,528 | 6,402 | 6,364 (99.4) | 6,138 | 6,364 | 4,347 / 4,421 |
+| 3 | 3,452 | 3,381 | 3,363 (99.5) | 3,282 | 3,363 | 2,844 / 2,937 |
+
+  Winged Boots were held in 238 of the 11,764 runs with a map (the matching path uses the fewest free steps the record needs; 156 / 60 / 32 acts use one).
+  The Spoils Map reading (Act 2 first) matched in 634 Act 2 maps. The 71 mismatches and the region and boss misses look like the player's unlocks (the copy
+  assumes a fully unlocked profile); that is inferred, not shown.
+* **Where the human stood.** The record names a room by its type only; the node is read from the path. When several paths of the same room types fit, the node is
+  not known (521 runs have such a step somewhere): a decision on an unknown node is dropped and counted, not guessed (card 718, rest 75, shop 17, route 1,151).
+  That keeps only the steps the record's later rooms pin down, which favours steps whose rooms differ in type.
+* **The row.** The base vector's map block (25 numbers: per room type the fewest, mean and most on the paths to the boss, and the nearest one; the log of the
+  number of paths) and the distance to the boss are those of the act's true map at the node the human stood on (`run_train.features.map_ahead`, the same
+  function the player uses), and the fight block H is computed from that vector, so a row is the player's input at that state. v1 shards carry the block (113
+  stored columns, `rows x 113`, `N_DENSE_V1`); v0 shards (88) still load, with donors.
+
+### Route decisions
+
+At each step of an act with more than one room to go to, one decision: the state after the previous floor (HP, gold, deck, relics, potions the human walked
+out with), and as options the rooms the node leads to, each as the player's afterstate for a map step (`apply_option` with the map option, as the `vrun` macro scores
+routes: the room's type pending, one floor on, the position moved, so the map block ahead of it is that room's). The chosen row is the room the record went to next.
+
+| | Act 1 | Act 2 | Act 3 | all |
+|---|---|---|---|---|
+| steps of the record (a room entered after the first) | 166,498 | 81,680 | 46,288 | 294,466 |
+| steps with only one room to go to (no decision) | 103,194 | 50,305 | 29,474 | 182,973 |
+| **route decisions built** | **60,988** | **29,689** | **15,971** | **106,648** |
+| ... of them the rooms differ in type | 43,781 | 21,038 | 11,395 | 76,214 |
+| dropped: node unknown (several paths fit) | 435 | 564 | 152 | 1,151 |
+| dropped: after Winged Boots were picked up | 1,304 | 670 | 454 | 2,428 |
+| dropped: a relic or a deck card the copy has no id for | 577 | 452 | 237 | 1,266 |
+
+Fifths 1 / 2 / 3 / 4: 26,731 / 27,175 / 26,883 / 25,859 decisions (80,789 train, 25,859 validation); 21,055 are from winning runs. About 9.1 route decisions a run,
+6.5 where the rooms differ in type (the probe said 6.7). Winged Boots let the player step to any room of the next row, which the option set does not model, so
+the floors after their pick-up are left out; a free step to a room that is not a child never appears as a choice.
+
+### Shop prices
+
+The probe's replay (`HistoryReplayer` with the changes that probe made) walks the copy through each run floor by floor, fights resolved not played, and at each shop
+records the copy's shelf with a price on every item. A visit is graded:
+
+* **strict (the probe's criterion, and the only grade in the fit)**: the replay was *clean* on entry (nothing before had left the record's path: no event option
+  ambiguous or unreproduced, no gold or HP difference), the shelf equals the record's (cards left plus cards bought, relics, potions), and what the human bought adds
+  up, to the gold, to what the record says was spent; no price-changing relic (Membership Card, Courier, Smiling Mask) was bought in the visit. Its rows lose
+  `price_unverified` and carry the copy's price of each item (the sale item at its sale price), so which card was on sale is no longer guessed.
+* **shelf only**: the same evidence (shelf equal, prices add up) but the replay had already left the record's path. The shelf coming out equal says the shop stream was in the
+  right place; these rows keep `price_unverified` (they are out of the fit) and carry `F_SHELF_ONLY` (flag bit 64) so a later fit can take them (`_bool_unavailable(..., shelf_only_ok=True)`).
+* otherwise the rules' price and `price_unverified`, with the reason counted.
+
+| grade | visits | share of the 18,681 built | Act 1 | Act 2 | Act 3 |
+|---|---|---|---|---|---|
+| **strict (price verified)** | **7,249** | **38.8 in 100** | 6,133 of 9,036 (67.9) | 1,034 of 5,902 (17.5) | 82 of 3,743 (2.2) |
+| shelf only | 5,863 | 31.4 | 1,734 | 2,678 | 1,451 |
+| shelf differs | 4,705 | 25.2 | 929 | 1,851 | 1,925 |
+| bought items' prices do not add up | 113 | 0.6 | 24 | 44 | 45 |
+| price-changing relic bought | 294 | 1.6 | 104 | 126 | 64 |
+| an offer the copy's shelf lacks | 116 | 0.6 | 17 | 67 | 32 |
+| no replay of the visit | 341 | 1.8 | 95 | 102 | 144 |
+
+The verified share falls by act because the clean path ends early (the median clean path ends at floor 7, probe section 3.2): most Act 1 shops are verified and almost
+no Act 3 shop is. Among clean visits with a matching shelf and a purchase, the prices added up to the gold in 7,721 of 7,728. By rows: 94,237 of 246,362 shop rows are verified; 48,452 of
+the training fifths' rows are in the fit (the rest are unavailable offers, replay mismatches or unverified); 15,630 rows validate. The rules' price check of v0 (75.4 in
+100 within 10 gold) is still computed and reported in `counts.json` for comparison.
+
+### The fit (`fit --decisions decisions-v1 [--win-input]`)
+
+The v0 recipe unchanged: generation 11's run judgement as the start (`gen11`), decisions of winning runs weighted 1x, AdamW 3e-4, batches of 256 decisions of mixed kinds, dropout 0.1,
+gradient clip 1, early stopping at patience 3 on the sum of the mean validation negative log-likelihoods of the kinds fitted (now card, ancient, rest kind, smith target,
+**shop and route**), fifth 4 validating. No donors are drawn: the map block is in the row. One run each on one RTX 3080.
+
+| | v1 | v1-win |
+|---|---|---|
+| decisions trained on (card / ancient / rest / shop / route) | 105,624 / 14,774 / 37,413 / 48,452 / 74,988 | the same |
+| decisions validated on | 34,323 / 4,775 / 12,090 / 15,630 / 24,298 | the same |
+| best epoch (of the epochs run) | 13 (16) | 15 (18) |
+| validation score | 4.917 | 4.912 |
+| wall time (data load 22 s included) | 171 s | 157 s |
+
+The decisions of runs whose deck replay disagrees with the final deck (546 runs of the four fifths; 33,118 decisions in the training fifths) are left out of the fit, as in v0. Runs: 8,916 train, 2,848 validation (true-map runs of fifths 1 to 3 and 4).
+
+### Agreement with the human choice on the validation fifth (fifth 4, `agreement`)
+
+Top-1 in 100. **v0 with true maps** is v0's kept weights (`pi_h-v0/weights.npz`, trained with donors, never on routes or shops) scored on the v1 rows, i.e. with the true map
+in place of the donor, on the same decisions as the other columns. v1-win is scored at its play setting (the input "this run won" is 1 for every row); the next column gives the
+same weights with each decision's own run outcome as the input. The last column is generation 11's run judgement (argmax of expected final floors, W = 53) on the same rows.
+Agreement is *not* how the variants are chosen (that is the head-to-head and the labels).
+
+| kind | n | v0, true maps | v1 | v1-win (input 1) | v1-win (input as recorded) | run judgement (gen 11) |
+|---|---|---|---|---|---|---|
+| **card reward, all** | 34,323 | **51.7** | **50.7** | **50.9** | 51.2 | 30.5 |
+| ... Act 1 / Act 2 / Act 3 | 20,587 / 9,523 / 4,213 | 51.1 / 50.9 / 56.9 | 49.8 / 49.9 / 57.0 | 50.1 / 50.2 / 56.8 | 50.6 / 50.3 / 56.3 | 33.7 / 27.4 / 22.1 |
+| ... human took a card / skipped | 26,087 / 8,236 | 51.7 / 51.9 | 48.8 / 56.7 | 48.4 / 58.7 | 49.4 / 56.8 | |
+| ancient | 4,775 | 54.4 | 54.5 | 54.8 | 55.0 | 30.3 |
+| rest kind (heal / smith / other) | 12,090 | 75.4 | 75.8 | 76.6 | 76.3 | 59.1 |
+| smith target | 6,751 | 48.4 | 48.7 | 48.9 | 48.7 | 22.0 |
+| shop, buy or leave (verified rows; 12,717 / 2,692 / 221 by act) | 15,630 | not fitted | 83.6 | 83.9 | 84.0 | not scored |
+| **route, all** | 24,298 | 59.9 (not fitted) | **76.0** | **75.7** | 75.8 | 62.5 |
+| ... Act 1 / Act 2 / Act 3 | 14,135 / 6,707 / 3,456 | 55.1 / 66.0 / 68.0 | 75.4 / 76.7 / 76.6 | 75.0 / 76.6 / 76.7 | 75.0 / 76.8 / 76.8 | 60.9 / 67.4 / 59.9 |
+| ... rooms differ in type | 17,371 | 63.7 | 79.1 | 78.8 | 79.0 | 64.5 |
+
+Mean negative log-likelihood: card 1.109 (v0) / 1.128 (v1) / 1.131 (v1-win); route 0.540 (v1) / 0.545 (v1-win); shop 0.404 / 0.399. Skip rate of the card prior 27.2 (v1) and 28.7 (v1-win)
+against the humans' 24.0 (v0 22.5; the judgement 10.3).
+
+**Route baselines** (the same 24,298 decisions; 17,371 where the rooms differ in type):
+
+| baseline | all | rooms differ in type | Act 1 / 2 / 3 | mean NLL |
+|---|---|---|---|---|
+| a coin over the rooms | 46.2 | 48.5 | 46.3 / 45.9 / 46.0 | 0.791 |
+| the room whose column is nearest the boss node's (ties share the credit) | 47.8 | 49.2 | 47.8 / 48.1 / 47.2 | n/a |
+| the room type humans took most often when offered it, per act (rates from fifths 1 to 3) | 64.0 | 73.4 | 64.1 / 63.7 / 64.0 | 0.710 |
+| **v1 prior** | **76.0** | **79.1** | 75.4 / 76.7 / 76.6 | **0.540** |
+
+"Nearest to the boss" is read as the column: every room of a step is one row nearer the boss, so only the column tells them apart. The type-frequency baseline is added because
+most of the humans' choice is which kind of room they want; the prior beats it by 12 points overall and 6 where the rooms differ in type, so it learns more than a type preference
+(HP, gold, the deck, what lies ahead of each room). The player's own judgement takes the human's room 62.5 in 100, between the type baseline and the prior.
+
+Winning runs apart (the decisions of the 6,687 card screens of winners; routes 4,658): card 56.2 (v1), 57.0 (v1-win), 57.0 (v0); route 78.0 / 78.1; rest kind 75.4 / 77.5 / 73.9. The win variant's gain over v1 is
+0.2 on all cards and 0.8 on winners' cards at the play setting; the files carry both.
+
+**Shops.** 15.8 in 100 of the verified offers are bought; always leaving is right 84.2 times in 100, above the model's 83.6 / 83.9 top-1, while its negative log-likelihood
+(0.404 / 0.399) is under the base rate's 0.436: a weak signal, as in v0's informational fit (83.7 against 83.1, which had unverified prices).
+
+### The win variant (`pi_h-v1-win/`)
+
+The net takes one extra input per row, "this run won" (1 for the rows of winning runs, 0 otherwise), a column of 256 weights added to the first layer's pre-activation (it starts at zero, so
+the net starts as the plain one). At play the input is 1: the prior then says what humans who won picked. **Weights format**: `weights.npz` has every array and the `meta` JSON of v0's, so the v0 loader
+(`NumpyPrior`) loads it unchanged, plus one array `extra.won.weight` (256) and one `meta["extra_inputs"]` entry:
+
+```
+{"name": "won", "weight_key": "extra.won.weight", "added_to": "hidden1 pre-activation (times the input)", "value_at_play": 1.0,
+ "folded_at": 1.0, "values_in_training": "1 for a decision of a run that won, 0 for one of a run that did not"}
+```
+
+`hidden1.bias` already includes `extra.won.weight * folded_at`, i.e. it is stored at the play setting, so a loader that ignores `extra_inputs` scores at the play setting without any change (checked: the v0 loader of
+main and the extended one give identical scores on 3,000 validation rows of both v1 files). A loader that wants another input value `x` adds `(x - folded_at) * extra.won.weight` to the first layer's
+pre-activation. `NumpyPrior(path)(dense, counts, extra=None)` does that (`extra` one number per row); `export_net` writes the format. `fit.json` lists `win_input: true`; `agreement.json` reports the prior at input 1
+(`prior`), with each run's own outcome (`prior_input_as_recorded`) and on the winners' decisions (`prior_winning_runs`). The plain v1 file carries no `extra_inputs`.
+
+### Caveats
+
+* **Map and position.** 98.4 in 100 of the runs have a true map; the 197 left out (compass, mismatch) are 1.6 in 100 and the mismatches look like the player's unlocks (inferred). The node a human stood on
+  is read from the room types of their route; steps where several paths fit are dropped, which favours steps whose rooms differ in type, so the route set has slightly more type choices than the record.
+* **Routes are the human's, from a human's play.** The prior says where a human goes (HP, deck and the map ahead as inputs), not where it works for our player; the chooser blends it with the judgement and
+  that is decided on the labels. Winged Boots runs lose their route decisions after the pick-up (2.0 in 100 of runs hold them).
+* **Shops.** Verified for 38.8 in 100 of visits and for 2.2 in 100 of Act 3 visits, so the shop rows in the fit are mostly Act 1 and early Act 2; the buy-or-leave signal is weak (above). The shelf-only rows (31.4 in 100 of visits) are
+  evidence-equal to the strict ones apart from the replay's clean flag and could be added; they are not in this fit. A price-changing relic bought mid-visit leaves its visit out.
+* **v1 against v0 on the same cards**: 50.7 against 51.7. The true map instead of a donor's changes v0's own score on cards by 0.1 (51.7 here, 51.6 on v0's decisions with donors): the map block matters little for
+  card rewards. The multitask fit with routes and shops costs about a point on cards (v0's informational fit with shops cost about one too); no variant was tuned.
+* **The win variant** needs the flag at play to be 1: no run is known to have won at play, so the input is an assumption about the target, and 11 in 100 of the runs won.
+* The fight block H uses the true distance to the boss (v0: the first donor's). The 16 in 100 card rewards with a guessed boss (the run died first) are as in v0.
+* Not built: potion rewards, the removal target at the shop, Hatch; events are rows (kind 4) but not fitted.
+* Ids in the shards: `kind` 0 card, 1 rest, 2 ancient, 3 shop, 4 event, 5 route; flag bits 1 split screen, 2 price unverified, 4 unavailable, 8 replay mismatch, 16 guessed boss,
+  32 gate unknown (events), 64 shelf only (shops).
+
+### Rerun (v1)
+
+```
+python rl/human_prior_replay.py run --procs 2 --resume             # the copy: truth-NNNNN.json.gz in <out>/truth (680 s on 2 processes for 11,961 runs)
+python rl/human_prior.py build --truth <out>/truth --procs 2 --clean   # <out>/decisions-v1 and counts.json (577 s)
+python rl/human_prior.py fit --decisions decisions-v1 --name pi_h-v1 --variants gen11 --winner-weights 1                # GPU, 171 s
+python rl/human_prior.py fit --decisions decisions-v1 --name pi_h-v1-win --variants gen11 --winner-weights 1 --win-input
+python rl/human_prior.py agreement --decisions decisions-v1 --model <out>/pi_h-v1 --baseline <run_value.npz> --out <out>/pi_h-v1/agreement.json
+```
+
+The tests (`tests/python/test_human_prior.py`, 16 now, seconds) add: the route-is-a-path check (unique, ambiguous, no path, Winged Boots' jumps, another seed's map), the runs a true map cannot stand for, a route decision's option set
+and afterstates, the dropped cases, the price grades and flags and the fit's use of them, a v1 shard through a fit step and the numpy scorer, the baselines, the win input (its fold, the v0 loader's identical scores at play, the loss
+reaching the weight) and the truth chunk join.

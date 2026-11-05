@@ -304,5 +304,322 @@ class HumanPriorTests(unittest.TestCase):
         self.assertIn("within10_spend", summary)
 
 
+class HumanPriorV1Tests(unittest.TestCase):
+    """v1: the true map (identity check, position of the human on it), the route kind, the replay's shop prices and their flags, the won input."""
+
+    @classmethod
+    def setUpClass(cls):
+        hp.stack()
+        cls.t = hp.Tables()
+        cls.train_id = _find_ids(False, 1, "v")[0]
+        cls.record = synthetic_run(cls.train_id)
+
+    # a small act: start (3,0), three rooms in row 1, the human's path along column 3, boss at row 7
+    NODES = [[3, 0, 8], [2, 1, 1], [3, 1, 1], [4, 1, 3], [2, 2, 4], [3, 2, 1], [3, 3, 1], [4, 3, 1], [3, 4, 4], [3, 5, 3], [3, 6, 3], [3, 7, 6]]
+    EDGES = [[3, 0, 2, 1], [3, 0, 3, 1], [3, 0, 4, 1], [3, 1, 3, 2], [2, 1, 2, 2], [2, 2, 3, 3], [4, 1, 3, 2], [3, 2, 3, 3], [3, 2, 4, 3], [3, 3, 3, 4], [4, 3, 3, 4],
+             [3, 4, 3, 5], [3, 5, 3, 6], [3, 6, 3, 7]]
+
+    def visit(self, **kw):
+        t = self.t
+        v = {"floor": 5, "clean": True, "clean2": True, "shelf_ok": True, "removal": 100, "purchase": True, "spent": 225, "predicted": 225, "found_all": True,
+             "exact": True, "moving": False,
+             "cards": [[t.cards["ANGER"], 52, 0], [t.cards["HEADBUTT"], 77, 0], [t.cards["HAVOC"], 48, 0]],
+             "relics": [[t.relics["ANCHOR"], 177], [t.relics["BAG_OF_PREPARATION"], 210]], "potions": [[t.potions["FIRE_POTION"], 52]]}
+        v.update(kw)
+        return v
+
+    def truth(self, **kw):
+        act = {"act": 1, "points": 7, "status": "ok", "reading": "plain", "jumps": 0, "unique": True, "cols": [3] * 7, "nodes": self.NODES, "edges": self.EDGES,
+               "start": [3, 0]}
+        doc = {"id": self.train_id, "compass": False, "boots": None, "spoils_act1": False, "acts": [act], "shops": [self.visit()]}
+        doc.update(kw)
+        return doc
+
+    def build(self, truth):
+        stats, seen, price = Counter(), Counter(), Counter()
+        specs = hp.run_decisions(self.record, self.t, stats, seen, price, truth=truth)
+        return specs, stats, seen, price
+
+    # ------------------------------------------------------------------------------------------ the identity check
+
+    def test_map_identity_check(self):
+        import human_prior_replay as hpr  # noqa: PLC0415
+
+        nodes = {(3, 0): 8, (2, 1): 1, (4, 1): 1, (2, 2): 1, (4, 2): 3, (3, 3): 6}
+        edges = [((3, 0), (2, 1)), ((3, 0), (4, 1)), ((2, 1), (2, 2)), ((4, 1), (4, 2)), ((2, 2), (3, 3)), ((4, 2), (3, 3))]
+        graph = {"nodes": nodes, "edges": edges, "current": (3, 0)}
+        left = hpr.match_route(graph, [1, 1, 6])  # the route is a path, and the only one
+        self.assertEqual((left["ok"], left["unique"], left["cols"]), (True, True, [3, 2, 2, 3]))
+        right = hpr.match_route(graph, [1, 3, 6])
+        self.assertEqual((right["ok"], right["cols"]), (True, [3, 4, 4, 3]))
+        bad = hpr.match_route(graph, [1, 5, 6])  # no room of that type: not a path of this map, and how far it got
+        self.assertEqual((bad["ok"], bad["best"]), (False, 1))
+        prefix = hpr.match_route(graph, [1])  # a route that ended early fits both rooms: the record cannot say which
+        self.assertEqual((prefix["ok"], prefix["unique"], prefix["cols"]), (True, False, [3, -1]))
+        # Winged Boots: a step to any room of the next row, after the floor they were picked up on, at the fewest jumps
+        nodes2 = dict(nodes)
+        nodes2[(4, 1)] = 2
+        graph2 = {"nodes": nodes2, "edges": edges, "current": (3, 0)}
+        self.assertFalse(hpr.match_route(graph2, [1, 3])["ok"])
+        boots = hpr.match_route(graph2, [1, 3], boots_floor=1)
+        self.assertEqual((boots["ok"], boots["jumps"], boots["cols"]), (True, 1, [3, 2, 4]))
+        self.assertFalse(hpr.match_route(graph2, [1, 3], boots_floor=3)["ok"])  # picked up too late for the jump (the step is floor 3)
+        # the other side of the check: the same route against another seed's map
+        other = {"nodes": {(3, 0): 8, (1, 1): 3, (3, 3): 6}, "edges": [((3, 0), (1, 1)), ((1, 1), (3, 3))], "current": (3, 0)}
+        self.assertFalse(hpr.match_route(other, [1, 1, 6])["ok"])
+
+    def test_runs_whose_map_cannot_stand_are_left_out(self):
+        ok = self.truth()
+        self.assertIsNone(hp.run_exclusion(ok))
+        self.assertIsNone(hp.run_exclusion(None))
+        self.assertEqual(hp.run_exclusion(self.truth(compass=True)), "golden_compass")
+        bad = self.truth()
+        bad["acts"][0] = dict(bad["acts"][0], status="no_path")
+        self.assertEqual(hp.run_exclusion(bad), "map_mismatch")
+        self.assertEqual(hp.run_exclusion(self.truth(maps_crash="boom")), "map_crash")
+        specs, stats, seen, _ = self.build(self.truth(compass=True))
+        self.assertEqual(specs, [])
+        self.assertEqual(stats["runs_left_out|golden_compass"], 1)
+        self.assertEqual(stats["runs_true_map"], 0)
+        self.assertEqual(seen["act1|card"], 3)  # the screens are still counted (counts.json's definitions)
+        self.assertGreater(stats["drop|act1|card|run left out: golden_compass"], 0)
+
+    # ----------------------------------------------------------------------------------------------- route rows
+
+    def test_route_rows_option_set(self):
+        specs, stats, _, _ = self.build(self.truth())
+        routes = [s for s in specs if s["kind"] == "route"]
+        self.assertEqual(len(routes), 2)  # six steps, two with more than one room to go to
+        first, second = routes
+        self.assertEqual([o["node"] for o in first["options"]], [[2, 1, 1], [3, 1, 1], [4, 1, 3]])  # the rooms the start leads to, by column
+        self.assertEqual(first["chosen"], 1)  # the human went to (3, 1)
+        self.assertEqual([o["node"] for o in second["options"]], [[3, 3, 1], [4, 3, 1]])
+        self.assertEqual(second["chosen"], 0)
+        self.assertEqual((first["floor"], first["position"]), (1, (3, 0)))  # the state is the one after floor 1, standing on the start
+        self.assertEqual((second["floor"], second["position"]), (3, (3, 2)))
+        self.assertEqual(stats["route|act1|steps"], 6)
+        self.assertEqual((stats["route|act1|choices"], stats["route|act1|single_room"], stats["route|act1|type_choices"]), (2, 4, 1))
+        # every other decision carries the map and the node the human stood on
+        others = [s for s in specs if s["kind"] != "route"]
+        self.assertTrue(others and all("map_nodes" in s and s["position"][0] == 3 for s in others))
+        self.assertEqual({s["floor"]: s["position"] for s in others if s["kind"] in ("card", "shop")}, {2: (3, 1), 3: (3, 2), 5: (3, 4)})  # floor 4's screen of five is dropped
+        # the afterstates: the step is pending (the room's type), one floor on, the position moved; the distance to the boss is the same for all
+        F = hp.stack().F
+        rows = np.stack(hp.spec_rows(first))
+        b = F.B_OFFSET
+        room = [int(np.argmax(r[b:b + 9])) for r in rows]
+        self.assertEqual(room[0], room[1])  # two monsters
+        self.assertNotEqual(room[0], room[2])  # and a rest
+        self.assertEqual(len({round(float(r[15]), 6) for r in rows}), 1)
+        self.assertAlmostEqual(float(rows[0][15]), (7 - 1) / 16, places=6)
+        self.assertGreater(float(rows[0][5]), float(np.stack(hp.spec_rows({**first, "options": [{"k": "card.skip"}]}))[0][5]))  # floor / 17 moved on by one
+        # the map block differs between the rooms of the step (a shop lies ahead of one, not of the other)
+        self.assertFalse(np.array_equal(rows[0][F.C_OFFSET:F.C_OFFSET + F.C_SIZE], rows[1][F.C_OFFSET:F.C_OFFSET + F.C_SIZE]))
+
+    def test_route_rows_are_dropped_not_guessed(self):
+        # a step whose node the record cannot tell (several paths of the same room types) is no decision, nor is what stands on it
+        amb = self.truth()
+        amb["acts"][0] = dict(amb["acts"][0], cols=[3, 3, -1, 3, 3, 3, 3], unique=False)
+        specs, stats, _, _ = self.build(amb)
+        self.assertEqual([s["floor"] for s in specs if s["kind"] == "route"], [1])
+        self.assertEqual(stats["drop|act1|route|route: position ambiguous (several paths of the same room types)"], 1)
+        self.assertEqual(stats["drop|act1|card|map position ambiguous (several paths of the same room types)"], 1)
+        self.assertNotIn(3, {s["floor"] for s in specs if s["kind"] == "card"})
+        # after Winged Boots the next room may be any of the row: not modelled, left out
+        boots = self.build(self.truth(boots=1))
+        self.assertEqual([s for s in boots[0] if s["kind"] == "route"], [])
+        self.assertEqual(boots[1]["drop|act1|route|route: after Winged Boots were picked up (free steps are not modelled)"], 2)  # both steps with a choice
+        # a step that is not along an edge of the map
+        edges = [e for e in self.EDGES if e[:4] != [3, 0, 3, 1]]
+        off = self.truth()
+        off["acts"][0] = dict(off["acts"][0], edges=edges)
+        self.assertEqual(self.build(off)[1]["drop|act1|route|route step is not along an edge of the map"], 1)
+
+    # ------------------------------------------------------------------------------------------------ shop prices
+
+    def test_price_flags_follow_the_replay(self):
+        def shop_rows(visit):
+            truth = self.truth(shops=[visit] if visit else [])
+            return [s for s in self.build(truth)[0] if s["kind"] == "shop"]
+
+        t = self.t
+        strict = shop_rows(self.visit())
+        self.assertTrue(strict and all(not (s["flags"] & (hp.F_PRICE_UNVERIFIED | hp.F_SHELF_ONLY)) for s in strict))
+        quoted = {(s["offer"], s["options"][1]["id"]): s["options"][1]["price"] for s in strict}
+        self.assertEqual(quoted[(hp.OFFER_CARD, t.cards["HAVOC"])], 48)  # the copy's price, not the rules' band
+        self.assertEqual(quoted[(hp.OFFER_RELIC, t.relics["ANCHOR"])], 177)
+        self.assertEqual(quoted[(hp.OFFER_POTION, t.potions["FIRE_POTION"])], 52)
+        self.assertTrue(all(s["price"] == s["options"][1]["price"] for s in strict))
+        # the replay had left the record's path, but the shelf and the prices match anyway: usable apart, not in the verified set
+        loose = shop_rows(self.visit(clean=False))
+        self.assertTrue(all(s["flags"] & hp.F_PRICE_UNVERIFIED and s["flags"] & hp.F_SHELF_ONLY for s in loose))
+        self.assertEqual({(s["offer"], s["options"][1]["id"]): s["options"][1]["price"] for s in loose}, quoted)
+        # anything short of that keeps the flag and the rules' price
+        for reason, v in (("shelf", self.visit(shelf_ok=False)), ("price", self.visit(exact=False)), ("moving", self.visit(moving=True)), ("no replay", None)):
+            rows = shop_rows(v)
+            self.assertTrue(rows and all(s["flags"] & hp.F_PRICE_UNVERIFIED and not s["flags"] & hp.F_SHELF_ONLY for s in rows), reason)
+            self.assertEqual(rows[0]["options"][1]["price"], hp.shop_price(rows[0]["offer"], rows[0]["options"][1]["id"], rows[0]["relics"], t)[0], reason)
+        # a visit without a purchase has nothing to add up: the shelf alone vouches for it
+        self.assertTrue(all(not s["flags"] & hp.F_PRICE_UNVERIFIED for s in shop_rows(self.visit(purchase=False, exact=None))))
+        # the grades, as the build counts them
+        stats = self.build(self.truth(shops=[self.visit(shelf_ok=False)]))[1]
+        self.assertEqual((stats["shop_visit|shelf_differs"], stats["shop_visit|strict"]), (1, 0))
+        self.assertEqual(self.build(self.truth())[1]["shop_visit|strict"], 1)
+        # a v1 fit leaves out the unverified rows (the shelf-only ones too, unless asked), a v0 fit all of them
+        ds = types.SimpleNamespace(dec=np.zeros((4, len(hp.COLS)), np.int32))
+        ds.dec[:, hp.C["kind"]] = hp.KIND["shop"]
+        ds.dec[:, hp.C["flags"]] = [0, hp.F_PRICE_UNVERIFIED, hp.F_PRICE_UNVERIFIED | hp.F_SHELF_ONLY, hp.F_UNAVAILABLE]
+        self.assertEqual(hp._bool_unavailable(ds, True, False).tolist(), [False, True, True, True])
+        self.assertEqual(hp._bool_unavailable(ds, True, False, shelf_only_ok=True).tolist(), [False, True, False, True])
+        self.assertEqual(hp._bool_unavailable(ds, True, False, verified_only=False).tolist(), [False, False, False, True])
+        self.assertEqual(hp._bool_unavailable(ds, False, False).tolist(), [True] * 4)
+
+    # ------------------------------------------------------------------------------------ the shard, the fit, the scorer
+
+    def v1_shard(self, tmp, specs):
+        for sp in specs:
+            sp["run_ix"] = 0
+        path = Path(tmp) / "shard-00000.npz"
+        n_rows = hp.write_shard(path, specs, [self.train_id], fake_judge(), {}, None)
+        self.assertEqual(n_rows, sum(len(s["options"]) for s in specs))
+        return hp.Dataset.load(Path(tmp), [hs.exam_bucket(self.train_id)], None)
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_v1_round_trip_with_true_maps(self):
+        specs = self.build(self.truth())[0]
+        F = hp.stack().F
+        with tempfile.TemporaryDirectory() as tmp:
+            ds = self.v1_shard(tmp, specs)
+            self.assertTrue(ds.has_map)
+            self.assertEqual(ds.dense.shape[1], hp.N_DENSE_V1)
+            self.assertEqual(len(ds.kind_idx["route"]), 2)
+            # the stored map block is the true one of the node the human stood on, and the distance to the boss comes with it
+            card = int(ds.kind_idx["card"][0])
+            row = int(ds.dec[card, hp.C["start"]])
+            node_map = hp.act_map(self.truth()["acts"][0])["nodes"]
+            pos = specs[[s["kind"] for s in specs].index("card")]["position"]
+            np.testing.assert_allclose(ds.dense[row, hp.S1_C], F._map_ahead(node_map, pos))
+            self.assertAlmostEqual(float(ds.dense[row, 15]), (7 - pos[1]) / 16, places=6)
+            # routes carry the room's type and column per option
+            r0 = int(ds.kind_idx["route"][0])
+            s0, n0 = int(ds.dec[r0, hp.C["start"]]), int(ds.dec[r0, hp.C["n"]])
+            self.assertEqual(ds.role[s0:s0 + n0].tolist(), [1, 1, 3])
+            self.assertEqual(ds.ident[s0:s0 + n0].tolist(), [2, 3, 4])
+            self.assertEqual(int(ds.dec[r0, hp.C["aux"]]), 3)  # the boss node's column
+            # fit steps on every kind, the numpy prior equals the torch net, and the metrics know the route kind
+            dev = torch.device("cpu")
+            net = hp.make_net()
+            gt = hp.Gpu(ds, None, dev, 1.0)
+            opt = torch.optim.AdamW(net.parameters(), lr=1e-3)
+            net.train()
+            for kind in ("card", "ancient", "rest", "shop", "route"):
+                loss = gt.loss(net, kind, torch.from_numpy(ds.kind_idx[kind]))
+                self.assertTrue(torch.isfinite(loss).item(), kind)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+            hp.export_net(net, Path(tmp) / "weights.npz", {"kinds": ["card", "ancient", "rest", "shop", "route"]})
+            prior = hp.NumpyPrior(Path(tmp) / "weights.npz")
+            np.testing.assert_allclose(gt.scores(net), hp.row_scores_np(ds, None, prior), rtol=1e-4, atol=1e-4)
+            m = hp.metrics_from_scores(ds, hp.row_scores_np(ds, None, prior), ~hp._bool_unavailable(ds, True, False))
+            self.assertEqual(m["route"]["n"], 2)
+            self.assertEqual(m["route_type_choices"]["n"], 1)  # only the first step offers rooms of different types
+            self.assertAlmostEqual(m["route_coin_top1"], (1 / 3 + 1 / 2) / 2)
+            # the baselines: a coin, and the room nearest the boss's column (ties share the credit)
+            old = hp.MIN_CELL
+            hp.MIN_CELL = 1
+            try:
+                base = hp.route_baselines(ds, ~hp._bool_unavailable(ds, True, False), ds)
+            finally:
+                hp.MIN_CELL = old
+            self.assertAlmostEqual(base["uniform"]["all"]["top1"], (1 / 3 + 1 / 2) / 2)
+            # first step: columns 2, 3, 4 against the boss's 3: the human took (3, 1), the nearest; second: 3 and 4, the human took (3, 3), the nearest
+            self.assertAlmostEqual(base["nearest_to_boss_column"]["all"]["top1"], 1.0)
+            self.assertEqual(base["decisions"], 2)
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_win_input(self):
+        specs = self.build(self.truth())[0]
+        for sp in specs:
+            sp["won"] = sp["kind"] == "card"  # rows of 'winning' and 'losing' runs
+        with tempfile.TemporaryDirectory() as tmp:
+            ds = self.v1_shard(tmp, specs)
+            dev = torch.device("cpu")
+            net = hp.make_net(win=True)
+            self.assertTrue(net.uses_win)
+            torch.manual_seed(3)
+            net.won_w.data = torch.randn_like(net.won_w) * 0.5  # a trained-looking input weight (it starts at zero)
+            gt = hp.Gpu(ds, None, dev, 1.0)
+            self.assertEqual(float(net.won_w.abs().sum() > 0), 1.0)
+            # the input is the decision's run outcome unless a value is given; the loss sees it and trains the weight
+            as_recorded, at_play, at_zero = gt.scores(net), gt.scores(net, win=1.0), gt.scores(net, win=0.0)
+            self.assertFalse(np.allclose(at_play, at_zero))
+            card_rows = np.concatenate([np.arange(ds.dec[i, hp.C["start"]], ds.dec[i, hp.C["start"]] + ds.dec[i, hp.C["n"]]) for i in ds.kind_idx["card"]])
+            np.testing.assert_allclose(as_recorded[card_rows], at_play[card_rows], rtol=1e-5, atol=1e-5)  # won decisions: input 1
+            other = np.setdiff1d(np.arange(len(as_recorded)), card_rows)
+            np.testing.assert_allclose(as_recorded[other], at_zero[other], rtol=1e-5, atol=1e-5)
+            net.train()
+            loss = gt.loss(net, "card", torch.from_numpy(ds.kind_idx["card"]))
+            loss.backward()
+            self.assertGreater(float(net.won_w.grad.abs().sum()), 0.0)
+            # the export keeps the v0 format: the same arrays and the same forward, with the input weight folded into the first bias at the play setting
+            path = Path(tmp) / "weights.npz"
+            hp.export_net(net, path, {"kinds": ["card"]})
+            prior = hp.NumpyPrior(path)
+            self.assertEqual([e["name"] for e in prior.extra_inputs], ["won"])
+            self.assertEqual(prior.meta["extra_inputs"][0]["value_at_play"], 1.0)
+            self.assertIn("extra.won.weight", prior.p)
+            self.assertNotIn("won_w", prior.p)
+            np.testing.assert_allclose(hp.row_scores_np(ds, None, prior), at_play, rtol=1e-4, atol=1e-4)  # no extra given: the play setting
+            np.testing.assert_allclose(hp.row_scores_np(ds, None, prior, extra=np.zeros(len(ds.dense), np.float32)), at_zero, rtol=1e-4, atol=1e-4)
+            rec = np.repeat(ds.dec[:, hp.C["won"]], ds.dec[:, hp.C["n"]]).astype(np.float32)
+            np.testing.assert_allclose(hp.row_scores_np(ds, None, prior, extra=rec), as_recorded, rtol=1e-4, atol=1e-4)
+            # a loader that knows nothing of extra inputs (the v0 formula over the stored arrays) scores at play
+            p = prior.p
+
+            def v0_forward(dense, counts):
+                e = np.concatenate([counts[:, :1154] @ p["embed.deck.weight"].T, counts[:, 1154:1450] @ p["embed.relics.weight"].T,
+                                    counts[:, 1450:] @ p["embed.potions.weight"].T], axis=1)
+                h = np.maximum(np.concatenate([dense, e], axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"], 0.0)
+                h = np.maximum(h @ p["hidden2.weight"].T + p["hidden2.bias"], 0.0)
+                return (h @ p["score.weight"].T + p["score.bias"])[:, 0]
+
+            np.testing.assert_allclose(hp.row_scores_np(ds, None, v0_forward), at_play, rtol=1e-4, atol=1e-4)
+            # a plain prior takes no input and the won column is not in its file
+            plain = hp.make_net()
+            self.assertFalse(plain.uses_win)
+            hp.export_net(plain, Path(tmp) / "plain.npz", {})
+            self.assertEqual(hp.NumpyPrior(Path(tmp) / "plain.npz").extra_inputs, [])
+
+    def test_kind_and_flag_ids_do_not_collide(self):
+        self.assertEqual(len(set(hp.KIND.values())), len(hp.KIND))
+        self.assertEqual({k: hp.KIND[k] for k in ("card", "rest", "ancient", "shop")}, {"card": 0, "rest": 1, "ancient": 2, "shop": 3})  # v0's ids
+        bits = [hp.F_SPLIT, hp.F_PRICE_UNVERIFIED, hp.F_UNAVAILABLE, hp.F_REPLAY_MISMATCH, hp.F_BOSS_GUESSED, hp.F_GATE_UNKNOWN, hp.F_SHELF_ONLY]
+        self.assertEqual(len(set(bits)), len(bits))
+        self.assertTrue(all(b & (b - 1) == 0 for b in bits))
+
+    def test_truth_chunk_must_match_the_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "truth-00000.json.gz"
+            with gzip.open(good, "wt", encoding="utf-8") as fh:
+                json.dump({"run_ids": [self.train_id], "runs": [self.truth()]}, fh)
+            self.assertEqual(list(hp.load_truth_chunk(good)), [self.train_id])
+            bad = Path(tmp) / "truth-00001.json.gz"
+            with gzip.open(bad, "wt", encoding="utf-8") as fh:
+                json.dump({"run_ids": [self.train_id, "x"], "runs": [self.truth()]}, fh)
+            with self.assertRaises(ValueError):
+                hp.load_truth_chunk(bad)
+            hp._WORK.update(t=self.t, judge=fake_judge(), donors=None, dindex={}, exam=frozenset())
+            try:
+                other = synthetic_run(_find_ids(False, 2, "w")[1])
+                with self.assertRaises(AssertionError):  # a run the truth chunk has no record of
+                    hp.build_chunk({"lines": [json.dumps(other)], "out": str(Path(tmp) / "shard.npz"), "truth": str(good)})
+                ok = hp.build_chunk({"lines": [json.dumps(self.record)], "out": str(Path(tmp) / "shard-00000.npz"), "truth": str(good)})
+            finally:
+                hp._WORK.clear()
+            self.assertEqual(ok["runs"], 1)
+            self.assertEqual(ok["stats"]["runs_true_map"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
