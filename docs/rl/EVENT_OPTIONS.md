@@ -113,8 +113,10 @@ clone and keeping the one that gives that relic.
 | ended by an ambiguous event option | 122 | 25 (the visits with a rolled page) |
 | ended by an event option that did not reproduce the record | 53 | 0 |
 | ended by a different event than the record's | 14 | 17 |
-| ended by a gold or HP difference after a floor | 71 (28 shop, 16 "?", 14 fight, 10 elite, 3 other) | 128 (48 shop, 37 "?", 24 fight, 15 elite, 4 other) |
-| other (rest option Hatch 7 / 11, crystal sphere minigame 0 / 8, ...) | | |
+| ended by a gold or HP difference after a floor | 71 (28 shop, 16 "?", 14 fight, 10 elite, 3 other) | 129 (48 shop, 37 "?", 24 fight, 15 elite, 5 other) |
+| ended on an event screen the replay cannot answer (Crystal Sphere's minigame: its clicks are not in the record) | 4 | 10 |
+| rest option Hatch (the record does not name its relic) | 7 | 11 |
+| not clean in all | 289 | 216 |
 
 More replays reach the later floors, so the later causes (shops, fights) now end more of them. The table's index was never illegal on the
 copy (0 of 1,591 table steps), and the table-resolved floors with a gold or HP difference are concentrated where the event is a fight or a
