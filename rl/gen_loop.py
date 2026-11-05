@@ -45,6 +45,8 @@ from typing import Any
 
 import numpy as np
 
+import macro_recipe
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_AGENT_ROOT = ROOT.parents[1] / "referee" / "agent"
 GEN_WINDOW = 3  # DESIGN 5.4: train on the last 3 generations
@@ -136,6 +138,10 @@ class Agent:
     # the version of the run action mask this agent's runs are built with (agent.json `mask_version`, absent: 1); it only
     # changes what the mask carries, never what the agent chooses (run_train.engine._legal hides the potion actions)
     mask_version: int = 1
+    # a blended macro (`imitation_chooser`, macro "vrun+pi_h:lambda=...:pi_h=<8 hex>"): the human prior's weights (human_prior.npz in the
+    # candidate's folder) and its lambda; the other macros leave them unset
+    human_prior: str | None = None
+    lam: float = 0.0
 
     def search_extra(self) -> dict[str, Any]:
         """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
@@ -161,6 +167,12 @@ class Agent:
             from run_train.policy import LookaheadPolicy  # noqa: PLC0415
 
             return LookaheadPolicy(self.macro_npz, self.tau, eps=self.eps, W=self.W)
+        if macro_recipe.is_blended(self.macro):
+            if not (self.macro_npz and self.human_prior):
+                raise ValueError(f"macro {self.macro} needs run_value.npz and human_prior.npz")
+            import imitation_chooser  # noqa: PLC0415
+
+            return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W)
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -196,7 +208,7 @@ def exploring_agent(agent: Agent | None, tau: float, eps: float) -> Agent:
     `run_train.policy.LookaheadPolicy`: softmax over V_W at temperature `tau` floors, plus `eps` uniform) from each run's own
     exploration stream, so a run replays exactly. Only a vrun macro samples; evaluation (E-blocks, nights, scores) plays the
     argmax agent `load_agent` returns, never this one."""
-    if agent is None or agent.macro != "vrun":
+    if agent is None or not (agent.macro == "vrun" or macro_recipe.is_blended(agent.macro)):
         raise ValueError("only a vrun macro explores: give the agent of a generation that plays V_run")
     if tau < 0 or not 0.0 <= eps <= 1.0:
         raise ValueError(f"tau must be >= 0 and eps in [0, 1], not {tau}, {eps}")
@@ -219,13 +231,27 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     prior = str(p) if (p / "model.json").is_file() and (p / "combat_policy.pt").is_file() else None
     mode = macro or meta.get("macro", "rules")
     npz = p / "run_value.npz"
-    if mode == "vrun" and not npz.is_file():
-        raise FileNotFoundError(f"macro vrun needs run_value.npz in {p.name}")
+    blended = macro_recipe.is_blended(mode)
+    if (mode == "vrun" or blended) and not npz.is_file():
+        raise FileNotFoundError(f"macro {mode} needs run_value.npz in {p.name}")
+    human, lam = None, 0.0
+    if blended:  # the recipe names lambda and the prior's weights (8 hex of their sha256); the folder must hold exactly those
+        lam, sha8 = macro_recipe.parse_macro(mode)
+        named = meta.get("human_prior") or {}  # agent.json's own record of the prior: file, full sha256, lambda
+        human = p / str(named.get("file") or "human_prior.npz")
+        if not human.is_file():
+            raise FileNotFoundError(f"macro {mode} needs {human.name} in {p.name}")
+        sha = file_sha256(human)
+        if sha[:8] != sha8 or (named.get("sha256") and named["sha256"] != sha):
+            raise ValueError(f"{p.name}/{human.name} is not the prior macro {mode} names")
+        if named.get("lambda") is not None and macro_recipe.format_lambda(lam) != str(named["lambda"]):
+            raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior lambda {named['lambda']} disagree")
     mask_version = meta.get("mask_version", 1)
     if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
         raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
-    return Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" else None,
-                 float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version))
+    return Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
+                 float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
+                 human_prior=str(human) if human else None, lam=lam)
 
 
 def active_agent_extra() -> dict[str, Any]:
@@ -1291,27 +1317,33 @@ BUILT_PRIOR_FILES = ("combat_policy.pt", "combat_net.pt")  # the prior export's 
 BUILT_BASE_FILES = ("run_value.npz", "run_value.pt")  # the base generation's V_run fit, copied unchanged
 
 
-def candidate_dirname(retrain: int = 0, attempt: int = 1) -> str:
+def candidate_dirname(retrain: int = 0, attempt: int = 1, tag: str = "") -> str:
     """The folder a candidate of generation <target> sits in: `candidate` (a first attempt), `candidate-r<n>` (the n-th retrain of a
     trained one) or `candidate-a<n>` (the n-th attempt of a built one: the same target number tried again, beside the earlier
     attempts' folders, which stay as they are)."""
     if attempt > 1 and retrain:
         raise ValueError("an attempt folder is not a retrain folder")
+    if tag:
+        if attempt > 1 or retrain or not TAG.fullmatch(tag):
+            raise ValueError(f"a recipe tag is lowercase words joined by hyphens, never beside an attempt or a retrain: {tag!r}")
+        return f"candidate-{tag}"
     if attempt > 1:
         return f"candidate-a{int(attempt)}"
     return "candidate" if retrain == 0 else f"candidate-r{retrain}"
 
 
-def built_candidate(agent_root: Path | str, target: int, retrain: int = 0, attempt: int = 1) -> Path | None:
-    """AGENT/gen<target>/candidate (candidate-r<n> for a retrain index, candidate-a<n> for an attempt) when `build_candidate` wrote it
-    (agent.json has `built`), else None: `gen0.py train` judges such a candidate as it is and never trains over it."""
-    cand = Path(agent_root) / f"gen{int(target)}" / candidate_dirname(retrain, attempt)
+def built_candidate(agent_root: Path | str, target: int, retrain: int = 0, attempt: int = 1, tag: str = "") -> Path | None:
+    """AGENT/gen<target>/candidate (candidate-r<n> for a retrain index, candidate-a<n> for an attempt, candidate-<tag> for a tagged
+    recipe) when `build_candidate` wrote it (agent.json has `built`), else None: `gen0.py train` judges such a candidate as it is and
+    never trains over it."""
+    cand = Path(agent_root) / f"gen{int(target)}" / candidate_dirname(retrain, attempt, tag)
     meta = cand / "agent.json"
     return cand if meta.is_file() and BUILT_KEY in read_json(meta) else None
 
 
 def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
-                    export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1) -> Path:
+                    export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1, tag: str = "",
+                    human_prior: Path | str | None = None, lam: float | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1329,7 +1361,13 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
 
     `attempt` (default 1: gen<target>/candidate) places a further attempt at the same generation number in gen<target>/candidate-a<n>
     (`candidate_dirname`), so the earlier attempt's folder, its promotion.json and its markers stay as they are; the lab's train job
-    takes it by the `ready-<base>-g<target>-a<n>` marker."""
+    takes it by the `ready-<base>-g<target>-a<n>` marker.
+
+    `human_prior` (the weights of rl/human_prior.py's fit, `weights.npz`) with `lam` makes the blended chooser the candidate's macro
+    (`imitation_chooser`, D55 milestone 4): the file is copied as human_prior.npz and agent.json's `macro` is the recipe string
+    `vrun+pi_h:lambda=<lam>:pi_h=<8 hex of its sha256>` (`macro_recipe.macro_name`), which the ledger counts attempts under as a
+    recipe of its own. The base must play the vrun macro (its V_run fit is the other half of the blend). `tag` places the candidate in
+    gen<target>/candidate-<tag> (marker `ready-<base>-g<target>-<tag>`), so two recipes of one generation number sit side by side."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1356,7 +1394,19 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         raise FileNotFoundError(f"{prior_dir.name} has no {', '.join(missing)}")
     if int(attempt) < 1:
         raise ValueError(f"attempt {attempt}: attempts count from 1")
-    cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt))
+    macro, chooser = base_agent.macro, None
+    if (human_prior is None) != (lam is None):
+        raise ValueError("the blended chooser needs both the prior's weights and lambda")
+    if human_prior is not None:
+        if base_agent.macro != "vrun":
+            raise ValueError(f"the blended chooser adds the prior to the vrun macro; the base plays {base_agent.macro}")
+        if not Path(human_prior).is_file():
+            raise FileNotFoundError(f"no human prior weights at {human_prior}")
+        chooser = {"file": "human_prior.npz", "sha256": file_sha256(human_prior), "lambda": macro_recipe.format_lambda(float(lam)),
+                   "source": f"{Path(human_prior).parent.name}/{Path(human_prior).name}",
+                   "guard": {"prob": 0.02, "floors": 1.0, "rule": "an option the prior gives under prob is taken only if V prefers it by more than floors"}}
+        macro = macro_recipe.macro_name(float(lam), chooser["sha256"])
+    cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt), tag)
     if cand.exists() and any(cand.iterdir()):
         raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
     cand.mkdir(parents=True, exist_ok=True)
@@ -1371,6 +1421,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
             (cand / name).unlink(missing_ok=True)
             if (Path(vrun_fit) / name).is_file():
                 shutil.copyfile(Path(vrun_fit) / name, cand / name)
+    if chooser is not None:
+        shutil.copyfile(human_prior, cand / "human_prior.npz")
     npz = cand / "run_value.npz"
     fit = {"source": "base", "sha256": file_sha256(npz)} if npz.is_file() else {"source": "none", "sha256": None}
     if fit_doc is not None:
@@ -1384,7 +1436,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
              "rule": "the prior's files and the base's V_run fit are copied unchanged; `gen0.py train` judges the candidate as it is",
              "prior": {**prior, "model_json": read_json(prior_dir / "model.json")},
              "base": {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro,
-                      "policy_sha256": base_agent.describe()["prior_sha256"], "run_value_sha256": fit["sha256"]}}
+                      "policy_sha256": base_agent.describe()["prior_sha256"], "run_value_sha256": fit["sha256"]},
+             **({"chooser": {**chooser, "macro": macro}} if chooser else {})}
     fit_text = (f"the V_run fit of {Path(vrun_fit).name} ({'matched to this prior' if fit['matched'] else 'played by another prior'})"
                 if fit_doc is not None else "its V_run fit")
     if fit_doc is not None:
@@ -1392,25 +1445,30 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     lineage = None if target == base_agent.generation + 1 else {
         "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
         "difference": (f"the combat prior of {prior_dir.parent.name}/{prior_dir.name} (built, not trained) with generation "
-                       f"{base_agent.generation}'s macro {base_agent.macro} and {fit_text}"),
+                       f"{base_agent.generation}'s macro {base_agent.macro} and {fit_text}"
+                       + (f", the run chooser blended with the human prior ({macro})" if chooser else "")),
         "decision": why}
     doc: dict[str, Any] = {"candidate_generation": target, BUILT_KEY: built, **({"lineage": lineage} if lineage else {}),
                            "prior_train": source_train}
     if export:
         doc["onnx"] = export_all(cand)
-    meta = {"generation": target, "macro": base_agent.macro, "built_on": base_agent.generation, "written": utc_now(),
+    meta = {"generation": target, "macro": macro, "built_on": base_agent.generation, "written": utc_now(),
             **({"lineage": lineage} if lineage else {}), "mask_version": base_agent.mask_version,
             **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
+            **({"human_prior": chooser} if chooser else {}),
             "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"],
-                                         **({"attempt": int(attempt)} if int(attempt) > 1 else {})},
-            "note": (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                                         **({"attempt": int(attempt)} if int(attempt) > 1 else {}), **({"tag": tag} if tag else {})},
+            "note": ((f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, "
+                      f"the run chooser blended with the human prior ({macro}); its E-block judges the chooser alone")
+                     if chooser else
+                     f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
                      f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone" if fit_doc is None else
                      f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
                      f"({base_agent.macro}) and {fit_text}; its E-block judges the prior and the fit together")}
     write_json(cand / "train.json", doc)
     write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
     got = load_agent(cand)
-    if (got.generation, got.macro, got.describe()["prior_sha256"]) != (target, base_agent.macro, champ.policy_sha256):
+    if (got.generation, got.macro, got.describe()["prior_sha256"]) != (target, macro, champ.policy_sha256):
         raise ValueError(f"gen{target}/{cand.name} does not load as built: {got.describe()}")
     return cand
 
@@ -1420,7 +1478,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
 
 _MARKER = re.compile(r"(ready|done)-(\d+)(?:-r(\d+))?")
 # names the candidate generation (and, with `-a<n>`, the attempt: the candidate sits in gen<target>/candidate-a<n>); not counted as a budget by mark_ready
-_MARKER_TARGET = re.compile(r"(ready|done)-(\d+)-g(\d+)(?:-a(\d+))?")
+TAG = re.compile(r"[a-z]{3}[a-z0-9]*(?:-[a-z0-9]+)*")  # a recipe tag, three letters or more at the start (never `a`, `a2`, `b2`): `ready-11-g12-imit` is the candidate in gen12/candidate-imit
+_MARKER_TARGET = re.compile(r"(ready|done)-(\d+)-g(\d+)(?:-a(\d+)|-(" + TAG.pattern + r"))?")
 
 
 def marker_parts(path: Path | str) -> tuple[int, int] | None:
@@ -1447,18 +1506,24 @@ def marker_attempt(path: Path | str) -> int:
     return int(t[4]) if t and t[1] == "ready" and t[4] else 1
 
 
-def marker_key(path: Path | str) -> tuple[int, int, int, int] | None:
-    """Marker order: generation, then the plain and `-r<n>` forms by retrain index, then the `-g<target>` forms by target and attempt."""
+def marker_tag(path: Path | str) -> str:
+    """The recipe tag a `ready-<gen>-g<target>-<tag>` marker names ("" for every other form): the candidate is gen<target>/candidate-<tag>."""
+    t = _MARKER_TARGET.fullmatch(Path(path).name)
+    return (t[5] or "") if t and t[1] == "ready" else ""
+
+
+def marker_key(path: Path | str) -> tuple[int, int, int, int, str] | None:
+    """Marker order: generation, then the plain and `-r<n>` forms by retrain index, then the `-g<target>` forms by target, attempt and tag."""
     parts = marker_parts(path)
     if parts is None:
         return None
     target = marker_target(path)
-    return (parts[0], 0, parts[1], 0) if target is None else (parts[0], 1, target, marker_attempt(path))
+    return (parts[0], 0, parts[1], 0, "") if target is None else (parts[0], 1, target, marker_attempt(path), marker_tag(path))
 
 
 def ready_markers(train_dir: Path) -> list[tuple[int, Path]]:
-    """`LAB/train/ready-<gen>[-r<n>|-g<target>[-a<n>]]` markers, lowest generation first, within one: the plain, the `-r<n>`, the
-    `-g<target>` (by target, then attempt)."""
+    """`LAB/train/ready-<gen>[-r<n>|-g<target>[-a<n>|-<tag>]]` markers, lowest generation first, within one: the plain, the `-r<n>`, the
+    `-g<target>` (by target, then attempt, then tag)."""
     d = Path(train_dir)
     found = [(marker_key(p), p) for p in (d.glob("ready-*") if d.is_dir() else [])]
     return [(k[0], p) for k, p in sorted(((k, p) for k, p in found if k), key=lambda x: x[0])]
@@ -1598,7 +1663,7 @@ def lineage_blocks(rows: list[dict[str, str]], blocks: int = 3) -> list[tuple[in
 
 def run_head_sha(agent: Agent) -> str:
     """The sha256 of the run head (run_value.npz) an agent chooses its run-level options by; "" for an agent with none (macro rules)."""
-    npz = agent.macro_npz if agent.macro == "vrun" else None
+    npz = agent.macro_npz if agent.macro == "vrun" or macro_recipe.is_blended(agent.macro) else None
     return file_sha256(npz) if npz and Path(npz).is_file() else ""
 
 
@@ -1609,28 +1674,41 @@ def candidate_identity(agent: Agent) -> tuple[str, str]:
     return agent.describe()["prior_sha256"] or "none", run_head_sha(agent)
 
 
+def candidate_recipe(agent: Agent) -> str:
+    """The recipe a candidate's attempts are counted under (promotions.tsv `macro`): "" for the plain macros (rules, vrun), the macro's
+    own string for a blended chooser (`macro_recipe.recipe_of`). A new recipe starts its attempts at 1: generation 12's self-play
+    line (the vrun macro, closed by D55 after two refusals) does not count against the imitation line."""
+    return macro_recipe.recipe_of(agent.macro)
+
+
+def row_recipe(row: dict[str, str]) -> str:
+    """The recipe a promotions.tsv row was judged under; rows from before the `macro` column read "" (the plain macros)."""
+    return row.get("macro", "") or ""
+
+
 def row_identity(row: dict[str, str]) -> tuple[str, str]:
     """The identity a promotions.tsv row records: `cand_sha` and `run_head_sha`. Rows written before the second column existed read ""
     there, so each old row stands for one attempt of its combat prior with no head named (no migration of the file)."""
     return row.get("cand_sha", ""), row.get("run_head_sha", "")
 
 
-def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str, head_sha: str = "") -> int:
-    """Other candidates of generation `cand_gen` judged so far: distinct identities (combat prior sha, run head sha; `row_identity`)
-    other than (`cand_sha`, `head_sha`). A row without a prior sha counts as one candidate; a row without a head sha is the candidate
-    of its prior alone (a pair with the head "")."""
+def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str, head_sha: str = "", recipe: str = "") -> int:
+    """Other candidates of generation `cand_gen` judged so far under the same recipe (`candidate_recipe`): distinct identities (combat
+    prior sha, run head sha; `row_identity`) other than (`cand_sha`, `head_sha`). A row without a prior sha counts as one candidate; a
+    row without a head sha is the candidate of its prior alone (a pair with the head ""); a row without a `macro` is the plain recipe."""
     me = (cand_sha, head_sha)
-    return len({row_identity(r) for r in rows if r.get("cand_gen") == str(cand_gen) and row_identity(r) != me})
+    return len({row_identity(r) for r in rows
+                if r.get("cand_gen") == str(cand_gen) and row_recipe(r) == recipe and row_identity(r) != me})
 
 
-def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = None) -> int | None:
+def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = None, recipe: str = "") -> int | None:
     """With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable) and `cand_gen` already judged at the
     guard's cap (distinct candidates in `promotions.tsv` by prior sha and run head sha, `attempts_before` with no sha): that count, the number `promote` would
     refuse a further candidate at. None otherwise (guard off, or attempts left). `train` asks before it trains, so a round that
     could not be judged costs no training."""
     if not review_guard_on(review_guard):
         return None
-    n = attempts_before(read_promotions(tsv), cand_gen, "")
+    n = attempts_before(read_promotions(tsv), cand_gen, "", recipe=recipe)
     return n if n >= review_guard_module().ATTEMPT_CAP else None
 
 
@@ -1640,14 +1718,14 @@ def previous_drift_flagged(rows: list[dict[str, str]]) -> bool:
 
 
 def review_guard_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
-                         block: str, boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "") -> dict[str, Any]:
+                         block: str, boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "", recipe: str = "") -> dict[str, Any]:
     """The review's guard (promotion_guard.judge) on two arms, with the lineage, the drift history and the attempt count
     from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage).
     With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap but allowed."""
     pg = review_guard_module()
     kills_c, kills_b, dmg_c, dmg_b = pg.from_rows(cand_rows, base_rows, kill=boss_kill)
     history = [r for r in rows if r.get("seed_block") != block]
-    prior = attempts_before(rows, cand_gen, cand_sha, head_sha)
+    prior = attempts_before(rows, cand_gen, cand_sha, head_sha, recipe)
     cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
     verdict = pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
                        prior_attempts=prior, cap=cap, boot=boot)
@@ -1852,7 +1930,9 @@ TSV_COLUMNS = ("written", "cand_gen", "base_gen", "seed_block", "seeds", "d_floo
                # the review's guard: the attempt of the generation (always), the drift verdict and the guard line (empty / "off" when off)
                "attempt", "drift", "guard",
                # the second half of the candidate's identity (`candidate_identity`); empty in rows written before it existed
-               "run_head_sha")
+               "run_head_sha",
+               # the run chooser's recipe when it is a blended one (`candidate_recipe`); empty for the plain macros and in older rows
+               "macro")
 
 
 def guard_cells(guard: dict[str, Any] | None, attempt: int) -> dict[str, Any]:
@@ -1882,10 +1962,12 @@ def append_promotion(tsv: Path, values: dict[str, Any]) -> None:
         fh.write("\t".join(str(values.get(c, "")) for c in TSV_COLUMNS) + "\n")
 
 
-def block_used_by_another(tsv: Path | None, block: str, cand_sha: str, head_sha: str = "") -> bool:
-    """Whether `block` already judged a candidate other than (`cand_sha`, `head_sha`): another combat prior, or the same prior with
-    another run head (a row without a sha counts as another one; a row without a head sha is its prior alone, `row_identity`)."""
-    return any(r.get("seed_block") == block and row_identity(r) != (cand_sha, head_sha) for r in read_promotions(tsv))
+def block_used_by_another(tsv: Path | None, block: str, cand_sha: str, head_sha: str = "", recipe: str = "") -> bool:
+    """Whether `block` already judged a candidate other than (`cand_sha`, `head_sha`, `recipe`): another combat prior, the same prior
+    with another run head, or the same pair under another chooser recipe (a row without a sha counts as another one; a row without a
+    head sha is its prior alone, `row_identity`; a row without a `macro` is the plain recipe)."""
+    return any(r.get("seed_block") == block and (row_identity(r), row_recipe(r)) != ((cand_sha, head_sha), recipe)
+               for r in read_promotions(tsv))
 
 
 def check_disjoint(seeds: list[str], others: dict[str, list[str]]) -> None:
@@ -2006,12 +2088,13 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     cand_agent = load_agent(cand)
     base_agent = load_agent(base, agent_root=None if base else agent_root)
     cand_sha, head_sha = candidate_identity(cand_agent)
+    recipe = candidate_recipe(cand_agent)
     tsv = Path(agent_root) / "promotions.tsv"
-    if block_used_by_another(tsv, name, cand_sha, head_sha):  # a second look at one block is a look the alpha does not pay for
+    if block_used_by_another(tsv, name, cand_sha, head_sha, recipe):  # a second look at one block is a look the alpha does not pay for
         raise ValueError(f"E-block {name} already judged another candidate; make a fresh one (resolve_e_block)")
     rows = read_promotions(tsv)
     guard_on = review_guard_on(review_guard)
-    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha) + 1
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha, recipe) + 1
     if guard_on and attempt > review_guard_module().ATTEMPT_CAP:
         raise ValueError(f"generation {cand_agent.generation} already had {attempt - 1} promotion attempts "
                          f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
@@ -2022,7 +2105,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if sequential:
         def verdict(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
             return (review_guard_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
-                                         head_sha=head_sha) if guard_on else None)
+                                         head_sha=head_sha, recipe=recipe) if guard_on else None)
 
         def rows_at(n: int) -> tuple[list[dict], list[dict]]:
             part = seeds[:n]
@@ -2036,7 +2119,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
         played = len(seeds)
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
-                                  head_sha=head_sha) if guard_on else None)
+                                  head_sha=head_sha, recipe=recipe) if guard_on else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != played:  # a partial arm must not promote on fewer pairs than the block
         raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both arms")
@@ -2050,7 +2133,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
-           "run_head_sha": head_sha,
+           "run_head_sha": head_sha, **({"macro": recipe} if recipe else {}),
            # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
            "f7": "not run", "matched_wall_clock": False}
     if seq is not None:
@@ -2070,7 +2153,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                            "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                            "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
                            "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
-                           "run_head_sha": head_sha, **cells})
+                           "run_head_sha": head_sha, "macro": recipe, **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
@@ -2125,10 +2208,11 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         part = set(seeds[:played])
         cand_rows, base_rows = [r for r in cand_rows if r["seed"] in part], [r for r in base_rows if r["seed"] in part]
     cand_sha, head_sha = candidate_identity(cand_agent)
+    recipe = candidate_recipe(cand_agent)
     rows = read_promotions(Path(agent_root) / "promotions.tsv")
-    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha) + 1
+    attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha, recipe) + 1
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
-                                  apply_cap=False, head_sha=head_sha) if review_guard_on(review_guard) else None)
+                                  apply_cap=False, head_sha=head_sha, recipe=recipe) if review_guard_on(review_guard) else None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard)
     if res["paired_seeds"] != played:
         raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both cached arms")
@@ -2148,7 +2232,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
            "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha, "run_head_sha": head_sha,
-           "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
+           **({"macro": recipe} if recipe else {}), "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
            "f7": "not run", "matched_wall_clock": False}
     cells = guard_cells(guard, attempt)
     if stop is not None:
@@ -2165,7 +2249,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                       "p_floor": f"{f['p']:.5f}", "boss_cand": bk["cand"], "boss_base": bk["base"], "p_boss": f"{bk['p']:.5f}",
                       "wins_cand": doc["cand"]["summary"]["wins"], "wins_base": doc["base"]["summary"]["wins"],
                       "decision": doc["decision_text"], "cand_sha": cand_sha, "cand_dir": Path(cand).name,
-                      "run_head_sha": head_sha, **cells})
+                      "run_head_sha": head_sha, "macro": recipe, **cells})
     if res["decision"]["promote"]:
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name, "note": note})
@@ -2177,12 +2261,13 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
 
 
 def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = None, cand_sha: str | None = None,
-                    also_dirs: Sequence[Path | str] | None = None, head_sha: str = "") -> Path:
+                    also_dirs: Sequence[Path | str] | None = None, head_sha: str = "", recipe: str = "") -> Path:
     """The E-block for candidate generation `k`: `template` with {k} for the generation and {date} for today (UTC).
     An existing `E<k>-*.json` that has not judged another candidate (per `promotions.tsv`) is used as it is
     (E1-2026-10-23 is committed). If every such block did, a new `E<k>-<date>-r<n>` is created by the seed rule, so a
     candidate is never judged on a block that already judged a different one; a candidate is its combat prior and its run head
-    (`candidate_identity`, `head_sha`), so a second attempt that keeps the prior and changes the head gets a block of its own. A new block is written to the template's
+    (`candidate_identity`, `head_sha`) under a chooser recipe (`candidate_recipe`), so a second attempt that keeps the prior and changes
+    the head, or the same pair under another recipe, gets a block of its own. A new block is written to the template's
     folder (the lab's `seeds` folder, outside the checkout); existing blocks are looked for there and in `also_dirs`
     (default: the checkout's committed folder), and a new name is free in all of them."""
     import gen0  # noqa: PLC0415
@@ -2194,7 +2279,7 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
             found.setdefault(p.stem, p)
     existing = [found[name] for name in sorted(found)]
     for p in existing:
-        if not block_used_by_another(tsv, p.stem, cand_sha or "none", head_sha):
+        if not block_used_by_another(tsv, p.stem, cand_sha or "none", head_sha, recipe):
             return p
     if existing:
         j = 1

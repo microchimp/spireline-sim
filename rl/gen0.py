@@ -269,6 +269,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 if rec is not None:
                     rec.decision(view, d, pick)
                 fields.emu_macro(view.floor, d.options[pick.index], slugs)
+                if getattr(rules, "last", None):  # a blended chooser says which component decided this deck screen
+                    fields.decide(view.floor, rules.last)
                 s.apply(d.options[pick.index])
                 decisions += 1
                 continue
@@ -746,7 +748,7 @@ def train_cmd(a: argparse.Namespace) -> int:
     _setup()
     import gen_loop  # noqa: PLC0415
 
-    gen, retrain, target, attempt = a.gen, 0, getattr(a, "candidate_generation", None), 1
+    gen, retrain, target, attempt, tag = a.gen, 0, getattr(a, "candidate_generation", None), 1, ""
     if a.marker_dir:
         marks = gen_loop.ready_markers(Path(a.marker_dir))
         if not marks:
@@ -759,11 +761,14 @@ def train_cmd(a: argparse.Namespace) -> int:
             return 2
         target = named if named is not None else target
         attempt = gen_loop.marker_attempt(marks[0][1])  # ready-<gen>-g<target>-a<n>: the built candidate gen<target>/candidate-a<n>
+        tag = gen_loop.marker_tag(marks[0][1])  # ready-<gen>-g<target>-<tag>: the built candidate gen<target>/candidate-<tag>
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
     cand_gen = gen + 1 if target is None else target
-    spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None)
+    built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
+    recipe = gen_loop.macro_recipe.recipe_of(gen_loop.read_json(built / "agent.json").get("macro")) if built is not None else ""  # attempts are counted per chooser recipe
+    spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe)
     if spent is not None:  # the review guard's cap: `promote` would refuse this candidate, so nothing is trained (rc 0: a finished round)
         from tools.lab import jobs  # noqa: PLC0415
 
@@ -772,10 +777,9 @@ def train_cmd(a: argparse.Namespace) -> int:
               f"{gen_loop.review_guard_module().ATTEMPT_CAP}), so a further candidate could not be judged"
               + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
         return 0
-    built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt)  # `gen0.py build` assembled it: judged as it is, never trained over
-    if attempt > 1 and built is None:  # an attempt marker is written by `build`; training would write over the first attempt's folder
-        print(f"{marks[0][1].name} names attempt {attempt} of generation {cand_gen}, but gen{cand_gen}/"
-              f"{gen_loop.candidate_dirname(0, attempt)} is not a built candidate: nothing trained", file=sys.stderr)
+    if (attempt > 1 or tag) and built is None:  # an attempt or tag marker is written by `build`; training would write over the first attempt's folder
+        print(f"{marks[0][1].name} names {'tag ' + tag if tag else 'attempt ' + str(attempt)} of generation {cand_gen}, but gen{cand_gen}/"
+              f"{gen_loop.candidate_dirname(0, attempt, tag)} is not a built candidate: nothing trained", file=sys.stderr)
         return 2
     if built is not None and (built / "promotion.json").is_file():
         from tools.lab import jobs  # noqa: PLC0415
@@ -801,8 +805,10 @@ def train_cmd(a: argparse.Namespace) -> int:
         if not (a.emu_python and a.seeds_file):
             print("--promote needs --emu-python and --seeds-file", file=sys.stderr)
             return 2
-        sha, head = gen_loop.candidate_identity(gen_loop.load_agent(cand))  # the prior's sha and the run head's: attempt 2 changes only the head
-        seeds_file = gen_loop.resolve_e_block(a.seeds_file, target, tsv=Path(a.agent_root) / "promotions.tsv", cand_sha=sha, head_sha=head) \
+        cand_agent = gen_loop.load_agent(cand)
+        sha, head = gen_loop.candidate_identity(cand_agent)  # the prior's sha and the run head's: attempt 2 changes only the head
+        seeds_file = gen_loop.resolve_e_block(a.seeds_file, target, tsv=Path(a.agent_root) / "promotions.tsv", cand_sha=sha, head_sha=head,
+                                              recipe=gen_loop.candidate_recipe(cand_agent)) \
             if "{k}" in a.seeds_file else Path(a.seeds_file)
         import prior_launch  # noqa: PLC0415
 
@@ -824,17 +830,19 @@ def build_cmd(a: argparse.Namespace) -> int:
 
     base = a.base or str(Path(a.agent_root) / "current.json")
     attempt = int(getattr(a, "attempt", 1) or 1)
+    tag = getattr(a, "tag", None) or ""
     marker = None
     if a.marker_dir:  # checked before anything is written: a marker that already exists (or was consumed) is not written again
         base_gen = gen_loop.load_agent(base).generation
-        name = f"ready-{base_gen}-g{a.candidate_generation}" + (f"-a{attempt}" if attempt > 1 else "")
+        name = f"ready-{base_gen}-g{a.candidate_generation}" + (f"-a{attempt}" if attempt > 1 else "") + (f"-{tag}" if tag else "")
         taken = [p.name for p in (Path(a.marker_dir) / name, Path(a.marker_dir) / ("done-" + name.removeprefix("ready-"))) if p.exists()]
         if taken:
             print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
             return 2
         marker = Path(a.marker_dir) / name
     cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export,
-                                    vrun_fit=getattr(a, "vrun_fit", None) or None, attempt=attempt)
+                                    vrun_fit=getattr(a, "vrun_fit", None) or None, attempt=attempt, tag=tag,
+                                    human_prior=getattr(a, "human_prior", None) or None, lam=parse_lambda(getattr(a, "lam", None)))
     meta = gen_loop.read_json(cand / "agent.json")
     out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
            "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
@@ -844,6 +852,16 @@ def build_cmd(a: argparse.Namespace) -> int:
         out["marker"] = marker.name
     print(json.dumps(out))
     return 0
+
+
+def parse_lambda(text: str | float | None) -> float | None:
+    """`--lambda inf|0.5|...` -> float (None when not given)."""
+    if text is None or text == "":
+        return None
+    lam = float(text)  # float("inf") is inf
+    if not lam >= 0:
+        raise ValueError(f"--lambda is 0 or more (inf is the prior alone), not {text}")
+    return lam
 
 
 def vrun_fit_cmd(a: argparse.Namespace) -> int:
@@ -1248,6 +1266,11 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--attempt", type=int, default=1, help="the candidate's attempt at this generation number: from 2 it is written as "
                     "gen<N>/candidate-a<K> with the marker ready-<base generation>-g<N>-a<K>, beside the first attempt, which stays as it is")
     bd.add_argument("--no-export", action="store_true", help="no ONNX files (they need torch's exporter and the onnx package)")
+    bd.add_argument("--human-prior", help="the human prior's weights (rl/human_prior.py fit: weights.npz): the candidate's macro blends it with "
+                    "the base's V_run (macro vrun+pi_h:lambda=<--lambda>:pi_h=<8 hex>, a recipe of its own for the attempt count)")
+    bd.add_argument("--lambda", dest="lam", help="with --human-prior: the blend's weight on log pi_h (inf: the prior alone; 0.5; ...)")
+    bd.add_argument("--tag", help="a recipe tag: the candidate is gen<N>/candidate-<tag> and the marker ready-<base generation>-g<N>-<tag> "
+                    "(lowercase words joined by hyphens, e.g. imit, imit-l05); not beside --attempt")
     bd.add_argument("--vrun-fit", help="a fighter-matched V_run fit (`vrun-fit`'s OUT) to carry instead of the base's; it must "
                     "have passed the keep test")
     vf = sub.add_parser("vrun-fit", help="fit V_run on the runs one combat prior played (the fighter-matched recipe, reset order "

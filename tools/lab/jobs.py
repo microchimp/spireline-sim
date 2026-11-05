@@ -95,10 +95,14 @@ def _age_h(p: Path) -> float | None:
         return None
 
 
+# a recipe tag (rl/gen_loop.TAG): `ready-11-g12-imit` is the candidate gen12/candidate-imit
+TAG = r"[a-z]{3}[a-z0-9]*(?:-[a-z0-9]+)*"
+
+
 def gen_key(name: str) -> tuple[int, int, int, int, str]:
     """Marker order: by generation, then the plain and retrain forms by index, then the target forms by target and attempt
-    (``ready-4`` < ``ready-4-r1`` < ``ready-4-g6`` < ``ready-4-g6-a2`` < ``ready-12``)."""
-    m = re.search(r"-(\d+)(?:-r(\d+)|-g(\d+)(?:-a(\d+))?)?$", name)
+    (``ready-4`` < ``ready-4-r1`` < ``ready-4-g6`` < ``ready-4-g6-a2`` < ``ready-4-g6-imit`` < ``ready-12``)."""
+    m = re.search(r"-(\d+)(?:-r(\d+)|-g(\d+)(?:-a(\d+)|-" + TAG + r")?)?$", name)
     if not m:
         return (1 << 30, 0, 0, 0, name)
     return (int(m.group(1)), 1 if m.group(3) else 0, int(m.group(3) or m.group(2) or 0), int(m.group(4) or 0), name)
@@ -219,11 +223,13 @@ def params_for(kind: str, lab: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         ms = train_markers(lab)
         p["marker"] = ms[0].name if ms else ""
         p["generation"] = p["marker"].removeprefix("ready-")
-        target = re.fullmatch(r"ready-(\d+)-g(\d+)(?:-a(\d+))?", p["marker"])
+        target = re.fullmatch(r"ready-(\d+)-g(\d+)(?:-a(\d+)|-(" + TAG + r"))?", p["marker"])
         if target:  # `ready-<gen>-g<target>[-a<n>]`: the shards of <gen> train a candidate that is generation <target> (D33 addendum (b))
             p["generation"], p["candidate_generation"] = target.group(1), int(target.group(2))
             if target.group(3):  # the n-th attempt at that number: a built candidate in gen<target>/candidate-a<n>
                 p["attempt"] = int(target.group(3))
+            if target.group(4):  # a tagged recipe: a built candidate in gen<target>/candidate-<tag>
+                p["tag"] = target.group(4)
     return p
 
 

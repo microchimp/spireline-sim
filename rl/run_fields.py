@@ -11,6 +11,9 @@
   nodes             the map node types taken in order, one letter each: M monster, E elite, R rest, S shop, T treasure, B boss,
                     ? unknown, A ancient (x: a type this table lacks).
   rests             [[floor, "heal" | "smith" | ...], ...]: each rest site choice (leaving is not recorded).
+  decided           only under a blended chooser (`imitation_chooser`, macro vrun+pi_h): [[floor, "card" | "ancient" | "rest", prior, v,
+                    guard], ...], one per deck decision the blend made; prior and v are 1 when the human prior's top option / the
+                    judgement's top option is the one taken, guard is 1 when the guard overrode the blend. Absent for the other macros.
 Shop buys are not recorded: the referee's shop label carries a slot and a price, not the item, so a buy needs new plumbing.
 
 A row without these keys is an older row: absent means unknown, never 0 (the guard stays inert on such rows).
@@ -94,6 +97,7 @@ class RunFields:
         self.cards: list[list] = []  # [floor, card name | name+ (upgraded) | "skip"] per card reward decided
         self.nodes: list[str] = []  # the map node types taken, one letter each, in order
         self.rests: list[list] = []  # [floor, "heal" | "smith" | ...] per rest site choice
+        self.decided: list[list] = []  # [floor, screen, prior, v, guard] per deck decision of a blended chooser
 
     @property
     def in_boss_fight(self) -> bool:
@@ -141,6 +145,11 @@ class RunFields:
         elif kind.startswith("rest.") and kind != "rest.leave":
             self.rests.append([int(floor), kind[5:]])
 
+    def decide(self, floor: int, note: dict) -> None:
+        """What decided a deck screen under a blended chooser (`BlendedPolicy.last`): the screen, whether the human prior's top option
+        and the judgement's top option were the one taken, and whether the guard overrode the blend."""
+        self.decided.append([int(floor), str(note["screen"]), int(note["prior"]), int(note["v"]), int(note["guard"])])
+
     def real_macro(self, kind: str, label: Any, floor: Any) -> None:
         """The referee action the lockstep took (its label), by decision kind. A card reward's other alternatives (a reroll, a
         relic) are neither a card nor a skip and are not recorded."""
@@ -161,8 +170,11 @@ class RunFields:
         """The keys for the run's row (an open boss fight is closed as lost: the run stopped in it)."""
         self.boss_over(won=False)
         first = next((frac for act, frac in self.bosses if act == 0), 0.0)
-        return {"boss_damage": first, "boss_damage_acts": [list(b) for b in self.bosses],
-                "cards": [list(c) for c in self.cards], "nodes": "".join(self.nodes), "rests": [list(r) for r in self.rests]}
+        out = {"boss_damage": first, "boss_damage_acts": [list(b) for b in self.bosses],
+               "cards": [list(c) for c in self.cards], "nodes": "".join(self.nodes), "rests": [list(r) for r in self.rests]}
+        if self.decided:
+            out["decided"] = [list(d) for d in self.decided]
+        return out
 
 
 def aggregate(rows: Iterable[dict]) -> dict:
