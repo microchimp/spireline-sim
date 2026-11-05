@@ -87,6 +87,13 @@ Turn and potions keep the weight every measurement gave them, `W_OTHER`. What is
             simulations: `best` is the kill's first move, `line` the whole sequence, and `kill_check` says so. With no
             kill the search runs as it always did, and `kill_check` records the look. Off by default.
 
+  hold      With `potion_hold=f` (a config's option, `search_configs.SearchConfig.potion_hold`, which passes it in hallway
+            fights only), the root's potion moves are dropped from the search's candidates (the playouts below the root
+            still may use one) unless this turn's kill check finds no verified kill AND the player would fall under
+            f of max HP after the enemies' announced attacks (`incoming_damage`, less the block the player holds now).
+            The test is made once, at the root, from the position the player sees; `SearchResult.hold` records it. A
+            potion is the only thing it ever removes, and never when it is all that is left to play. Off by default.
+
 No hidden information is used. Every simulation starts from a resampling clone. The one
 faithful clone is read for the observation the player can see, then destroyed.
 
@@ -297,6 +304,8 @@ class SearchResult:
     # the kill's first move and no simulation ran; with `SPIRELINE_LETHAL_SHADOW=1` a fired record also carries the search's own
     # move ("search_move") and whether it is another move ("differs"), for measuring the check.
     kill_check: dict | None = None
+    # The potion hold's record for this decision (`_Search.hold_potions`): None when the hold was off or had no potion move to judge.
+    hold: dict | None = None
 
 
 class _Move(NamedTuple):
@@ -1319,6 +1328,19 @@ def _line(best: _RootMove) -> tuple[list[tuple[int, int, str]], bool]:
     return line, False
 
 
+def hold_keeps_potions(killed: bool | None, hp: int, max_hp: int, block: int, incoming: int, frac: float) -> tuple[bool, dict]:
+    """The hallway potion hold's rule, pure: whether the root keeps its potion moves, and the record of why.
+
+    The potions are removed unless BOTH hold: the kill check did not find a verified kill this turn, and the HP left after the enemies'
+    announced attacks (`incoming` less the `block` the player holds now, never under 0 damage) would be under `frac` of `max_hp`. Block
+    that this turn's cards would add is not counted, so the rule keeps a potion in reach a little more often than the position needs.
+    `killed` None (the check could not run) keeps the potions."""
+    after = hp - max(0, incoming - block)
+    threshold = frac * max_hp
+    keep = killed is None or (not killed and after < threshold)
+    return keep, {"kept": keep, "killed": killed, "hp": hp, "after": after, "threshold": round(threshold, 2), "incoming": incoming, "block": block}
+
+
 class _Search:
     """One search of one position: the root moves, the three phases, and the result."""
 
@@ -1347,6 +1369,7 @@ class _Search:
             "prior_min_visits": prior_min_visits, "clock": clock, "leaf": leaf,
         }
         self.kill_check: dict | None = None  # the kill check's record, once it has looked
+        self.hold: dict | None = None  # the potion hold's record, once it has judged (`hold_potions`)
         # The search's clock: the wall clock, or (`gym_lockstep`) the time its own fight
         # has run, so that a search sharing a process with other fights gets its budget.
         self.clock = clock
@@ -1417,6 +1440,39 @@ class _Search:
         if os.environ.get(LETHAL_SHADOW_ENV) == "1":  # a measurement: does the kill hold on the true position (the draw order the check never read)?
             self.kill_check["true_world_kill"] = self._holds_on_true_world(report.kill.path)
         return result
+
+    def hold_potions(self, frac: float) -> dict | None:
+        """The hallway potion hold (`potion_hold=frac`): drop the root's potion moves from the candidates unless the player is in danger
+        (`hold_keeps_potions`). The kill check is the one `lethal()` already ran when it is on (it found no verified kill, or the search
+        would not be here); with it off it is run now, and a kill found there is no danger. The position is read off the faithful copy the
+        player sees. A check that fails keeps the potions: the hold only ever removes moves on a positive reading. Returns the record
+        (None when there was no potion move beside another move to judge), also kept as `self.hold`."""
+        potions = [c for c in self.children if c.node.kind == "potion"]
+        rest = [c for c in self.children if c.node.kind != "potion"]
+        self.hold = None
+        if not potions or not rest:  # no potion to hold, or nothing else to play
+            return None
+        killed: bool | None
+        if self.kill_check is not None:  # the search's own look came back empty-handed (a fired one never gets here)
+            killed = None if self.kill_check.get("reason") == "error" else bool(self.kill_check.get("fired"))
+        else:
+            try:
+                killed = lethal.find_lethal(self.root, _LIVE_RULES).kill is not None
+            except Exception as error:  # noqa: BLE001 -- a failing check keeps the potions, as `lethal()` searches on
+                _LOG.warning("potion hold: the kill check failed, the potions stay: %s", error)
+                killed = None
+        view = self.root.fork(None)
+        try:
+            hp, max_hp, block = int(view.obs[0]), int(view.obs[1]), int(view.obs[2])
+            incoming = int(incoming_damage(view.obs))
+        finally:
+            view.close()
+        keep, record = hold_keeps_potions(killed, hp, max_hp, block, incoming, frac)
+        record["potions"] = len(potions)
+        if not keep:
+            self.children = rest
+        self.hold = record
+        return record
 
     def _holds_on_true_world(self, path: list[_Move]) -> bool:
         """Replay the kill's moves on a faithful copy of the position (its real draw order and rolls): whether the fight ends won."""
@@ -1627,6 +1683,7 @@ def search_live(
     leaf: str = "rollout",
     leaf_fn: Callable[[int], Any] | None = None,
     lethal_check: bool = False,
+    potion_hold: float | None = None,
     _lane: tuple[int, int] = (0, 1),
 ) -> SearchResult:
     """Search the combat on `handle` and grade every root move.
@@ -1653,6 +1710,9 @@ def search_live(
     `lethal_check` first looks for a kill with this turn's cards (rl/lethal.py); a verified one is
     answered at once with no simulations, and `SearchResult.kill_check` records the look either way.
 
+    `potion_hold` (a fraction of max HP) drops the root's potion moves unless the kill check finds no kill and the player would fall
+    under that fraction after the enemies' announced attacks (`hold_keeps_potions`); `SearchResult.hold` records the judgement.
+
     `_lane` is for `ParallelSearcher`: a search in lane (i, n) plays only seeds that are
     i modulo n, so searches in different lanes never share an imagined world.
 
@@ -1665,7 +1725,7 @@ def search_live(
     try:
         return _search_live(
             handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn, lethal_check,
+            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn, lethal_check, potion_hold,
         )
     finally:
         _ORACLE = saved
@@ -1687,7 +1747,8 @@ def _shadow_note(result: SearchResult, plain: SearchResult) -> None:
 
 
 def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-                 confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None, lethal_check=False) -> SearchResult:
+                 confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None, lethal_check=False,
+                 potion_hold=None) -> SearchResult:
     search = _Search(
         handle,
         time_budget_s=time_budget_s,
@@ -1713,8 +1774,11 @@ def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, m
             if os.environ.get(LETHAL_SHADOW_ENV) == "1":
                 _shadow_note(killed, search.twin().run(leaf_fn))
             return killed
+    if potion_hold is not None:
+        search.hold_potions(potion_hold)
     result = search.run(leaf_fn)
     result.kill_check = search.kill_check
+    result.hold = search.hold
     return result
 
 
@@ -1735,6 +1799,7 @@ def search_steps(
     clock: Callable[[], float] | None = None,
     leaf: str = "rollout",
     lethal_check: bool = False,
+    potion_hold: float | None = None,
 ):
     """`search_live` as steps, for a driver that plays many fights in one process.
 
@@ -1779,8 +1844,11 @@ def search_steps(
             if os.environ.get(LETHAL_SHADOW_ENV) == "1":
                 _shadow_note(killed, (yield from search.twin().steps()))
             return killed
+    if potion_hold is not None:
+        search.hold_potions(potion_hold)
     result = yield from search.steps()
     result.kill_check = search.kill_check
+    result.hold = search.hold
     return result
 
 

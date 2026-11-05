@@ -9,6 +9,18 @@ A config may carry a budget schedule: simulations per decision from what the pla
 number of distinct legal moves, HP fraction, elite or boss fight). `Position` holds those features; `sims_for`
 is pure so it can be tested without native code. `position_of` reads them from a live fight.
 
+A config may also carry the two options of `docs/rl/STAKES_AND_HOLD.md` (2026-11-06), both off in every config that existed before:
+
+* `stakes`: a multiplier of the simulations per fight kind, (hallway, elite, boss), applied after the budget schedule and to its clamp
+  and to the safety clock (`time_budget_s`): the hallway x1, elite x4, boss x16 schedule is `a3-v1@h1e4b16`, which at a boss fight is
+  exactly what the play-or-deck measurement's `x16` arm played (`fight_gym.arm_settings`) and in a hallway fight is a3-v1;
+* `potion_hold`: in a hallway fight the root's potion moves are dropped unless the kill check fails and the player would fall under
+  that fraction of max HP after the enemies' intended damage (`live_search.search_live(potion_hold=...)`).
+
+A config with either has a name `<base>[@h<H>e<E>b<B>][+hold<N>]` (`macro_recipe.config_name`) that `get` reads, so every consumer of a
+config name (the lab's self-play, the promotion arms, the lockstep's real-game player) can play it; an agent's own schedule comes from
+its agent.json (`gen_loop.Agent.search_config`, `for_agent` here).
+
     python rl/gen0.py emu --config a3-v1 ...
 """
 
@@ -17,6 +29,8 @@ from __future__ import annotations
 import dataclasses
 import os
 from dataclasses import dataclass, field
+
+import macro_recipe
 
 KINDS = ("play", "target", "select")
 NODE_ELITE, NODE_BOSS = 2, 6  # run_train.vocab, copied so this module imports no native code
@@ -31,10 +45,18 @@ class Position:
     hp_frac: float  # player HP / max HP when the decision is asked
     hard: bool  # an elite or boss fight
     act: int = 0
+    fight: str = ""  # "hall", "elite" or "boss" (`position_of` sets it); "": not said, `fight_kind` reads `hard`
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"unknown decision kind {self.kind!r}")
+        if self.fight and self.fight not in macro_recipe.FIGHT_KINDS:
+            raise ValueError(f"unknown fight kind {self.fight!r}")
+
+    @property
+    def fight_kind(self) -> str:
+        """The fight's kind: what `position_of` read, else "elite" for a hard fight (the kind is not known) and "hall" for the rest."""
+        return self.fight or ("elite" if self.hard else "hall")
 
 
 @dataclass(frozen=True)
@@ -68,26 +90,53 @@ class SearchConfig:
     # Before the search, look for a kill with this turn's cards (rl/lethal.py) and play its first move if one is verified; with no
     # kill found the search runs as it always did. Off in every config that existed before the option.
     lethal_check: bool = False
+    # A multiplier of the simulations (and of the safety clock) per fight kind, (hall, elite, boss); None: the config's own budget.
+    stakes: tuple[int, int, int] | None = None
+    # The hallway potion hold's threshold, a fraction of max HP; None: no hold (see the module docstring).
+    potion_hold: float | None = None
+
+    @property
+    def needs_position(self) -> bool:
+        """Whether a decision's `Position` changes what the search does (a schedule, a stakes multiplier or a hold): the callers read
+        the fight only for such a config."""
+        return bool(self.schedule) or self.stakes is not None or self.potion_hold is not None
+
+    def stakes_mult(self, pos: Position | None) -> int:
+        """The multiplier of the fight `pos` is in: 1 without a stakes schedule or a position."""
+        if self.stakes is None or pos is None:
+            return 1
+        return self.stakes[macro_recipe.FIGHT_KINDS.index(pos.fight_kind)]
+
+    def wall_factor(self) -> float:
+        """How much longer than the base config's a run of this config may take: the largest multiplier over four (a boss at x16
+        takes about 16 times as long as a3-v1's, but a boss is one fight of a run), never under 1. The dispatchers' per-run wall
+        limits are multiplied by it."""
+        return max(1.0, max(self.stakes) / 4) if self.stakes is not None else 1.0
 
     def high_stakes(self, pos: Position) -> bool:
         s = self.schedule
         return bool(s) and (pos.hard or pos.hp_frac < s.low_hp or pos.n_moves >= s.many_moves)
 
     def sims_for(self, pos: Position | None) -> int:
-        """Simulations for this decision. Without a schedule (or a position) the flat `sims`."""
+        """Simulations for this decision. Without a schedule (or a position) the flat `sims`. A stakes multiplier scales the base
+        count before the kind multiplier and the clamp's top, so a boss fight at x16 is a3-v1's 30 simulations times 16 and its
+        choice screens 120 times 16, as the `x16` arm of `fight_gym.arm_settings` plays them."""
         s = self.schedule
+        m = self.stakes_mult(pos)
         if s is None or pos is None:
-            return self.sims
-        n = s.high if self.high_stakes(pos) else self.sims
+            return self.sims * m
+        n = (s.high if self.high_stakes(pos) else self.sims) * m
         n = round(n * s.kind_mult.get(pos.kind, 1.0))
-        return max(s.lo, min(s.hi, n))
+        return max(s.lo, min(s.hi * m, n))
 
     def search_kwargs(self, pos: Position | None = None, env_prior: bool = True) -> dict:
         """Keyword arguments for `live_search.search_live` (add `seed`). With `env_prior`, SPIRELINE_GEN_DIR names a
         generation whose combat prior is added (score-real's lockstep player builds its search from a config alone);
         the emulator driver passes False, because there the agent argument alone decides the prior."""
         kw = {"max_sims": self.sims_for(pos), "min_child_sims": self.min_child_sims, "c": self.c,
-              "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s, "resample": True}
+              "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s * self.stakes_mult(pos), "resample": True}
+        if self.potion_hold is not None and pos is not None and pos.fight_kind == "hall":  # a hallway fight only; every other call is unchanged
+            kw["potion_hold"] = self.potion_hold
         if self.leaf != "rollout":  # a rollout config's arguments stay what they always were
             kw["leaf"] = self.leaf
         if self.lethal_check:  # likewise: a config without the option passes nothing new
@@ -134,12 +183,45 @@ SCORE_REAL = "a3-v1"  # the config score-real plays (the same agent, so the prom
 
 
 def get(name: str) -> SearchConfig:
-    """The named config; "flat-N" is N flat simulations with gen 0's other settings."""
+    """The named config; "flat-N" is N flat simulations with gen 0's other settings; `<base>@h<H>e<E>b<B>` and `<base>+hold<N>` are
+    a config with a stakes schedule and a potion hold (`with_options`)."""
     if name in CONFIGS:
         return CONFIGS[name]
     if name.startswith("flat-") and name[5:].isdigit():
         return flat(int(name[5:]), name)
-    raise KeyError(f"unknown search config {name!r}; known: {', '.join(sorted(CONFIGS))}, flat-N")
+    if "@" in name or "+" in name:
+        base, mult, hold = macro_recipe.parse_config_name(name)
+        return with_options(get(base), mult, hold)
+    raise KeyError(f"unknown search config {name!r}; known: {', '.join(sorted(CONFIGS))}, flat-N, <config>@h<H>e<E>b<B>[+hold<N>]")
+
+
+def with_options(cfg: SearchConfig, mult=None, hold: int | None = None) -> SearchConfig:
+    """`cfg` with a stakes schedule (`mult`: {"hall", "elite", "boss"} or a (hall, elite, boss) sequence) and/or the potion hold at
+    `hold` per cent of max HP; the name says both (`a3-v1@h1e4b16+hold30`). Neither: `cfg` itself. A config that already has the
+    options is not given them again."""
+    if cfg.stakes is not None or cfg.potion_hold is not None:
+        raise ValueError(f"search config {cfg.name!r} already has a stakes schedule or a potion hold")
+    stakes = None
+    if mult is not None:
+        m = macro_recipe.stakes_mult(mult)
+        stakes = tuple(m[k] for k in macro_recipe.FIGHT_KINDS)
+    if stakes is None and hold is None:
+        return cfg
+    return dataclasses.replace(cfg, name=macro_recipe.config_name(cfg.name, mult, hold), stakes=stakes,
+                               potion_hold=(macro_recipe.hold_pct(hold) / 100.0 if hold is not None else None))
+
+
+def for_agent(sims, stakes: str | None = None, hold: int | None = None) -> SearchConfig:
+    """The config an agent plays: `sims` (a config name or a flat budget) as the lab passes it, unless the agent has a stakes schedule
+    (agent.json `search_schedule`, as its tag `<base>@h<H>e<E>b<B>`), whose base config is the agent's own and replaces `sims`; and
+    the agent's potion hold (`potion_hold`, per cent of max HP) on either."""
+    if stakes is not None:
+        base, mult = macro_recipe.parse_stakes_tag(stakes)
+        return with_options(get(base), mult, hold)
+    cfg = get(sims) if isinstance(sims, str) else flat(int(sims))
+    if hold is not None and cfg.potion_hold == macro_recipe.hold_pct(hold) / 100.0:
+        return cfg  # the lab already asked for this very hold by name
+    return with_options(cfg, None, hold)
 
 
 def position_of(root, info: dict) -> Position:
@@ -156,6 +238,7 @@ def position_of(root, info: dict) -> Position:
         kind = "target" if any(v > 1 for v in per_action.values()) else "play"
     max_hp = max(1, int(info.get("max_hp", 1)))
     hp = int(root.hp()) if hasattr(root, "hp") else int(info.get("hp", 0))
-    return Position(kind=kind, n_moves=len(moves), hp_frac=hp / max_hp,
-                    hard=int(info.get("node_type", 0)) in (NODE_ELITE, NODE_BOSS),
-                    act=1 + max(0, int(info.get("floor", 1)) - 1) // 17)  # the info's "act" is a region id
+    node = int(info.get("node_type", 0))
+    return Position(kind=kind, n_moves=len(moves), hp_frac=hp / max_hp, hard=node in (NODE_ELITE, NODE_BOSS),
+                    act=1 + max(0, int(info.get("floor", 1)) - 1) // 17,  # the info's "act" is a region id
+                    fight="boss" if node == NODE_BOSS else "elite" if node == NODE_ELITE else "hall")
