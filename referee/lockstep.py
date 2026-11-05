@@ -79,6 +79,17 @@ def macro_policy():
     return gen_loop.load_agent(os.environ.get(gen_loop.ENV_GEN_DIR) or None).macro_policy()
 
 
+def search_config(sims):
+    """The search config the scored agent plays when the block asks for `sims` (a config name or a flat budget): `sims` itself, unless
+    the agent SPIRELINE_GEN_DIR names has a stakes schedule or a potion hold of its own (agent.json `search_schedule`, `potion_hold`;
+    `gen_loop.Agent.search_config`), whose base config then replaces `sims`. The emulator arm (gen0.play_emu_run) asks the same
+    `Agent.search_config`, so both arms of a paired score search alike."""
+    _paths()
+    import gen_loop  # noqa: PLC0415
+
+    return gen_loop.load_agent(os.environ.get(gen_loop.ENV_GEN_DIR) or None).search_config(sims)
+
+
 # Referee actions beyond a screen's own options (driver/Env.cs, RunPlay.cs), and what each maps to on the emulator side:
 #   "none"                   a card selection that allows 0: the emulator's select.offer_done where it has one
 #   "done"                   the end of a fight card screen taken with full_select (driver/Env.cs): the emulator's decline,
@@ -777,14 +788,16 @@ class EmuLock:
         import search_configs  # noqa: PLC0415
         from sts2_gym import native  # noqa: PLC0415
 
-        # `sims`: a flat budget, or a search config name (rl/search_configs.py)
-        self.cfg = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
+        # `sims`: a flat budget, or a search config name (rl/search_configs.py); the scored agent's own schedule and hold, if it has them
+        self.cfg = search_config(sims)
         self.position_of = search_configs.position_of
         self.E, self.F, self.V, self.ls, self.native = engine, features, vocab, live_search, native
         self.seed, self.sims = seed, sims
         self.s = engine.RunSession(seed, ascension, engine.CombatBudget(self.cfg.sims, self.cfg.sims), mask_version=MASK_VERSION,
                                    **({} if character == "IRONCLAD" else {"character": character}))
         self.rules = macro_policy()  # the scored agent's (SPIRELINE_GEN_DIR); the rules for generation 0
+        if hasattr(self.rules, "begin_run"):  # a sampling chooser seeds its draws by the game seed and the floor, as the emulator arm does
+            self.rules.begin_run(seed)
         # the agent's RNG is seeded from the agent seed alone, never from the game seed (DESIGN 3.2)
         self.rng = agent_rng(agent_seed if agent_seed is not None else [fresh_agent_seed()])
         self.slug = {k: {v: self.V.game_slug(n) for n, v in m.items()} for k, m in self._id_map().items()}
@@ -1571,7 +1584,7 @@ class EmuLock:
         self.ai_state_assumed = False
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
-            pos = self.position_of(root, self.s.info) if self.cfg.schedule else None
+            pos = self.position_of(root, self.s.info) if self.cfg.needs_position else None
             res = self.ls.search_live(root.handle, seed=int(self.rng.integers(1 << 30)), **self.cfg.search_kwargs(pos))
         finally:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)

@@ -20,12 +20,24 @@ softmax there). Each stage is the same blend; a kind's V is its best option's.
 The candidate's `macro` names the recipe (`macro_name`): `vrun+pi_h:lambda=<inf|number>:pi_h=<8 hex of the weights' sha256>`. A
 different lambda or different weights is a different recipe, for the ledger and the attempt count (`gen_loop.candidate_recipe`).
 
+How the deck screen's option is taken (the recipe's `:pick=` part, `macro_recipe.PICKS`; 2026-11-06, docs/rl/STAKES_AND_HOLD.md):
+
+* `argmax` (no part): the blend's argmax, as above. Measured on the first sanity run it skips Act 1 card rewards 5.4 times in 100 against
+  the humans' 15.4, because a prior's top option is the card whenever the card is likelier than the skip.
+* `sample`: the option is drawn from softmax((V + lambda log pi_h) / tau) at tau 1 over the options the guard leaves (the rest site on its
+  flat joint score, as exploring self-play samples it), from a stream seeded by the run's seed, the floor and the screen's count on that
+  floor (`begin_run`), so a block replays exactly and the draw never depends on what any other decision consumed.
+* `skipcal<bias>`: the argmax of the blend with `bias` floors added to the skip option's score; the bias is the one
+  `rl/skip_calibrate.py` found so that the agent's Act 1 skip rate lands near the humans' 15.4. A card screen's run row (`decided`)
+  then carries its skip gap: the bias at which the skip would have been taken.
+
 `BlendedPolicy` is a `run_train.policy.LookaheadPolicy` (same values, same exploration arguments) that decides the deck screens by the
 blend; `last` tells the driver which screen it decided and whether the prior's top option, V's top option, or the guard decided.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,11 +47,16 @@ import numpy as np
 from human_prior_infer import PriorScorer, log_softmax, option_rows
 from human_prior_infer import load as load_prior
 from macro_recipe import (  # noqa: F401 -- the recipe's names live there
+    PICK_ARGMAX,
+    PICK_SAMPLE,
+    PICK_SKIPCAL,
+    PICKS,
     PREFIX,
     format_lambda,
     is_blended,
     macro_name,
     parse_macro,
+    parse_pick,
 )
 from run_train import models
 from run_train.policy import LookaheadPolicy
@@ -77,18 +94,20 @@ def _argmax_by(primary, secondary, among):
     return max(tied, key=lambda i: (secondary[i], -i))
 
 
-def _blend(values, logp, lam: float, guard: bool) -> tuple[int, bool]:
-    """The index the blend takes and whether the guard decided it."""
+def _blend(values, logp, lam: float, guard: bool, bonus=None) -> tuple[int, bool]:
+    """The index the blend takes and whether the guard decided it. `bonus` (one number per option, or None) is added to each option's
+    score (the prior's log-probability at lambda = inf): the skip bias of the `skipcal` pick mode."""
     n = len(values)
     everyone = list(range(n))
     if lam == 0:
         return _argmax_by(values, [0.0] * n, everyone), False
     allowed = [i for i in everyone if math.exp(logp[i]) >= GUARD_PROB] if guard else everyone
     allowed = allowed or everyone
+    extra = [0.0] * n if bonus is None else [float(b) for b in bonus]
     if math.isinf(lam):
-        best = _argmax_by(logp, values, allowed)
+        best = _argmax_by([x + b for x, b in zip(logp, extra, strict=True)], values, allowed)
     else:
-        score = [v + lam * x for v, x in zip(values, logp, strict=True)]
+        score = [v + lam * x + b for v, x, b in zip(values, logp, extra, strict=True)]
         best = _argmax_by(score, values, allowed)
     over = [i for i in everyone if i not in allowed and values[i] > values[best] + GUARD_FLOORS]
     if over:
@@ -96,16 +115,29 @@ def _blend(values, logp, lam: float, guard: bool) -> tuple[int, bool]:
     return best, False
 
 
-def blend_pick(values, logp, lam: float) -> Choice:
-    """argmax_o [ values[o] + lam * logp[o] ] over one decision's options, with the guard. `lam = inf` takes the highest `logp`
-    (ties by value); `lam = 0` takes the highest value and the guard is off (it is `vrun`)."""
+def blend_pick(values, logp, lam: float, bonus=None) -> Choice:
+    """argmax_o [ values[o] + lam * logp[o] + bonus[o] ] over one decision's options, with the guard. `lam = inf` takes the highest
+    `logp` (plus bonus; ties by value); `lam = 0` takes the highest value and the guard is off (it is `vrun`). `bonus` is None except in
+    the `skipcal` pick mode, where it is the skip bias on the skip option."""
     values = [float(v) for v in values]
     logp = [float(x) for x in logp]
     n = len(values)
     if n == 0 or n != len(logp):
         raise ValueError("a decision needs one value and one log-probability per option")
-    index, fired = _blend(values, logp, lam, True)
+    if bonus is not None and len(bonus) != n:
+        raise ValueError("a bonus needs one number per option")
+    index, fired = _blend(values, logp, lam, True, bonus)
     return Choice(index, _argmax_by(logp, values, range(n)), _argmax_by(values, [0.0] * n, range(n)), fired)
+
+
+def skip_gap(values, logp, lam: float, skip: int) -> float:
+    """The skip bias at which the blend would take the skip option `skip` over the best other option: the best other score minus the
+    skip's (V + lam log pi_h, or log pi_h at lam = inf), the guard left out. Negative: the blend already takes the skip. The skip is
+    taken at bias b exactly when b >= gap (ties go to the skip, which the argmax's tie rule decides the other way by 1e-9: not a case
+    that matters). Used by `rl/skip_calibrate.py` to read what skip rate any bias would give on the screens an agent has met."""
+    score = [float(x) if math.isinf(lam) else float(v) + lam * float(x) for v, x in zip(values, logp, strict=True)]
+    other = max(s for i, s in enumerate(score) if i != skip)
+    return other - score[skip]
 
 
 def _lse(x) -> float:
@@ -170,16 +202,39 @@ class BlendedPolicy(LookaheadPolicy):
     """`vrun` with the deck screens decided by `blend_pick` / `blend_rest`. With `lam = 0` it is `LookaheadPolicy`."""
 
     def __init__(self, checkpoint: str | Path, prior: str | Path | PriorScorer, lam: float, temperature: float = 0.0, eps: float = 0.0,
-                 W: float | None = None):  # noqa: N803
+                 W: float | None = None, pick: str = PICK_ARGMAX, skip_bias: float = 0.0):  # noqa: N803
         super().__init__(checkpoint, temperature, eps, W)
         if not (lam >= 0):
             raise ValueError(f"lambda is 0 or more, not {lam}")
+        if pick not in PICKS:
+            raise ValueError(f"unknown pick mode {pick!r}; one of {', '.join(PICKS)}")
+        if pick != PICK_SKIPCAL and skip_bias:
+            raise ValueError("a skip bias belongs to the skipcal pick mode")
         self.lam = float(lam)
+        self.pick_mode = pick
+        self.skip_bias = float(skip_bias)
         self.prior = prior if isinstance(prior, PriorScorer) else load_prior(prior)
         self.last: dict[str, Any] | None = None
+        self._run_key: bytes | None = None  # the run's seed hashed: what a sampled pick's stream is built from (`begin_run`)
+        self._screens: dict[tuple[int, str], int] = {}  # (floor, screen) -> screens of that kind decided on that floor so far
 
     def describe(self) -> dict[str, Any]:
-        return {**super().describe(), "kind": "lookahead+pi_h", "lambda": format_lambda(self.lam), "pi_h": self.prior.sha256[:8]}
+        extra = {} if self.pick_mode == PICK_ARGMAX else {"pick": self.pick_mode, **({"skip_bias": self.skip_bias} if self.skip_bias else {})}
+        return {**super().describe(), "kind": "lookahead+pi_h", "lambda": format_lambda(self.lam), "pi_h": self.prior.sha256[:8], **extra}
+
+    def begin_run(self, seed: str | int) -> None:
+        """Name the run this policy now plays (its game seed): a `sample` pick's draws are seeded by it, the floor and the screen's
+        count on the floor, never by the order of anything else, so the same seed always draws the same options and the block replays."""
+        self._run_key = hashlib.sha256(f"spireline-imitation-sample|{seed}".encode()).digest()
+        self._screens = {}
+
+    def _sample_stream(self, floor: int, screen: str) -> np.random.Generator:
+        if self._run_key is None:
+            raise ValueError("a sample pick needs begin_run(seed): the draw is seeded by the run's seed and the floor")
+        nth = self._screens.get((floor, screen), 0)
+        self._screens[(floor, screen)] = nth + 1
+        digest = hashlib.sha256(self._run_key + f"|{floor}|{screen}|{nth}".encode()).digest()
+        return np.random.default_rng(int.from_bytes(digest[:8], "little"))
 
     def pick(self, view: RunView, decision: Decision, rng: np.random.Generator | None) -> Pick:
         self.last = None
@@ -192,29 +247,42 @@ class BlendedPolicy(LookaheadPolicy):
         probs = self.nets.value.floor_probs(rows)
         values = models.expected_floors(probs, self.W)
         logits = self.prior.row_logits(rows)
+        logp = log_softmax(logits)
+        skip = next((i for i, o in enumerate(options) if o.kind == "card.skip"), None) if screen == "card" else None
+        bonus = None
+        if self.pick_mode == PICK_SKIPCAL and skip is not None and self.skip_bias:
+            bonus = [self.skip_bias if i == skip else 0.0 for i in range(len(options))]
         if screen == "rest":
             choice = blend_rest(values, logits, [rest_group(o) for o in options], self.lam)
         else:
-            choice = blend_pick(values, log_softmax(logits), self.lam)
+            choice = blend_pick(values, logp, self.lam, bonus)
         k, p = choice.index, 1.0
-        if self.tau > 0 or self.eps > 0:  # exploring self-play: sample around the blend (the rest site on its flat score)
-            pi = self.distribution(values, log_softmax(logits), choice)
-            k = _draw(pi, rng)
+        exploring = self.tau > 0 or self.eps > 0
+        if exploring or self.pick_mode == PICK_SAMPLE:  # sample around the blend (the rest site on its flat score)
+            pi = self.distribution(values, logp, choice, tau=None if exploring else 1.0, bonus=bonus)
+            k = _draw(pi, rng if exploring else self._sample_stream(int(view.floor), screen))
             p = float(pi[k])
         self.last = {"screen": screen, "prior": int(k == choice.prior_top), "v": int(k == choice.v_top), "guard": int(choice.guard)}
+        if self.pick_mode == PICK_SKIPCAL and skip is not None:  # the skip's gap, for the calibration (run_fields.decide appends it)
+            self.last["gap"] = round(skip_gap(values, logp, self.lam, skip), 4)
         return Pick(k, values=tuple(float(v) for v in values), p_chosen=p, p_floor=tuple(float(x) for x in probs[k]))
 
-    def distribution(self, values, logp=None, choice: Choice | None = None) -> np.ndarray:  # type: ignore[override]
+    def distribution(self, values, logp=None, choice: Choice | None = None, tau: float | None = None,
+                     bonus=None) -> np.ndarray:  # type: ignore[override]
         """The sampling distribution over a deck screen's options: (1 - eps) softmax(score / tau) + eps / n, where score is
         V + lam * log pi_h (log pi_h alone at lam = inf) and an option under the guard's probability has no mass unless the guard
-        picked it. tau = 0 is the blend's own pick. Called with the values alone (no prior, a plain screen) it is `vrun`'s."""
+        picked it. tau = 0 is the blend's own pick. `tau` None is the policy's own (the exploration temperature); the `sample` pick
+        mode passes 1. Called with the values alone (no prior, a plain screen) it is `vrun`'s."""
         if logp is None or choice is None:
             return super().distribution(values)
         values = np.asarray(values, dtype=np.float64)
         logp = np.asarray(logp, dtype=np.float64)
         n = len(values)
-        if self.tau > 0:
+        tau = self.tau if tau is None else tau
+        if tau > 0:
             score = logp if math.isinf(self.lam) else values + self.lam * logp
+            if bonus is not None:
+                score = score + np.asarray(bonus, dtype=np.float64)
             allowed = np.exp(logp) >= GUARD_PROB
             if not allowed.any():
                 allowed[:] = True
@@ -222,7 +290,7 @@ class BlendedPolicy(LookaheadPolicy):
                 allowed = np.zeros(n, dtype=bool)
                 allowed[choice.index] = True
             masked = np.where(allowed, score, -np.inf)
-            greedy = models.softmax((masked - masked.max()) / self.tau)
+            greedy = models.softmax((masked - masked.max()) / tau)
         else:
             greedy = np.zeros(n)
             greedy[choice.index] = 1.0

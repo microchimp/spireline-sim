@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 AGENT_SEED = 20261023  # the base agent seed of generation 0's blocks (an agent seed, never a game seed)
 RUN_WALL_CAP_S = 1800.0
+REAL_RUN_DEADLINE_S = 1800.0  # referee/envproto.py RUN_DEADLINE_S (a test keeps them equal): the real-game arm's per-run deadline
 RUN_TIMEOUT_S = 600.0  # the dispatcher's wall limit per emulator run (was the in-run cap plus 5 minutes, 2,100 s): the slowest of 3,999 finished
 # runs took 123 s, and a hung run was killed, run again and killed again while the other workers idled (2026-11-02 sweep, tails 1,290 to 2,808 s)
 REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
@@ -205,6 +206,16 @@ def _init_worker() -> None:
     procutil.lower_priority()  # BelowNormal on Windows
 
 
+def agent_search_config(agent, sims):
+    """`agent.search_config(sims)` (`gen_loop.Agent`: the lab's `sims`, or the agent's own stakes schedule and hold); a stand-in agent
+    without it plays `sims` as the lab names it."""
+    if hasattr(agent, "search_config"):
+        return agent.search_config(sims)
+    import search_configs  # noqa: PLC0415
+
+    return search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
+
+
 def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent_seed: int = AGENT_SEED,
                  hook=None, agent=None, record: bool = False, character: str = "IRONCLAD") -> dict:
     """One whole run on the emulator under the agent: search_live in fights, the macro policy elsewhere.
@@ -229,12 +240,16 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
     t0 = time.perf_counter()
     rng = np.random.default_rng([agent_seed, ix])
     explore = np.random.default_rng([agent_seed, ix, 1])
-    cfg = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
     agent = agent or gen_loop.Agent()
+    cfg = agent.search_config(sims)  # `sims` as the lab asks, unless the agent has a stakes schedule or a potion hold of its own
+    wall_cap = RUN_WALL_CAP_S * agent.wall_factor()
+    hold_judged = hold_dropped = 0
     if hook is not None and agent.prior_server:
         gen_loop.replay_note("server", "this hooked replay")  # a replay is exact on the CPU path only
     extra = agent.search_extra()
     rules = agent.macro_policy()
+    if hasattr(rules, "begin_run"):  # a sampling chooser seeds its draws by the game seed and the floor
+        rules.begin_run(seed)
     prior_before = _prior_counts(agent)
     rec = None
     if record:
@@ -250,7 +265,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
     try:
         env = s.env
         while True:
-            if time.perf_counter() - t0 > RUN_WALL_CAP_S:
+            if time.perf_counter() - t0 > wall_cap:
                 end = "timeout"
                 break
             d = s.decision()
@@ -283,7 +298,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 rec.open_fight(s, s.combat())
             root = s.combat(fork_combat=True).combat_fork(None)
             try:
-                pos = search_configs.position_of(root, s.info) if (cfg.schedule or hook) else None
+                pos = search_configs.position_of(root, s.info) if (cfg.needs_position or hook) else None
                 if hook is not None and hook(k, root, s, pos):
                     end = "hooked"
                     break
@@ -293,6 +308,10 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 kw.update(extra)
                 res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
                 sims_spent += res.sims
+                hold = getattr(res, "hold", None)
+                if hold is not None:  # the hallway potion hold judged a root with a potion beside other moves
+                    hold_judged += 1
+                    hold_dropped += not hold["kept"]
                 if rec is not None:
                     rec.sample(root, res, tokens)
             finally:
@@ -311,6 +330,8 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                "character": character, "prior_path": prior_path, "prior_calls": prior_calls}
         if prior_latency is not None:
             row["prior_latency_ms"] = prior_latency
+        if cfg.potion_hold is not None:  # how often the hallway hold judged a root and dropped its potion moves
+            row["hold_judged"], row["hold_dropped"] = hold_judged, hold_dropped
         row.update(fields.row())
         if rec is not None and end in ("win", "death"):
             row["_shard"] = {"record": rec.finish(s, k, won=end == "win", prior_path=prior_path, prior_calls=prior_calls),
@@ -475,12 +496,13 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     nprocs = server_procs if (prior_server is not None and server_procs) else procs
     if prior_server is not None:
         agent = dataclasses.replace(agent, prior_server=prior_server.endpoint, prior_authkey=prior_server.authkey)
+    if run_timeout_s is not None:  # an agent whose bosses think 16 times as long is given that much more wall per run (stakes: max mult / 4)
+        run_timeout_s = run_timeout_s * (agent.wall_factor() if hasattr(agent, "wall_factor") else 1.0)
+    plain_search = getattr(agent, "stakes", None) is None and getattr(agent, "hold", None) is None  # a stakes agent's summary keeps the lab's `config` and names its own as `search_config`
     cfg0 = None
     sink = None
     if record:
-        import search_configs  # noqa: PLC0415
-
-        cfg0 = search_configs.get(sims) if isinstance(sims, str) else search_configs.flat(int(sims))
+        cfg0 = agent_search_config(agent, sims)  # the config the agent plays: the lab's `sims`, or the agent's own schedule and hold
         sink = gen_loop.ShardSink(out, agent.generation, config=cfg0.name, base_sims=cfg0.sims, ascension=ascension,
                                   agent=agent.describe())
     out.mkdir(parents=True, exist_ok=True)
@@ -620,7 +642,8 @@ def run_block(seeds: list[str], sims: int | str, procs: int, out: Path, *, ascen
     pool_stats = {k: sum(st[k] for st in pools_stats) for k in pools_stats[0]} if pools_stats else {}
     summary = {"sims": sims, "procs": procs, "ascension": ascension, "character": character, "agent_seed": AGENT_SEED,
                "wall_s": round(wall, 1),
-               "config": cfg0.name if cfg0 else (sims if isinstance(sims, str) else f"flat-{sims}"), "agent": agent.describe(),
+               "config": cfg0.name if (cfg0 and plain_search) else (sims if isinstance(sims, str) else f"flat-{sims}"),
+               **({} if plain_search else {"search_config": agent.config_name(sims)}), "agent": agent.describe(),
                **engine_block(rows), "decisions_per_s": round(new_decisions / wall, 2) if wall else None}
     summary["run_timeout_s"] = run_timeout_s
     summary["pool"] = {**pool_stats, "retried": counts["retried"], "lost": counts["lost"]}
@@ -767,7 +790,7 @@ def train_cmd(a: argparse.Namespace) -> int:
         return 2
     cand_gen = gen + 1 if target is None else target
     built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
-    recipe = gen_loop.macro_recipe.recipe_of(gen_loop.read_json(built / "agent.json").get("macro")) if built is not None else ""  # attempts are counted per chooser recipe
+    recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
     spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe)
     if spent is not None:  # the review guard's cap: `promote` would refuse this candidate, so nothing is trained (rc 0: a finished round)
         from tools.lab import jobs  # noqa: PLC0415
@@ -840,9 +863,18 @@ def build_cmd(a: argparse.Namespace) -> int:
             print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
             return 2
         marker = Path(a.marker_dir) / name
+    stakes = getattr(a, "stakes", None) or None  # `<base config>@h<H>e<E>b<B>`
+    schedule = None
+    if stakes:
+        sbase, smult = gen_loop.macro_recipe.parse_stakes_tag(stakes)
+        schedule = {"base": sbase, "mult": smult}
+    hold = getattr(a, "potion_hold", None)  # per cent of max HP
     cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export,
                                     vrun_fit=getattr(a, "vrun_fit", None) or None, attempt=attempt, tag=tag,
-                                    human_prior=getattr(a, "human_prior", None) or None, lam=parse_lambda(getattr(a, "lam", None)))
+                                    human_prior=getattr(a, "human_prior", None) or None, lam=parse_lambda(getattr(a, "lam", None)),
+                                    pick=getattr(a, "pick", None) or gen_loop.macro_recipe.PICK_ARGMAX,
+                                    skip_bias=float(getattr(a, "skip_bias", 0.0) or 0.0), search_schedule=schedule,
+                                    potion_hold=(gen_loop.macro_recipe.hold_pct(int(hold)) / 100.0 if hold is not None else None))
     meta = gen_loop.read_json(cand / "agent.json")
     out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
            "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
@@ -985,7 +1017,7 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") 
     if not isinstance(named, dict):
         return False, "summary.json names no agent"
     named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
-    for key in ("generation", "prior_sha256", "macro"):
+    for key in ("generation", "prior_sha256", "macro", "stakes", "hold"):  # the last two: the search's own identity (a plain agent has neither)
         if named.get(key) != agent.get(key, "rules" if key == "macro" else None):
             return False, f"names another agent ({key} {named.get(key)!r}, scored {agent.get(key)!r})"
     return True, "names the scored agent"
@@ -1141,6 +1173,8 @@ def play_score(a: argparse.Namespace) -> int:
            "--ascension", str(a.ascension), "--stop-after-h", str(a.stop_after_h), "--character", a.character, "--engine", engine]
     if getattr(a, "recycle", 0):
         cmd += ["--recycle", str(a.recycle)]
+    if agent.wall_factor() > 1:  # a stakes agent's bosses think longer: the real arm's per-run deadline grows with it (envproto RUN_DEADLINE_S)
+        cmd += ["--run-deadline-s", str(round(REAL_RUN_DEADLINE_S * agent.wall_factor()))]
     if getattr(a, "sample_machine", 0):
         cmd += ["--sample-machine", str(a.sample_machine)]  # the machine sampler of envproto play (referee/machine_sampler.py)
     if only:
@@ -1271,6 +1305,18 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--lambda", dest="lam", help="with --human-prior: the blend's weight on log pi_h (inf: the prior alone; 0.5; ...)")
     bd.add_argument("--tag", help="a recipe tag: the candidate is gen<N>/candidate-<tag> and the marker ready-<base generation>-g<N>-<tag> "
                     "(lowercase words joined by hyphens, e.g. imit, imit-l05); not beside --attempt")
+    bd.add_argument("--pick", choices=("argmax", "sample", "skipcal"), default="argmax",
+                    help="with --human-prior: how the chooser takes its option: the argmax (default), a draw from softmax((V + lambda log pi_h) / 1) "
+                    "seeded by the run seed and the floor (sample), or the argmax with --skip-bias floors on the skip option (skipcal); "
+                    "part of the macro string (docs/rl/STAKES_AND_HOLD.md)")
+    bd.add_argument("--skip-bias", type=float, default=0.0, help="with --pick skipcal: the skip option's bonus in floors "
+                    "(rl/skip_calibrate.py finds it)")
+    bd.add_argument("--stakes", help="a stakes schedule for the candidate's fights, `<base config>@h<hall>e<elite>b<boss>` (e.g. "
+                    "a3-v1@h1e4b16: hallway x1, elite x4, boss x16 of the base config's simulations); written to agent.json "
+                    "`search_schedule` and carried in the recipe, and every lab path that plays the candidate honours it")
+    bd.add_argument("--potion-hold", type=int, help="the hallway potion hold, per cent of max HP (e.g. 30): in a hallway fight the root's "
+                    "potion moves are dropped unless the kill check fails and the player would fall under that after the enemies' "
+                    "announced attacks; written to agent.json `potion_hold` and carried in the recipe")
     bd.add_argument("--vrun-fit", help="a fighter-matched V_run fit (`vrun-fit`'s OUT) to carry instead of the base's; it must "
                     "have passed the keep test")
     vf = sub.add_parser("vrun-fit", help="fit V_run on the runs one combat prior played (the fighter-matched recipe, reset order "

@@ -14,6 +14,8 @@
   decided           only under a blended chooser (`imitation_chooser`, macro vrun+pi_h): [[floor, "card" | "ancient" | "rest", prior, v,
                     guard], ...], one per deck decision the blend made; prior and v are 1 when the human prior's top option / the
                     judgement's top option is the one taken, guard is 1 when the guard overrode the blend. Absent for the other macros.
+                    Under the `skipcal` pick mode a card screen with a skip option has a sixth entry, its skip gap (the skip bias
+                    at which the skip would have been taken, `imitation_chooser.skip_gap`), which `rl/skip_calibrate.py` reads.
 Shop buys are not recorded: the referee's shop label carries a slot and a price, not the item, so a buy needs new plumbing.
 
 A row without these keys is an older row: absent means unknown, never 0 (the guard stays inert on such rows).
@@ -148,7 +150,8 @@ class RunFields:
     def decide(self, floor: int, note: dict) -> None:
         """What decided a deck screen under a blended chooser (`BlendedPolicy.last`): the screen, whether the human prior's top option
         and the judgement's top option were the one taken, and whether the guard overrode the blend."""
-        self.decided.append([int(floor), str(note["screen"]), int(note["prior"]), int(note["v"]), int(note["guard"])])
+        self.decided.append([int(floor), str(note["screen"]), int(note["prior"]), int(note["v"]), int(note["guard"]),
+                             *([float(note["gap"])] if note.get("gap") is not None else [])])
 
     def real_macro(self, kind: str, label: Any, floor: Any) -> None:
         """The referee action the lockstep took (its label), by decision kind. A card reward's other alternatives (a reroll, a

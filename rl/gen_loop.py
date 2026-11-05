@@ -142,6 +142,34 @@ class Agent:
     # candidate's folder) and its lambda; the other macros leave them unset
     human_prior: str | None = None
     lam: float = 0.0
+    # How this agent searches its fights beyond the lab's `--config` (2026-11-06, docs/rl/STAKES_AND_HOLD.md): a stakes schedule (agent.json
+    # `search_schedule`, as its tag `<base config>@h<hall>e<elite>b<boss>`: the base config's simulations times a multiplier per fight kind;
+    # the schedule's base replaces the config the lab passes) and the hallway potion hold (agent.json `potion_hold`, per cent of max HP).
+    # Both are part of the agent's identity (`describe`, `recipe`): None is every agent that existed before them.
+    stakes: str | None = None
+    hold: int | None = None
+
+    def search_config(self, sims):
+        """The `search_configs.SearchConfig` this agent plays when the lab asks for `sims` (a config name or a flat budget): `sims` itself
+        for an agent without a stakes schedule or a hold, so every older agent searches as it always did."""
+        import search_configs  # noqa: PLC0415 -- pure
+
+        return search_configs.for_agent(sims, self.stakes, self.hold)
+
+    def config_name(self, sims) -> str:
+        """The name `search_config(sims)` carries (what an arm's summary names as its `config`): `sims` as given for a plain agent."""
+        if self.stakes is None and self.hold is None:
+            return sims if isinstance(sims, str) else f"flat-{int(sims)}"
+        return self.search_config(sims).name
+
+    def wall_factor(self) -> float:
+        """How many times the plain per-run wall limits (`gen0.RUN_TIMEOUT_S`, `RUN_WALL_CAP_S`, the real arm's run deadline) this agent's
+        search is given: the stakes schedule's largest multiplier over four, never under 1."""
+        return 1.0 if self.stakes is None else self.search_config("a3-v1").wall_factor()
+
+    def recipe(self) -> str:
+        """The ledger's recipe (`macro_recipe.full_recipe`): the macro's, the schedule's and the hold's."""
+        return macro_recipe.full_recipe(self.macro, self.stakes, self.hold)
 
     def search_extra(self) -> dict[str, Any]:
         """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
@@ -172,7 +200,9 @@ class Agent:
                 raise ValueError(f"macro {self.macro} needs run_value.npz and human_prior.npz")
             import imitation_chooser  # noqa: PLC0415
 
-            return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W)
+            pick, bias = macro_recipe.parse_pick(self.macro)
+            return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W,
+                                                   pick=pick, skip_bias=bias)
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -184,8 +214,10 @@ class Agent:
         # an exploring self-play agent (`gen0.py emu --explore-tau/--explore-eps`) names its sampling; the argmax agent every
         # evaluation plays keeps the description it always had
         explore = {k: v for k, v in (("tau", self.tau), ("eps", self.eps)) if v}
+        # the search's own identity, named only where the agent has it, so an older agent's description is what it was
+        search = {k: v for k, v in (("stakes", self.stakes), ("hold", self.hold)) if v is not None}
         return {"generation": self.generation, "dir": tail, "prior": bool(self.prior_dir), "prior_sha256": sha,
-                "macro": self.macro, **explore}
+                "macro": self.macro, **explore, **search}
 
 
 @lru_cache(maxsize=8)
@@ -246,12 +278,51 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
             raise ValueError(f"{p.name}/{human.name} is not the prior macro {mode} names")
         if named.get("lambda") is not None and macro_recipe.format_lambda(lam) != str(named["lambda"]):
             raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior lambda {named['lambda']} disagree")
+        if named.get("pick") is not None and named["pick"] != macro_recipe.parse_pick(mode)[0]:
+            raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior pick {named['pick']} disagree")
     mask_version = meta.get("mask_version", 1)
     if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
         raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
-    return Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
-                 float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
-                 human_prior=str(human) if human else None, lam=lam)
+    stakes, hold = search_identity(meta, p.name)
+    agent = Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
+                  float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
+                  human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold)
+    if meta.get("recipe") is not None and meta["recipe"] != agent.recipe():  # the recipe agent.json records is the one the fields give
+        raise ValueError(f"{p.name}/agent.json: recipe {meta['recipe']!r} is not the agent's ({agent.recipe()!r})")
+    return agent
+
+
+def search_identity(meta: dict[str, Any], name: str = "agent.json") -> tuple[str | None, int | None]:
+    """(stakes tag, hold per cent) of an agent.json: its `search_schedule` ({"base": a search config name, "mult": {"hall", "elite",
+    "boss"}}) as the tag `<base>@h<hall>e<elite>b<boss>`, and its `potion_hold` ({"hp_frac": 0.30, "fights": "hall"}) as per cent of
+    max HP; (None, None) for an agent with neither. A schedule whose base is not a search config, a multiplier that is not a whole
+    number from 1 to 64, and a hold that is not a whole per cent are refused (the build and the load check alike)."""
+    stakes = hold = None
+    sched = meta.get("search_schedule")
+    if sched is not None:
+        import search_configs  # noqa: PLC0415 -- pure
+
+        try:
+            stakes = macro_recipe.stakes_tag(str(sched["base"]), sched["mult"])
+            base = search_configs.get(str(sched["base"]))
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"{name}: search_schedule {sched!r} is not a base config and a hall/elite/boss multiplier: {e}") from e
+        if base.stakes is not None or base.potion_hold is not None:
+            raise ValueError(f"{name}: search_schedule's base {sched['base']!r} already has a stakes schedule or a hold")
+        if sched.get("tag") is not None and sched["tag"] != stakes:
+            raise ValueError(f"{name}: search_schedule's tag {sched['tag']!r} is not {stakes!r}")
+    ph = meta.get("potion_hold")
+    if ph is not None:
+        try:
+            pct = round(float(ph["hp_frac"]) * 100)
+            if abs(float(ph["hp_frac"]) * 100 - pct) > 1e-6:
+                raise ValueError(f"hp_frac {ph['hp_frac']!r} is not a whole per cent")
+            hold = macro_recipe.hold_pct(int(pct))
+            if ph.get("fights", "hall") != "hall":
+                raise ValueError(f"fights {ph['fights']!r}: the hold is for hallway fights")
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"{name}: potion_hold {ph!r} is not {{'hp_frac': <whole per cent as a fraction>, 'fights': 'hall'}}: {e}") from e
+    return stakes, hold
 
 
 def active_agent_extra() -> dict[str, Any]:
@@ -1343,7 +1414,8 @@ def built_candidate(agent_root: Path | str, target: int, retrain: int = 0, attem
 
 def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
                     export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1, tag: str = "",
-                    human_prior: Path | str | None = None, lam: float | None = None) -> Path:
+                    human_prior: Path | str | None = None, lam: float | None = None, pick: str = macro_recipe.PICK_ARGMAX,
+                    skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1367,7 +1439,13 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     (`imitation_chooser`, D55 milestone 4): the file is copied as human_prior.npz and agent.json's `macro` is the recipe string
     `vrun+pi_h:lambda=<lam>:pi_h=<8 hex of its sha256>` (`macro_recipe.macro_name`), which the ledger counts attempts under as a
     recipe of its own. The base must play the vrun macro (its V_run fit is the other half of the blend). `tag` places the candidate in
-    gen<target>/candidate-<tag> (marker `ready-<base>-g<target>-<tag>`), so two recipes of one generation number sit side by side."""
+    gen<target>/candidate-<tag> (marker `ready-<base>-g<target>-<tag>`), so two recipes of one generation number sit side by side.
+
+    `pick` and `skip_bias` (with `human_prior`) say how the chooser takes its option (`macro_recipe.PICKS`): the argmax (the default),
+    a draw from softmax((V + lambda log pi_h) / 1) ("sample"), or the argmax with `skip_bias` floors added to the skip option ("skipcal");
+    the mode is part of the macro string. `search_schedule` ({"base": a search config name, "mult": {"hall", "elite", "boss"}}) gives the
+    candidate a stakes schedule and `potion_hold` (a fraction of max HP, a whole per cent) the hallway potion hold, both written to
+    agent.json (`gen_loop.search_identity` reads them back), with `recipe`, the ledger's recipe of the whole (`candidate_recipe`)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1405,7 +1483,28 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         chooser = {"file": "human_prior.npz", "sha256": file_sha256(human_prior), "lambda": macro_recipe.format_lambda(float(lam)),
                    "source": f"{Path(human_prior).parent.name}/{Path(human_prior).name}",
                    "guard": {"prob": 0.02, "floors": 1.0, "rule": "an option the prior gives under prob is taken only if V prefers it by more than floors"}}
-        macro = macro_recipe.macro_name(float(lam), chooser["sha256"])
+        if pick not in macro_recipe.PICKS:
+            raise ValueError(f"unknown pick mode {pick!r}; one of {', '.join(macro_recipe.PICKS)}")
+        if pick != macro_recipe.PICK_ARGMAX:
+            chooser["pick"] = pick
+        if pick == macro_recipe.PICK_SAMPLE:
+            chooser["tau"] = 1.0
+        if pick == macro_recipe.PICK_SKIPCAL:
+            chooser["skip_bias"] = float(macro_recipe.format_bias(skip_bias))
+        macro = macro_recipe.macro_name(float(lam), chooser["sha256"], pick, skip_bias)
+    elif pick != macro_recipe.PICK_ARGMAX or skip_bias:
+        raise ValueError("a pick mode belongs to the blended chooser (--human-prior and --lambda)")
+    if base_agent.stakes is not None or base_agent.hold is not None:
+        raise ValueError("the base has a stakes schedule or a potion hold; build on a plain generation")
+    search_meta: dict[str, Any] = {}
+    if search_schedule is not None:
+        search_meta["search_schedule"] = {"base": str(search_schedule["base"]), "mult": macro_recipe.stakes_mult(search_schedule["mult"])}
+    if potion_hold is not None:
+        search_meta["potion_hold"] = {"hp_frac": float(potion_hold), "fights": "hall"}
+    stakes_tag, hold_per_cent = search_identity(search_meta, f"gen{target}/candidate")  # refuses what the load would refuse
+    if stakes_tag is not None:
+        search_meta["search_schedule"]["tag"] = stakes_tag
+    recipe = macro_recipe.full_recipe(macro, stakes_tag, hold_per_cent)
     cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt), tag)
     if cand.exists() and any(cand.iterdir()):
         raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
@@ -1452,19 +1551,28 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
                            "prior_train": source_train}
     if export:
         doc["onnx"] = export_all(cand)
+    parts = (f", searching its fights under the schedule {stakes_tag}" if stakes_tag else "") + (
+        f", holding hallway potions at {hold_per_cent} in 100 of max HP" if hold_per_cent else "")
+    if chooser:
+        note = (f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, "
+                f"the run chooser blended with the human prior ({macro}){parts}; its E-block judges the "
+                + ("recipe as a whole" if parts else "chooser alone"))
+    elif parts:
+        note = (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                f"({base_agent.macro}) and V_run fit{parts}; its E-block judges the fight search alone")
+    elif fit_doc is None:
+        note = (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone")
+    else:
+        note = (f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
+                f"({base_agent.macro}) and {fit_text}; its E-block judges the prior and the fit together")
     meta = {"generation": target, "macro": macro, "built_on": base_agent.generation, "written": utc_now(),
             **({"lineage": lineage} if lineage else {}), "mask_version": base_agent.mask_version,
             **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
-            **({"human_prior": chooser} if chooser else {}),
+            **({"human_prior": chooser} if chooser else {}), **search_meta, **({"recipe": recipe} if recipe else {}),
             "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"],
                                          **({"attempt": int(attempt)} if int(attempt) > 1 else {}), **({"tag": tag} if tag else {})},
-            "note": ((f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, "
-                      f"the run chooser blended with the human prior ({macro}); its E-block judges the chooser alone")
-                     if chooser else
-                     f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
-                     f"({base_agent.macro}) and V_run fit; its E-block judges the prior swap alone" if fit_doc is None else
-                     f"built, not trained: the combat prior of {prior_dir.name} with generation {base_agent.generation}'s macro "
-                     f"({base_agent.macro}) and {fit_text}; its E-block judges the prior and the fit together")}
+            "note": note}
     write_json(cand / "train.json", doc)
     write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
     got = load_agent(cand)
@@ -1676,9 +1784,11 @@ def candidate_identity(agent: Agent) -> tuple[str, str]:
 
 def candidate_recipe(agent: Agent) -> str:
     """The recipe a candidate's attempts are counted under (promotions.tsv `macro`): "" for the plain macros (rules, vrun), the macro's
-    own string for a blended chooser (`macro_recipe.recipe_of`). A new recipe starts its attempts at 1: generation 12's self-play
-    line (the vrun macro, closed by D55 after two refusals) does not count against the imitation line."""
-    return macro_recipe.recipe_of(agent.macro)
+    own string for a blended chooser (`macro_recipe.recipe_of`), and for an agent with a stakes schedule or a potion hold the macro,
+    then `+stakes:<base>@h<H>e<E>b<B>` and `+hold:<N>` (`macro_recipe.full_recipe`), so a schedule and a hold are recipes of their own.
+    A new recipe starts its attempts at 1: generation 12's self-play line (the vrun macro, closed by D55 after two refusals) does not
+    count against the imitation line."""
+    return agent.recipe()
 
 
 def row_recipe(row: dict[str, str]) -> str:
