@@ -534,7 +534,7 @@ class AttemptCountTests(unittest.TestCase):
         self.assertTrue(rows[-1]["guard"].endswith("attempt 1/2") or "attempt 1/2" in rows[-1]["guard"])
         self.assertEqual(self.tsv.read_text().splitlines()[0].split("\t"), list(gen_loop.TSV_COLUMNS))
         self.assertEqual(OLD_HEADER.split("\t"), list(gen_loop.TSV_COLUMNS)[:len(OLD_HEADER.split("\t"))])  # the old columns keep their places
-        self.assertEqual("macro", gen_loop.TSV_COLUMNS[-1])
+        self.assertEqual("macro", gen_loop.TSV_COLUMNS[-10])  # the keep test v2's nine columns follow it (gen_loop.TSV_COLUMNS[-9:])
 
     def test_the_lambda_half_candidate_is_a_recipe_of_its_own_and_gets_its_own_block(self):
         imit = blended_stub(self.root, "candidate-imit", math.inf, self.PRIOR_BYTES)
