@@ -1,6 +1,8 @@
 """The generation loop (rl/gen_loop.py, rl/gen0.py train and promote): shards, training, the agent's prior, the E1 block,
 the promotion maths and the lab's train markers. Tests that need the native library skip without it."""
 
+import contextlib
+import io
 import json
 import math
 import os
@@ -14,13 +16,14 @@ from unittest import mock
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-for _p in (ROOT / "rl", ROOT / "src", ROOT):
+for _p in (ROOT / "rl", ROOT / "src", ROOT, Path(__file__).resolve().parent):
     sys.path.insert(0, str(_p))
 os.environ.setdefault("STS2_LIB_PATH", str(ROOT / "out"))
 os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
+import keep_v2_fixtures as fx  # noqa: E402
 
 HAVE_NATIVE = (ROOT / "out" / "Sts2Emulator.dll").exists() or bool(os.environ.get("STS2_LIB_PATH") and (Path(os.environ["STS2_LIB_PATH"]) / "Sts2Emulator.dll").exists())
 
@@ -679,6 +682,36 @@ class BuiltCandidateTests(unittest.TestCase):
         self.assertTrue(rp.call_args[1]["review_guard"])
         self.assertTrue((marker_dir / "ready-5-g7").exists())  # the lab consumes it when the command succeeds
 
+    def test_train_passes_keep_rule_to_promote(self):
+        marker_dir = self.root / "train"
+        self.assertEqual(0, gen0.main(["build", "--prior", str(self.prior), "--agent-root", str(self.agents), "--candidate-generation", "7",
+                                       "--why", "test", "--no-export", "--marker-dir", str(marker_dir)]))
+        seeds = str(self.root / "E7-test.json")
+        args = ["train", "--marker-dir", str(marker_dir), "--shards-root", str(self.root), "--agent-root", str(self.agents), "--promote",
+                "--emu-python", "python", "--seeds-file", seeds]
+        with mock.patch.dict(os.environ):
+            os.environ.pop(gen_loop.KEEP_RULE_FLAG, None)
+            with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp:
+                self.assertEqual(0, gen0.main([*args, "--review-guard"]))
+                self.assertIsNone(rp.call_args[1]["keep_rule"])  # no flag: nothing passed on, the child reads the variable or v1
+                self.assertEqual(0, gen0.main([*args, "--review-guard", "--keep-rule", "v2"]))
+                self.assertEqual(rp.call_args[1]["keep_rule"], "v2")
+                self.assertEqual(0, gen0.main([*args, "--keep-rule", "v1"]))
+                self.assertEqual(rp.call_args[1]["keep_rule"], "v1")
+                tg.assert_not_called()
+            # the cap before training: v2 has it in the rule, so two judged candidates of the generation stop the round without --review-guard
+            tsv = self.agents / "promotions.tsv"
+            for i in range(2):
+                gen_loop.append_promotion(tsv, {"cand_gen": 7, "seed_block": f"E7-{i}", "cand_sha": f"sha-{i}", "decision": "rejected"})
+            with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp:
+                self.assertEqual(0, gen0.main(args))  # v1 without the review guard has no cap: the candidate goes on to be judged
+                rp.assert_called_once()
+                rp.reset_mock()
+                self.assertEqual(0, gen0.main([*args, "--keep-rule", "v2"]))  # the marker is renamed done-, nothing is judged or trained
+                rp.assert_not_called()
+                tg.assert_not_called()
+                self.assertTrue((marker_dir / "done-5-g7").exists())
+
     def test_a_judged_built_candidate_is_not_judged_again_or_trained_over(self):
         cand = self.build()
         (cand / "promotion.json").write_text("{}")
@@ -887,6 +920,233 @@ class PromoteEndToEndTests(unittest.TestCase):
         (arm / "summary.json").write_text(json.dumps({"config": "a3-v1", "agent": agent.describe()}))
         with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
             self.assertEqual(len(gen_loop.run_arm(self.seeds, arm, agent, "a3-v1", 2)), 300)
+
+
+class KeepRuleV2Tests(unittest.TestCase):
+    """The keep test v2 in the generation loop (tools/lab/keep_v2.py, docs/rl/KEEP_TEST_V2.md): the ledger's nine columns, `rejudge` on saved
+    arms (no attempt spent, a dry run that writes only to its own folder), and the default rule staying v1."""
+
+    NINE = ("rule", "frontier", "route", "k2_cand", "k2_base", "d_deep", "deep_lower", "p_deep", "floor_lower95")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.agents = self.root / "agent"
+        self.agents.mkdir()
+        self.seeds, self.cand_rows, self.base_rows = fx.arms()
+        self.seed_file = self.root / "seeds" / "Etest-2.json"
+        self.seed_file.parent.mkdir()
+        self.seed_file.write_text(json.dumps({"seeds": self.seeds}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def lineage(self) -> None:
+        """Generation 3 promoted on Eprev with the Act 2 boss beaten 3 times in 100: the incumbent's own arm that sets the frontier at B2."""
+        prev = [fx.run_row(f"P{i:09d}", 2 if i < 60 else 1 if i < 1000 else 0, np.random.default_rng(i)) for i in range(2000)]
+        self.write_arm(self.agents / "gen3" / "candidate", "Eprev", prev)
+        gen_loop.append_promotion(self.agents / "promotions.tsv",
+                                  {"cand_gen": 3, "base_gen": 2, "seed_block": "Eprev", "seeds": 2000, "boss_cand": 1000, "boss_base": 900,
+                                   "decision": "promoted", "cand_sha": "sha-3", "cand_dir": "candidate", "attempt": 1, "drift": "clear"})
+
+    @staticmethod
+    def write_arm(folder: Path, name: str, rows: list[dict]) -> None:
+        arm = folder / "arms" / f"{name}-a3-v1"
+        arm.mkdir(parents=True)
+        (arm / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    def judged_candidate(self, others: int = 0) -> Path:
+        """Candidate sha-a of generation 4, refused by the floor test on Etest-2 (its row is in the ledger, its arms are on disk), and
+        `others` more candidates of generation 4 judged on other blocks."""
+        self.lineage()
+        cand = stub_candidate(self.root, "c1", "sha-a", generation=4)
+        self.write_arm(cand, "Etest-2", self.cand_rows)
+        self.write_arm(self.agents / "gen0", "Etest-2", self.base_rows)
+        tsv = self.agents / "promotions.tsv"
+        for i in range(others):
+            gen_loop.append_promotion(tsv, {"cand_gen": 4, "base_gen": 3, "seed_block": f"Eother{i}", "seeds": 200, "boss_cand": 90, "boss_base": 100,
+                                            "decision": "rejected", "cand_sha": f"sha-o{i}", "cand_dir": f"candidate-o{i}", "attempt": i + 1})
+        gen_loop.append_promotion(tsv, {"cand_gen": 4, "base_gen": 3, "seed_block": "Etest-2", "seeds": 2000, "d_floor": "-0.3060",
+                                        "floor_lower": "-0.7660", "p_floor": "0.93900", "boss_cand": 965, "boss_base": 1043, "p_boss": "0.99944",
+                                        "decision": "rejected", "cand_sha": "sha-a", "cand_dir": "c1", "attempt": others + 1, "drift": "clear",
+                                        "guard": "kill FIRES"})
+        (cand / "promotion.json").write_text(json.dumps({"decision_text": "rejected", "written": "2026-11-05T17:49:35Z", "seed_block": "Etest-2"}))
+        return cand
+
+    def rejudge(self, cand: Path, **kw):
+        with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
+            return gen_loop.rejudge(cand, None, self.seed_file, agent_root=self.agents, note="keep test v2", boot=500, keep_rule="v2", **kw)
+
+    # ---------------------------------------------------------------- the ledger
+
+    def test_ledger_v2_columns_append_and_old_rows_read_as_v1(self):
+        cols = gen_loop.TSV_COLUMNS
+        self.assertEqual(cols[-len(self.NINE):], self.NINE)  # appended after `macro`, nothing moved
+        self.assertEqual(cols[cols.index("macro") + 1:], self.NINE)
+        t = self.root / "promotions.tsv"
+        old_cols = cols[:cols.index("rule")]
+        old = {c: "x" for c in old_cols} | {"seed_block": "E9-old", "decision": "promoted", "seeds": "2000", "boss_cand": "928", "boss_base": "829"}
+        t.write_text("\t".join(old_cols) + "\n" + "\t".join(old[c] for c in old_cols) + "\n", encoding="utf-8")
+        rows = gen_loop.read_promotions(t)
+        self.assertNotIn("rule", rows[0])  # the file before the columns existed
+        self.assertEqual(gen_loop.row_rule(rows[0]), "v1")
+        cells = {"rule": "v2", "frontier": "B2", "route": "A", "k2_cand": 107, "k2_base": 49, "d_deep": "3.0500", "deep_lower": "1.4500",
+                 "p_deep": "0.00005", "floor_lower95": "-0.6300"}
+        gen_loop.append_promotion(t, {"seed_block": "E12-new", "decision": "promoted", "seeds": 2000, "boss_cand": 965, "boss_base": 1043, **cells})
+        lines = t.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0].split("\t"), list(cols))  # the old header was rewritten to the new columns
+        self.assertTrue(all(len(x.split("\t")) == len(cols) for x in lines))  # and every row has every cell
+        rows = gen_loop.read_promotions(t)
+        self.assertEqual([r["seed_block"] for r in rows], ["E9-old", "E12-new"])
+        self.assertEqual([r[c] for r in rows[:1] for c in self.NINE], [""] * 9)  # old rows keep their values and read empty here: v1
+        self.assertEqual(rows[0]["boss_cand"], "928")
+        self.assertEqual((gen_loop.row_rule(rows[0]), gen_loop.row_rule(rows[1])), ("v1", "v2"))
+        self.assertEqual({c: rows[1][c] for c in self.NINE}, {c: str(v) for c, v in cells.items()})
+        # the drift check's lineage reads the Act 1 columns of both kinds of row alike
+        self.assertEqual(gen_loop.lineage_blocks(rows), [(928, 2000), (965, 2000)])
+        # a file that already has the columns is appended to as it stands; a v1 row leaves the nine cells empty
+        gen_loop.append_promotion(t, {"seed_block": "E13-v1", "decision": "rejected", "seeds": 200})
+        self.assertEqual(t.read_text(encoding="utf-8").splitlines()[0].split("\t"), list(cols))
+        self.assertEqual([gen_loop.row_rule(r) for r in gen_loop.read_promotions(t)], ["v1", "v2", "v1"])
+        self.assertEqual(gen_loop.read_promotions(t)[2]["route"], "")
+
+    # ---------------------------------------------------------------- rejudge
+
+    def test_rejudge_v2_from_saved_rows_spends_no_attempt(self):
+        cand = self.judged_candidate(others=2)  # a third candidate of generation 4: `promote` would refuse it before playing a seed
+        tsv = self.agents / "promotions.tsv"
+        before = gen_loop.read_promotions(tsv)
+        self.assertEqual(gen_loop.attempts_before(before, 4, "sha-new"), 3)
+        self.assertEqual(gen_loop.attempts_before(before, 4, "sha-a"), 2)
+        doc = self.rejudge(cand, lab=self.root / "lab")
+        k = doc["keep_v2"]
+        self.assertEqual(doc["decision_text"], "promoted")
+        self.assertEqual((doc["decision"]["rule"], k["route"], k["frontier"]["name"]), (gen_loop.keep_v2_module().RULE, "A", "B2"))
+        self.assertEqual(k["frontier"]["pooled_kills"][1], 60)  # read from the incumbent's own arm on Eprev
+        self.assertEqual(k["kills"]["B2"], [107, 49])
+        self.assertEqual((k["attempt"]["attempt"], k["attempt"]["cap"], k["attempt"]["allowed"]), (3, 2, True))  # attempt 3 of 2, and a re-read is allowed
+        self.assertEqual(doc["rejudged"], {"note": "keep test v2", "earlier_decision": "rejected"})
+        self.assertEqual(doc["keep_rule"], "v2")
+        # the ledger: a second row for the block, v2 columns filled, the same candidate: the count of attempts is as it was
+        after = gen_loop.read_promotions(tsv)
+        self.assertEqual(len(after), len(before) + 1)
+        new = after[-1]
+        self.assertEqual((new["seed_block"], new["decision"], new["rule"], new["frontier"], new["route"], new["k2_cand"], new["k2_base"]),
+                         ("Etest-2", "promoted", "v2", "B2", "A", "107", "49"))
+        self.assertEqual((new["boss_cand"], new["boss_base"], new["attempt"]), ("965", "1043", "3"))  # Act 1 columns as ever
+        self.assertEqual(gen_loop.attempts_before(after, 4, "sha-new"), 3)  # nothing was spent
+        self.assertEqual(gen_loop.attempts_before(after, 4, "sha-a"), 2)
+        self.assertEqual(gen_loop.attempts_spent(tsv, 4, True), 3)  # the cap still stands for a new candidate
+        self.assertEqual(json.loads((self.agents / "current.json").read_text())["note"], "keep test v2")
+        self.assertTrue((self.root / "lab" / "score" / "pending").is_file())
+        self.assertTrue((cand / "promotion-rejected-2026-11-05.json").is_file())  # the earlier record kept beside the new one
+        self.assertEqual(json.loads((cand / "promotion.json").read_text())["keep_v2"]["route"], "A")
+        # the drift check reads the rows before this block, not its own: Eprev (1000 of 2000) and the two other candidates' blocks (100 of 200 each)
+        self.assertEqual((k["drift"]["pooled_kills"], k["drift"]["pooled_n"], k["drift"]["verdict"]), (1200, 2400, "clear"))
+        self.assertEqual(new["drift"], "clear")
+
+    def test_rejudge_v2_dry_run_writes_only_to_its_own_folder(self):
+        cand = self.judged_candidate()
+        snapshot = {p: p.read_bytes() for p in sorted(self.root.rglob("*")) if p.is_file()}
+        out = self.root / "dry"
+        doc = self.rejudge(cand, out=out)
+        self.assertEqual(doc["decision_text"], "promoted")
+        after = {p: p.read_bytes() for p in sorted(self.root.rglob("*")) if p.is_file() and out not in p.parents}
+        self.assertEqual(after, snapshot)  # the agent folder and the candidate's folder are byte for byte as they were
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["current.json", "promotion.json", "promotions.tsv"])
+        rows = gen_loop.read_promotions(out / "promotions.tsv")
+        self.assertEqual(len(rows), len(gen_loop.read_promotions(self.agents / "promotions.tsv")) + 1)
+        self.assertEqual((rows[-1]["rule"], rows[-1]["route"], rows[-1]["decision"]), ("v2", "A", "promoted"))
+        self.assertEqual(json.loads((out / "promotion.json").read_text())["keep_v2"]["route"], "A")
+        self.assertEqual(json.loads((out / "current.json").read_text())["generation"], 4)
+        self.assertFalse((self.agents / "current.json").exists())
+        with self.assertRaisesRegex(ValueError, "no lab marker"):  # a dry run names no lab folder
+            self.rejudge(cand, out=out, lab=self.root / "lab")
+        self.assertFalse((self.root / "lab").exists())
+        # run twice: the ledger copy is made afresh, so the dry run is repeatable
+        self.rejudge(cand, out=out)
+        self.assertEqual(len(gen_loop.read_promotions(out / "promotions.tsv")), len(rows))
+
+    def test_a_refused_v2_rejudge_names_the_blocking_check(self):
+        cand = self.judged_candidate()
+        self.cand_rows[:] = fx.with_bad(self.cand_rows, 8)  # eight crashed seeds against none: the crash guard
+        (cand / "arms" / "Etest-2-a3-v1" / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in self.cand_rows), encoding="utf-8")
+        doc = self.rejudge(cand, out=self.root / "dry")
+        self.assertEqual(doc["decision_text"], "rejected")
+        self.assertEqual(doc["keep_v2"]["blocking"], ["crash"])
+        self.assertFalse(doc["decision"]["checks"]["crash"])
+        self.assertFalse((self.root / "dry" / "current.json").exists())
+
+    # ---------------------------------------------------------------- the default
+
+    def test_keep_rule_default_v1_is_unchanged(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop(gen_loop.KEEP_RULE_FLAG, None)
+            self.assertEqual(gen_loop.KEEP_RULE_FLAG, "SPIRELINE_KEEP_RULE")
+            self.assertEqual(gen_loop.keep_rule_of(), "v1")
+            self.assertEqual(gen_loop.keep_rule_of(None), "v1")
+            self.assertEqual((gen_loop.keep_rule_of("v1"), gen_loop.keep_rule_of(" V2 ")), ("v1", "v2"))
+            os.environ[gen_loop.KEEP_RULE_FLAG] = "v2"
+            self.assertEqual(gen_loop.keep_rule_of(), "v2")
+            self.assertEqual(gen_loop.keep_rule_of("v1"), "v1")  # the flag beats the variable
+            os.environ[gen_loop.KEEP_RULE_FLAG] = ""
+            self.assertEqual(gen_loop.keep_rule_of(), "v1")
+            for bad in ("v3", "on", "2"):
+                os.environ[gen_loop.KEEP_RULE_FLAG] = bad
+                with self.assertRaises(ValueError):
+                    gen_loop.keep_rule_of()
+            os.environ.pop(gen_loop.KEEP_RULE_FLAG)
+            p = gen0.build_parser()
+            for cmd, extra in (("promote", ["--cand", "c", "--agent-root", "a"]), ("rejudge", ["--cand", "c", "--seeds-file", "s", "--agent-root", "a", "--note", "n"]),
+                               ("train", ["--marker-dir", "m", "--shards-root", "s", "--agent-root", "a"])):
+                self.assertIsNone(p.parse_args([cmd, *extra]).keep_rule, cmd)
+                self.assertEqual(p.parse_args([cmd, *extra, "--keep-rule", "v2"]).keep_rule, "v2", cmd)
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    p.parse_args([cmd, *extra, "--keep-rule", "v3"])
+            self.assertIsNone(p.parse_args(["rejudge", "--cand", "c", "--seeds-file", "s", "--agent-root", "a", "--note", "n"]).out)
+        # the child process is told only when the caller names a rule
+        ran = []
+        with mock.patch.object(gen_loop.subprocess, "run", lambda cmd, check=False: ran.append(cmd) or SimpleNamespace(returncode=0)):
+            gen_loop.run_promote_subprocess("py", Path("c"), None, Path("s.json"), Path("a"), 4, None, None)
+            gen_loop.run_promote_subprocess("py", Path("c"), None, Path("s.json"), Path("a"), 4, None, None, keep_rule="v2")
+        self.assertNotIn("--keep-rule", ran[0])
+        self.assertEqual(ran[1][ran[1].index("--keep-rule") + 1], "v2")
+        # a judgement without the rule is D24's, with the columns empty and no v2 key anywhere
+        seeds = [f"S{i:09d}" for i in range(300)]
+        seed_file = self.root / "seeds" / "Etest-1.json"
+        seed_file.write_text(json.dumps({"seeds": seeds}))
+        base_rows = arm_rows_like(seeds, lambda i: 3 + i % 12)
+        cand_rows = arm_rows_like(seeds, lambda i: 5 + i % 12)
+        for r in cand_rows[:80]:
+            r["floor"] = 18
+        cand = stub_candidate(self.root, "gen5c", "sha-z")
+        with mock.patch.dict(os.environ), mock.patch.object(gen_loop, "run_arm", lambda s, a, ag, c, p, ascension=10: cand_rows if ag.prior_dir else base_rows):
+            os.environ.pop(gen_loop.KEEP_RULE_FLAG, None)
+            os.environ.pop(gen_loop.REVIEW_GUARD_FLAG, None)
+            doc = gen_loop.promote(cand, None, seed_file, agent_root=self.agents, boot=500)
+            self.assertEqual(doc["decision_text"], "promoted")
+            self.assertEqual(doc["decision"]["rule"], "D24")
+            self.assertNotIn("keep_v2", doc)
+            self.assertNotIn("keep_rule", doc)
+            new = gen_loop.read_promotions(self.agents / "promotions.tsv")[-1]
+            self.assertEqual([new[c] for c in self.NINE], [""] * 9)
+            self.assertEqual(gen_loop.row_rule(new), "v1")
+            self.assertEqual(new["guard"], "off")
+        # the comparison without a verdict of the rule is the one it always was
+        res = gen_loop.compare_arms(cand_rows, base_rows, gen_loop.ALPHA, 500)
+        self.assertEqual(res["decision"]["rule"], "D24")
+        self.assertNotIn("keep_v2", res)
+        self.assertEqual(gen_loop.attempts_spent(self.agents / "promotions.tsv", 5, None), None)  # the cap is the review guard's alone under v1
+
+    def test_the_cap_before_training_holds_under_v2_without_the_review_guard(self):
+        tsv = self.agents / "promotions.tsv"
+        for i in range(2):
+            gen_loop.append_promotion(tsv, {"cand_gen": 6, "seed_block": f"E{i}", "cand_sha": f"sha-{i}", "decision": "rejected"})
+        with mock.patch.dict(os.environ):
+            os.environ.pop(gen_loop.REVIEW_GUARD_FLAG, None)
+            self.assertIsNone(gen_loop.attempts_spent(tsv, 6, None))  # v1 with the flag off: no cap
+            self.assertEqual(gen_loop.attempts_spent(tsv, 6, None, keep_rule="v2"), 2)  # v2 carries the cap in the rule
+            self.assertIsNone(gen_loop.attempts_spent(tsv, 7, None, keep_rule="v2"))
 
 
 class FreshBlockTests(unittest.TestCase):

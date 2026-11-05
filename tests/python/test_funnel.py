@@ -27,8 +27,10 @@ os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
+import keep_v2_fixtures as fx  # noqa: E402
 import pool_fakes as pf  # noqa: E402
 from tools.lab import pairing_check as pc  # noqa: E402
+from tools.lab import keep_v2 as k2  # noqa: E402
 
 LOOKS = [200, 500, 800, 1100, 1400, 1700, 2000]
 SD = 7.74  # the per-seed SD of the paired floor difference on E11's block
@@ -601,6 +603,261 @@ class WiringTests(unittest.TestCase):
         with mock.patch.object(gen_loop, "promote", return_value=doc) as pr:
             self.assertEqual(gen0.promote_cmd(a), 0)
         self.assertEqual((pr.call_args[1]["sequential"], pr.call_args[1]["smoke"], pr.call_args[1]["batch"]), (True, 200, 300))
+
+
+# ----------------------------------------------------------------- the keep test v2's funnel (tools/lab/keep_v2.py `seq_call`)
+
+SD_FLOOR_L05, SD_DEEP_L05, RHO_L05 = 8.77, 28.04, 0.458  # candidate-imit-l05's block: the SD of the paired floor and deep_B2 differences, their correlation
+
+
+def v2_call(floor_mean: float, deep_mean: float, n: int, j: int, looks=LOOKS, sd_f: float = SD_FLOOR_L05, sd_d: float = SD_DEEP_L05) -> dict:
+    """`keep_v2.seq_call` on differences whose sample mean and SD are exactly the ones given."""
+    return k2.seq_call(fx.std_diffs(floor_mean, sd_f, n, 3), fx.std_diffs(deep_mean, sd_d, n, 4), j, looks)
+
+
+class V2RuleTests(unittest.TestCase):
+    def test_v2_smoke_refuses_floor_collapse_without_act2_sign(self):
+        # 200 seeds: floor SE 0.62, deep_f SE 1.98
+        self.assertEqual(v2_call(-1.5, -0.01, 200, 0)["action"], "refuse")  # the floor mean is below -1.0 and deep_f is not above 0
+        self.assertEqual(v2_call(-1.5, -3.0, 200, 0)["action"], "refuse")
+        c = v2_call(-1.5, 3.0, 200, 0)  # the same floor with Act 2 kills up: play on (the 95% upper bound -0.48 is above -1.0)
+        self.assertEqual(c["action"], "continue")
+        self.assertGreater(c["upper95"], -1.0)
+        c = v2_call(-3.0, 5.0, 200, 0)  # a collapse no deep_f gain pays for: the floor's 95% upper bound is below -1.0, no route can pass
+        self.assertEqual(c["action"], "refuse")
+        self.assertLess(c["upper95"], -1.0)
+        self.assertEqual(v2_call(-0.9, -0.01, 200, 0)["action"], "continue")  # above the smoke line
+        self.assertEqual(v2_call(-1.01, -0.01, 200, 0)["action"], "refuse")
+        self.assertEqual(v2_call(-1.01, 0.01, 200, 0)["action"], "continue")  # any sign above 0 keeps it alive
+        self.assertEqual(v2_call(8.0, 30.0, 200, 0)["action"], "continue")  # the smoke look never promotes
+        # today's smoke rule would have refused the first and the last-but-one alike (floor below -1.0 with the 95% bound below 0)
+        self.assertEqual(gen_loop.seq_call(fx.std_diffs(-1.5, SD_FLOOR_L05, 200, 3), 0, LOOKS)["action"], "refuse")
+        # the design's three 200-seed blocks: generation 12's second attempt, the pure imitation and generation 12
+        self.assertEqual(v2_call(-1.29, -1.0, 200, 0, sd_f=9.7, sd_d=20.0)["action"], "refuse")
+        self.assertEqual(v2_call(-3.14, 2.5, 200, 0, sd_f=9.7, sd_d=29.0)["action"], "refuse")
+        self.assertEqual(v2_call(-6.79, -1.0, 200, 0)["action"], "refuse")
+
+    def test_v2_later_look_refuses_only_when_both_routes_dead(self):
+        # 800 seeds (look 3): floor SE 0.31, so its 99% upper bound is the mean + 0.72; deep_f SE 0.99, its 95% upper bound the mean + 1.63
+        c = v2_call(-0.9, -2.0, 800, 2)
+        self.assertEqual(c["action"], "refuse")  # route F dead (upper99 -0.18) and route A dead (deep_f's upper bound -0.37 is under +1.0)
+        self.assertLess(c["upper99"], 0)
+        self.assertLess(c["deep_upper95"], k2.MIN_GAIN)
+        c = v2_call(-0.9, 1.0, 800, 2)
+        self.assertEqual(c["action"], "continue")  # route F is dead but route A is alive: today's rule would have refused here
+        self.assertLess(c["upper99"], 0)
+        self.assertEqual(gen_loop.seq_call(fx.std_diffs(-0.9, SD_FLOOR_L05, 800, 3), 2, LOOKS)["action"], "refuse")
+        c = v2_call(-2.0, 5.0, 800, 2)
+        self.assertEqual(c["action"], "refuse")  # route A needs the floor guard (95% lower bound at least -1.0): its 99% upper bound is -1.28
+        self.assertLess(c["upper99"], -k2.FLOOR_MARGIN)
+        self.assertEqual(v2_call(-0.1, -5.0, 800, 2)["action"], "continue")  # route F alive (upper99 +0.62): deep_f is no reason to refuse
+        self.assertEqual(v2_call(0.0, 0.0, 800, 2)["action"], "continue")
+        # a refusal needs the bound below 0, not the mean: at -0.7 the upper bound is +0.02
+        self.assertEqual(v2_call(-0.7, -5.0, 800, 2)["action"], "continue")
+
+    def test_v2_early_z_splits_alpha_over_routes(self):
+        z = k2.early_z(7)
+        self.assertAlmostEqual(z, NormalDist().inv_cdf(1 - 0.001 / (2 * 5)), places=9)  # 0.001 over five interim looks and two routes
+        self.assertAlmostEqual(z, 3.72, places=2)
+        self.assertAlmostEqual(gen_loop.seq_early_z(7), 3.54, places=2)  # v1 spends the same alpha on one route
+        self.assertGreater(z, gen_loop.seq_early_z(7))
+        self.assertLess(2 * 5 * (1 - NormalDist().cdf(z)), 0.0010001)  # the union bound: ten (look, route) pairs spend at most 0.001
+        self.assertEqual(k2.early_z(2), math.inf)
+        self.assertEqual(k2.early_z(1), math.inf)
+        self.assertAlmostEqual(k2.early_z(4), NormalDist().inv_cdf(1 - 0.001 / 4), places=9)
+        # route F is eligible at the early z, with deep_f not worse; at 0.99 of it it is not
+        n, j = 1100, 3
+        se_f, se_d = SD_FLOOR_L05 / math.sqrt(n), SD_DEEP_L05 / math.sqrt(n)
+        c = v2_call(z * se_f * 1.01, 0.0, n, j)
+        self.assertEqual((c["action"], c["routes"]), ("eligible", ["F"]))
+        self.assertEqual(v2_call(z * se_f * 0.99, 0.0, n, j)["action"], "continue")
+        # route F also needs deep_f's 95% upper bound at or above 0: a clearly worse deep_f is no route F
+        self.assertEqual(v2_call(z * se_f * 1.01, -3.0 * 1.645 * se_d, n, j)["action"], "continue")
+        # route A at the early z needs its gain of +1.0 per 100 and the floor guard too
+        c = v2_call(0.0, z * se_d * 1.01, n, j)
+        self.assertEqual((c["action"], c["routes"]), ("eligible", ["A"]))
+        self.assertEqual(v2_call(0.0, z * se_d * 0.99, n, j)["action"], "continue")
+        self.assertEqual(v2_call(-1.3, z * se_d * 1.2, n, j)["action"], "continue")  # floor 95% lower bound -1.3 - 0.45 is under -1.0
+        both = v2_call(z * se_f * 1.5, z * se_d * 1.5, n, j)
+        self.assertEqual(both["routes"], ["F", "A"])
+        # a z that clears 3.54 but not 3.72 is not enough for v2, though it is for v1
+        c = v2_call(3.6 * se_f, 0.0, n, j)
+        self.assertEqual(c["action"], "continue")
+        self.assertEqual(gen_loop.seq_call(fx.std_diffs(3.6 * se_f, SD_FLOOR_L05, n, 3), j, LOOKS)["action"], "eligible")
+        self.assertEqual(v2_call(8.0, 30.0, 2000, 6)["action"], "final")
+
+    def test_seq_call_matches_an_independent_reading_of_the_rule_on_random_paths(self):
+        rng = np.random.default_rng(8)
+        z95, z99, z_e = NormalDist().inv_cdf(0.95), NormalDist().inv_cdf(0.99), k2.early_z(7)
+        seen = set()
+        for mf in (-3.0, -1.0, -0.4, 0.0, 0.6, 1.5):
+            for md in (-3.0, 0.0, 2.0, 6.0):
+                for _ in range(8):
+                    f = rng.normal(mf, SD_FLOOR_L05, 2000)
+                    d = rng.normal(md, SD_DEEP_L05, 2000)
+                    for j, n in enumerate(LOOKS):
+                        pf, pd_ = f[:n], d[:n]
+                        m, s = pf.mean(), pf.std(ddof=1) / math.sqrt(n)
+                        dm, ds = pd_.mean(), pd_.std(ddof=1) / math.sqrt(n)
+                        f_dead, a_dead = m + z99 * s < 0, (m + z99 * s < -1.0) or (dm + z95 * ds < 1.0)
+                        if j == len(LOOKS) - 1:
+                            want = "final"
+                        elif j == 0:
+                            want = "refuse" if (m < -1.0 and not dm > 0) or m + z95 * s < -1.0 else "continue"
+                        elif f_dead and a_dead:
+                            want = "refuse"
+                        elif (m / s >= z_e and dm + z95 * ds >= 0) or (dm / ds >= z_e and dm >= 1.0 and m - z95 * s >= -1.0):
+                            want = "eligible"
+                        else:
+                            want = "continue"
+                        got = k2.seq_call(pf, pd_, j, LOOKS)["action"]
+                        self.assertEqual(got, want, (mf, md, j))
+                        seen.add(want)
+        self.assertEqual(seen, {"final", "refuse", "eligible", "continue"})
+
+    def simulate_null(self, paths: int = 20000, seed: int = 2026) -> dict[str, float]:
+        """The rule on its normal model with no difference at all (both means 0), l05's moments: Brownian sums of a correlated pair at the
+        looks, known SDs, the final look's decision the routes' own (z at 0.005, the gain, the floor guard, deep_f not worse)."""
+        rng = np.random.default_rng(seed)
+        n = np.array(LOOKS, dtype=float)
+        inc = np.diff([0, *LOOKS]).astype(float)
+        zf = rng.standard_normal((paths, len(LOOKS)))
+        zd = RHO_L05 * zf + math.sqrt(1 - RHO_L05**2) * rng.standard_normal((paths, len(LOOKS)))
+        sf = np.cumsum(SD_FLOOR_L05 * np.sqrt(inc) * zf, axis=1)
+        sd = np.cumsum(SD_DEEP_L05 * np.sqrt(inc) * zd, axis=1)
+        m, d = sf / n, sd / n
+        se_f, se_d = SD_FLOOR_L05 / np.sqrt(n), SD_DEEP_L05 / np.sqrt(n)
+        z95, z99, z_e, z_r = NormalDist().inv_cdf(0.95), NormalDist().inv_cdf(0.99), k2.early_z(len(LOOKS)), NormalDist().inv_cdf(1 - k2.ROUTE_ALPHA)
+        alive = np.ones(paths, dtype=bool)
+        promoted = np.zeros(paths, dtype=bool)
+        early = np.zeros(paths, dtype=bool)
+        stop = np.full(paths, len(LOOKS) - 1)
+        for j in range(len(LOOKS)):
+            f_dead = m[:, j] + z99 * se_f[j] < 0
+            a_dead = (m[:, j] + z99 * se_f[j] < -k2.FLOOR_MARGIN) | (d[:, j] + z95 * se_d[j] < k2.MIN_GAIN)
+            if j == len(LOOKS) - 1:
+                route_f = (m[:, j] / se_f[j] >= z_r) & (d[:, j] + z95 * se_d[j] >= 0)
+                route_a = (d[:, j] / se_d[j] >= z_r) & (d[:, j] >= k2.MIN_GAIN) & (m[:, j] - z95 * se_f[j] >= -k2.FLOOR_MARGIN)
+                promoted |= alive & (route_f | route_a)
+                break
+            if j == 0:
+                refuse = ((m[:, j] < k2.SMOKE_MEAN) & ~(d[:, j] > 0)) | (m[:, j] + z95 * se_f[j] < -k2.FLOOR_MARGIN)
+                eligible = np.zeros(paths, dtype=bool)
+            else:
+                refuse = f_dead & a_dead
+                eligible = ((m[:, j] / se_f[j] >= z_e) & (d[:, j] + z95 * se_d[j] >= 0)) | (
+                    (d[:, j] / se_d[j] >= z_e) & (d[:, j] >= k2.MIN_GAIN) & (m[:, j] - z95 * se_f[j] >= -k2.FLOOR_MARGIN))
+            stop[alive & (refuse | eligible)] = j
+            promoted |= alive & eligible
+            early |= alive & eligible
+            alive &= ~(refuse | eligible)
+        return {"promote": float(promoted.mean()), "early": float(early.mean()), "seeds": float(n[stop].mean())}
+
+    def test_v2_null_promotes_at_most_0p012(self):
+        r = self.simulate_null()
+        self.assertLessEqual(r["promote"], 0.012)  # 0.005 per route at the last look plus 0.001 early: the design's 0.011
+        self.assertLessEqual(r["early"], 0.0012)  # the early budget, split over the interim looks and the two routes
+        self.assertGreater(r["promote"], 0.005)  # and the model is not trivially inert
+        # a real gain of the size the design wants (+3 per 100 at the Act 2 boss, floor -0.3) is promoted: the model's other end
+        rng = np.random.default_rng(7)
+        n = 2000
+        f = rng.normal(-0.3, SD_FLOOR_L05, (500, n))
+        d = RHO_L05 * (f + 0.3) / SD_FLOOR_L05 * SD_DEEP_L05 + math.sqrt(1 - RHO_L05**2) * rng.normal(0, SD_DEEP_L05, (500, n)) + 3.0
+        final_a = (d.mean(axis=1) / (d.std(axis=1, ddof=1) / math.sqrt(n)) >= NormalDist().inv_cdf(1 - k2.ROUTE_ALPHA)) & (d.mean(axis=1) >= k2.MIN_GAIN) & (
+            f.mean(axis=1) - 1.645 * f.std(axis=1, ddof=1) / math.sqrt(n) >= -k2.FLOOR_MARGIN)
+        self.assertGreater(final_a.mean(), 0.9)  # route A at 2,000 seeds finds +3.0 per 100 nine times in ten or better
+
+
+class PromoteV2Tests(unittest.TestCase):
+    """`promote(sequential=True, keep_rule="v2")` on the synthetic arms of `candidate-imit-l05` (no emulator)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.agents = self.root / "agent"
+        self.agents.mkdir()
+        self.seeds, self.cand_rows, self.base_rows = fx.arms()
+        (self.root / "seeds").mkdir()
+        self.seed_file = self.root / "seeds" / "Etest-2.json"
+        self.seed_file.write_text(json.dumps({"seeds": self.seeds}))
+        # the incumbent's lineage: generation 3 promoted on Eprev with the Act 2 boss beaten 3 times in 100 (60 in 2,000)
+        prev = [fx.run_row(f"P{i:09d}", 2 if i < 60 else 1 if i < 1000 else 0, np.random.default_rng(i)) for i in range(2000)]
+        arm = self.agents / "gen3" / "candidate" / "arms" / "Eprev-a3-v1"
+        arm.mkdir(parents=True)
+        (arm / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in prev), encoding="utf-8")
+        gen_loop.append_promotion(self.agents / "promotions.tsv",
+                                  {"cand_gen": 3, "base_gen": 2, "seed_block": "Eprev", "seeds": 2000, "boss_cand": 1000, "boss_base": 900,
+                                   "decision": "promoted", "cand_sha": "sha-3", "cand_dir": "candidate", "attempt": 1, "drift": "clear"})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_promote(self, cand_rows, base_rows, cand: Path, **kw):
+        arms = StubArms(cand_rows, base_rows)
+        with mock.patch.object(gen_loop, "run_arm", arms):
+            doc = gen_loop.promote(cand, None, self.seed_file, agent_root=self.agents, boot=500, sequential=True, keep_rule="v2", **kw)
+        return doc, arms
+
+    def test_a_route_a_gain_is_promoted_early_with_the_record_and_the_ledger_row(self):
+        cand = stub_candidate(self.root, "c1", "sha-a", generation=4)
+        doc, arms = self.run_promote(self.cand_rows, self.base_rows, cand)
+        n = doc["n_seeds"]
+        self.assertEqual(doc["decision_text"], "promoted")
+        self.assertTrue(500 <= n < 2000, n)  # the strict early z, and never at the smoke block
+        self.assertEqual(arms.calls[-2:], [("cand", n, True), ("base", n, True)])
+        self.assertEqual(doc["sequential"]["stop"]["action"], "promote")
+        self.assertGreaterEqual(doc["sequential"]["looks"][-1]["deep_z"], k2.early_z(7))
+        self.assertAlmostEqual(doc["sequential"]["z_early"], 3.72, places=2)
+        self.assertEqual((doc["sequential"]["keep_rule"], doc["sequential"]["frontier"]), ("v2", "B2"))  # fixed from the incumbent's own arms
+        self.assertEqual(doc["keep_v2"]["frontier"]["pooled_kills"][1], 60)
+        self.assertEqual(doc["keep_v2"]["route"], "A")
+        self.assertEqual(doc["decision"]["rule"], k2.RULE + "+D51-funnel")
+        self.assertTrue(all(doc["decision"]["checks"].values()), doc["decision"]["checks"])
+        self.assertEqual(doc["keep_rule"], "v2")
+        cur = json.loads((self.agents / "current.json").read_text())
+        self.assertEqual((cur["generation"], Path(cur["dir"]).name), (4, "c1"))
+        rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
+        new = rows[-1]
+        self.assertEqual((new["decision"], new["seeds"], new["rule"], new["frontier"], new["route"], new["attempt"]), ("promoted", str(n), "v2", "B2", "A", "1"))
+        self.assertEqual((gen_loop.row_rule(new), gen_loop.row_rule(rows[0])), ("v2", "v1"))
+        self.assertGreater(int(new["k2_cand"]), int(new["k2_base"]))
+        self.assertGreater(float(new["deep_lower"]), 0)
+        self.assertIn(f"funnel promote at {n} of 2000 seeds", new["guard"])
+        self.assertIn("v2 route A", new["guard"])
+        self.assertEqual(rows[0]["rule"], "")  # the incumbent's older row has no rule: it reads as v1
+        # the Act 1 kill guard fires on these arms and blocks nothing
+        self.assertIn("kill", doc["keep_v2"]["act1_review"]["fires"])
+
+    def test_a_floor_collapse_is_refused_at_the_smoke_look_without_playing_on(self):
+        collapse = ((600, 0, 1), (1400, 1, 1))  # 600 of 2,000 runs lose the Act 1 boss they used to beat
+        seeds, cand, base = fx.arms(collapse, prefix="C")
+        self.seed_file.write_text(json.dumps({"seeds": seeds}))
+        cand_dir = stub_candidate(self.root, "c1", "sha-a", generation=4)
+        doc, arms = self.run_promote(cand, base, cand_dir)
+        self.assertEqual(arms.calls, [("cand", 200, True), ("base", 200, True)])
+        self.assertEqual((doc["decision_text"], doc["n_seeds"], doc["sequential"]["stop"]["action"]), ("rejected", 200, "refuse"))
+        self.assertIs(doc["decision"]["checks"]["sequential"], False)
+        self.assertFalse((self.agents / "current.json").exists())
+
+    def test_the_eligible_route_must_hold_in_the_judgement(self):
+        seeds, cand, base = self.seeds, self.cand_rows, self.base_rows
+        real = gen_loop.compare_arms
+
+        def judged(c, b, alpha, boot, guard=None, keep=None):
+            res = real(c, b, alpha, boot, guard, keep=keep)
+            if len(c) < 1400:  # the judgement on the seeds played finds no route (as if the route that cleared the z did not hold)
+                res["keep_v2"] = {**res["keep_v2"], "route": ""}
+            return res
+
+        out = gen_loop.funnel(seeds, lambda n: (cand, base), lambda c, b: judged(c, b, gen_loop.ALPHA, 500, keep=gen_loop.keep_v2_verdict(
+            c, b, [], cand_gen=4, cand_sha="x", block="Etest-2", frontier_info={"index": 1, "name": "B2"}, boot=500)),
+            keep_rule="v2", frontier=1)
+        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("promote", 1400))
+        self.assertEqual([x["action"] for x in out["looks"][:3]], ["continue"] * 3)
+        self.assertEqual(out["looks"][3]["routes"], ["A"])  # route A cleared the early z at 1,100 seeds ...
+        self.assertEqual(out["looks"][3]["held"], ["route A"])  # ... but did not hold in the judgement, so the walk went on
+        self.assertNotIn("held", out["looks"][4])
+
 
 
 # ----------------------------------------------------------------- the lab's recorded blocks

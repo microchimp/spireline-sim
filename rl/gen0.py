@@ -36,6 +36,9 @@ RUN_TIMEOUT_S = 600.0  # the dispatcher's wall limit per emulator run (was the i
 # runs took 123 s, and a hung run was killed, run again and killed again while the other workers idled (2026-11-02 sweep, tails 1,290 to 2,808 s)
 REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
                      "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
+KEEP_RULE_HELP = ("the promotion rule: v1 (default: D24's floor primary and the review guard) or v2 (the keep test v2, tools/lab/keep_v2.py, "
+                  "docs/rl/KEEP_TEST_V2.md: promote on the deepest boss the lineage reaches, or on the floor, with the guards); "
+                  "default: the SPIRELINE_KEEP_RULE variable, else v1")  # train, promote and rejudge
 SEQUENTIAL_HELP = ("play the E-block as the funnel (D51, gen_loop.seq_call): a 200-seed smoke block, then 300 seeds at a time, stopping at a "
                    "look that refuses (or promotes early); a block not stopped plays every seed and is judged as without this flag")
 # The lab asks a running block to finish by writing STOP_FILE in the block's folder (tools/lab/runner.py FILLER_STOP_FILE; a test keeps the
@@ -791,7 +794,8 @@ def train_cmd(a: argparse.Namespace) -> int:
     cand_gen = gen + 1 if target is None else target
     built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
     recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
-    spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe)
+    spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe,
+                                    keep_rule=gen_loop.keep_rule_of(getattr(a, "keep_rule", None)))
     if spent is not None:  # the review guard's cap: `promote` would refuse this candidate, so nothing is trained (rc 0: a finished round)
         from tools.lab import jobs  # noqa: PLC0415
 
@@ -838,7 +842,8 @@ def train_cmd(a: argparse.Namespace) -> int:
         return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
                                                Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
                                                prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
-                                               sequential=bool(getattr(a, "sequential", False)))  # off unless the train flags say
+                                               sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
+                                               keep_rule=getattr(a, "keep_rule", None))  # None: the child reads SPIRELINE_KEEP_RULE, else v1
     return 0
 
 
@@ -966,7 +971,7 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
                            lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
-                           smoke=a.smoke_seeds, batch=a.batch_seeds,
+                           smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
     print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
     return 0
@@ -978,8 +983,13 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
 
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
-                           review_guard=True if a.review_guard else None)
+                           review_guard=True if a.review_guard else None, keep_rule=getattr(a, "keep_rule", None), out=Path(a.out) if getattr(a, "out", None) else None)
     out = {k: doc[k] for k in ("decision_text", "n_seeds", "floor", "boss_kill", "wins", "decision")}
+    if "keep_v2" in doc:  # the keep test v2: the route, the frontier and the headline figures beside the usual ones
+        k2 = doc["keep_v2"]
+        out["keep_v2"] = {"route": k2["route"], "frontier": k2["frontier"]["name"], "k2": k2["kills"]["B2"], "d_deep": k2["deep"]["mean"],
+                          "deep_lower": k2["deep"]["lower_route"], "floor_lower95": k2["floor"]["lower95"], "crash": k2["crash"],
+                          "drift": k2["drift"]["verdict"], "act1_review": k2["act1_review"]["fires"]}
     if "seeds" in doc["rejudged"]:  # a block the funnel stopped early: say which seeds were judged
         out["seeds_judged"] = doc["rejudged"]["seeds"]["text"]
     print(json.dumps(out, indent=1))
@@ -1287,6 +1297,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--lab")
     t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     t.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
+    t.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
     bd = sub.add_parser("build", help="assemble generation N's candidate from a combat prior export and a generation's V_run fit and "
                         "macro, nothing trained (D44 step A); with --marker-dir the lab's train job then judges it as it is")
     bd.add_argument("--prior", required=True, help="a combat prior export: model.json, combat_policy.pt, combat_net.pt (the fight "
@@ -1358,6 +1369,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "the E-block must not contain their seeds; repeatable")
     pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
+    pr.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
     pr.add_argument("--smoke-seeds", type=int, default=200, help="with --sequential: the seeds of the smoke block, the first look")
     pr.add_argument("--batch-seeds", type=int, default=300, help="with --sequential: the seeds added between the later looks")
     add_prior_server_flags(pr)
@@ -1370,6 +1382,9 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--note", required=True, help="why the block is judged again (the decision that changed the rule)")
     rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     rj.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
+    rj.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
+    rj.add_argument("--out", help="a dry run: write promotion.json, a copy of promotions.tsv with the new row and (on a promotion) current.json "
+                    "to this folder instead of the agent folder, which is only read; refused together with --lab")
     sc = sub.add_parser("score")
     sc.add_argument("--game", required=True)
     sc.add_argument("--seeds-file", required=True)
