@@ -72,7 +72,16 @@ Both carry `human_prior.npz` (sha256 2ebfe6d7f25e...) and the base's `run_value.
   logit 1.9e-6 and of a decision's log-probability 1.9e-6; on the 570 rows of 111 live decisions of the sanity run below, 1.9e-6 as well.
   `tests/python/test_imitation_chooser.py` pins the same bound at 1e-4 where the shards are on the machine, and that the rows scored at
   play (`option_rows` and `models.value_inputs`) equal the inputs the fit assembled from its stored rows.
-* @@SANITY@@
+* **Sanity run** (`candidate-imit`, whole runs on the copy at `a3-v1`, one process, a fixed set of seeds; the first 10 are the milestone's check,
+  100 in all): no crash. Of 1,210 deck decisions (764 card rewards, 131 ancients, 315 rest sites) the pick was the prior's own argmax in
+  1,184; the other 26 (4 card rewards, 22 rest sites) are the guard overruling a prior-given near-zero option, and none is a mismatch (the
+  rest site checked against an independent staged argmax). The run row's `decided` field holds the same 1,210 entries. Act 1 card
+  skips: 34 of 633 screens (5.4 in 100; humans 15.4). That is what an argmax of this prior does, not a defect of the wiring: on the human
+  validation fifth's own states the prior's argmax skips 7.5 in 100 of Act 1 screens (humans 15.4), 39.9 in Act 2 (humans 32.3), 56.3 in
+  Act 3 (47.3); the agent's Act 2 rate is 46.8 in 100 (58 of 124). Mean floor over the 100 runs 18.7, 80 reached the Act 1 boss, 0 wins.
+  Generation 11 (the incumbent) on the same 100 seeds, same process settings: mean floor 23.0, 48 Act 1 boss kills, 0 wins; the paired
+  difference of `candidate-imit` is -4.3 floors (SE 1.0) and 28 against 48 boss kills. So pure imitation is expected to be refused at the
+  lab's 200-seed smoke; the blend (`candidate-imit-l05`) is the candidate that can still pass.
 
 ## Caveats
 
