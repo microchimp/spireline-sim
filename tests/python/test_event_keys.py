@@ -243,6 +243,63 @@ class TableShape(unittest.TestCase):
         self.assertNotIn("decompil", text.lower())
 
 
+class ShownAndAvailable(unittest.TestCase):
+    def test_the_page_a_choice_was_made_on_lists_its_options(self):
+        for event, key, shown in [
+            ("ABYSSAL_BATHS", "INITIAL.IMMERSE", [0, 1]), ("ABYSSAL_BATHS", "ALL.LINGER", [0, 1]),
+            ("SLIPPERY_BRIDGE", "OVERCOME", [0, 1]), ("SLIPPERY_BRIDGE", "HOLD_ON_3.HOLD_ON_4", [0, 1]),
+            ("ENDLESS_CONVEYOR", "ALL.CAVIAR", [0, 1]), ("ENDLESS_CONVEYOR", "GRAB_SOMETHING_OFF_THE_BELT.LEAVE", [0, 1]),
+            ("TRIAL", "NOBLE.GUILTY", [0, 1]), ("RELIC_TRADER", "TOP", [0, 1, 2]), ("WELCOME_TO_WONGOS", "LEAVE", [0, 1, 2, 3]),
+            ("DENSE_VEGETATION", "REST.FIGHT", [0]), ("TINKER_TIME", "INITIAL.CHOOSE_CARD_TYPE", [0]),
+        ]:
+            with self.subTest(event=event, key=key):
+                self.assertEqual(TABLE.shown_for(event, key), shown)
+        self.assertIsNone(TABLE.shown_for("TINKER_TIME", "CHOOSE_CARD_TYPE.SKILL"))  # a rolled page
+        self.assertIsNone(TABLE.shown_for("NOT_AN_EVENT", "X"))
+
+    def test_the_chosen_index_is_always_among_the_shown_ones(self):
+        for name, event in TABLE.by_name.items():
+            for page in event["pages"]:
+                shown = page.get("shown")
+                if shown is None:
+                    continue
+                self.assertEqual(shown, sorted(set(shown)), (name, page["page"]))
+                for row in page["options"]:
+                    if row.get("index") is not None and row["mapping"] != "unresolved":
+                        self.assertIn(row["index"], shown, (name, page["page"], row["key"]))
+
+    def test_the_gold_prices_are_the_engines(self):
+        text = (ROOT / "src" / "Sts2Emulator" / "Core" / "Run" / "RunConstants.cs").read_text(encoding="utf-8")
+        const = {name: int(v) for name, v in re.findall(r"public const int (\w+) = (\d+);", text)}
+        for (event, index), price in ek.GOLD_GATES.items():
+            name = {
+                ("ZEN_WEAVER", 1): "ZenWeaverEmotionalCost", ("ZEN_WEAVER", 2): "ZenWeaverAcupunctureCost", ("TEA_MASTER", 0): "BoneTeaCost",
+                ("TEA_MASTER", 1): "EmberTeaCost", ("WELCOME_TO_WONGOS", 0): "WongosBargainBinCost", ("WELCOME_TO_WONGOS", 1): "WongosFeaturedItemCost",
+                ("WELCOME_TO_WONGOS", 2): "WongosMysteryBoxCost", ("WATERLOGGED_SCRIPTORIUM", 1): "ScriptoriumQuillCost",
+                ("WATERLOGGED_SCRIPTORIUM", 2): "ScriptoriumSpongeCost",
+            }[(event, index)]
+            self.assertEqual(price, const[name], (event, index, name))
+
+    def test_locks(self):
+        rich, poor = {"gold": 400, "n_deck": 10}, {"gold": 10, "n_deck": 10}
+        self.assertTrue(ek.available("ZEN_WEAVER", 2, rich))
+        self.assertFalse(ek.available("ZEN_WEAVER", 2, poor))
+        self.assertFalse(ek.available("ZEN_WEAVER", 1, {"gold": 124}))
+        self.assertTrue(ek.available("ZEN_WEAVER", 1, {"gold": 125}))
+        self.assertTrue(ek.available("ZEN_WEAVER", 0, poor))  # Breathing Techniques is never locked in the engine
+        self.assertFalse(ek.available("STONE_OF_ALL_TIME", 0, {"potions": 0}))
+        self.assertTrue(ek.available("STONE_OF_ALL_TIME", 0, {"potions": 1}))
+        self.assertFalse(ek.available("SELF_HELP_BOOK", 2, {"n_power": 0, "n_attack": 5}))
+        self.assertTrue(ek.available("SELF_HELP_BOOK", 0, {"n_attack": 5}))
+        self.assertFalse(ek.available("WATERLOGGED_SCRIPTORIUM", 1, {"gold": 500, "n_deck": 0}))
+        self.assertTrue(ek.available("RANWID_THE_ELDER", 1, poor))  # Give Gold is always on the table
+        self.assertFalse(ek.available("RANWID_THE_ELDER", 2, {"relics": 0}))
+        self.assertTrue(ek.available("THIS_OR_THAT", 1, poor))  # an event without a rule has no lock
+        for event, index in [("LUMINOUS_CHOIR", 1), ("CRYSTAL_SPHERE", 0), ("WHISPERING_HOLLOW", 0)]:
+            self.assertIsNone(ek.available(event, index, rich), (event, index))  # the price is rolled per visit
+        self.assertIsNone(ek.available("NOT_AN_EVENT", 0, rich))
+
+
 class Coverage(unittest.TestCase):
     def test_a_visit_is_as_weak_as_its_weakest_key(self):
         seqs = [

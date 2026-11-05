@@ -63,7 +63,7 @@ SPIRE_CODEX = "Spire Codex public run export for v0.107.1"
 
 REGION = {"ACT.OVERGROWTH": 1, "ACT.UNDERDOCKS": 2, "ACT.HIVE": 3, "ACT.GLORY": 4}
 START_HP, START_MAX_HP, START_GOLD = 64, 80, 99  # the run judgement's own Act 1 start state at the first ancient
-KIND = {"card": 0, "rest": 1, "ancient": 2, "shop": 3}
+KIND = {"card": 0, "rest": 1, "ancient": 2, "shop": 3, "event": 4}  # event rows only with `build --events` (docs/rl/HUMAN_PRIOR.md)
 KIND_NAME = {v: k for k, v in KIND.items()}
 ROLE_HEAL, ROLE_SMITH, ROLE_OTHER = 0, 1, 2
 OFFER_CARD, OFFER_RELIC, OFFER_POTION = 0, 1, 2
@@ -72,6 +72,7 @@ COLS = ("kind", "fifth", "act", "floor", "region", "row", "boss", "run", "won", 
         "offer", "price", "gold", "hp", "max_hp")
 C = {name: i for i, name in enumerate(COLS)}
 F_SPLIT, F_PRICE_UNVERIFIED, F_UNAVAILABLE, F_REPLAY_MISMATCH, F_BOSS_GUESSED = 1, 2, 4, 8, 16
+F_GATE_UNKNOWN = 32  # an event page with an option whose lock turns on a price the record does not carry (the option is listed)
 # the dense part stored per row: A (22), the first 21 of B (room and special slots), D (25), X (12) and H (8)
 N_DENSE = 88
 S_A, S_B, S_D, S_X, S_H = slice(0, 22), slice(22, 43), slice(43, 68), slice(68, 80), slice(80, 88)
@@ -280,10 +281,11 @@ def _boss_of_act(mph: list, a: int, t: Tables) -> int | None:
     return None
 
 
-def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats: Counter) -> list[dict]:
+def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats: Counter, events: bool = False) -> list[dict]:
     """Every card reward, ancient, rest-site and shop decision of one run as plain-data specs: the state the human stood in and the
     options with the chosen one. `stats` counts the drops by reason, `seen` the screens the corpus holds (counts.json's definitions),
-    `price_stats` the shop price check."""
+    `price_stats` the shop price check. With `events`, also one decision per option page of each event visit whose choice the option
+    table resolves (`rl/event_keys.py`); the others are dropped and counted."""
     import human_starts as hs  # noqa: PLC0415
 
     s = stack()
@@ -331,6 +333,9 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
         if ptype == "shop":
             seen[f"act{act + 1}|shop"] += 1
             want.append("shop")
+        if events and _is_event_visit(pt, ptype) and ps.get("event_choices"):
+            seen[f"act{act + 1}|event"] += 1
+            want.append("event")
         if want and region is not None:
             boss = bosses[a] if a < len(bosses) else None
             guessed = boss is None
@@ -373,9 +378,17 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
                         "won": won, "final": final, "hp": int(min(hp, mx)), "max_hp": int(mx), "gold": int(gold),
                         "deck": [(x.card_id, int(x.upgraded), x.enchantment, x.enchant_amount) for x in refs], "relics": relic_ids,
                         "potions": pot_ids, "flags": F_BOSS_GUESSED if guessed else 0}
+                walk_in = base
+                if "event" in want:  # an event's state is the one walking in (the floor before's), whatever else the point holds
+                    h2, m2, g2 = prev.get("current_hp", ps.get("current_hp")), prev.get("max_hp", ps.get("max_hp")), prev.get("current_gold", ps.get("current_gold"))
+                    if h2 is None or m2 is None or g2 is None or not 0 < int(m2):
+                        stats[f"drop|act{act + 1}|event|hp or gold missing in the record"] += 1
+                        want = [k for k in want if k != "event"]
+                    else:
+                        walk_in = dict(base, hp=int(min(h2, m2)), max_hp=int(m2), gold=int(g2))
                 for kind in want:
                     try:
-                        specs.extend(_kind_specs(kind, base, ps, pt, t, stats, price_stats, removals))
+                        specs.extend(_kind_specs(kind, walk_in if kind == "event" else base, ps, pt, t, stats, price_stats, removals))
                     except Drop as why:
                         stats[f"drop|act{act + 1}|{kind}|{why}"] += 1
             except Drop as why:
@@ -422,7 +435,69 @@ def _kind_specs(kind: str, base: dict, ps: dict, pt: dict, t: Tables, stats: Cou
         return [dict(base, kind="ancient", options=out, chosen=chosen[0], aux=0, aux2=0, offer=0, price=0)]
     if kind == "rest":
         return _rest_specs(base, ps, t)
+    if kind == "event":
+        return _event_specs(base, ps, pt, t, stats)
     return _shop_specs(base, ps, pt, t, stats, price_stats, removals)
+
+
+def _is_event_visit(pt: dict, ptype: str) -> bool:
+    """A "?" room that turned out to be an event (not an ancient, not Neow)."""
+    mid = str((pt.get("rooms") or [{}])[0].get("model_id") or "")
+    return ptype != "ancient" and mid.startswith("EVENT.") and mid != "EVENT.NEOW"
+
+
+def _event_gate_state(base: dict, t: Tables) -> dict:
+    """What the events' lock rules read (`event_keys.available`) from the state the human walked in with."""
+    V = stack().V
+    deck = [(V.card(c[0]), bool(c[1])) for c in base["deck"]]
+    starter = {t.relics.get("BURNING_BLOOD"), t.relics.get("BLACK_BLOOD")}
+    return {"gold": base["gold"], "potions": len(base["potions"]), "relics": sum(1 for r in base["relics"] if r not in starter),
+            "n_deck": len(deck), "n_attack": sum(f.card_type == "Attack" for f, _ in deck), "n_skill": sum(f.card_type == "Skill" for f, _ in deck),
+            "n_power": sum(f.card_type == "Power" for f, _ in deck), "n_upgradable": sum(V.card_upgradable(f.card_id, up) for f, up in deck),
+            "n_exhaust": sum(f.is_exhaust(up) for f, up in deck)}
+
+
+def _event_specs(base: dict, ps: dict, pt: dict, t: Tables, stats: Counter) -> list[dict]:
+    """One decision per option page of an event visit: the options are the page's displayed indices that the state leaves on offer, as
+    `event.option` afterstates (event id, index, step = the page's place in the visit), the chosen one the index the option table gives
+    the recorded key. A key the table cannot place (a rolled page, a name no source knows) or a page with one option is dropped and
+    counted by reason; the other pages of the visit still count."""
+    import event_keys as ek  # noqa: PLC0415
+
+    tab = ek.table()
+    act = f"act{base['act'] + 1}"
+    name = str((pt.get("rooms") or [{}])[0].get("model_id") or "").removeprefix("EVENT.")
+    event = tab.by_name.get(name)
+    if event is None:
+        stats[f"drop|{act}|event|event of another mod, not in the table"] += 1
+        return []
+    gate = _event_gate_state(base, t)
+    out = []
+    for step, c in enumerate(ps.get("event_choices") or []):
+        key = str((c.get("title") or {}).get("key") or "")
+        idx = tab.resolve(name, key)
+        if idx is None:
+            rolled = any(r.get("dynamic") for r in tab.rows_for(name, key))
+            why = "page with rolled options" if rolled else "name the table does not place"
+            stats[f"drop|{act}|event|{why}"] += 1
+            continue
+        shown = tab.shown_for(name, key)
+        if shown is None or idx not in shown:
+            stats[f"drop|{act}|event|page not in the table"] += 1
+            continue
+        if len(shown) < 2:
+            stats[f"drop|{act}|event|page with one option"] += 1
+            continue
+        avail = {i: (True if i == idx else (ek.available(name, i, gate) if step == 0 else True)) for i in shown}
+        options = [i for i in shown if avail[i] is not False]
+        if len(options) < 2:
+            stats[f"drop|{act}|event|page with one option on offer"] += 1
+            continue
+        flags = base["flags"] | (F_GATE_UNKNOWN if any(avail[i] is None for i in options) else 0)
+        out.append(dict(base, kind="event", options=[{"k": "event.option", "event": [event["engine_id"], i, min(step, 3)], "id": i} for i in options],
+                        chosen=options.index(idx), aux=event["engine_id"], aux2=step, offer=0, price=0, flags=flags))
+        stats[f"event_decisions|{act}"] += 1
+    return out
 
 
 def _card_specs(base: dict, ps: dict, t: Tables, stats: Counter) -> list[dict]:
@@ -608,6 +683,8 @@ def _option(sp_opt: dict, view, index: int):
         return F.Option(k, 1, deck_index=di)
     if k.startswith("rest."):
         return F.Option(k, stack().V.REST_OPTION_IDS[k])
+    if k == "event.option":
+        return F.Option(k, sp_opt["event"][1], event=tuple(sp_opt["event"]))
     if k == "shop.leave":
         return F.Option(k, index)
     if k == "shop.card":
@@ -700,7 +777,7 @@ def build_chunk(job: dict) -> dict:
         rid = hs.run_id(r)
         if hs.is_exam(rid, exam):
             raise AssertionError(f"human_prior: run {rid} belongs to the exam fifth and may not be read")
-        got = run_decisions(r, t, stats, seen, price_stats)
+        got = run_decisions(r, t, stats, seen, price_stats, bool(job.get("events")))
         if got:
             run_ids.append(rid)
             for sp in got:
@@ -891,7 +968,8 @@ def summarize(out_dir: Path, results: list[dict], parent: Counter) -> dict:
             if int(d[C["won"]]):
                 won_decisions[kind] += 1
             for bit, name in ((F_SPLIT, "split_screen"), (F_PRICE_UNVERIFIED, "price_unverified"), (F_UNAVAILABLE, "unavailable"),
-                              (F_REPLAY_MISMATCH, "replay_mismatch"), (F_BOSS_GUESSED, "boss_guessed")):
+                              (F_REPLAY_MISMATCH, "replay_mismatch"), (F_BOSS_GUESSED, "boss_guessed"),
+                              (F_GATE_UNKNOWN, "gate_unknown")):
                 if int(d[C["flags"]]) & bit:
                     flags[f"{kind}|{name}"] += 1
             run_sets[(kind, act)].add(str(run_ids[int(d[C["run"]])]))
@@ -999,7 +1077,7 @@ def cmd_build(a: argparse.Namespace) -> int:
         for line in iter_run_lines(Path(a.corpus), exam, parent, a.limit_runs):
             chunk.append(line)
             if len(chunk) >= a.chunk_runs:
-                job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz")}
+                job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events)}
                 chunks[ix] = job
                 pending.append((ix, job))
                 ix += 1
@@ -1011,7 +1089,7 @@ def cmd_build(a: argparse.Namespace) -> int:
                 submit_ready()
                 drain()
         if chunk:
-            job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz")}
+            job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events)}
             chunks[ix] = job
             pending.append((ix, job))
         while pending or pool.inflight():
@@ -1631,6 +1709,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--limit-runs", type=int, default=0)
     b.add_argument("--lib", default="", help="a native build to load (STS2_LIB_PATH); by default none is loaded")
     b.add_argument("--clean", action="store_true")
+    b.add_argument("--events", action="store_true", help="also build event rows (kind 4) from the option table; the fit does not train them yet")
     f = sub.add_parser("fit")
     f.add_argument("--out-dir", default=str(OUT_DIR))
     f.add_argument("--judge", default=str(GEN11))

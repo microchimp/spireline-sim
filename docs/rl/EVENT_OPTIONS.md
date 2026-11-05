@@ -13,8 +13,9 @@ event decisions could not be taught and a whole-run seed replay lost step at the
 * `scripts/build_event_option_titles.py`: `scan` (one pass over the training fifths of the corpus, aggregates only), `build` (writes the
   JSON), `check` (the file agrees with the captures). The curated rows (the names no title carries, the later pages, the pages rolled
   per visit) are written in that script with their evidence.
-* `tests/python/test_event_keys.py`: 27 tests (every capture title resolves to its own index, the patterns, unresolved is None, the
-  coverage count).
+* `tests/python/test_event_keys.py`: 31 tests (every capture title resolves to its own index, the patterns, unresolved is None, the
+  coverage count, the shown sets and the locks). `shown_for` gives the options displayed together with a chosen one and `available`
+  the engine's locks; they feed the event rows of the human prior (`docs/rl/HUMAN_PRIOR.md`, "Event rows").
 
 No decompiled text is used or copied: the sources are the live captures and our own engine code. The decompile is not on this machine
 and `scripts/decompile.sh` and `scripts/generate_event_options.py` were not run. Anything derived from the record is from the Spire

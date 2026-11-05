@@ -96,6 +96,7 @@ class EventTable:
                     rr["_key_re"] = re.compile(r["key_pattern"]) if r.get("key_pattern") else None
                     rr["_title_re"] = re.compile(r["title_pattern"], re.IGNORECASE) if r.get("title_pattern") else None
                     rr["_page"] = page["page"]
+                    rr["_shown"] = page.get("shown")
                     rows.append(rr)
                 out.append((pat, rows))
             self._compiled[name] = out
@@ -180,10 +181,51 @@ class EventTable:
                     return r["index"]
         return None
 
+    def shown_for(self, event_id, record_title: str, state: Mapping | None = None) -> list[int] | None:
+        """The option indices displayed together with the chosen option on its page (the page's other choices), or None when the table
+        does not say (a rolled page, an unknown name, a name on several pages that show different sets)."""
+        sets = {tuple(r["_shown"]) for r in self.rows_for(event_id, record_title, state) if r.get("_shown") is not None}
+        return list(next(iter(sets))) if len(sets) == 1 else None
+
     def describe(self, event_id, record_title: str, state: Mapping | None = None) -> dict | None:
         """The table row for a title (the strongest class when the name sits on several pages), for reports."""
         hits = self.rows_for(event_id, record_title, state)
         return min(hits, key=lambda r: CLASSES.index(row_class(r))) if hits else None
+
+
+# Gold prices the engine's event masks use (RunConstants.cs): an option below its price is locked in the game, so it is not on offer.
+GOLD_GATES = {
+    ("ZEN_WEAVER", 1): 125, ("ZEN_WEAVER", 2): 250, ("TEA_MASTER", 0): 50, ("TEA_MASTER", 1): 150,
+    ("WELCOME_TO_WONGOS", 0): 100, ("WELCOME_TO_WONGOS", 1): 200, ("WELCOME_TO_WONGOS", 2): 300,
+    ("WATERLOGGED_SCRIPTORIUM", 1): 55, ("WATERLOGGED_SCRIPTORIUM", 2): 99,
+}
+# Options whose lock turns on a price the event rolls from its own stream, which the record does not carry: availability is not known.
+GATE_UNKNOWN = {("LUMINOUS_CHOIR", 1), ("CRYSTAL_SPHERE", 0), ("WHISPERING_HOLLOW", 0)}
+
+
+def available(event_id, index: int, state: Mapping) -> bool | None:
+    """Whether option `index` of an event's first page is on offer in `state`, or None when the lock depends on something the record
+    does not carry. `state`: gold, potions (held), relics (non-starter held), and the deck's counts n_deck, n_attack, n_skill, n_power,
+    n_upgradable, n_exhaust. The rules are the engine's event masks (RunEngine.WriteEventActionMask); an event without a rule has no lock."""
+    name = table().name(event_id)
+    if name is None:
+        return None
+    key = (name, int(index))
+    if key in GATE_UNKNOWN:
+        return None
+    if key in GOLD_GATES:
+        ok = state.get("gold", 0) >= GOLD_GATES[key]
+        if name == "WATERLOGGED_SCRIPTORIUM":
+            ok = ok and state.get("n_deck", 0) > 0
+        return ok
+    need = {
+        ("AROMA_OF_CHAOS", 0): "n_deck", ("AROMA_OF_CHAOS", 1): "n_upgradable", ("MORPHIC_GROVE", 0): "n_deck",
+        ("SELF_HELP_BOOK", 0): "n_attack", ("SELF_HELP_BOOK", 1): "n_skill", ("SELF_HELP_BOOK", 2): "n_power",
+        ("SYMBIOTE", 0): "n_attack", ("GRAVE_OF_THE_FORGOTTEN", 0): "n_exhaust", ("STONE_OF_ALL_TIME", 0): "potions",
+        ("STONE_OF_ALL_TIME", 1): "n_attack", ("RANWID_THE_ELDER", 0): "potions", ("RANWID_THE_ELDER", 2): "relics",
+        ("WHISPERING_HOLLOW", 1): "n_deck",
+    }.get(key)
+    return True if need is None else state.get(need, 0) > 0
 
 
 @functools.lru_cache(maxsize=1)

@@ -160,6 +160,24 @@ TITLES: dict[tuple, str] = {
 }
 # Titles that carry a changing word are matched by a pattern as well (digits are patterned by the builder).
 TITLE_PATTERNS: dict[tuple, str] = {("ENDLESS_CONVEYOR", "ALL"): r"Grab .+ off the Belt"}
+# The options displayed together on a page after the first (the indices that stand side by side on the screen; the record names a page by the
+# object that built the chosen option, which is not always the page it was shown on: the conveyor's grab is on page ALL, its Leave on
+# GRAB_SOMETHING_OFF_THE_BELT). A page of one is not a decision. The first page's set is the captured page's.
+SHOWN: dict[tuple, list[int]] = {
+    ("ABYSSAL_BATHS", "ALL"): [0, 1],
+    ("SLIPPERY_BRIDGE", "re:HOLD_ON_(?:\\d+|LOOP)"): [0, 1],
+    ("TABLET_OF_TRUTH", "re:DECIPHER(?:_\\d+)?"): [0, 1],
+    ("DENSE_VEGETATION", "REST"): [0],
+    ("PUNCH_OFF", "I_CAN_TAKE_THEM"): [0],
+    ("THE_LANTERN_KEY", "KEEP_THE_KEY"): [0],
+    ("TRIAL", "re:MERCHANT|NOBLE|NONDESCRIPT"): [0, 1],
+    ("TRIAL", "REJECT"): [0, 1],
+    ("ENDLESS_CONVEYOR", "ALL"): [0, 1],
+    ("ENDLESS_CONVEYOR", "GRAB_SOMETHING_OFF_THE_BELT"): [0, 1],
+    ("ROUND_TEA_PARTY", "CONTINUE_FIGHT"): [0],
+    ("COLOSSAL_FLOWER", "REACH_DEEPER_1"): [0, 1],
+    ("COLOSSAL_FLOWER", "REACH_DEEPER_2"): [0, 1],
+}
 # Options the game takes as the continuation of a choice and the record does not list: (event, page, key) -> the key they follow.
 UNRECORDED: dict[tuple, str] = {("ROUND_TEA_PARTY", "CONTINUE_FIGHT", "CONTINUE_FIGHT"): "PICK_FIGHT"}
 
@@ -411,7 +429,9 @@ def build(counts: dict | None) -> dict:
                                 desc=o["description"] or None))
         rows.sort(key=lambda r: (r["index"], r["key"] or ""))
         if rows:
-            pages.append({"page": "INITIAL", "page_pattern": False, "options": rows})
+            first = sorted({r["index"] for r in rows if r["index"] is not None}
+                           | {o["index"] for o in page1 if not o["is_proceed"] and o["title"] != "Proceed"})
+            pages.append({"page": "INITIAL", "page_pattern": False, "shown": first, "options": rows})
         # --- other pages: curated rows grouped by page
         by_page: dict[str, list[tuple]] = defaultdict(list)
         for r in rows_by_event.get(ev, []):
@@ -433,7 +453,10 @@ def build(counts: dict | None) -> dict:
             if (ev, pg) in TITLE_PATTERNS:
                 for r in prow:
                     r["title_pattern"] = TITLE_PATTERNS[(ev, pg)]
-            pages.append({"page": pg[3:] if is_re else pg, "page_pattern": is_re, "options": prow})
+            page_doc = {"page": pg[3:] if is_re else pg, "page_pattern": is_re, "options": prow}
+            if (ev, pg) in SHOWN:
+                page_doc["shown"] = SHOWN[(ev, pg)]
+            pages.append(page_doc)
         # --- dynamic pages
         dyn_by_page: dict[str, list[tuple]] = defaultdict(list)
         for d in DYNAMIC:

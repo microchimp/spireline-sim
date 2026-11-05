@@ -165,6 +165,41 @@ kind 75.4, and shop buy-or-leave 83.7 in 100 against a majority rate of 83.1 (16
 log-likelihood 0.401 against the base rate's 0.454). Fitting the shops costs the other kinds about one point and the shop signal is weak,
 so the kept prior leaves them out until prices are verified.
 
+## Event rows (`python rl/human_prior.py build --events`)
+
+An event is the decision kind the record names by an option key (`<EVENT>.pages.<PAGE>.options.<OPTION>.title`) and the copy takes by an
+index. `rl/event_keys.py` joins them (`docs/rl/EVENT_OPTIONS.md`); with `--events`, `build` adds a fifth kind, `event` (kind 4), and
+the default build is unchanged (no event row, the counts contract and the other four kinds as before). The fit does not train the
+kind yet (`kinds = card, ancient, rest[, shop]`); the rows are in the shards for the next step.
+
+* **A decision** is one option page of an event visit. A visit with a series (Abyssal Baths: Immerse, Linger, Linger, Exit; Tablet of
+  Truth; Trial; the conveyor; Slippery Bridge) gives one decision per page. The state is the one walking in (the floor before's HP and
+  gold, the deck and relics rebuilt as for the other kinds).
+* **The options** are the page's displayed indices (`shown` in the table: the first page's captured options, later pages' listed in the
+  builder) that the state leaves on offer; each is the run judgement's own `event.option` afterstate, `(event id, index, step)` with the
+  step the page's place in the visit (cut at 3, as `_live_event` does), through `apply_option` and the same encoder as every other kind
+  (the event's own effect is the judgement's learned pending input, not a modelled one). The chosen option is the index the table gives
+  the recorded key. Locks come from the engine's masks (`event_keys.available`): gold prices (Zen Weaver 125 and 250, Tea Master 50 and 150,
+  Wongos 100, 200 and 300, the Scriptorium's quill and sponge), a potion held (Stone of All Time's Lift, Ranwid), a card type in the
+  deck (Self Help Book's three pages, Symbiote, Stone's Push), a card to upgrade (Aroma of Chaos), an exhaust card (Grave of the
+  Forgotten) and a relic to give (Ranwid); only the first page is gated. Three options are locked by a price the event rolls
+  from its own stream (Luminous Choir's tribute, Crystal Sphere's divination, Whispering Hollow's exchange): they are listed and the decision
+  carries the flag `gate_unknown` (bit 32).
+* **Dropped and counted** (the decisions of the training fifths and the validation fifth, by act 1 / 2 / 3): a page whose options are
+  rolled per visit, which needs the offered list (381 / 1,203 / 1,146: Future of Potions, Tinker Time's two later pages, Colorful
+  Philosophers, Doll Room's second page); a page with one option (369 / 298 / 438: the fight pages, Tinker Time's first page); an event of
+  another mod (13 visits); a name the table does not place (3); and the points the other kinds also lose (a relic held that the copy has no
+  id for: 231 / 189 / 132 visits; a deck card unknown: 20 / 34 / 18).
+* **Built over the training fifths and the validation fifth** (11,961 runs, 44,867 event visits with a recorded option): **49,243 event
+  decisions**, 28,566 / 13,310 / 7,367 in Acts 1 / 2 / 3. By fifth: fifths 1 to 3 (the fit's) 37,314 (21,644 / 10,063 / 5,607) and the
+  validation fifth 11,929 (6,922 / 3,247 / 1,760). 43,244 of them have 2 options, 5,886 have 3 and 113 have 4. 854 carry `gate_unknown`
+  and 3,788 `replay_mismatch` (a run whose deck replay disagrees with its final deck; left out of a fit as for the other kinds).
+* **Not in the rows**: what an event pays or costs (the afterstate carries the slot, as the run judgement's own event input does); the rolled
+  pages (they wait on the offered list: `docs/rl/EVENT_OPTIONS.md`, section 5); a gate on a later page of a series.
+
+`tests/python/test_human_prior_events.py` pins the switch (off by default), the option sets, the steps of a series, the conveyor's pages, a
+locked option, the drops by reason, the rows' shape and a shard's round trip.
+
 ## Caveats
 
 * Humans' choices assume human fight skill (the average human wins 11 in 100 here); the prior is what a human picks, not what works for
@@ -176,13 +211,14 @@ so the kept prior leaves them out until prices are verified.
 * Relic effects the afterstate does not model (a relic with an effect on pickup) are the judgement's own approximations.
 * The smith target is the first card in `upgraded_cards`; a site with two choices (Miniature Tent) uses the first.
 * Not done here: the exam's `boss_entry_exam.py agreement` extension to ancients, smith targets and shops (the exam fifth is read once
-  per frozen candidate by the orchestrator); the removal target at the shop; shops in the fit (waits on the prices); events and routes.
+  per frozen candidate by the orchestrator); the removal target at the shop; shops in the fit (waits on the prices); routes; the event kind in the fit.
 
 ## Rerun
 
 ```
 python rl/human_prior.py donors                      # donor table (one process)
 python rl/human_prior.py build --procs 4 --clean     # shards, counts.json (with the counts contract), price check
+python rl/human_prior.py build --procs 4 --clean --events   # the same plus the event rows (kind 4)
 python rl/human_prior.py fit                         # GPU (the venv with torch and CUDA); pi_h-v0/ weights.npz and fit.json
 python rl/human_prior.py agreement --model <folder> --baseline <run_value.npz> --out <file>
 ```
