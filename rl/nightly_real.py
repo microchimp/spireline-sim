@@ -4,14 +4,14 @@
     python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--emu-runs N] [--procs 12]
                               [--recycle 60]
 
-Two triggers (2026-11-06: the real-game check is the bottleneck, so it runs when a promotion lands, not on a clock). A *promotion*
-block runs when LAB/nightly/pending exists (rl/gen_loop.py mark_promotion writes it at a promotion): it plays each generation promoted
+Two triggers (2026-11-06: the real-game check is the bottleneck, so it runs when the orchestrator asks for it after a promotion, not
+on a clock). A *promotion* block runs when LAB/nightly/pending exists (written by hand; no code writes it): it plays each generation promoted
 since the last block (the incumbent among them when it was promoted since) at `--runs-promoted`, plus the copy arm's `--emu-runs`, and
 does not play the incumbent's `--runs` block (the incumbent is the promoted player). A *clock* block (LAB/nightly/last-ok older than
 the job's `every_h`, the weekly copy-accuracy watch) keeps the old night: the incumbent first, every agent at `--runs-promoted` when a
-generation was promoted since the last block, else the incumbent at `--runs`. `--trigger` forces one (default: promotion when the marker exists at the start). The driver takes its list at its
-start time (`started_epoch` in result.json); the lab stamps last-ok with that time and removes the marker only if no promotion wrote to
-it after, so a promotion that lands while a block plays is the next block's.
+generation was promoted since the last block, else the incumbent at `--runs`. `--trigger` forces one (default: promotion when the marker exists at the start).
+The driver takes its list at its start time (`started_epoch` in result.json); the lab stamps last-ok with that time and removes the
+marker when the block ends, unless it was written after that time, so a promotion that lands while a block plays is the next block's.
 
 For the incumbent (agent-root/current.json) and each generation promoted since the last block (promotions.tsv rows written after
 LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and

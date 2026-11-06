@@ -2400,23 +2400,10 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         write_json(Path(agent_root) / "current.json", {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()),
                                                         "promoted": doc["written"], "seed_block": name})
         if lab is not None:
-            mark_promotion(lab, cand, cand_agent.generation)
+            p = Path(lab) / "score" / "pending"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(utc_now() + "\n", encoding="utf-8")
     return doc
-
-
-def mark_promotion(lab: Path | str, cand: Path | str, generation: int) -> None:
-    """What a promotion tells the lab (tools/lab/jobs.py): LAB/score/pending (a line with the UTC time: the fixed-seed score of the new
-    incumbent) and LAB/nightly/pending (a line `<UTC> gen<N>/<folder>` appended per promotion: the real-game block of the generations
-    promoted since the last block, which the lab runs first, ahead of the score and of training; the marker is consumed when that block
-    ends, unless a promotion appended after the block took its list)."""
-    stamp = utc_now()
-    p = Path(lab) / "score" / "pending"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(stamp + "\n", encoding="utf-8")
-    q = Path(lab) / "nightly" / "pending"
-    q.parent.mkdir(parents=True, exist_ok=True)
-    with q.open("a", encoding="utf-8") as f:
-        f.write(f"{stamp} gen{int(generation)}/{Path(cand).name}\n")
 
 
 def funnel_stop_record(doc: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2534,7 +2521,9 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         write_json((Path(agent_root) if out is None else dest) / "current.json",
                    {"generation": cand_agent.generation, "dir": str(Path(cand).resolve()), "promoted": doc["written"], "seed_block": name, "note": note})
         if lab is not None:
-            mark_promotion(lab, cand, cand_agent.generation)
+            p = Path(lab) / "score" / "pending"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(utc_now() + "\n", encoding="utf-8")
     return doc
 
 

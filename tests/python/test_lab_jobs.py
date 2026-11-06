@@ -563,6 +563,17 @@ class NightlyKindTest(Base):
         os.utime(m, (old, old))
         self.assertIsNone(self.unready())
 
+    def test_a_long_block_keeps_its_window_open_for_the_whole_nine_hundred_minute_cap(self):
+        self.nightly()
+        m = self.marker("nightly/active")
+        for hours, open_ in ((1, True), (7.6, True), (14.5, True), (jb.NIGHTLY_ACTIVE_STALE_H + 1, False)):
+            t = time.time() - hours * 3600
+            os.utime(m, (t, t))
+            self.assertEqual(open_, jb.nightly_active(self.lab_dir), hours)  # the filler and the fights runners stay off while it plays
+            self.assertEqual(open_, "nightly block has not finished" in (self.unready() or ""), hours)
+        self.assertGreaterEqual(jb.NIGHTLY_WINDOW_H, 15.0)
+        self.assertEqual(900, jb.DEFAULTS["nightly-real"]["timeout_min"])
+
     def test_the_ladder_picks_it_before_score_real_and_train_and_says_why_when_it_is_held(self):
         r = self.nightly()
         self.marker("PAUSE")

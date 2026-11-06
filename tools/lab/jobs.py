@@ -12,17 +12,19 @@ Priority ladder (lower number first; what the runner's choose() does with it is 
 
   1 presort   1.5 nightly-real   2 score-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
 
-The real-game checks come first (owner, 2026-11-06: the real-game check is the bottleneck): a promotion writes LAB/score/pending and
-LAB/nightly/pending (rl/gen_loop.py mark_promotion), and the next pick after the running job is the nightly block, then the fixed-seed score.
+The real-game checks come first (owner, 2026-11-06: the real-game check is the bottleneck): when LAB/nightly/pending is written (by
+hand, by the orchestrator, after a promotion; no code writes it) the next pick after the running job is the nightly block, then the
+fixed-seed score (LAB/score/pending, which a promotion writes).
 
 nightly-real is a kind of its own (D8, D33 addendum 2): score-real is one command on one marker, the nightly block is a driver
 (rl/nightly_real.py) that plays several agents under the QUIET.lock, so the due rule and the window markers sit here and the
-work sits in the driver. Ready (2026-11-06): LAB/nightly/pending exists (a promotion landed; the block plays the generations promoted
+work sits in the driver. Ready (2026-11-06): LAB/nightly/pending exists (hand-written; the block plays the generations promoted
 since the last block, `trigger` promotion) or LAB/nightly/last-ok is older than `every_h` (the clock stays as the weekly copy-accuracy
 watch, `trigger` clock). Skipped, with the reason, while LAB/HALT or LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not
-finished) or LAB/score/active is fresh; nothing is pre-empted. The pending marker is consumed when the block ends, unless a promotion
-landed after the block took its list (the marker is newer than the block's start); last-ok is stamped with the block's START time, so a
-promotion that landed while the block played is "since the last block" for the next one.
+finished) or LAB/score/active is fresh; nothing is pre-empted. The pending marker is consumed when the block ends (so an interrupted or
+superseded block is still wanted), unless it was written after the block took its list (the marker is newer than the block's start);
+last-ok is stamped with the block's START time, so a promotion that landed while the block played is "since the last block" for the
+next one.
 
 A job's command may write ``<job>/result.json`` (an object); its keys named in mix.YIELD_COLUMNS become the job's
 yield.tsv columns, and the bench kinds also store it under readiness.json ``bench.env`` / ``bench.emu``.
@@ -46,7 +48,7 @@ PRIORITY = {"presort": 1, "nightly-real": 1.5, "score-real": 2, "train": 3, "fig
             "bench-env": 7, "bench-emu": 7}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run
 ACTIVE_STALE_H = SCORE_WINDOW_H + 1.0  # an `active` marker older than this is a crash's leftover
-NIGHTLY_WINDOW_H = 10.0  # the longest a nightly block may run (all agents)
+NIGHTLY_WINDOW_H = 15.0  # the longest a nightly block may run (all agents): the job's 900-minute cap (2026-11-06; a 2,000-run block of the x16 player is about 7.6 h)
 NIGHTLY_ACTIVE_STALE_H = NIGHTLY_WINDOW_H + 1.0
 NIGHTLY_RETRY_H = 1.0  # after a block that was skipped (the QUIET.lock never freed), the next try is this much later
 
@@ -63,7 +65,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "needs": []},
     "score-real": {"enabled": True, "cmd": _placeholder("score-real", "rl/score_real.py"), "cwd": "{tree}", "timeout_min": 240,
                    "procs": 14, "weekly": False, "weekly_days": 7.0, "needs": []},
-    "nightly-real": {"enabled": False, "cmd": _placeholder("nightly-real", "rl/nightly_real.py"), "cwd": "{tree}", "timeout_min": 600,
+    "nightly-real": {"enabled": False, "cmd": _placeholder("nightly-real", "rl/nightly_real.py"), "cwd": "{tree}", "timeout_min": 900,
                      "procs": 12, "every_h": 20.0, "needs": []},
     "bench-env": {"enabled": False, "cmd": _placeholder("bench-env", "the envproto bench on branch env/leak-probe"), "cwd": "{tree}",
                   "timeout_min": 40, "procs": 12, "every_h": 20.0, "needs": []},
@@ -127,9 +129,10 @@ def score_active(lab: Path) -> bool:
 
 
 def nightly_active(lab: Path) -> bool:
-    """A nightly-real window is open (its marker is fresh): nothing of the lab may run beside the real-game arms."""
+    """A nightly-real window is open (its marker is fresh): nothing of the lab may run beside the real-game arms. Fresh is the nightly
+    window's own span (NIGHTLY_ACTIVE_STALE_H), not the score window's: a block of the x16 player runs 7 to 15 hours."""
     a = _age_h(Path(lab) / "nightly" / "active")
-    return a is not None and a < ACTIVE_STALE_H
+    return a is not None and a < NIGHTLY_ACTIVE_STALE_H
 
 
 GPU_OK_FILE = "D:/spireline/referee/GPU_OK"  # rl/gen0.py GPU_OK_FILE: the lines of the lanes that allow a GPU fit beside the real-game arm
@@ -178,8 +181,7 @@ def due(lab: Path, kind: str, every_h: float) -> bool:
 
 
 def nightly_pending_time(lab: Path) -> float | None:
-    """Epoch seconds LAB/nightly/pending was last written (a promotion appends a line to it: rl/gen_loop.py mark_promotion), None when
-    there is no such marker."""
+    """Epoch seconds LAB/nightly/pending was last written (by hand: no code writes it), None when there is no such marker."""
     try:
         return (Path(lab) / "nightly" / "pending").stat().st_mtime
     except OSError:
@@ -187,13 +189,13 @@ def nightly_pending_time(lab: Path) -> float | None:
 
 
 def nightly_wanted(lab: Path, every_h: float) -> bool:
-    """A nightly block is wanted: a promotion is waiting (LAB/nightly/pending) or the clock (last-ok older than `every_h`) says so."""
+    """A nightly block is wanted: LAB/nightly/pending was written or the clock (last-ok older than `every_h`) says so."""
     return nightly_pending_time(lab) is not None or due(lab, "nightly", every_h)
 
 
 def consume_nightly_pending(lab: Path, started: float | None) -> bool:
-    """Remove LAB/nightly/pending after a block that took its list of promotions at `started` (epoch seconds), unless a promotion wrote
-    to the marker after that: the next block plays it. `started` None (a result that does not say) removes it. True when removed."""
+    """Remove LAB/nightly/pending after a block that took its list of promotions at `started` (epoch seconds), unless the marker was
+    written after that: the next block plays it. `started` None (a result that does not say) removes it. True when removed."""
     t = nightly_pending_time(lab)
     if t is None or (started is not None and t > started):
         return False
