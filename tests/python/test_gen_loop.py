@@ -851,7 +851,18 @@ class PromoteEndToEndTests(unittest.TestCase):
         cur = json.loads((self.agents / "current.json").read_text())
         self.assertEqual((cur["generation"], Path(cur["dir"]).name), (5, "gen5c"))
         self.assertTrue((lab / "score" / "pending").is_file())
+        line = (lab / "nightly" / "pending").read_text(encoding="utf-8").splitlines()  # the real-game block runs first (2026-11-06)
+        self.assertEqual(1, len(line))
+        self.assertRegex(line[0], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z gen5/gen5c$")
         self.assertTrue((cand / "promotion.json").is_file())
+
+    def test_each_promotion_appends_a_line_to_the_nightly_marker_and_a_rejection_writes_none(self):
+        lab = self.root / "lab"
+        gen_loop.mark_promotion(lab, self.root / "gen5c", 5)
+        gen_loop.mark_promotion(lab, "agent/gen6/candidate-imit", 6)
+        lines = (lab / "nightly" / "pending").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["gen5/gen5c", "gen6/candidate-imit"], [x.split()[1] for x in lines])
+        self.assertEqual(1, len((lab / "score" / "pending").read_text(encoding="utf-8").splitlines()))  # that marker is a single stamp as before
 
     def test_a_rejection_leaves_current_json_and_the_marker_alone(self):
         cand = stub_candidate(self.root, "gen5c", "sha-a")
@@ -861,6 +872,7 @@ class PromoteEndToEndTests(unittest.TestCase):
         self.assertEqual(len(gen_loop.read_promotions(self.agents / "promotions.tsv")), 1)
         self.assertFalse((self.agents / "current.json").exists())
         self.assertFalse((lab / "score" / "pending").exists())
+        self.assertFalse((lab / "nightly" / "pending").exists())
 
     def test_a_block_that_judged_another_candidate_is_refused_and_the_same_one_may_resume(self):
         self.run_promote(stub_candidate(self.root, "c1", "sha-a"), better=False)

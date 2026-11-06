@@ -669,17 +669,17 @@ class Runner:
     last_nightly_note = ""
 
     def ladder_top(self, sha: str) -> str:
-        """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: score-real (2),
-        train (3), selfplay when the loop (selfplay + train + score-real) has not yet used its configured share of the last `share_days`
-        days' CPU (6, `share` and `share_days` in LAB/jobs.json, default 7 days; a short window keeps the loop running daily instead
-        of in bursts; an empty window means self-play first; all-time `strategy_cpu` is a statistic only), the
+        """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: nightly-real (1.5: a
+        promotion or the weekly clock, the real-game check comes first), score-real (2), train (3), selfplay when the loop
+        (selfplay + train + score-real) has not yet used its configured share of the last `share_days` days' CPU (6, `share` and
+        `share_days` in LAB/jobs.json, default 7 days; a short window keeps the loop running daily instead of in bursts; an empty window means self-play first; all-time `strategy_cpu` is a statistic only), the
         benches (7, nightly, the lab otherwise idle: a running job was resumed before this point and a ready score-real or
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
         cfg = jobs.load_config(self.lab.root)
-        for kind in ("score-real", "train", "nightly-real"):
+        for kind in ("nightly-real", "score-real", "train"):  # jobs.PRIORITY order
             why = jobs.unready(kind, self.lab.root, cfg[kind])
-            if kind == "nightly-real" and why and cfg[kind].get("enabled") and jobs.due(self.lab.root, "nightly", float(cfg[kind].get("every_h", 20.0))):
+            if kind == "nightly-real" and why and cfg[kind].get("enabled") and jobs.nightly_wanted(self.lab.root, float(cfg[kind].get("every_h", 20.0))):
                 if why != self.last_nightly_note:  # due but held: say why once, not at every pick
                     self.last_nightly_note = why
                     self.log(f"nightly-real: skipped, {why}")

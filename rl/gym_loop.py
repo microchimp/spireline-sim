@@ -98,7 +98,7 @@ INCUMBENT0 = REF / "agent" / "gen7" / "candidate-r1"  # M2's agent: version 0, t
 # each, 1,478 starts). D44 step E: the trainer waited for fresh practice on a thin set, so the set takes each night as it comes.
 RUNS_PER_NIGHT = 250  # runs of each night's arm replayed into the set (a night holds 500 or 2,000)
 MAX_NIGHTS = 14  # the newest nights the set takes: a window, so it stays bounded (about 2,100 starts and 28 MB a night)
-_NIGHT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_NIGHT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:T\d{4})?$")  # a night folder: the date, or the date and start time of a block (rl/nightly_real.py BLOCK_RE)
 ENGINE = "core2"
 NS_GEN, NS_WEIGHTS = "L", "W"  # generation's and the weights pass's seed namespaces; the gym's (and the gate's) is "g"
 KINDS = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")

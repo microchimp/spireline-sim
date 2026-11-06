@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -157,6 +159,41 @@ def end(seed: str, floor: int, kind: str = "death") -> dict:
     return {"ev": "end", "seed": seed, "end": kind, "floor": floor, "s": 1.0, "stats": {"decisions": 10}}
 
 
+class BlockNameTest(Tmp):
+    def test_the_name_is_the_utc_start_to_the_minute(self):
+        t = calendar.timegm((2026, 11, 6, 3, 12, 59))
+        self.assertEqual("2026-11-06T0312", nr.block_name(t))
+        self.assertRegex(nr.block_name(), r"^\d{4}-\d{2}-\d{2}T\d{4}$")
+        self.assertNotEqual(nr.block_name(t), nr.block_name(t + 60))  # two blocks of a day do not collide
+
+    def test_dates_and_start_times_are_both_block_folders_and_nothing_else_is(self):
+        for ok in ("2026-11-04", "2026-11-06T0312", "2026-11-06T2359"):
+            self.assertTrue(nr.is_block_folder(ok), ok)
+        for bad in ("last-ok", "active", "pending", "2026-11-06T03", "2026-11-06T031", "2026-11-06T03:12", "2026-11-06-g4", "scratch", "x2026-11-06"):
+            self.assertFalse(nr.is_block_folder(bad), bad)
+
+    def test_folder_names_sort_in_time_order_across_both_forms(self):
+        names = ["2026-11-06T0415", "2026-11-05", "2026-11-06", "2026-11-06T0300", "2026-11-07"]
+        self.assertEqual(["2026-11-05", "2026-11-06", "2026-11-06T0300", "2026-11-06T0415", "2026-11-07"], sorted(names))
+
+    def test_trigger_is_the_marker_unless_forced(self):
+        lab = self.tmp / "lab"
+        self.assertEqual("clock", nr.trigger_of(lab))
+        (lab / "nightly").mkdir(parents=True)
+        (lab / "nightly" / "pending").write_text("x\n")
+        self.assertEqual("promotion", nr.trigger_of(lab))
+        self.assertEqual("clock", nr.trigger_of(lab, "clock"))
+        (lab / "nightly" / "pending").unlink()
+        self.assertEqual("promotion", nr.trigger_of(lab, "promotion"))
+
+    def test_promotion_agents_drop_an_incumbent_that_was_not_promoted_since(self):
+        inc = {"label": "g3", "role": "incumbent"}
+        prom = {"label": "g4", "role": "promoted"}
+        self.assertEqual(["g4"], [a["label"] for a in nr.promotion_agents([inc, prom])])
+        self.assertEqual(["g3", "g4"], [a["label"] for a in nr.promotion_agents([{**inc, "promoted_since": True}, prom])])
+        self.assertEqual([], nr.promotion_agents([inc]))
+
+
 class UnfinishedNightTest(Tmp):
     def night(self, date: str, *folders: str, finished: bool = False, age_h: float = 1.0) -> Path:
         d = self.tmp / "nightly" / date
@@ -175,6 +212,14 @@ class UnfinishedNightTest(Tmp):
         (self.tmp / "nightly" / "last-ok").write_text("x")
         (self.tmp / "nightly" / "scratch").mkdir()
         self.assertEqual("2026-10-27", nr.unfinished_night(self.tmp))
+
+    def test_blocks_named_by_their_start_are_found_and_the_newest_unfinished_one_wins(self):
+        self.night("2026-11-06", "g12", "g12-emu", finished=True)
+        self.night("2026-11-06T0300", "g13", "g13-emu", finished=True)
+        self.night("2026-11-06T0415", "g14-emu")  # a block of the same day that a stopped job left unfinished
+        self.assertEqual("2026-11-06T0415", nr.unfinished_night(self.tmp))
+        self.night("2026-11-07", "g14", "g14-emu", finished=True)
+        self.assertEqual("2026-11-06T0415", nr.unfinished_night(self.tmp))  # the newer finished block does not hide it (sorted newest first, then finished)
 
     def test_a_finished_or_old_night_starts_a_fresh_one(self):
         self.night("2026-10-26", "g5", "g5-emu", finished=True)
@@ -332,7 +377,7 @@ class DriverTest(Tmp):
         rc, seen, lab, job, lock = self.run_driver(prepare=finished)
         self.assertEqual((0, []), (rc, seen))
 
-    def test_without_a_date_the_newest_unfinished_night_is_resumed_else_today(self):
+    def test_without_a_date_the_newest_unfinished_block_is_resumed_else_a_fresh_one_named_by_its_start(self):
         lab = self.tmp / "lab"
         emu = lab / "nightly" / "2026-10-24" / "g3-emu"
         emu.mkdir(parents=True)
@@ -344,8 +389,97 @@ class DriverTest(Tmp):
         self.assertTrue((emu / "runs.jsonl").is_file())  # the arm's rows are left for gen0.run_block's resume
         shutil.rmtree(job)
         shutil.rmtree(self.tmp / "agent")
-        rc, seen, lab, job, lock = self.run_driver(date=None)  # that night is finished now: a fresh one under today's date
-        self.assertEqual(time.strftime("%Y-%m-%d"), json.loads((job / "result.json").read_text())["date"])
+        rc, seen, lab, job, lock = self.run_driver(date=None)  # that night is finished now: a fresh one under its UTC start time
+        fresh = json.loads((job / "result.json").read_text())["date"]
+        self.assertRegex(fresh, r"^\d{4}-\d{2}-\d{2}T\d{4}$")
+        self.assertEqual(time.strftime("%Y-%m-%d", time.gmtime()), fresh[:10])
+        self.assertTrue((lab / "nightly" / fresh / "g3").is_dir())
+
+    def test_two_blocks_on_one_day_have_folders_and_seed_blocks_of_their_own(self):
+        with unittest.mock.patch.object(nr, "block_name", return_value="2026-11-06T0300"):
+            rc, seen, lab, job, lock = self.run_driver(date=None)
+        first = seen[0]
+        shutil.rmtree(job)
+        shutil.rmtree(self.tmp / "agent")
+        with unittest.mock.patch.object(nr, "block_name", return_value="2026-11-06T0415"):
+            rc, seen, lab, job, lock = self.run_driver(date=None)  # the first is finished: this one is a block of its own, not "already played"
+        self.assertEqual(1, len(seen))
+        self.assertEqual(str(lab / "seeds" / "N-2026-11-06T0300.json"), first[first.index("--seeds-file") + 1])
+        self.assertEqual(str(lab / "seeds" / "N-2026-11-06T0415.json"), seen[0][seen[0].index("--seeds-file") + 1])
+        for name in ("2026-11-06T0300", "2026-11-06T0415"):
+            summ = json.loads((lab / "nightly" / name / "g3" / "summary.json").read_text())
+            self.assertEqual(name, summ["nightly"]["date"])
+        self.assertEqual("2026-11-06T0415", json.loads((job / "result.json").read_text())["date"])
+
+    # ---- 2026-11-06: the promotion trigger
+
+    def promoted_g4(self, marker: bool = True, written: str = "2026-10-25T02:00:00Z", last_ok: str | None = "2026-10-24T12:00:00Z"):
+        """A prepare for run_driver: generation 4 promoted at `written`, the pending marker up, last-ok at `last_ok` (None: no stamp)."""
+        def prepare(_folder):
+            lab, agent = self.tmp / "lab", self.tmp / "agent"
+            (agent / "gen4" / "c").mkdir(parents=True)
+            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+                                                 f"{written}\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
+            (lab / "nightly").mkdir(parents=True, exist_ok=True)
+            if marker:
+                (lab / "nightly" / "pending").write_text(f"{written} gen4/c\n", encoding="utf-8")
+            if last_ok:
+                (lab / "nightly" / "last-ok").write_text("x\n")
+                t = nr.parse_utc(last_ok)
+                os.utime(lab / "nightly" / "last-ok", (t, t))
+        return prepare
+
+    def test_a_promotion_block_plays_the_promoted_generation_alone_at_runs_promoted_with_the_copy_sample(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "7", prepare=self.promoted_g4())
+        self.assertEqual(0, rc)
+        self.assertEqual(1, len(seen))  # g3, the incumbent, is not played at --runs: g4 is the promoted player here
+        cmd = seen[0]
+        self.assertEqual(str(self.tmp / "agent" / "gen4" / "c"), cmd[cmd.index("--gen-dir") + 1])
+        self.assertEqual(("40", "7"), (cmd[cmd.index("--runs") + 1], cmd[cmd.index("--emu-runs") + 1]))
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual(["g4"], list(res["agents"]))
+        self.assertEqual(("promotion", 40), (res["trigger"], res["runs_per_agent"]))
+        self.assertEqual("promotion", res["agents"]["g4"]["trigger"])
+        self.assertAlmostEqual(time.time(), res["started_epoch"], delta=60)
+
+    def test_the_incumbent_promoted_since_is_the_promotion_blocks_player(self):
+        def prepare(folder):
+            self.promoted_g4(written="2026-10-25T02:00:00Z")(folder)
+            agent = self.tmp / "agent"
+            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+                                                 f"2026-10-25T02:00:00Z\t3\t2\tE\t2000\tpromoted\tsha\t{agent / 'gen3' / 'c'}\n")
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", prepare=prepare)
+        self.assertEqual([("40", str(self.tmp / "agent" / "gen3" / "c"))], [(c[c.index("--runs") + 1], c[c.index("--gen-dir") + 1]) for c in seen])
+        self.assertEqual("N-2026-10-25", Path(seen[0][seen[0].index("--seeds-file") + 1]).stem)  # the incumbent's block name as before
+
+    def test_a_clock_block_without_the_marker_keeps_the_old_night(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", prepare=self.promoted_g4(marker=False))
+        self.assertEqual(0, rc)
+        self.assertEqual([("40", "g3"), ("40", "g4")],
+                         [(c[c.index("--runs") + 1], Path(c[c.index("--out") + 1]).name) for c in seen])  # the incumbent too, at the promotion night's runs
+        self.assertEqual("clock", json.loads((job / "result.json").read_text())["trigger"])
+
+    def test_trigger_clock_forces_the_old_night_though_the_marker_is_up(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--trigger", "clock", prepare=self.promoted_g4())
+        self.assertEqual(2, len(seen))
+        self.assertEqual("clock", json.loads((job / "result.json").read_text())["trigger"])
+
+    def test_a_marker_whose_promotion_the_last_block_already_played_is_an_idle_block(self):
+        # the promotion (01:00) is before last-ok (stamped with the last block's start): nothing to play, nothing stamped, no incumbent block
+        rc, seen, lab, job, lock = self.run_driver(None, prepare=self.promoted_g4(written="2026-10-25T01:00:00Z", last_ok="2026-10-25T05:00:00Z"))
+        self.assertEqual((0, []), (rc, seen))
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual(({}, "promotion"), (res["agents"], res["trigger"]))
+        self.assertIn("no generation promoted", res["idle"])
+        self.assertFalse(lock.exists())  # the QUIET.lock line was taken and released
+
+    def test_the_block_names_its_start_in_the_result_for_the_lab_to_stamp(self):
+        before = time.time()
+        rc, seen, lab, job, lock = self.run_driver()
+        res = json.loads((job / "result.json").read_text())
+        self.assertGreaterEqual(res["started_epoch"], before - 1)
+        self.assertLessEqual(res["started_epoch"], time.time())
+        self.assertEqual("clock", res["trigger"])
 
     def test_skips_with_a_reason_when_the_lock_stays_taken(self):
         rc, seen, lab, job, lock = self.run_driver(f"w4-readout {nr.utc_now()}", "--wait-h", "0")

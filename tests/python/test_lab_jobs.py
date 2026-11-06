@@ -470,6 +470,8 @@ class KindRunTest(Base):
         for k in KINDS:
             self.assertIn(k, pl.PLANS)
             self.assertIn(k, rn.JOB_TYPES)
+        self.assertLess(jb.PRIORITY["presort"], jb.PRIORITY["nightly-real"])  # the real-game checks come first (2026-11-06)
+        self.assertLess(jb.PRIORITY["nightly-real"], jb.PRIORITY["score-real"])
         self.assertLess(jb.PRIORITY["score-real"], jb.PRIORITY["train"])
         self.assertLess(jb.PRIORITY["train"], jb.PRIORITY["selfplay"])
         self.assertEqual(7, jb.PRIORITY["bench-env"])
@@ -561,16 +563,134 @@ class NightlyKindTest(Base):
         os.utime(m, (old, old))
         self.assertIsNone(self.unready())
 
-    def test_the_ladder_picks_it_after_train_and_before_self_play_and_says_why_when_it_is_held(self):
+    def test_the_ladder_picks_it_before_score_real_and_train_and_says_why_when_it_is_held(self):
         r = self.nightly()
         self.marker("PAUSE")
         self.assertNotEqual("nightly-real", r.choose("abc")[0])
         self.assertTrue(any("nightly-real: skipped, LAB/PAUSE is up" in x for x in (self.lab_dir / "runner.log").read_text().splitlines()))
         (self.lab_dir / "PAUSE").unlink()
         self.marker("train/ready-3")
-        self.assertEqual("train", r.choose("abc")[0])
-        (self.lab_dir / "train" / "ready-3").unlink()
+        self.assertEqual("nightly-real", r.choose("abc")[0])  # the weekly clock is due (never ran): the real-game check first
+        self.marker("nightly/last-ok")
+        self.assertEqual("train", r.choose("abc")[0])  # ran within the week: the rest of the ladder as ever
+
+    # ---- 2026-11-06: a promotion makes the block ready at once, at the top of the ladder
+
+    def pending(self, age_s: float = 0.0):
+        m = self.marker("nightly/pending")
+        t = time.time() - age_s
+        os.utime(m, (t, t))
+        return m
+
+    def test_a_pending_marker_makes_it_ready_though_the_clock_says_it_ran(self):
+        self.nightly(every_h=168)
+        self.marker("nightly/last-ok")
+        self.assertEqual("ran within the last night", self.unready())
+        self.pending()
+        self.assertIsNone(self.unready())
+        self.assertTrue(jb.nightly_wanted(self.lab_dir, 168))
+        (self.lab_dir / "nightly" / "pending").unlink()
+        self.assertFalse(jb.nightly_wanted(self.lab_dir, 168))
+
+    def test_a_pending_marker_does_not_override_the_other_wait_reasons(self):
+        self.nightly()
+        self.marker("nightly/last-ok")
+        self.pending()
+        for rel, word in (("HALT", "HALT"), ("PAUSE", "PAUSE"), ("nightly/active", "nightly block has not finished"),
+                          ("score/active", "score-real window")):  # a running real-game job of either kind is never pre-empted
+            m = self.marker(rel)
+            self.assertIn(word, self.unready(), rel)
+            m.unlink()
+        self.marker("nightly/last-skip")  # the last attempt was skipped a moment ago: the retry waits an hour, the marker stays
+        self.assertIn("skipped", self.unready())
+        (self.lab_dir / "nightly" / "last-skip").unlink()
+        self.assertIsNone(self.unready())
+
+    def test_the_ladder_puts_a_pending_block_above_score_real_and_train_and_runs_them_after_it(self):
+        r = self.nightly(every_h=168)
+        self.marker("nightly/last-ok")
+        self.pending()
+        self.marker("score/pending")
+        self.marker("train/ready-3")
         self.assertEqual("nightly-real", r.choose("abc")[0])
+        r.execute(r.new_run("nightly-real", "abc"))
+        self.assertFalse((self.lab_dir / "nightly" / "pending").exists())  # consumed when the block ended
+        self.assertEqual("score-real", r.choose("abc")[0])
+        (self.lab_dir / "score" / "pending").unlink()
+        self.assertEqual("train", r.choose("abc")[0])
+
+    def test_a_running_score_window_holds_a_pending_block_and_it_goes_first_when_the_window_closes(self):
+        r = self.nightly(every_h=168)
+        self.marker("nightly/last-ok")
+        self.pending()
+        self.marker("score/pending")
+        a = self.marker("score/active")
+        self.assertEqual("score-real", r.choose("abc")[0])  # no pre-emption: the window that is open finishes first
+        a.unlink()
+        self.assertEqual("nightly-real", r.choose("abc")[0])
+
+    def test_the_marker_is_kept_while_the_block_plays_and_consumed_when_it_ends(self):
+        saw = ["{python}", "-c", "import sys, json, os; r = json.loads(sys.argv[3]); r['saw_pending'] = os.path.exists(sys.argv[2]); "
+               "open(sys.argv[1] + '/result.json', 'w').write(json.dumps(r))", "{job}", "{lab}/nightly/pending"]
+        r = self.nightly(cmd=saw + [json.dumps(self.RESULT)])
+        self.marker("nightly/last-ok")
+        self.pending()
+        r.execute(r.new_run("nightly-real", "abc"))
+        res = json.loads(next(self.lab_dir.glob("runs/*-nightly-real/result.json")).read_text(encoding="utf-8"))
+        self.assertTrue(res["saw_pending"])  # an interrupted block is resumed on the marker
+        self.assertFalse((self.lab_dir / "nightly" / "pending").exists())
+
+    def finish_with(self, result: dict, pending_age_s: float | None):
+        """jb.finish for a nightly-real job whose driver wrote `result`; the pending marker `pending_age_s` old (None: none)."""
+        if pending_age_s is not None:
+            self.pending(pending_age_s)
+        job = self.tmp / "job"
+        job.mkdir(exist_ok=True)
+        (job / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        return jb.finish("nightly-real", self.lab_dir, job, {})
+
+    def test_a_promotion_that_landed_after_the_block_took_its_list_keeps_the_marker_for_the_next_block(self):
+        t0 = time.time() - 3600  # the block took its list an hour ago and played since
+        self.assertIsNone(self.finish_with({"date": "d", "agents": {"g3": {"runs": 1}}, "started_epoch": t0}, pending_age_s=1800))
+        self.assertTrue((self.lab_dir / "nightly" / "pending").exists())  # appended 30 min ago: after t0
+        last = self.lab_dir / "nightly" / "last-ok"
+        self.assertAlmostEqual(t0, last.stat().st_mtime, delta=2)  # stamped with the block's START, so that promotion is "since the last block"
+        self.assertIsNone(jb.unready("nightly-real", self.lab_dir, {**jb.load_config(self.lab_dir)["nightly-real"], "enabled": True}))
+        # a block that started after the marker's last line consumes it
+        self.assertIsNone(self.finish_with({"date": "d", "agents": {"g3": {"runs": 1}}, "started_epoch": time.time() - 600}, pending_age_s=1800))
+        self.assertFalse((self.lab_dir / "nightly" / "pending").exists())
+
+    def test_a_result_without_a_start_time_consumes_the_marker_and_stamps_the_end(self):
+        self.assertIsNone(self.finish_with({"date": "d", "agents": {"g3": {"runs": 1}}}, pending_age_s=10))
+        self.assertFalse((self.lab_dir / "nightly" / "pending").exists())
+        self.assertLess(time.time() - (self.lab_dir / "nightly" / "last-ok").stat().st_mtime, 60)
+        self.assertFalse(jb.consume_nightly_pending(self.lab_dir, None))  # nothing to consume now
+
+    def test_an_idle_promotion_block_consumes_the_marker_and_stamps_nothing(self):
+        self.marker("nightly/last-skip")
+        self.assertIsNone(self.finish_with({"idle": "no generation promoted since the last block", "agents": {}, "started_epoch": time.time() - 5},
+                                           pending_age_s=60))
+        self.assertFalse((self.lab_dir / "nightly" / "pending").exists())
+        self.assertFalse((self.lab_dir / "nightly" / "last-ok").exists())
+        self.assertTrue((self.lab_dir / "nightly" / "last-skip").exists())
+        self.assertFalse((self.lab_dir.parent / "readiness.json").exists())
+
+    def test_a_skipped_or_failed_block_keeps_the_marker(self):
+        self.assertIsNone(self.finish_with({"skipped": "QUIET.lock stayed taken", "agents": {}}, pending_age_s=60))
+        self.assertTrue((self.lab_dir / "nightly" / "pending").exists())
+        r = self.nightly(cmd=["{python}", "-c", "import sys; sys.exit(3)"])
+        run = r.new_run("nightly-real", "abc")
+        r.execute(run)
+        self.assertTrue((self.lab_dir / "nightly" / "pending").exists())  # rc 3: finish never ran
+        self.assertFalse((self.lab_dir / "nightly" / "last-ok").exists())
+
+    def test_the_runner_says_why_a_pending_block_is_held(self):
+        r = self.nightly(every_h=168)
+        self.marker("nightly/last-ok")
+        self.pending()
+        self.marker("PAUSE")
+        self.assertNotEqual("nightly-real", r.choose("abc")[0])
+        self.assertTrue(any("nightly-real: skipped, LAB/PAUSE is up" in x for x in (self.lab_dir / "runner.log").read_text().splitlines()))
 
     def test_a_run_marks_its_window_then_stamps_the_night_and_stores_readiness(self):
         r = self.nightly()

@@ -4,10 +4,21 @@
     python rl/nightly_real.py --lab LAB --agent-root AGENT --game GAME --lib DIR [--runs 2000] [--runs-promoted N] [--emu-runs N] [--procs 12]
                               [--recycle 60]
 
-For the incumbent (agent-root/current.json) and each generation promoted since the last nightly (promotions.tsv rows written after
+Two triggers (2026-11-06: the real-game check is the bottleneck, so it runs when a promotion lands, not on a clock). A *promotion*
+block runs when LAB/nightly/pending exists (rl/gen_loop.py mark_promotion writes it at a promotion): it plays each generation promoted
+since the last block (the incumbent among them when it was promoted since) at `--runs-promoted`, plus the copy arm's `--emu-runs`, and
+does not play the incumbent's `--runs` block (the incumbent is the promoted player). A *clock* block (LAB/nightly/last-ok older than
+the job's `every_h`, the weekly copy-accuracy watch) keeps the old night: the incumbent first, every agent at `--runs-promoted` when a
+generation was promoted since the last block, else the incumbent at `--runs`. `--trigger` forces one (default: promotion when the marker exists at the start). The driver takes its list at its
+start time (`started_epoch` in result.json); the lab stamps last-ok with that time and removes the marker only if no promotion wrote to
+it after, so a promotion that lands while a block plays is the next block's.
+
+For the incumbent (agent-root/current.json) and each generation promoted since the last block (promotions.tsv rows written after
 LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
 N-<date>-<agent> for the others, written to LAB/seeds/, checked disjoint from every known block, E and S blocks included) is played
-by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The block's folder is LAB/nightly/<date>/<agent>/ (the
+by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The block's folder is LAB/nightly/<block>/<agent>/, <block> the
+UTC start `YYYY-MM-DDTHHMM` (two blocks on one day do not collide; the folders of 2026-11-06 and earlier are named by date alone, and every
+reader takes both; the seed blocks are `N-<block>[-<agent>]`) (the
 real game's runs.jsonl, divergences.jsonl, summary.json, compare.json; the emulator arm is its sibling <agent>-emu/), ranked in
 place by tools/lab/rank.py (ranked.json, top20.md, by_family.*). A block a stopped job left unfinished is resumed in place (`gen0.py
 score --resume`): its folder is not cleared and only the seeds without a row are played; a block with the finished mark is skipped.
@@ -44,6 +55,7 @@ import argparse
 import contextlib
 import datetime as dt
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +70,9 @@ for _p in (str(ROOT), str(ROOT / "rl")):
 
 TAG = "lab-nightly"
 RESUME_NIGHT_H = 36.0  # an unfinished night whose newest row is under this old is resumed under its own date
+BLOCK_FORMAT = "%Y-%m-%dT%H%M"  # the folder of a block started now (UTC); folders up to 2026-11-06 are `%Y-%m-%d`
+BLOCK_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:T\d{4})?$")
+TRIGGERS = ("auto", "promotion", "clock")
 
 import quiet_lock  # noqa: E402 -- rl/ is on sys.path (above)
 from quiet_lock import STALE_H, UTC_FORMAT, parse_utc, utc_now  # noqa: E402,F401 -- the QUIET.lock protocol moved to rl/quiet_lock.py (shared with `gen0.py score`)
@@ -128,6 +143,35 @@ def night_runs(agents: list[dict[str, Any]], runs: int, runs_promoted: int | Non
     return runs
 
 
+def block_name(now: float | None = None) -> str:
+    """The folder (and block label) of a block started at `now` (epoch seconds, default now): the UTC date and minute, so two blocks of one
+    day have folders of their own."""
+    return time.strftime(BLOCK_FORMAT, time.gmtime(time.time() if now is None else now))
+
+
+def is_block_folder(name: str) -> bool:
+    """A LAB/nightly/<block> folder name: a date (the blocks up to 2026-11-06) or a date and start time (`2026-11-06T0312`)."""
+    return bool(BLOCK_RE.match(name))
+
+
+def pending_marker(lab: Path) -> Path:
+    return Path(lab) / "nightly" / "pending"
+
+
+def trigger_of(lab: Path, requested: str = "auto") -> str:
+    """`promotion` when the lab's pending marker exists (or `requested` says so), else `clock`."""
+    if requested in ("promotion", "clock"):
+        return requested
+    return "promotion" if pending_marker(lab).is_file() else "clock"
+
+
+def promotion_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The agents a promotion block plays: those promoted since the last block (`promoted_labels`); the incumbent only when it is one of
+    them. An incumbent that was not promoted since is not played at `--runs` by a promotion block (that is the clock block's job)."""
+    keep = set(promoted_labels(agents))
+    return [ag for ag in agents if ag["label"] in keep]
+
+
 def seed_block_name(date: str, agent: dict[str, Any]) -> str:
     return f"N-{date}" if agent["role"] == "incumbent" else f"N-{date}-{agent['label']}"
 
@@ -149,7 +193,7 @@ def make_block(lab: Path, name: str, n: int, extra_seed_dirs: list[Path]) -> tup
 
 
 def unfinished_night(lab: Path, now: float | None = None, max_age_h: float = RESUME_NIGHT_H) -> str | None:
-    """The date of the newest LAB/nightly/<date> folder that holds a started agent block without its finished mark (the agent's
+    """The name of the newest LAB/nightly/<block> folder (a date, or a date and start time) that holds a started agent block without its finished mark (the agent's
     summary.json with `nightly`): an emulator arm (`<agent>-emu/runs.jsonl`) or a real folder that a stopped job left behind,
     when its newest runs.jsonl is under `max_age_h` old. None: every night is finished or too old, so a fresh one starts.
 
@@ -163,9 +207,7 @@ def unfinished_night(lab: Path, now: float | None = None, max_age_h: float = RES
     except OSError:
         return None
     for d in dates:
-        try:
-            dt.datetime.strptime(d.name, "%Y-%m-%d")
-        except ValueError:
+        if not is_block_folder(d.name):
             continue
         labels = {p.name[:-4] if p.name.endswith("-emu") else p.name for p in d.iterdir() if p.is_dir()}
         newest = max((f.stat().st_mtime for f in d.glob("*/runs.jsonl")), default=None)
@@ -279,6 +321,7 @@ def play_agent(a: argparse.Namespace, agent: dict[str, Any], date: str, date_dir
     shutil.rmtree(folder / "scratch", ignore_errors=True)  # the game processes' working copies
     nums = nightly_numbers(folder, date, agent, name, len(seeds), a.engine, emu_n)
     nums["rc"] = rc
+    nums["trigger"] = getattr(a, "trigger_used", None)
     if (folder / "summary.json").is_file():
         doc = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
         (folder / "summary.json").write_text(json.dumps({**doc, "nightly": nums}, indent=1), encoding="utf-8")
@@ -306,7 +349,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default="a3-v1")
     ap.add_argument("--engine", choices=("old", "core2"), default="core2")
     ap.add_argument("--stop-after-h", type=float, default=4.0, help="per agent: no new run after this many hours")
-    ap.add_argument("--date", help="the night's folder and block name (default: the newest unfinished night under 36 h old, else today)")
+    ap.add_argument("--date", help="the block's folder and seed-block label (default: the newest unfinished block under 36 h old, else the "
+                    "UTC start time, `YYYY-MM-DDTHHMM`)")
+    ap.add_argument("--trigger", choices=TRIGGERS, default="auto",
+                    help="promotion: play the generations promoted since the last block (the incumbent only if among them); clock: the "
+                    "incumbent at --runs as well; auto: promotion when LAB/nightly/pending exists at the start")
     ap.add_argument("--quiet-lock", default="D:/spireline/referee/QUIET.lock", help="the shared QUIET.lock file")
     ap.add_argument("--tag", default=TAG)
     ap.add_argument("--gpu-ok-file", default=None, help="the GPU_OK file (default: gen0.GPU_OK_FILE): `gen0.py score` keeps the line "
@@ -330,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.date is not None:
             print(f"[{utc_now()}] resuming the unfinished night {a.date} (both arms of each block keep their rows)", flush=True)
         else:
-            a.date = time.strftime("%Y-%m-%d")
+            a.date = block_name()
     out = Path(a.out) if a.out else lab / "nightly"
     out.mkdir(parents=True, exist_ok=True)
     lock = QuietLock(Path(a.quiet_lock), a.tag, wait_h=a.wait_h)
@@ -342,17 +389,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         lock.start_heartbeat()
     try:
+        t0 = time.time()  # the block's list is taken now: a promotion after this is the next block's (jobs.finish stamps last-ok with it)
         since = parse_utc(a.since) if a.since else None
         ok = lab / "nightly" / "last-ok"
         if since is None and ok.is_file():
             since = ok.stat().st_mtime
-        t0 = time.time()
         date_dir = lab / "nightly" / a.date
         agents: dict[str, Any] = {}
+        a.trigger_used = trigger_of(lab, a.trigger)
         todo = agents_to_score(Path(a.agent_root), since)
+        if a.trigger_used == "promotion":
+            todo = promotion_agents(todo)
+            if not todo:  # the marker outlived its promotion (the block before took it): nothing to play, nothing stamped
+                why = "no generation promoted since the last block"
+                print(f"[{utc_now()}] promotion block: {why}", flush=True)
+                (out / "result.json").write_text(json.dumps({"idle": why, "agents": {}, "trigger": "promotion", "started_epoch": t0}), encoding="utf-8")
+                return 0
         a.runs = night_runs(todo, a.runs, a.runs_promoted)
         promoted = promoted_labels(todo)
-        print(f"[{utc_now()}] {a.runs} runs per agent ({'promoted since the last nightly: ' + ', '.join(promoted) if promoted else 'no promotion since the last nightly'})", flush=True)
+        print(f"[{utc_now()}] {a.trigger_used} block {a.date}: {a.runs} runs per agent ({'promoted since the last block: ' + ', '.join(promoted) if promoted else 'no promotion since the last block'})", flush=True)
         for ag in todo:
             try:
                 agents[ag["label"]] = play_agent(a, ag, a.date, date_dir)
@@ -361,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{utc_now()}] {ag['label']}: {agents[ag['label']]['error']}", flush=True)
         good = [v for v in agents.values() if "error" not in v]
         inc = good[0] if good else {}
-        res = {"date": a.date, "engine": a.engine, "runs_per_agent": a.runs, "emu_runs_per_agent": emu_runs_tonight(a.emu_runs, a.runs) or a.runs,
+        res = {"date": a.date, "trigger": a.trigger_used, "started_epoch": t0, "engine": a.engine, "runs_per_agent": a.runs, "emu_runs_per_agent": emu_runs_tonight(a.emu_runs, a.runs) or a.runs,
                "agents": agents, "wall_s": round(time.time() - t0, 1),
                # the yield columns (tools/lab/mix.py) are the first agent's
                "runs": inc.get("runs"), "wins": inc.get("wins"), "mean_floor": inc.get("mean_floor"), "crashes": inc.get("crashes"),

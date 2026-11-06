@@ -35,7 +35,7 @@ finished runs to the shards and end (only a block that wrote `stop-honored` is w
 still in flight are lost, nothing else.
 
 Night: it does not start while LAB/nightly/active is fresh or within `night_margin_min` of the time the night is due
-(LAB/nightly/last-ok + nightly-real.every_h, or the retry after a skipped attempt when that is later), and a running block is
+(LAB/nightly/last-ok + nightly-real.every_h, or now when LAB/nightly/pending is up, or the retry after a skipped attempt when that is later), and a running block is
 stopped two minutes before the night is due, when its marker is up, or when the runner starts the nightly-real job (a block lasts
 about 20 minutes, `--block-min 20`, so one started before the margin has ended by then).
 """
@@ -184,7 +184,8 @@ def filler_cmd(cmd: list[str], cores: int, explore: list[str] | None = None) -> 
 
 def night_due_at(lab: Path, doc: dict | None) -> float | None:
     """Epoch seconds the night is due (None when nightly-real is off): LAB/nightly/last-ok + every_h (0, long ago, when it never
-    ran), or the retry after a skipped attempt (last-skip + jobs.NIGHTLY_RETRY_H) when that is later. The rule of jobs.due."""
+    ran) or, when a promotion is waiting (LAB/nightly/pending), the time the marker was written (due now: the rule of jobs.nightly_wanted),
+    whichever is earlier; the retry after a skipped attempt (last-skip + jobs.NIGHTLY_RETRY_H) when that is later."""
     cfg = jobs.config_from(doc)["nightly-real"]
     if not cfg.get("enabled"):
         return None
@@ -193,6 +194,9 @@ def night_due_at(lab: Path, doc: dict | None) -> float | None:
         t = (nd / "last-ok").stat().st_mtime + float(cfg.get("every_h", 20.0)) * 3600
     except OSError:
         t = 0.0
+    pending = jobs.nightly_pending_time(lab)
+    if pending is not None:
+        t = min(t, pending)
     try:
         t = max(t, (nd / "last-skip").stat().st_mtime + jobs.NIGHTLY_RETRY_H * 3600)
     except OSError:

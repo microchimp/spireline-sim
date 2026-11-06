@@ -116,6 +116,19 @@ class CoresRulesTest(unittest.TestCase):
         os.utime(p, (t, t))
         return p
 
+    def test_a_pending_promotion_block_is_due_now_for_the_filler(self):
+        doc = {"nightly-real": {"enabled": True, "every_h": 168}}
+        lab = self.tmp
+        self.touch("nightly/last-ok", age_s=3600)  # the weekly clock is far off
+        self.assertIsNone(cores.night_hold(lab, doc))
+        self.touch("nightly/pending", age_s=60)  # a promotion landed a minute ago: no start, and a running block is stopped
+        self.assertIn("the night is due at", cores.night_hold(lab, doc))
+        self.assertIn("the night is due at", cores.night_hold(lab, doc, starting=False))
+        self.assertLess(cores.night_due_at(lab, doc), time.time())
+        (lab / "nightly" / "pending").unlink()
+        self.assertIsNone(cores.night_hold(lab, doc))
+        self.assertIsNone(cores.night_due_at(lab, {"nightly-real": {"enabled": False}}))
+
     def test_the_night_holds_the_filler(self):
         doc = {"nightly-real": {"enabled": True, "every_h": 20}}
         lab = self.tmp

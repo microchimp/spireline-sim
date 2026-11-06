@@ -10,12 +10,19 @@ score-real are on but only ever ready when their marker file exists (LAB/train/r
 
 Priority ladder (lower number first; what the runner's choose() does with it is in runner.py):
 
-  1 presort   2 score-real, nightly-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
+  1 presort   1.5 nightly-real   2 score-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
+
+The real-game checks come first (owner, 2026-11-06: the real-game check is the bottleneck): a promotion writes LAB/score/pending and
+LAB/nightly/pending (rl/gen_loop.py mark_promotion), and the next pick after the running job is the nightly block, then the fixed-seed score.
 
 nightly-real is a kind of its own (D8, D33 addendum 2): score-real is one command on one marker, the nightly block is a driver
 (rl/nightly_real.py) that plays several agents under the QUIET.lock, so the due rule and the window markers sit here and the
-work sits in the driver. Due: LAB/nightly/last-ok older than `every_h` (20); skipped, with the reason, while LAB/HALT or
-LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not finished) or LAB/score/active is fresh.
+work sits in the driver. Ready (2026-11-06): LAB/nightly/pending exists (a promotion landed; the block plays the generations promoted
+since the last block, `trigger` promotion) or LAB/nightly/last-ok is older than `every_h` (the clock stays as the weekly copy-accuracy
+watch, `trigger` clock). Skipped, with the reason, while LAB/HALT or LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not
+finished) or LAB/score/active is fresh; nothing is pre-empted. The pending marker is consumed when the block ends, unless a promotion
+landed after the block took its list (the marker is newer than the block's start); last-ok is stamped with the block's START time, so a
+promotion that landed while the block played is "since the last block" for the next one.
 
 A job's command may write ``<job>/result.json`` (an object); its keys named in mix.YIELD_COLUMNS become the job's
 yield.tsv columns, and the bench kinds also store it under readiness.json ``bench.env`` / ``bench.emu``.
@@ -35,7 +42,7 @@ BENCHES = ("bench-env", "bench-emu")
 # The kinds that exist only because self-play does: self-play, the training (and the promotion it runs) of what it recorded, and the
 # real-game score of what training promoted. `selfplay.share` is judged on their CPU together (mix.loop_cpu), not on self-play alone.
 LOOP_KINDS = ("selfplay", "train", "score-real")  # nightly-real is outside the loop share: it scores the incumbent whether or not self-play ran (D29 accounting)
-PRIORITY = {"presort": 1, "score-real": 2, "nightly-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
+PRIORITY = {"presort": 1, "nightly-real": 1.5, "score-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
             "bench-env": 7, "bench-emu": 7}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run
 ACTIVE_STALE_H = SCORE_WINDOW_H + 1.0  # an `active` marker older than this is a crash's leftover
@@ -170,6 +177,30 @@ def due(lab: Path, kind: str, every_h: float) -> bool:
     return a is None or a >= every_h
 
 
+def nightly_pending_time(lab: Path) -> float | None:
+    """Epoch seconds LAB/nightly/pending was last written (a promotion appends a line to it: rl/gen_loop.py mark_promotion), None when
+    there is no such marker."""
+    try:
+        return (Path(lab) / "nightly" / "pending").stat().st_mtime
+    except OSError:
+        return None
+
+
+def nightly_wanted(lab: Path, every_h: float) -> bool:
+    """A nightly block is wanted: a promotion is waiting (LAB/nightly/pending) or the clock (last-ok older than `every_h`) says so."""
+    return nightly_pending_time(lab) is not None or due(lab, "nightly", every_h)
+
+
+def consume_nightly_pending(lab: Path, started: float | None) -> bool:
+    """Remove LAB/nightly/pending after a block that took its list of promotions at `started` (epoch seconds), unless a promotion wrote
+    to the marker after that: the next block plays it. `started` None (a result that does not say) removes it. True when removed."""
+    t = nightly_pending_time(lab)
+    if t is None or (started is not None and t > started):
+        return False
+    (Path(lab) / "nightly" / "pending").unlink(missing_ok=True)
+    return True
+
+
 def nightly_blocked(lab: Path) -> str | None:
     """Why a due nightly block must wait (None: it may start). The runner's guards (PAUSE, HALT, load, disk) stop every job
     alike; main.lock holds every new pick but stops only a running presort (a running nightly carries on under it). They are named
@@ -205,7 +236,7 @@ def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
             return None
         return "no LAB/score/pending marker and the weekly block is not due"
     if kind == "nightly-real":
-        if not due(lab, "nightly", float(cfg.get("every_h", 20.0))):
+        if not nightly_wanted(lab, float(cfg.get("every_h", 20.0))):
             return "ran within the last night"
         return nightly_blocked(lab)
     if kind in BENCHES:
@@ -288,13 +319,20 @@ def finish(kind: str, lab: Path, job_dir: Path, params: dict[str, Any]) -> str |
             _atomic(lab / "score" / "last-ok", stamp)
         elif kind == "nightly-real":
             res = read_result(job_dir)
-            if res.get("skipped"):  # the QUIET.lock never freed: not a night; try again later
+            started = res.get("started_epoch")
+            started = float(started) if isinstance(started, (int, float)) and not isinstance(started, bool) and 0 < started <= time.time() else None
+            if res.get("skipped"):  # the QUIET.lock never freed: not a night; try again later (a pending marker stays)
                 _atomic(lab / "nightly" / "last-skip", stamp)
+            elif res.get("idle"):  # a promotion block with no generation to play (the marker outlived its promotion): nothing was played, nothing stamped
+                consume_nightly_pending(lab, started)
             else:
                 if res.get("agents"):
                     store_nightly(lab.parent / "readiness.json", res)
                 _atomic(lab / "nightly" / "last-ok", stamp)
+                if started is not None:  # the block's start, not its end: a promotion that landed while it played is "since the last block" for the next
+                    os.utime(lab / "nightly" / "last-ok", (started, started))
                 (lab / "nightly" / "last-skip").unlink(missing_ok=True)
+                consume_nightly_pending(lab, started)
         elif kind in BENCHES:
             res = read_result(job_dir)
             if res:

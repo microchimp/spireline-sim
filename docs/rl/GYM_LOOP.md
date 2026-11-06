@@ -53,7 +53,7 @@ candidate reaches it).
 
 - **Start mix** (gym-build P2, step 1). Every Act 1 and Act 2 fight (hallway, elite, boss; not events) that `--runs-per-night`
   runs (250) of each finished night's emulator arm entered, replayed exactly with the night's agent (`fight_gym._replay_task`), at
-  the fight's first decision. The nights are found, not listed (`nights_available`: every `LAB/nightly/<date>/<agent>-emu` with its
+  the fight's first decision. The nights are found, not listed (`nights_available`: every `LAB/nightly/<date or date-and-time>/<agent>-emu` with its
   summary.json, the newest `--max-nights`, 14); each night's runs are its own seeded draw (`night_seed`, by the night's label), a
   run once replayed is kept in `replays-<date>-<agent>.jsonl`, and only the picked runs of the nights taken are assembled (streamed;
   `assemble_starts`). Until 2026-11-02 the set was 50 runs of four nights (10-26 g5, 10-27 g7, 10-29 g7, 10-30 g9), 1,478 starts.
