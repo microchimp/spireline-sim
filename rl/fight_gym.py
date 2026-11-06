@@ -63,10 +63,11 @@ NODE_MONSTER, NODE_ELITE, NODE_BOSS = 1, 2, 6  # run_train.vocab
 NODE_OF_KIND = {"hall": NODE_MONSTER, "elite": NODE_ELITE, "boss": NODE_BOSS}
 ACT1_BOSS_INDEX = 15  # the run row's `nodes` string: index i is floor i + 2; the Act-1 boss is floor 17
 ACT2_INDICES = range(16, 32)  # floors 18..33; the Act-2 boss is floor 33
-ARMS = {"a3-v1": 1, "x4": 4, "x16": 16, "judge-v0": 1}
+ARMS = {"a3-v1": 1, "x4": 4, "x16": 16, "judge-v0": 1, "a3-v1-r": 1}
 # Arms whose search is a named config of search_configs rather than a3-v1 times a factor: the judge's leaf (rl/judge.py)
-# in place of play-outs, at a3-v1's wall time per decision. They need a judge (`play --lockstep K --judge PATH`).
-CONFIG_ARMS = {"judge-v0": "judge-v0"}
+# in place of play-outs, at a3-v1's wall time per decision (they need a judge: `play --lockstep K --judge PATH`), and a3-v1-r, a3-v1
+# with fights priced in the run head's terms (rl/run_currency.py; the game builds the start's currency from its record).
+CONFIG_ARMS = {"judge-v0": "judge-v0", "a3-v1-r": "a3-v1-r"}
 POTION_VALUE = 10.0  # live_search's and L0's potion value
 DECISION_CAP = 400  # a game still going after this many decisions is counted as capped (and not won)
 M3_PLAYOUTS = 30
@@ -75,7 +76,8 @@ MEM_LIMIT_GB = 3.0  # a worker over this private memory is killed: six of them s
 # measurement times 1.5 (the full run's x16 and a3-v1 means came out 1.7 and 1.3 times their measurement's).
 MEAN_S = {("act1-boss", "a3-v1"): 6.4, ("act1-boss", "x4"): 19.0, ("act1-boss", "x16"): 74.2,
           ("act2", "a3-v1"): 11.0, ("act2", "x4"): 35.0, ("act2", "x16"): 95.0,
-          ("act1-boss", "judge-v0"): 6.4, ("act2", "judge-v0"): 11.0}  # the judge's arm: a3-v1's wall time by design
+          ("act1-boss", "judge-v0"): 6.4, ("act2", "judge-v0"): 11.0,  # the judge's arm: a3-v1's wall time by design
+          ("act1-boss", "a3-v1-r"): 8.0, ("act2", "a3-v1-r"): 14.0}  # the currency's arm: a3-v1's, a quarter more for the head's calls
 DEADLINE_X = 10  # a game past ten times its arm's mean is capped and lost, never a hang
 HARD_GRACE = 1.5  # the parent kills a worker 1.5x past the deadline plus a minute (a search or a step that never returns)
 PRED_DEADLINE_S = 300.0
@@ -586,10 +588,13 @@ def _replay_task(task: tuple) -> dict:
             doc = native.get_state_json(root.handle)
             pots = doc.get("potions") or {}
             held = sum(1 for x in (pots.get("slots") or [])[: int(pots.get("max_slots", 0))] if x)
+            import run_currency  # noqa: PLC0415 -- numpy only
+
             got[f] = {"k": k, "node_type": int(s.info["node_type"]), "act": int(s.act_index) + 1, "hp": int(s.info["hp"]),
                       "max_hp": int(s.info["max_hp"]), "deck_size": int(s.info["deck_size"]), "potions": held,
                       "relics": int(s.info.get("relic_count", 0)), "encounter_id": doc.get("encounter_id"),
-                      "turn": int(doc.get("turn", 0)), "doc": doc}
+                      "turn": int(doc.get("turn", 0)), "doc": doc,
+                      "run_view": run_currency.view_to_json(s.view())}  # the run as the fight opens: the run currency's exact start state
         return f > last or len(got) == len(floors)
 
     t0 = time.perf_counter()
@@ -662,13 +667,18 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
     first: dict = {}
     leaf = None
     max_search = 0.0
+    terminal = None
+    if getattr(cfg, "run_currency", False):  # fights priced in the run head's terms: this start's currency (kept for the process, the draws share it)
+        import run_currency  # noqa: PLC0415 -- numpy only
+
+        terminal = run_currency.currency_for_start(start)
     moves: list = []
     grades: list = []
     positions: list = []
     while not world.done and k < DECISION_CAP and (deadline is None or clock() - t0 < deadline):
         info = {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
         pos = search_configs.position_of(world, info)
-        kw = cfg.search_kwargs(pos, env_prior=False)
+        kw = cfg.search_kwargs(pos, env_prior=False, terminal=terminal)
         kw.update(extra)
         res = yield from live_search.search_steps(world.handle, seed=game_seed(start["id"], j, f"{ns}{k}"), clock=clock, **kw)
         sims += res.sims
@@ -719,6 +729,11 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
            "budget_exhausted": exhausted, "ai_assumed": assumed, "max_search_s": round(max_search, 3), "search_s": round(search_s, 3),
            "L0": l0(won, world.hp(), held, world.max_hp()), "seconds": round(clock() - t0, 2), "moves_sha": moves_sha(moves),
            **first}
+    if terminal is not None:  # the currency's reading of the end: u (0 for a loss, 1 a full-HP win holding every potion) and what it did
+        import combat_mcts  # noqa: PLC0415
+
+        row["u_end"] = round(terminal.u(world.hp(), world.max_hp(), combat_mcts.held_potions(world)), 4) if won else 0.0
+        row["currency"] = terminal.summary()
     if cfg.lethal_check:  # only a kill-checking config's rows carry the check's counts
         row.update(lethal_checked=lethal_checked, lethal_fired=lethal_fired, lethal_s=round(lethal_s, 4), lethal_differs=lethal_differs,
                    lethal_wrong=lethal_wrong)
@@ -958,7 +973,7 @@ def report(out: Path) -> dict:
                               "budget_exhausted": sum(r["budget_exhausted"] for r in g),
                               "root_value": sum(rv) / len(rv) if rv else None,
                               "root_p_death": _avg([r.get("root_p_death") for r in g])}
-        for arm in ("x4", "x16"):
+        for arm in ("x4", "x16", "a3-v1-r"):
             if arm in c["arms"] and "a3-v1" in c["arms"]:
                 c["diffs"][arm] = {"won": paired_diff(rows, arm, "a3-v1", "won"), "L0": paired_diff(rows, arm, "a3-v1", "L0"),
                                    "root_value": paired_diff([r for r in rows if r.get("root_value") is not None], arm, "a3-v1", "root_value")}

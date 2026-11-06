@@ -17,6 +17,12 @@ A config may also carry the two options of `docs/rl/STAKES_AND_HOLD.md` (2026-11
 * `potion_hold`: in a hallway fight the root's potion moves are dropped unless the kill check fails and the player would fall under
   that fraction of max HP after the enemies' intended damage (`live_search.search_live(potion_hold=...)`).
 
+A config may price a fight in the run's terms (`run_currency`, training design section 3 and brief 3a; `rl/run_currency.py`): a won fight is
+worth what the frozen run head says of the post-fight state (HP, max HP and the potions still held) instead of its end HP plus 10 a potion.
+Its name is the base's with `-r` (`a3-v1-r`, `judge-v0-r`, `a3-v1-k-r`; `with_currency`), and the stakes and hold options go after it
+(`a3-v1-r@h1e4b16`). The search needs the fight's currency from its caller (`search_kwargs(pos, terminal=...)`: the caller knows the run's
+view or the start record); a currency config asked for kwargs without one raises rather than quietly play in HP.
+
 A config with either has a name `<base>[@h<H>e<E>b<B>][+hold<N>]` (`macro_recipe.config_name`) that `get` reads, so every consumer of a
 config name (the lab's self-play, the promotion arms, the lockstep's real-game player) can play it; an agent's own schedule comes from
 its agent.json (`gen_loop.Agent.search_config`, `for_agent` here).
@@ -26,6 +32,7 @@ its agent.json (`gen_loop.Agent.search_config`, `for_agent` here).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 from dataclasses import dataclass, field
@@ -94,6 +101,8 @@ class SearchConfig:
     stakes: tuple[int, int, int] | None = None
     # The hallway potion hold's threshold, a fraction of max HP; None: no hold (see the module docstring).
     potion_hold: float | None = None
+    # Price a won fight in the run head's terms (rl/run_currency.py) instead of HP and 10 a potion; the caller passes the fight's currency.
+    run_currency: bool = False
 
     @property
     def needs_position(self) -> bool:
@@ -129,12 +138,20 @@ class SearchConfig:
         n = round(n * s.kind_mult.get(pos.kind, 1.0))
         return max(s.lo, min(s.hi * m, n))
 
-    def search_kwargs(self, pos: Position | None = None, env_prior: bool = True) -> dict:
+    def search_kwargs(self, pos: Position | None = None, env_prior: bool = True, terminal=None) -> dict:
         """Keyword arguments for `live_search.search_live` (add `seed`). With `env_prior`, SPIRELINE_GEN_DIR names a
         generation whose combat prior is added (score-real's lockstep player builds its search from a config alone);
-        the emulator driver passes False, because there the agent argument alone decides the prior."""
+        the emulator driver passes False, because there the agent argument alone decides the prior.
+
+        `terminal` is the fight's run currency (`run_currency.FightCurrency`); a `run_currency` config passes it on as `terminal` and
+        refuses to go on without one, and any other config ignores it."""
         kw = {"max_sims": self.sims_for(pos), "min_child_sims": self.min_child_sims, "c": self.c,
               "confirm_pairs": self.confirm_pairs, "time_budget_s": self.time_budget_s * self.stakes_mult(pos), "resample": True}
+        if self.run_currency:
+            if terminal is None:
+                raise ValueError(f"search config {self.name!r} prices fights in the run's terms: its caller must pass the fight's currency "
+                                 f"(rl/run_currency.py), or play a config without -r")
+            kw["terminal"] = terminal
         if self.potion_hold is not None and pos is not None and pos.fight_kind == "hall":  # a hallway fight only; every other call is unchanged
             kw["potion_hold"] = self.potion_hold
         if self.leaf != "rollout":  # a rollout config's arguments stay what they always were
@@ -171,12 +188,31 @@ JUDGE_V0 = SearchConfig("judge-v0", 30 * JUDGE_SIMS_X, min_child_sims=1, c=0.2, 
 # measurement says so.
 A3_V1_K = dataclasses.replace(A3_V1, name="a3-v1-k", lethal_check=True)
 
+CURRENCY_SUFFIX = "-r"
+
+
+def with_currency(cfg: SearchConfig) -> SearchConfig:
+    """`cfg` priced in the run's terms (named `<cfg>-r`). Only a plain base config takes the suffix: the stakes schedule and the hold go after it."""
+    if cfg.run_currency:
+        raise ValueError(f"search config {cfg.name!r} already prices fights in the run's terms")
+    if cfg.stakes is not None or cfg.potion_hold is not None:
+        raise ValueError(f"search config {cfg.name!r} has a stakes schedule or a hold: put -r on its base ({cfg.name.split('@')[0].split('+')[0]}-r)")
+    return dataclasses.replace(cfg, name=cfg.name + CURRENCY_SUFFIX, run_currency=True)
+
+
+A3_V1_R = with_currency(A3_V1)  # the brief's a3-v1-r: a3-v1 with the run currency
+JUDGE_V0_R = with_currency(JUDGE_V0)
+A3_V1_K_R = with_currency(A3_V1_K)
+
 CONFIGS: dict[str, SearchConfig] = {
     "gen0-60": flat(60),
     "gen0-120": flat(120),
     "a3-v1": A3_V1,
     "a3-v1-k": A3_V1_K,
     "judge-v0": JUDGE_V0,
+    "a3-v1-r": A3_V1_R,
+    "judge-v0-r": JUDGE_V0_R,
+    "a3-v1-k-r": A3_V1_K_R,
 }
 SELFPLAY = "a3-v1"  # the config self-play runs
 SCORE_REAL = "a3-v1"  # the config score-real plays (the same agent, so the promotion test grades what self-play made)
@@ -189,6 +225,9 @@ def get(name: str) -> SearchConfig:
         return CONFIGS[name]
     if name.startswith("flat-") and name[5:].isdigit():
         return flat(int(name[5:]), name)
+    if name.endswith(CURRENCY_SUFFIX) and "@" not in name and "+" not in name and len(name) > len(CURRENCY_SUFFIX):
+        with contextlib.suppress(KeyError):  # `<base>-r` for any base this module knows (gen0-60-r, flat-30-r)
+            return with_currency(get(name[: -len(CURRENCY_SUFFIX)]))
     if "@" in name or "+" in name:
         base, mult, hold = macro_recipe.parse_config_name(name)
         return with_options(get(base), mult, hold)

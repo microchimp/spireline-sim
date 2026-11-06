@@ -376,15 +376,29 @@ def puct_action(node: Node, c_puct: float, prior: dict[int, float] | None = None
     return best
 
 
-def terminal_value(sim: Combat) -> float:
+def held_potions(sim: Combat) -> tuple[int, ...]:
+    """The potion ids the player holds in `sim`, sorted (an empty slot is 0 in the observation)."""
+    from combat_tokens import MAX_POTIONS, POTION_OFFSET  # noqa: PLC0415 -- the token layout, from the same library this module loads
+
+    obs = sim.obs
+    return tuple(sorted(int(obs[POTION_OFFSET + 2 * slot]) for slot in range(MAX_POTIONS) if obs[POTION_OFFSET + 2 * slot]))
+
+
+def terminal_value(sim: Combat, currency=None) -> float:
     """End-of-fight HP as a fraction of max, and 0 for a loss.
 
     HP fraction rather than raw HP so the backup stays in [0, 1] and `c` means the same
     thing at every max HP. The pdf reported at the end is in raw HP; this is only the
     search's internal currency.
+
+    With a `currency` (rl/run_currency.py, a `FightCurrency`) a win is its normalized value u instead: the run head's expected final
+    floor of the post-fight state, between the fight's own floor (0, as a death) and the full-HP, every-potion state (1). The live
+    search (`live_search._outcome`) prices a fight through the same module, so the two cannot drift.
     """
     if not sim.won():
         return 0.0
+    if currency is not None:
+        return float(currency.u(sim.hp(), sim.max_hp(), held_potions(sim)))
     return sim.hp() / max(1, sim.max_hp())
 
 

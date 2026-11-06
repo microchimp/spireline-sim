@@ -94,6 +94,12 @@ Turn and potions keep the weight every measurement gave them, `W_OTHER`. What is
             The test is made once, at the root, from the position the player sees; `SearchResult.hold` records it. A
             potion is the only thing it ever removes, and never when it is all that is left to play. Off by default.
 
+  currency  With `terminal=f` (rl/run_currency.py `FightCurrency`; a config's `run_currency` option, `search_configs`), a won fight's
+            value is `f(end HP, max HP, potion ids held)` in these same units instead of the end HP plus `potion_value` a potion: the run
+            head's expected final floor of the post-fight state, mapped so a death is -100 and a full-HP win holding every starting
+            potion is the start's max HP. A judge leaf composes through it (`judge_client.estimate`), with a potion count for the potions.
+            Off by default: every value above is then what it always was.
+
 No hidden information is used. Every simulation starts from a resampling clone. The one
 faithful clone is read for the observation the player can see, then destroyed.
 
@@ -147,6 +153,7 @@ from combat_mcts import (
     W_SKILL_IDLE,
     W_SKILL_NEEDED,
     Combat,
+    held_potions,
     incoming_damage,
 )
 from combat_tokens import MAX_POTIONS, POTION_OFFSET
@@ -347,6 +354,8 @@ class _Policy(NamedTuple):
     # weights until then (see `_tree_choice`).
     prior_min_visits: int = 0
     leaf: str = "rollout"  # how a simulation's leaf is valued: a rollout, or the judge (see the module docstring)
+    # The run currency's terminal function (rl/run_currency.py): a won fight's value from (end HP, max HP, potion ids). None: HP + potions.
+    terminal: Callable | None = None
 
 
 class _Node:
@@ -808,13 +817,18 @@ def _root_moves(root: Combat) -> tuple[list[_RootMove], int]:
     return children, max_hp
 
 
-def _outcome(world: Combat, potion_value: float) -> _Outcome:
-    """Score where a playout ended (spec 7.2), counting a capped one as a win at its HP."""
+def _outcome(world: Combat, potion_value: float, terminal: Callable | None = None) -> _Outcome:
+    """Score where a playout ended (spec 7.2), counting a capped one as a win at its HP.
+
+    A win is worth its end HP plus `potion_value` a potion held, or with a `terminal` function (the run currency) what it says
+    of (end HP, max HP, the potion ids held)."""
     if world.done and not world.won():
         return _Outcome(DEATH_VALUE, died=True, truncated=False, hp=0)
+    hp = world.hp()
+    if terminal is not None:
+        return _Outcome(float(terminal(hp, world.max_hp(), held_potions(world))), died=False, truncated=not world.done, hp=hp)
     obs = world.obs
     held = sum(1 for slot in range(MAX_POTIONS) if obs[POTION_OFFSET + 2 * slot])
-    hp = world.hp()
     return _Outcome(
         hp + potion_value * held,
         died=False,
@@ -1083,10 +1097,10 @@ def _simulate(
             if fresh:
                 break
         if policy.leaf == "judge" and not world.done:
-            outcome = _judged((yield LeafAsk(world.handle)), world, policy.potion_value)
+            outcome = _judged((yield LeafAsk(world.handle)), world, policy.potion_value, policy.terminal)
         else:
             _rollout(world, rng)
-            outcome = _outcome(world, policy.potion_value)
+            outcome = _outcome(world, policy.potion_value, policy.terminal)
         for visited in path:
             visited.visits += 1
             visited.value += outcome.value
@@ -1095,11 +1109,11 @@ def _simulate(
         world.close()
 
 
-def _judged(row, world: Combat, potion_value: float) -> _Outcome:
+def _judged(row, world: Combat, potion_value: float, terminal: Callable | None = None) -> _Outcome:
     """The judge's row at a leaf as an outcome in the search's units (judge_client.estimate)."""
     from judge_client import estimate  # noqa: PLC0415 -- numpy only
 
-    est = estimate(row, world.max_hp(), potion_value)
+    est = estimate(row, world.max_hp(), potion_value, terminal)
     if not math.isfinite(est.value):
         raise ValueError(f"the judge answered a value that is not finite: {est.value}")
     return _Outcome(est.value, died=False, truncated=False, hp=est.hp_if_win, p_died=est.p_death)
@@ -1110,6 +1124,7 @@ def _playout(
     child: _RootMove,
     seed: int,
     potion_value: float,
+    terminal: Callable | None = None,
 ) -> _Outcome | None:
     """Play a root move in one imagined world and roll out from there, for the confirmation.
 
@@ -1127,7 +1142,7 @@ def _playout(
             return None
         _step(world, action, child.node.target)
         _rollout(world, rng)
-        return _outcome(world, potion_value)
+        return _outcome(world, potion_value, terminal)
     finally:
         world.close()
 
@@ -1361,12 +1376,14 @@ class _Search:
         prior_min_visits: int = 0,
         clock: Callable[[], float] = time.perf_counter,
         leaf: str = "rollout",
+        terminal: Callable | None = None,
     ):
         self.handle = handle
         self._ctor = {
             "time_budget_s": time_budget_s, "min_child_sims": min_child_sims, "c": c, "potion_value": potion_value, "seed": seed,
             "max_sims": max_sims, "prior_fn": prior_fn, "c_puct": c_puct, "confirm_pairs": confirm_pairs, "lane": lane,
             "prior_min_visits": prior_min_visits, "clock": clock, "leaf": leaf,
+            "terminal": terminal,
         }
         self.kill_check: dict | None = None  # the kill check's record, once it has looked
         self.hold: dict | None = None  # the potion hold's record, once it has judged (`hold_potions`)
@@ -1396,6 +1413,7 @@ class _Search:
             potion_value,
             prior_min_visits,
             leaf,
+            terminal,
         )
         self.tree = _Node(-1, -1, "root")
         self.sims = self.uct_sims = self.attempts = 0
@@ -1607,7 +1625,7 @@ class _Search:
             return
         best = self._best_move()
         order = sorted(confirmed, key=lambda child: child is not best)
-        potion_value = self.policy.potion_value
+        potion_value, terminal = self.policy.potion_value, self.policy.terminal
         for _ in range(self.confirm_pairs):
             if self.clock() >= self.deadline:
                 self.exhausted = True
@@ -1620,7 +1638,8 @@ class _Search:
                         unplayed.confirm(None)
                     self.exhausted = True
                     return
-                outcome = _playout(self.root, child, seed, potion_value)
+                # the run currency's terminal rides along only when there is one, so a spy on `_playout` with the old signature still works
+                outcome = _playout(self.root, child, seed, potion_value, *(() if terminal is None else (terminal,)))
                 if outcome is None:
                     self.failures += 1
                 else:
@@ -1684,6 +1703,7 @@ def search_live(
     leaf_fn: Callable[[int], Any] | None = None,
     lethal_check: bool = False,
     potion_hold: float | None = None,
+    terminal: Callable[[float, float, Any], float] | None = None,
     _lane: tuple[int, int] = (0, 1),
 ) -> SearchResult:
     """Search the combat on `handle` and grade every root move.
@@ -1713,6 +1733,9 @@ def search_live(
     `potion_hold` (a fraction of max HP) drops the root's potion moves unless the kill check finds no kill and the player would fall
     under that fraction after the enemies' announced attacks (`hold_keeps_potions`); `SearchResult.hold` records the judgement.
 
+    `terminal(end_hp, max_hp, potions)` prices a won fight in these units (the run currency, rl/run_currency.py); `potions` is the tuple of
+    potion ids held, or a number from a judge leaf. None: the end HP plus `potion_value` a potion, as always.
+
     `_lane` is for `ParallelSearcher`: a search in lane (i, n) plays only seeds that are
     i modulo n, so searches in different lanes never share an imagined world.
 
@@ -1725,7 +1748,7 @@ def search_live(
     try:
         return _search_live(
             handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
-            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn, lethal_check, potion_hold,
+            confirm_pairs, prior_min_visits, _lane, leaf, leaf_fn, lethal_check, potion_hold, terminal,
         )
     finally:
         _ORACLE = saved
@@ -1748,7 +1771,7 @@ def _shadow_note(result: SearchResult, plain: SearchResult) -> None:
 
 def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, max_sims, prior_fn, c_puct,
                  confirm_pairs, prior_min_visits, _lane, leaf="rollout", leaf_fn=None, lethal_check=False,
-                 potion_hold=None) -> SearchResult:
+                 potion_hold=None, terminal=None) -> SearchResult:
     search = _Search(
         handle,
         time_budget_s=time_budget_s,
@@ -1763,6 +1786,7 @@ def _search_live(handle, time_budget_s, min_child_sims, c, potion_value, seed, m
         lane=_lane,
         prior_min_visits=prior_min_visits,
         leaf=leaf,
+        terminal=terminal,
     )
     if not search.children:
         raise ValueError("the position has no legal move to search")
@@ -1800,6 +1824,7 @@ def search_steps(
     leaf: str = "rollout",
     lethal_check: bool = False,
     potion_hold: float | None = None,
+    terminal: Callable[[float, float, Any], float] | None = None,
 ):
     """`search_live` as steps, for a driver that plays many fights in one process.
 
@@ -1835,6 +1860,7 @@ def search_steps(
         prior_min_visits=prior_min_visits,
         clock=clock or time.perf_counter,
         leaf=leaf,
+        terminal=terminal,
     )
     if not search.children:
         raise ValueError("the position has no legal move to search")
@@ -1861,6 +1887,7 @@ _SEARCH_SETTINGS = frozenset(inspect.signature(search_live).parameters) - {
     "leaf",
     "leaf_fn",
     "lethal_check",
+    "terminal",
 }
 
 

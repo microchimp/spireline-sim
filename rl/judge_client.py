@@ -57,12 +57,18 @@ def l0_of(p_win, hp_frac, potions, max_hp, potion_value: float = POTION_VALUE):
     return p_win * (0.5 + 0.5 * np.minimum(1.0, hp_frac + potion_value * potions / np.maximum(1.0, max_hp)))
 
 
-def estimate(row: Sequence[float], max_hp: int, potion_value: float = POTION_VALUE) -> Estimate:
-    """The judge's row as the search's leaf value: P(win) x (end HP + potion_value x potions) + P(death) x DEATH_VALUE."""
+def estimate(row: Sequence[float], max_hp: int, potion_value: float = POTION_VALUE, terminal=None) -> Estimate:
+    """The judge's row as the search's leaf value: P(win) x (end HP + potion_value x potions) + P(death) x DEATH_VALUE.
+
+    With a `terminal` function (the run currency, rl/run_currency.py `FightCurrency`) the won branch is its value of (end HP if won, max HP,
+    expected potions held if won) instead of HP + potion_value x potions: the leaf composes the judge's chances through the same pricing a
+    rolled-out win gets. The judge gives a potion count, not which potions, so the currency averages over the starting potions (a mean of
+    the judge's outputs put through the head is Jensen's error; a judge trained on the currency's u, brief 3b, removes it)."""
     p = float(_sigmoid(row[0]))
     hp = float(_sigmoid(row[1])) * max(1, int(max_hp))
     pots = max(0.0, float(row[2]))
-    return Estimate(p * (hp + potion_value * pots) + (1.0 - p) * DEATH_VALUE, 1.0 - p, hp, pots)
+    won = float(terminal(hp, max_hp, pots)) if terminal is not None else hp + potion_value * pots
+    return Estimate(p * won + (1.0 - p) * DEATH_VALUE, 1.0 - p, hp, pots)
 
 
 def stats() -> dict:
