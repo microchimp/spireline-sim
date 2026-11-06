@@ -229,6 +229,11 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
     search, on the oracle root it must only fork); a true return ends the run there ("hooked"). The hook never touches the
     agent's random streams, so the run replays exactly. With `record`, a finished run also returns its RunRecord and its
     combat samples under `_shard` (`gen_loop.RunRecorder`); recording only reads the position, so the run is unchanged.
+
+    The row also says what the player held at each boss's door (`boss_door`: [[act, potions, relics, HP, max HP], ...], one entry per boss
+    fight reached, read from the run's view at the fight's first decision). A `run_currency` config (`a3-v1-r`, rl/run_currency.py) prices
+    each fight in the frozen run head's terms from that same view, and its row carries `currency` (the fights priced, head evaluations,
+    fights that fell back to HP).
     """
     import numpy as np  # noqa: PLC0415
 
@@ -264,6 +269,14 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
     fields = run_fields.RunFields()  # the row's boss damage, card choices, map nodes and rest choices
     slugs = run_fields.card_slugs()
     fight_boss: bool | None = None  # None: no fight open; else whether the open fight is a boss fight
+    doors: list = []  # [act, potions, relics, HP, max HP] at each boss fight's first decision
+    currency = head = None  # the open fight's run currency (a `run_currency` config) and the frozen head it prices with
+    priced: list = []  # the summaries of the fights the currency priced
+    use_currency = bool(getattr(cfg, "run_currency", False))
+    if use_currency:
+        import run_currency  # noqa: PLC0415 -- numpy only
+
+        head = run_currency.default_head()
     end = "?"
     try:
         env = s.env
@@ -278,6 +291,9 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 if fight_boss:
                     fields.boss_over(won=d is not None or s.won)
                 fight_boss = None
+                if currency is not None:
+                    priced.append(currency.summary())
+                    currency = None
             if d is None and s.phase != engine.rc.PHASE_COMBAT:
                 end = "win" if s.won else "death"
                 break
@@ -294,6 +310,12 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                 continue
             if fight_boss is None:
                 fight_boss = s.info["node_type"] == engine.vocab.NODE_BOSS
+                if fight_boss or use_currency:
+                    fight_view = s.view()  # the run as the fight opens: the door's hand, and the currency's start state
+                    if fight_boss:
+                        doors.append([s.act_index, len(fight_view.potions), len(fight_view.relics), fight_view.hp, fight_view.max_hp])
+                    if use_currency:
+                        currency = run_currency.FightCurrency.for_view(fight_view, head)
             if fight_boss:  # the combat observation opens the run observation: the boss's HP at this decision
                 fields.boss_enemies(s.act_index, run_fields.obs_enemies(env._run_obs_buf, native.OBS_ENEMY_OFFSET,
                                                                        native.OBS_ENEMY_SLOT_SIZE, native.MAX_ENEMIES))
@@ -307,7 +329,7 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
                     break
                 k += 1
                 tokens = encode(root.handle, root.obs, root.encounter_id, probe=False) if rec is not None else None
-                kw = cfg.search_kwargs(pos, env_prior=False)  # the agent argument alone decides the prior
+                kw = cfg.search_kwargs(pos, env_prior=False, terminal=currency)  # the agent argument alone decides the prior
                 kw.update(extra)
                 res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
                 sims_spent += res.sims
@@ -336,6 +358,13 @@ def play_emu_run(seed: str, ix: int, sims: int | str, ascension: int = 10, agent
         if cfg.potion_hold is not None:  # how often the hallway hold judged a root and dropped its potion moves
             row["hold_judged"], row["hold_dropped"] = hold_judged, hold_dropped
         row.update(fields.row())
+        row["boss_door"] = doors
+        if use_currency:  # how the run currency priced this run's fights (a fight still open at the end is counted too)
+            if currency is not None:
+                priced.append(currency.summary())
+            row["currency"] = {"head": head.sha256[:8], "fights": len(priced), "evals": sum(p["evals"] for p in priced),
+                               "priced": sum(p["priced"] for p in priced), "fallbacks": sum(p["fallback"] for p in priced),
+                               "clipped": sum(p["clipped_low"] + p["clipped_high"] for p in priced)}
         if rec is not None and end in ("win", "death"):
             row["_shard"] = {"record": rec.finish(s, k, won=end == "win", prior_path=prior_path, prior_calls=prior_calls),
                              "samples": rec.samples.arrays()}

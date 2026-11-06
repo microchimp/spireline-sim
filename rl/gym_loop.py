@@ -98,6 +98,7 @@ GPU_PYTHON = os.environ.get("SPIRELINE_GPU_PYTHON", "D:/spireline/venv-gpu/Scrip
 DEFAULT_ROOT = REF / "gym-loop"
 STATUS_DIR = Path(os.environ.get("GYM_LOOP_STATUS_DIR", "D:/spireline/logs/gym-loop"))
 BOARD_DIR = REF / "lab" / "results" / "fight-gym" / "2026-10-29-m2"  # the fight board's starts and its three standing arms
+LITE_DROPS = ("doc", "run_view")  # what the list of starts without documents (starts.lite.json) leaves out of a start record
 INCUMBENT0 = REF / "agent" / "gen7" / "candidate-r1"  # M2's agent: version 0, the board's "Usual thinking"
 # The start set: every finished night's emulator arm (`nights_available`; until 2026-11-02 the four nights 10-26 to 10-30 at 50 runs
 # each, 1,478 starts). D44 step E: the trainer waited for fresh practice on a thin set, so the set takes each night as it comes.
@@ -533,7 +534,7 @@ def assemble_starts(d: Path, sources: list[tuple[Path, set[str]]]) -> list[dict]
                     continue
                 for s in r.get("starts") or []:
                     if _start_ok(s):
-                        chunk[s["id"]] = ((json.dumps(s) + "\n").encode("utf-8"), {k: v for k, v in s.items() if k != "doc"})
+                        chunk[s["id"]] = ((json.dumps(s) + "\n").encode("utf-8"), {k: v for k, v in s.items() if k not in LITE_DROPS})
             for sid in sorted(chunk):
                 if sid not in index:
                     index[sid] = fh.tell()
@@ -558,7 +559,7 @@ def write_start_set(d: Path, starts: list[dict]) -> None:
             fh.write((json.dumps(s) + "\n").encode("utf-8"))
     os.replace(tmp, out)
     write_json(Path(d) / "starts.index.json", index)
-    write_json(Path(d) / "starts.lite.json", [{k: v for k, v in s.items() if k != "doc"} for s in starts])
+    write_json(Path(d) / "starts.lite.json", [{k: v for k, v in s.items() if k not in LITE_DROPS} for s in starts])
 
 
 _START_CACHE: dict = {}
