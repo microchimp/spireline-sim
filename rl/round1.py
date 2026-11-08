@@ -406,7 +406,8 @@ def fragment(cfg: dict, rdir: Path, config_path: str) -> dict:
     """jobs.json entries for the chain (not installed). The cmd of each is `rl/round1.py <step>`; `needs` lists the files it reads."""
     py, gpu = "{python}", cfg["paths"]["gpu_python"]
     base = ["rl/round1.py"]
-    tail = ["--round-dir", str(rdir), "--config", config_path, "--out", "{job}"]
+    rdir = Path(rdir)
+    tail = ["--round-dir", rdir.as_posix(), "--config", config_path, "--out", "{job}"]
     out: dict[str, Any] = {"_note": "Fragment for LAB/jobs.json, NOT installed (D55 addendum 11, memo row 5). Keys are job kinds the runner does not "
                            "know yet (tools/lab/jobs.py NEW_KINDS); each runs rl/round1.py <step> and is resumable. Merge at a quiet time with "
                            "a jobs.json backup and a dated sentence in _note. Order: " + " -> ".join(f"round-{s}" for s in STEPS) + "."}
@@ -415,7 +416,7 @@ def fragment(cfg: dict, rdir: Path, config_path: str) -> dict:
         procs = {"play": 16, "label": cfg["label"]["procs"], "smoke": 16, "block": 16}.get(s, 4)
         out[f"round-{s}"] = {"enabled": False, "cmd": [py_, *base, s, *tail], "cwd": "{tree}", "timeout_min": {"play": 400, "label": 900, "block": 1200}.get(s, 180),
                              "procs": procs, "cores": procs, "gpu": s in ("refit-prior", "refit-judgement"), "after": f"round-{STEPS[STEPS.index(s) - 1]}" if s != "play" else None,
-                             "needs": ["{tree}/rl/round1.py", *[str(rdir / r) for r in IO[s][0]]], "leaves": [str(rdir / r) for r in IO[s][1]]}
+                             "needs": ["{tree}/rl/round1.py", *[(rdir / r).as_posix() for r in IO[s][0]]], "leaves": [(rdir / r).as_posix() for r in IO[s][1]]}
     return out
 
 

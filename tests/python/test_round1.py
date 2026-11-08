@@ -264,7 +264,7 @@ class ChainTests(unittest.TestCase):
             self.assertIn(s, e["cmd"])
             self.assertIn("rl/round1.py", e["cmd"])
             self.assertFalse(e["enabled"])
-            self.assertEqual(e["leaves"], [str(Path("D:/x/round") / r) for r in round1.IO[s][1]])
+            self.assertEqual(e["leaves"], [(Path("D:/x/round") / r).as_posix() for r in round1.IO[s][1]])
         self.assertIn("gpu", frag["round-refit-prior"]["cmd"][0].lower())
         json.dumps(frag)
 
