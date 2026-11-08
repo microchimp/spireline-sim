@@ -202,6 +202,12 @@ short version and the working notes.
   the candidate against the champion on the stratum. No calibration flag is applied to it (the human is not a draw). **The exam is run by
   hand** (no lab job and no gate calls it): the stratum adds its 1,600 games to a full `play` (about 25 minutes at the loop's speed) and
   its half A (about 800 games) to `compare`. `--allow-quiet TAG` lets a run ignore a named QUIET.lock tag (the lab's daytime score).
+- **First reading** (2026-11-08, champion v2 at a3-v1, four draws a start, 400 starts, 1,600 games in 1,928 s of wall time with the lab's
+  daytime score running beside it). Survival, player against human on the same starts: Act 1 hallway 100.0 / 100.0, elite 77.4 / 80.6
+  (-3.2 points, interval -14.5 to +8.1), boss 50.1 / 71.4 (-21.2, -26.9 to -15.8); Act 2 hallway 98.4 / 100.0, elite 71.0 / 77.4
+  (-6.5, -17.7 to +4.8), boss 52.5 / 83.5 (-31.0, -38.7 to -22.8); all 62.0 / 79.8 (-17.8, -21.3 to -14.4). HP lost (a death costs the
+  whole HP going in, both sides): Act 1 boss 44.0 / 39.2, Act 2 boss 49.5 / 40.2, all 38.6 / 33.2. Every boss is under the human's;
+  the widest gaps are Kaiser Crab (44.2 / 80.0), the Insatiable (52.4 / 87.1) and Soul Fysh (53.3 / 83.3).
 - **For the practice sampler.** `exam/exclude_runs.json` lists `run_seeds` (every run behind an exam start) and `start_ids`. The
   daemon's sampler (`sample_tasks`) picks any start of `starts.lite.json` and does not read it yet: **until it skips them the
   practice can play exam starts, and every exam start it plays is no longer clean** (the teacher's moves at that position become
