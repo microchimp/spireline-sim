@@ -487,13 +487,13 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "config":
         if a.write:
-            Path(a.write).write_text(rd.config_text(), encoding="utf-8")
+            Path(a.write).write_bytes(rd.config_text().encode("utf-8"))
         else:
             print(rd.config_text(), end="")
         return 0
     cfg = rd.load_config(getattr(a, "config", None) or None)
     if a.cmd == "fragment":
-        write_json(Path(a.out), fragment(cfg, Path(a.round_dir), a.config or "D:/spireline/fork/wt-gym-loop-run/rl/round1_config.json"))
+        write_json(Path(a.out), fragment(cfg, Path(a.round_dir), a.config or "{tree}/rl/round1_config.json"))
         return 0
     if a.cmd == "dry-run":
         rep = dry_run_chain(cfg, Path(a.scratch), tuple(a.steps.split(",")))
