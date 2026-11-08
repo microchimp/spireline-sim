@@ -59,3 +59,37 @@ stop rule's verdict (`report.json`). The readings of the first run are in the HA
 Unit tests: `tests/python/test_run_currency.py` (the arithmetic on a stub head, contexts, the map table, the head's batches, the audit and
 each way it stops, the config grammar, the search's terminal function against the old units, the gym and a whole run) and
 `tests/python/test_currency_fast.py` (the readings, the free-machine rule).
+
+## The real-game player (`-r` config)
+
+`referee/lockstep.py` `EmuLock` (the lockstep player of the lab's score-real job and the real-game blocks) used to raise on a currency
+config, because `SearchConfig.search_kwargs` refuses to search without the fight's currency. It now builds it: at the first combat decision
+of a fight (keyed by act, floor and encounter) it takes the emulator copy's run view (`RunSession.view()`: HP, max HP, potions, relics,
+deck, floor; the copy is anchored to the game as the fight opens, so the view is the game's) and builds `FightCurrency.for_view(view,
+default_head())`, keeps it for the fight's decisions (its memo is shared by them, card screens included) and passes it as `terminal=`. A
+config without `-r` asks `search_kwargs(pos)` exactly as before and never imports the currency (`tests/python/test_lockstep_currency.py`:
+the keywords equal the config's own, the head is never read, and the same seeds give the same requests). Run it as the lab's `--config
+a3-v1-r` (score-real and the emulator arm both accept the name; `EmuLock.currency_fights` counts the fights priced). Not yet played against
+a live game: the unit tests use a canned emulator side.
+
+## First readings (2026-11-08; `a3-v1-r` against `a3-v1`, generation 11's combat prior, the head `f0a199fb`)
+
+Run from `tools/currency_fast.sh` (audit, board, cells, batch, then `board2000`, `cells12`, `batch2`); the readings are in
+`referee/backlog/run-currency/fast-20261108T1107Z/report.json` (first pass in `report-first.json`). Intervals are 95%, paired by (start,
+draw) or seed, standard errors over starts for the cells (the draws of one start are not independent).
+
+| test | a3-v1 | a3-v1-r | difference |
+|---|---|---|---|
+| audit (360 exam starts) | | | passed: a potion 5.8 HP at the median in an Act 1 hallway, V rises with HP in all cells |
+| board, 200 Act 1 boss starts, 2,000 games an arm | 41.5% won | 41.8% won | +0.3 points, 95% lower bound -0.6 (rule: above -2) |
+| Act 1 hallway, 100 starts x 12 draws: won | 97.0% | 96.8% | -0.2 points [-0.5, +0.2] (the literal clause "at least 99%" is under both arms: the exam cell is harder than the runs' 99.2) |
+| Act 1 hallway: HP lost a fight | 9.63 | 9.42 | -0.20 [-0.55, +0.14] |
+| Act 1 hallway: share of won potion-holding fights in which a potion was drunk | 60.0% | 66.1% | **+5.9 points [+1.3, +10.5]** (rule: down; first pass, 4 draws: 58.6% to 66.2%) |
+| Act 1 elite, 100 starts x 12 draws: won / HP lost / drunk share | 90.1% / 34.43 / 95.3% | 90.1% / 34.40 / 94.8% | 0.0 points [-0.7, +0.7] / -0.04 [-0.51, +0.43] / -0.4 points [-1.6, +0.7] |
+| copy batch, 200 runs, gen 12's agent: potions held at the Act 1 boss door | 0.72 | 0.80 | +0.067 +- 0.047 (165 runs at both doors) |
+| same: relics at the door | 4.27 | 4.29 | -0.018 +- 0.014 |
+| same: Act 1 boss kills per 100 runs | 49.0 | 52.0 | +3.0 +- 3.6 |
+
+The warning of the build held in the one place it could: the head prices a potion at about half of today's 10 HP, and in a hallway the
+player drinks more (+5.9 points of the fights it holds one in, for a hallway HP saving that is inside its noise). Potions at the door and the
+boss kill move the right way but are inside their errors at 200 runs; the board and the elite are unchanged.
