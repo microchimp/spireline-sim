@@ -1,0 +1,127 @@
+{
+ "round": "round1",
+ "paths": {
+  "round_dir": "D:/spireline/referee/backlog/round1/run",
+  "lab_runs": "D:/spireline/referee/LAB/runs",
+  "agent_root": "D:/spireline/referee/agent",
+  "lab_tree": "D:/spireline/fork/wt-gym-loop-run",
+  "human_prior_dir": "D:/spireline/referee/human-prior",
+  "human_decisions": "decisions-v1",
+  "prior_weights": "D:/spireline/referee/human-prior/pi_h-v0/weights.npz",
+  "gpu_python": "D:/spireline/venv-gpu/Scripts/python.exe",
+  "emu_python": "D:/spireline/src/sts2/.venv/Scripts/python.exe"
+ },
+ "play": {
+  "runs": 2000,
+  "explore_tau": 0.1,
+  "explore_eps": 0.02,
+  "config": "a3-v1",
+  "procs": 16
+ },
+ "label": {
+  "k": 2,
+  "decisions": 1200,
+  "per_run": 2,
+  "procs": 6,
+  "max_options": 6,
+  "own_schedule": true,
+  "order_seed": 1,
+  "heldout_fraction": 0.2,
+  "task_cap_s": 3600.0,
+  "quota": {
+   "card/a1": 450,
+   "shop/a1": 300,
+   "rest/a1": 180,
+   "route/a1": 150,
+   "card/a2": 60,
+   "shop/a2": 30,
+   "route/a2": 20,
+   "rest/a2": 10
+  }
+ },
+ "prior": {
+  "lambda": 0.5,
+  "lambda_rule": "fixed",
+  "lambda_grid": [
+   0.0,
+   0.25,
+   0.5,
+   1.0
+  ],
+  "weights": {
+   "human": 1.0,
+   "agent": 0.5,
+   "label": 1.0
+  },
+  "kl_beta": 1.0,
+  "label_gap_se": 2.0,
+  "lr": 0.0001,
+  "epochs": 8,
+  "batch": 512,
+  "patience": 3,
+  "weight_decay": 0.0001,
+  "max_agent_decisions": 40000,
+  "seed": 20261108,
+  "human_fifths_train": [
+   1,
+   2,
+   3
+  ],
+  "human_fifth_val": 4,
+  "kinds": [
+   "card",
+   "ancient",
+   "rest",
+   "route"
+  ]
+ },
+ "judgement": {
+  "device": "cuda",
+  "human_weights": [
+   0.25,
+   1.0,
+   4.0
+  ],
+  "seeds": [
+   1,
+   2,
+   3
+  ],
+  "epochs": 6,
+  "lr": 0.0003,
+  "batch": 1024,
+  "beta": 0.0,
+  "fight_net": "keep",
+  "end_hp_weight": 0.25,
+  "heldout_fraction": 0.1,
+  "ranking_check": true,
+  "weight_decay": 0.0001,
+  "human_kinds": [
+   "card",
+   "ancient",
+   "route"
+  ],
+  "threads": 4
+ },
+ "smoke": {
+  "seeds": 200,
+  "seeds_file": "D:/spireline/referee/lab/seeds/R1-smoke-{date}.json",
+  "keep_rule": "v2",
+  "procs": 16
+ },
+ "block": {
+  "seeds": 3000,
+  "seeds_file": "D:/spireline/referee/lab/seeds/R1-block-{date}.json",
+  "keep_rule": "v2",
+  "procs": 16,
+  "batch_seeds": 300
+ },
+ "candidate": {
+  "tag": "round1",
+  "target_generation": 14,
+  "marker": false,
+  "base": "gen11/candidate",
+  "incumbent": "current.json",
+  "why": "D55 addendum 11 / memo row 5: the round's deck refit (prior on labels and blended choices, judgement on the new fighter's runs with human rows)"
+ }
+}
