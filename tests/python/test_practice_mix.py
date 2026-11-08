@@ -429,6 +429,123 @@ class SampleTasksTests(unittest.TestCase):
         self.assertEqual(row["preloss"], {})
 
 
+class HumanShortfallTests(unittest.TestCase):
+    """The regret mode that holds the player to the human's own result of a start (D55 addendum 10): `starts/human-outcomes.json`."""
+
+    PLAYS = [{"start": "H1", "root": 50.0, "played": -100.0},  # the player died where the human survived
+             {"start": "H1", "root": 50.0, "played": 30.0},
+             {"start": "H2", "root": 20.0, "played": 60.0},  # beat the root, short of the human
+             {"start": "H3", "root": None, "played": -100.0},  # a forced first move: no root
+             {"start": "N1", "root": 70.0, "played": 40.0},  # a start with no human result
+             {"start": "H4", "root": 10.0, "played": None}]  # capped: no outcome
+    HUMAN = {"H1": 45.0, "H2": 75.0, "H3": 12.0, "H4": 5.0}
+
+    def test_a_start_with_a_human_result_scores_the_mean_shortfall_against_it_and_a_death_is_minus_100(self):
+        sc = pm.scores(self.PLAYS, 4, "human-shortfall", self.HUMAN)
+        self.assertAlmostEqual(sc["H1"], ((45 + 100) + (45 - 30)) / 2)
+        self.assertAlmostEqual(sc["H2"], 75 - 60)  # the root rule would say zero
+        self.assertAlmostEqual(sc["H3"], 12 + 100)  # no root needed
+        self.assertAlmostEqual(sc["N1"], 70 - 40)  # no entry: the root rule
+        self.assertNotIn("H4", sc)  # nothing played to compare
+        self.assertEqual(pm.DEATH_VALUE, -100.0)
+
+    def test_the_latest_plays_only_and_a_human_death_is_met_by_a_player_death(self):
+        plays = [{"start": "H1", "root": 1.0, "played": -100.0}] * 3 + [{"start": "H1", "root": 1.0, "played": 40.0}]
+        self.assertAlmostEqual(pm.scores(plays, 4, "human-shortfall", {"H1": 50.0})["H1"], (3 * 150 + 10) / 4)
+        self.assertAlmostEqual(pm.scores(plays, 1, "human-shortfall", {"H1": 50.0})["H1"], 10.0)
+        both = [{"start": "H1", "root": 30.0, "played": -100.0}]
+        self.assertEqual(pm.scores(both, 4, "human-shortfall", {"H1": -100.0})["H1"], 0.0)  # the human died there too: no shortfall
+
+    def test_max_takes_the_larger_gap_play_by_play_and_needs_no_root(self):
+        sc = pm.scores(self.PLAYS, 4, "max", self.HUMAN)
+        self.assertAlmostEqual(sc["H1"], (max(150, 145) + max(20, 15)) / 2)  # play 1: root gap 150 against the human's 145; play 2: 20 against 15
+        self.assertAlmostEqual(sc["H2"], max(0, 15))
+        self.assertAlmostEqual(sc["H3"], 112.0)
+        self.assertAlmostEqual(sc["N1"], 30.0)
+
+    def test_the_other_modes_and_a_missing_or_empty_sidecar_leave_the_root_rule_alone(self):
+        base = pm.scores(self.PLAYS, 4)
+        for human in (None, {}, self.HUMAN):
+            self.assertEqual(pm.scores(self.PLAYS, 4, "shortfall", human), base)  # the default mode ignores the sidecar
+        for mode in ("human-shortfall", "max"):
+            self.assertEqual(pm.scores(self.PLAYS, 4, mode, None), base)
+            self.assertEqual(pm.scores(self.PLAYS, 4, mode, {}), base)
+        self.assertEqual(pm.scores(self.PLAYS, 4, "absolute", self.HUMAN), pm.scores(self.PLAYS, 4, "absolute"))
+        self.assertEqual(pm.scores(self.PLAYS, 4, "no-such-mode", self.HUMAN), base)  # a typo in mix.json must not stop the loop
+        self.assertEqual(pm.DEFAULTS["regret"]["mode"], "shortfall")
+        self.assertEqual(pm.HUMAN_MODES, ("human-shortfall", "max"))
+
+    def test_the_sidecar_is_read_by_start_id_and_read_again_only_when_it_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = Path(tmp)
+            self.assertEqual(pm.read_human_values(sd), {})
+            (sd / "human-outcomes.json").write_text(json.dumps({"outcomes": {
+                "human:A|f05": {"human_l0": 42, "human_survived": True}, "human:B|f17": {"human_l0": -100.0},
+                "human:C|f02": {"human_end_hp": 3}, "human:D|f02": {"human_l0": "x"}, "human:E|f02": {"human_l0": float("nan")}, "human:F": 7}}))
+            got = pm.read_human_values(sd)
+            self.assertEqual(got, {"human:A|f05": 42.0, "human:B|f17": -100.0})
+            self.assertIs(pm.read_human_values(sd), got)  # unchanged file: the cache
+            (sd / "human-outcomes.json").write_text(json.dumps({"outcomes": {"human:A|f05": {"human_l0": 50.0}, "human:Z|f09": {"human_l0": 1}}}))
+            self.assertEqual(pm.read_human_values(sd), {"human:A|f05": 50.0, "human:Z|f09": 1.0})
+            (sd / "human-outcomes.json").write_text("{cut")
+            self.assertEqual(pm.read_human_values(sd), {})
+
+    def test_the_real_sidecar_writer_and_the_reader_agree_on_the_field(self):
+        import human_starts as hs  # noqa: PLC0415
+
+        o = hs.fight_outcome(hp_in=60, max_hp_in=80, survived=True, ps={"current_hp": 40, "damage_taken": 26, "hp_healed": 6}, room={"turns_taken": 4},
+                             held=["BURNING_BLOOD"], potions_in=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            hs.atomic_json(Path(tmp) / hs.OUTCOME_FILE, {"outcomes": {"human:Q|f05": o}})
+            self.assertEqual(hs.OUTCOME_FILE, pm.HUMAN_OUTCOMES)
+            self.assertEqual(pm.read_human_values(Path(tmp)), {"human:Q|f05": 34 + 10.0})
+
+
+class HumanShortfallSampleTests(unittest.TestCase):
+    """`gym_loop.sample_tasks` reads the sidecar when the mix file asks for the mode, and only then."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "loop"
+        self.loop = gl.Loop(self.root)
+        sd = self.loop.starts
+        self.human = [{"id": f"human:H{i:03d}|f33", "cat": "act2-boss", "seed": f"H{i:03d}", "run": f"H{i:03d}", "source": "human"} for i in range(60)]
+        (sd / "starts.lite.json").write_text(json.dumps(_starts("2026-11-01/g9", "act2-boss", 5)))
+        (sd / "human-starts.lite.json").write_text(json.dumps(self.human))
+        (sd / "weights.json").write_text(json.dumps({"weights": {"act2-boss": 1.0}}))
+        self.loop.state["segment"] = 7
+        self.hard = self.human[10]["id"]
+        # every start won at 60 HP against a root of 20: no root shortfall anywhere; the human did better at one of them
+        _fake_shard(self.loop.shards / "s000001-1.npz", [{"start": h["id"], "root": 20.0, "won": True, "end_hp": 60} for h in self.human[:30]])
+        (sd / "human-outcomes.json").write_text(json.dumps({"outcomes": {
+            self.hard: {"human_l0": 85.0}, **{h["id"]: {"human_l0": 55.0} for h in self.human[:30] if h["id"] != self.hard}}}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def draws(self):
+        got = Counter()
+        for seed in range(30):
+            for t in gl.sample_tasks(self.loop, "c0001", 1200.0, "x16", 0.25, random.Random(seed)):
+                got[t[1]] += 1
+        return got
+
+    def test_the_default_mode_does_not_read_the_sidecar_and_the_mode_in_the_mix_file_does(self):
+        flat = self.draws()
+        self.assertEqual(self.loop.mix["scored_starts"], 30)
+        self.assertLess(flat[self.hard], 3 * (sum(flat[h["id"]] for h in self.human[:30]) / 30))  # nothing singles it out
+        (self.loop.starts / "mix.json").write_text(json.dumps({"regret": {"mode": "human-shortfall"}}))
+        got = Counter({k: v for k, v in self.draws().items() if k.startswith("human:")})
+        self.assertEqual(got.most_common(1)[0][0], self.hard)  # 25 short of the human against 0 anywhere else
+        self.assertGreater(got[self.hard], 3 * (sum(got[h["id"]] for h in self.human[:30] if h["id"] != self.hard) / 29))
+
+    def test_a_missing_sidecar_in_that_mode_is_the_root_rule(self):
+        (self.loop.starts / "mix.json").write_text(json.dumps({"regret": {"mode": "max"}}))
+        (self.loop.starts / "human-outcomes.json").unlink()
+        gl.sample_tasks(self.loop, "c0001", 900.0, "x16", 0.25, random.Random(1))
+        self.assertEqual(self.loop.mix["scored_starts"], 30)
+
+
 class PrelossTests(unittest.TestCase):
     """A lost fight leaves the position `back` decisions before its end; the segment merges it into the set."""
 

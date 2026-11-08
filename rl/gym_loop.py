@@ -1045,7 +1045,8 @@ def sample_tasks(loop: Loop, player: str, budget_s: float, teacher: str, exact_w
     ex = pmix.read_exclusion(loop.root)
     pools, dropped = pmix.load_pools(loop.root, ex)
     plays = pmix.sync_plays(loop.root, loop.log)
-    score = pmix.scores(plays, int(cfg["regret"]["n_last"]), cfg["regret"]["mode"])
+    human = pmix.read_human_values(loop.starts) if cfg["regret"]["mode"] in pmix.HUMAN_MODES else None
+    score = pmix.scores(plays, int(cfg["regret"]["n_last"]), cfg["regret"]["mode"], human)
     seg = int(loop.state["segment"])
     last_seg = loop.state["last_seg"]
     known = {s["id"] for items in pools.values() for s in items}

@@ -23,6 +23,11 @@ Exclusion. Never drawn: any start whose id, run id or seed is listed in `<loop r
 file, read at every draw, no file is no exclusion). Accepted shapes: a list of strings, or a dict whose lists of strings and
 whose dict keys are the ids (`{"runs": [...], "starts": [...]}`, `{"runs": {"RUN": {...}}}`, `{"RUN": true}`).
 
+Human-shortfall regret (D55 addendum 10). `starts/human-outcomes.json` holds the human's own result of each human start (end HP plus
+ten a held potion, a death -100: the search's currency). With the regret mode `human-shortfall` a start with an entry scores the
+mean over its latest plays of how far the played outcome fell short of the human's (max(0, human - played)); `max` takes the larger
+of that and the teacher-root shortfall per play; starts without an entry keep the root rule.
+
 Settings live in `<loop root>/starts/mix.json` when it exists (merged over `DEFAULTS`, read at every segment).
 """
 
@@ -230,16 +235,66 @@ def sync_plays(root: Path, log=None) -> list[dict]:
     return [r for r in rows if "start" in r]
 
 
-def scores(plays: list[dict], n_last: int = 4, mode: str = "shortfall") -> dict[str, float]:
-    """Each played start's regret score: the mean over its latest `n_last` plays (the log is in play order) of the gap between
-    the teacher's root value at the opening and the outcome. `shortfall` counts only the plays that fell short (max(0, root -
-    played)); `absolute` counts the gap either way. A play without a root value or an outcome counts for nothing."""
+HUMAN_OUTCOMES = "human-outcomes.json"  # starts/: the human's own result of each human start (rl/human_starts.py outcomes)
+HUMAN_MODES = ("human-shortfall", "max")  # the regret modes that read it
+_HUMAN_CACHE: dict = {}
+
+
+def read_human_values(starts_dir: Path) -> dict[str, float]:
+    """{start id: the human's result in the search's currency} from `<starts>/human-outcomes.json` (`human_l0`: end HP plus ten a
+    potion held, a death -100). Empty when the file is absent or unreadable. A long-lived process reads the file again only when it
+    changes (the pass writes it by rename)."""
+    p = Path(starts_dir) / HUMAN_OUTCOMES
+    try:
+        st = p.stat()
+    except OSError:
+        return {}
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    if _HUMAN_CACHE.get("key") != key:
+        doc = _read_json(p, None)
+        outs = doc.get("outcomes") if isinstance(doc, dict) else None
+        vals: dict[str, float] = {}
+        for sid, o in (outs or {}).items():
+            v = o.get("human_l0") if isinstance(o, dict) else None
+            if isinstance(v, (int, float)) and math.isfinite(v):
+                vals[sid] = float(v)
+        _HUMAN_CACHE.clear()
+        _HUMAN_CACHE.update(key=key, vals=vals)
+    return _HUMAN_CACHE["vals"]
+
+
+def scores(plays: list[dict], n_last: int = 4, mode: str = "shortfall", human: dict[str, float] | None = None) -> dict[str, float]:
+    """Each played start's regret score: the mean over its latest `n_last` plays (the log is in play order) of a gap between a
+    reference value at the opening and the outcome. A play without an outcome counts for nothing.
+
+      shortfall        the teacher's root value less the outcome, only when it fell short: max(0, root - played). The default.
+      absolute         the gap either way.
+      human-shortfall  for a start the human's result (`human[start]`, the sidecar's `human_l0`) is known for: max(0, human -
+                       played), a death counting as DEATH_VALUE; the root is not needed. Any other start keeps `shortfall`.
+      max              for a start with a human result: the larger of the `shortfall` gap (when the play has a root) and the
+                       human gap, per play; any other start keeps `shortfall`.
+
+    A mode the code does not know scores as `shortfall` (a typo in mix.json must not stop the loop)."""
     by: dict[str, list[float]] = defaultdict(list)
+    use_human = mode in HUMAN_MODES and bool(human)
     for p in plays:
-        if p.get("root") is None or p.get("played") is None:
+        played = p.get("played")
+        if played is None:
             continue
-        gap = p["root"] - p["played"]
-        by[p["start"]].append(abs(gap) if mode == "absolute" else max(0.0, gap))
+        root = p.get("root")
+        h = human.get(p["start"]) if use_human else None
+        if h is not None:
+            terms = [max(0.0, h - played)]
+            if mode == "max" and root is not None:
+                terms.append(max(0.0, root - played))
+            gap = max(terms)
+        elif root is None:
+            continue
+        elif mode == "absolute":
+            gap = abs(root - played)
+        else:
+            gap = max(0.0, root - played)
+        by[p["start"]].append(gap)
     return {sid: sum(g[-n_last:]) / len(g[-n_last:]) for sid, g in by.items()}
 
 
