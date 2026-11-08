@@ -3,6 +3,7 @@
 
     python rl/judge.py train --data DATA/positions.npz --out JUDGE.pt [--init AGENT/combat_net.pt] [--epochs 12]   (GPU venv)
     python rl/judge.py m3 --judge JUDGE.pt --m2 M2_DIR                                                      (emulator venv)
+    python rl/judge.py eval --data DATA/positions.npz --judge A.pt [--judge B.pt ...] [--unseen-by MANIFEST]   (GPU venv or CPU)
 
 What it is. `JudgeNet` is the combat network's trunk (`combat_net.CombatNet`: the same tokens, embeddings and encoder the
 agent's value head reads) with a judge head on the global token: three numbers, the win chance (a logit), the end HP as a
@@ -17,6 +18,11 @@ the win chance's Brier score, log loss and calibration error (ten equal-width bi
 estimates of the same positions: the agent's old value head (M3's "value head") and the search's own root value (the
 play-outs a3-v1 ran at that decision). `m3` scores the judge on M3's 200 leaves (the board's Act-1 boss positions at the end of
 the first turn, each with ten fresh a3-v1 games as its target), next to the old head and 30 play-outs.
+
+`eval` scores any number of judge checkpoints on the same positions of one split (the held-out fifth by default), in all and by
+category, start source and (with `--unseen-by`) on the starts of runs a given manifest's judge never trained on: how v1 is compared
+with v0. The npz may come from `judge_data.py buffer` (v1: the loop's buffer, held out by run) or `build` (v0); an npz with
+`start_run` takes its validation tenth by run as well.
 
 `LocalJudge` is the judge on the CPU (one torch thread): the tests', the lockstep gym's `--judge-path cpu`, and the remote
 judge's fallback. The prior server serves the same checkpoint on the card (`prior_server.py`, judge mode).
@@ -46,7 +52,7 @@ from combat_tokens import N_FEATURES, TYPE_PAD, VOCAB, bucket_centres  # noqa: E
 from judge_client import JUDGE_OUT, l0_of  # noqa: E402
 
 KIND = "judge"
-VERSION = "judge-v0"
+VERSION = "judge-v0"  # the default stamp of `train`; `--version judge-v1` names a retrain
 
 
 class JudgeNet(CombatNet):
@@ -207,11 +213,15 @@ class Positions:
         self.group = z["group"].astype(np.int64)
         start_ids = [str(s) for s in z["start_ids"]]
         held = z["start_heldout"].astype(bool)
-        val = np.array([val_of(s) for s in start_ids])
+        runs = [str(s) for s in z["start_run"]] if "start_run" in z.files else start_ids  # v1's npz: the validation tenth by run
+        val = np.array([val_of(s) for s in runs])
         self.split = np.where(held[self.group], 2, np.where(val[self.group], 1, 0))  # 0 train, 1 val, 2 held out
         self.start_cat = z["start_cat"][self.group]
         self.cats = [str(c) for c in z["cats"]]
         self.start_ids = start_ids
+        self.start_runs = runs
+        self.start_src = z["start_src"][self.group] if "start_src" in z.files else None
+        self.srcs = [str(c) for c in z["srcs"]] if "srcs" in z.files else []
         self.device = device
         self.t_types = torch.from_numpy(z["types"].astype(np.int64)).to(device)
         self.t_ids = torch.from_numpy(z["ids"].astype(np.int64)).to(device)
@@ -295,8 +305,19 @@ def _old_head(init: str, data: Positions, idx: np.ndarray, device) -> tuple[np.n
     return np.concatenate(wins), np.concatenate(l0s)
 
 
-def evaluate(model, data: Positions, split: int, init: str | None = None) -> dict:
-    idx = np.flatnonzero(data.split == split)
+def _cat_scores(l0, y, p) -> dict:
+    sc_ = score(l0, y[:, 3], p, y[:, 0])
+    return {k: v for k, v in sc_.items() if k != "win"} | {"win_ece": sc_["win"]["ece"], "win_brier": sc_["win"]["brier"],
+                                                            "win_rate": _r(float(y[:, 0].mean())), "mean_p_win": _r(float(np.mean(p)))}
+
+
+def evaluate(model, data: Positions, split: int, init: str | None = None, starts: np.ndarray | None = None) -> dict:
+    """The model on the positions of one split (0 train, 1 validation, 2 held out), optionally only those of the starts `starts`
+    marks (a bool per start). `by_cat` and `by_src` need 50 positions a cell."""
+    pos = data.split == split
+    if starts is not None:
+        pos &= np.asarray(starts, bool)[data.group]
+    idx = np.flatnonzero(pos)
     rows = predict_rows(model, data, idx)
     max_hp = np.maximum(1.0, data.meta[idx, 3])
     p, l0 = rows_to_win_l0(rows, max_hp)
@@ -307,10 +328,12 @@ def evaluate(model, data: Positions, split: int, init: str | None = None) -> dic
         rep["judge"]["hp_frac_mae_if_won"] = _r(float(np.mean(np.abs(1 / (1 + np.exp(-rows[won, 1])) - y[won, 1]))))
     rv = data.meta[idx, 4]
     ok = ~np.isnan(rv)
-    rep["search_root_value"] = score(rv[ok], y[ok, 3])
+    if ok.sum() >= 3:
+        rep["search_root_value"] = score(rv[ok], y[ok, 3])
     pdeath = data.meta[idx, 6]
     okp = ~np.isnan(pdeath)
-    rep["search_best_p_win"] = score(1 - pdeath[okp], y[okp, 3], 1 - pdeath[okp], y[okp, 0])
+    if okp.sum() >= 3:
+        rep["search_best_p_win"] = score(1 - pdeath[okp], y[okp, 3], 1 - pdeath[okp], y[okp, 0])
     if init:
         vw, vl = _old_head(init, data, idx, data.device)
         rep["old_value_head"] = score(vl, y[:, 3], vw, y[:, 0])
@@ -318,8 +341,13 @@ def evaluate(model, data: Positions, split: int, init: str | None = None) -> dic
     for ci, cat in enumerate(data.cats):
         m = data.start_cat[idx] == ci
         if m.sum() >= 50:
-            rep["by_cat"][cat] = {"positions": int(m.sum()), "judge": {k: v for k, v in score(l0[m], y[m, 3], p[m], y[m, 0]).items()
-                                                                       if k != "win"} | {"win_ece": score(l0[m], y[m, 3], p[m], y[m, 0])["win"]["ece"]}}
+            rep["by_cat"][cat] = {"positions": int(m.sum()), "starts": int(len(np.unique(data.group[idx][m]))), "judge": _cat_scores(l0[m], y[m], p[m])}
+    if data.start_src is not None:
+        rep["by_src"] = {}
+        for si, name in enumerate(data.srcs):
+            m = data.start_src[idx] == si
+            if m.sum() >= 50:
+                rep["by_src"][name] = {"positions": int(m.sum()), "starts": int(len(np.unique(data.group[idx][m]))), "judge": _cat_scores(l0[m], y[m], p[m])}
     return rep
 
 
@@ -392,19 +420,23 @@ def cmd_train(a) -> int:
     cal = fit_calibration(model, data, val_idx)
     best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     held = evaluate(model, data, 2, a.init)
-    blob = {"kind": KIND, "version": VERSION, "model": best_state, **dims, "outputs": ["win_logit", "hp_frac_logit", "potions"],
+    blob = {"kind": KIND, "version": a.version, "model": best_state, **dims, "outputs": ["win_logit", "hp_frac_logit", "potions"],
             "trained": {"data_sha256": hashlib.sha256(Path(a.data).read_bytes()).hexdigest(), "positions": int(len(data.lens)),
                         "train": int(len(train_idx)), "val": int(len(val_idx)), "heldout": held["positions"],
                         "init": Path(a.init).parent.name if a.init else None, "epochs": a.epochs, "lr": a.lr, "trunk_lr": a.trunk_lr, "wd": a.wd,
                         "dropout": a.dropout, "batch": a.batch,
                         "best_val_loss": round(best, 5), "seed": a.seed, "win_calibration": cal}}
+    if a.manifest:  # the data's window and counts (judge_data.py buffer's manifest), kept with the weights
+        man = json.loads(Path(a.manifest).read_text(encoding="utf-8"))
+        blob["trained"]["buffer"] = {k: man.get(k) for k in ("window", "segments", "shards", "fights", "starts", "runs", "heldout_runs",
+                                                            "positions", "by_cat", "by_src", "skipped_fights", "excluded", "sha256")}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     torch.save(blob, a.out)
-    report = {"version": VERSION, "trained": blob["trained"], "log": log, "heldout": held}
+    report = {"version": a.version, "trained": blob["trained"], "log": log, "heldout": held}
     Path(a.out).with_suffix(".report.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(json.dumps({"heldout_judge": held["judge"] | {"win": {k: v for k, v in held["judge"]["win"].items() if k != "bins"}},
                       "old_value_head": {k: v for k, v in held.get("old_value_head", {}).items() if k != "win"},
-                      "search_root_value": held["search_root_value"], "seconds": round(time.perf_counter() - t0, 1)}))
+                      "search_root_value": held.get("search_root_value"), "seconds": round(time.perf_counter() - t0, 1)}))
     return 0
 
 
@@ -470,9 +502,35 @@ def cmd_m3(a) -> int:
     return 0
 
 
+def cmd_eval(a) -> int:
+    """Score each --judge on the same positions of --split (held out by default); `--unseen-by MANIFEST` adds the starts of runs
+    that manifest's training did not contain (its `train` and `heldout` ids are "SEED|fNN")."""
+    device = torch.device("cuda" if torch.cuda.is_available() and not a.cpu else "cpu")
+    data = Positions(a.data, device)
+    split = {"train": 0, "val": 1, "heldout": 2}[a.split]
+    unseen = None
+    if a.unseen_by:
+        man = json.loads(Path(a.unseen_by).read_text(encoding="utf-8"))
+        seen = {str(i).split("|")[0] for i in man["train"] + man["heldout"]}
+        unseen = np.array([r not in seen for r in data.start_runs], dtype=bool)
+    out = {"data": str(Path(a.data).name), "split": a.split, "judges": {}}
+    for path in a.judge:
+        model, blob = load(path, device)
+        sha = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        rep = {"sha256": sha, "version": blob.get("version"), "all": evaluate(model, data, split, a.init)}
+        if unseen is not None:
+            rep["unseen_by"] = {"starts": int(unseen.sum()), **evaluate(model, data, split, a.init, unseen)}
+        out["judges"][str(path)] = rep
+    if a.out:
+        Path(a.out).write_text(json.dumps(out, indent=1), encoding="utf-8")
+    print(json.dumps({p: {"all": {k: v for k, v in r["all"]["judge"].items() if k != "win"} | {"win_ece": r["all"]["judge"]["win"]["ece"]}}
+                      for p, r in out["judges"].items()}))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("train", "m3"))
+    ap.add_argument("cmd", choices=("train", "m3", "eval"))
     ap.add_argument("--data")
     ap.add_argument("--out")
     ap.add_argument("--init", default=None)
@@ -487,10 +545,16 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--pause", type=float, default=0.5)
     ap.add_argument("--cpu", action="store_true")
-    ap.add_argument("--judge")
+    ap.add_argument("--judge", action="append", default=[], help="m3: the checkpoint; eval: each checkpoint to score (repeatable)")
     ap.add_argument("--m2")
+    ap.add_argument("--version", default=VERSION, help="train: the stamp kept in the checkpoint")
+    ap.add_argument("--manifest", default=None, help="train: judge_data.py buffer's manifest.json, kept in the checkpoint")
+    ap.add_argument("--split", choices=("train", "val", "heldout"), default="heldout")
+    ap.add_argument("--unseen-by", default=None)
     a = ap.parse_args(argv)
-    return {"train": cmd_train, "m3": cmd_m3}[a.cmd](a)
+    if a.cmd == "m3":
+        a.judge = a.judge[0] if a.judge else None
+    return {"train": cmd_train, "m3": cmd_m3, "eval": cmd_eval}[a.cmd](a)
 
 
 if __name__ == "__main__":
