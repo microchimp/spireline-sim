@@ -186,16 +186,17 @@ def cmd_cells(a: argparse.Namespace) -> int:
     return 0
 
 
-def batch_seeds(n: int) -> list[str]:
+def batch_seeds(n: int, offset: int = 0) -> list[str]:
+    """`n` seeds from index `offset` on: a later batch (`--seed-offset 200 --batch-name batch2`) adds new seeds to the first one's."""
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    return [("".join(alphabet[b % 32] for b in hashlib.sha256(f"b-fast-currency:{i}".encode()).digest()[:10])) for i in range(n)]
+    return [("".join(alphabet[b % 32] for b in hashlib.sha256(f"b-fast-currency:{i}".encode()).digest()[:10])) for i in range(offset, offset + n)]
 
 
 def cmd_batch(a: argparse.Namespace) -> int:
-    out = Path(a.out) / "batch"
+    out = Path(a.out) / a.batch_name
     out.mkdir(parents=True, exist_ok=True)
     seeds_file = out / "seeds.json"
-    seeds_file.write_text(json.dumps({"name": "b-fast-currency", "seeds": batch_seeds(a.runs)}), encoding="utf-8")
+    seeds_file.write_text(json.dumps({"name": "b-fast-currency", "seeds": batch_seeds(a.runs, a.seed_offset)}), encoding="utf-8")
     for arm in ARMS:
         d = out / arm
         while not (d / "summary.json").is_file():
@@ -276,6 +277,44 @@ def cell_reading(rows: list[dict], starts: dict[str, dict]) -> dict:
     return out
 
 
+def clustered(by_start: dict[str, list[float]]) -> dict:
+    """Mean of the per-start mean differences, its standard error over the starts (the draws of one start are not independent), n starts."""
+    d = [sum(v) / len(v) for v in by_start.values()]
+    n = len(d)
+    if n < 2:
+        return {"diff": (d[0] if d else None), "se": None, "starts": n}
+    m = sum(d) / n
+    se = math.sqrt(sum((x - m) ** 2 for x in d) / (n - 1) / n)
+    return {"diff": m, "se": se, "starts": n, "lo95": m - Z95 * se, "hi95": m + Z95 * se}
+
+
+def cells_paired_reading(rows: list[dict], starts: dict[str, dict]) -> dict:
+    """Per cell, a3-v1-r minus a3-v1 on the games both played, with the standard error over starts: win rate, HP lost a fight (the whole start HP
+    in a loss), potions drunk, the share of starts' potion-holding fights in which one was drunk, and that share on the fights both arms won."""
+    a = {(r["start"], int(r["j"])): r for r in rows if r["arm"] == "a3-v1"}
+    b = {(r["start"], int(r["j"])): r for r in rows if r["arm"] == "a3-v1-r"}
+    common = sorted(set(a) & set(b))
+
+    def lost(r: dict) -> float:
+        return float(starts[r["start"]]["hp"] - r["end_hp"]) if r["won"] else float(starts[r["start"]]["hp"])
+
+    metrics = {"win": (lambda r: float(r["won"]), lambda k: True), "hp_lost": (lost, lambda k: True),
+               "potions_used": (lambda r: float(r["potions_used"]), lambda k: True),
+               "drank_any": (lambda r: float(r["potions_used"] >= 1), lambda k: starts[k[0]]["potions"] >= 1),
+               "drank_share_both_won": (lambda r: float(r["potions_used"] >= 1), lambda k: starts[k[0]]["potions"] >= 1 and a[k]["won"] and b[k]["won"])}
+    out: dict = {}
+    for cell in CELLS:
+        keys = [k for k in common if starts[k[0]]["cat"] == cell]
+        out[cell] = {}
+        for name, (f, keep) in metrics.items():
+            by: dict[str, list[float]] = {}
+            for k in keys:
+                if keep(k):
+                    by.setdefault(k[0], []).append(f(b[k]) - f(a[k]))
+            out[cell][name] = clustered(by) | {"games": sum(len(v) for v in by.values())}
+    return out
+
+
 def run_reading(rows: list[dict]) -> dict:
     """One copy batch arm: runs, how many reached the Act 1 boss, the hand at its door (potions, relics, HP share), how many beat it."""
     door = [r for r in rows if any(d[0] == 0 for d in r.get("boss_door") or [])]
@@ -347,10 +386,15 @@ def cmd_report(a: argparse.Namespace) -> int:
         starts = {s["id"]: s for s in _rows(out / "cells" / "starts.jsonl")}
         cells = cell_reading(_rows(out / "cells" / "games.jsonl"), starts)
     batch = None
-    if all((out / "batch" / arm / "runs.jsonl").is_file() for arm in ARMS):
-        batch = batch_reading(_rows(out / "batch" / "a3-v1" / "runs.jsonl"), _rows(out / "batch" / "a3-v1-r" / "runs.jsonl"))
-    rep = {"audit": None if audit is None else {k: audit[k] for k in ("passed", "stop", "head_sha256")}, "board": board, "cells": cells, "batch": batch,
-           "verdict": verdict(audit, board, cells, batch), "written": stamp()}
+    folders = sorted(d for d in out.glob("batch*") if all((d / arm / "runs.jsonl").is_file() for arm in ARMS))  # batch, batch2, ...: other seeds
+    if folders:
+        batch = batch_reading([r for d in folders for r in _rows(d / "a3-v1" / "runs.jsonl")], [r for d in folders for r in _rows(d / "a3-v1-r" / "runs.jsonl")])
+        batch["folders"] = [d.name for d in folders]
+    cells_paired = None
+    if cells is not None:
+        cells_paired = cells_paired_reading(_rows(out / "cells" / "games.jsonl"), starts)
+    rep = {"audit": None if audit is None else {k: audit[k] for k in ("passed", "stop", "head_sha256")}, "board": board, "cells": cells,
+           "cells_paired": cells_paired, "batch": batch, "verdict": verdict(audit, board, cells, batch), "written": stamp()}
     (out / "report.json").write_text(json.dumps(rep, indent=1), encoding="utf-8")
     print(json.dumps(rep, indent=1))
     return 0
@@ -378,6 +422,8 @@ def main(argv=None) -> int:
     ap.add_argument("--audit-cell", type=int, default=60, help="audit: starts a cell")
     ap.add_argument("--draws", type=int, default=4, help="cells: draws a start")
     ap.add_argument("--runs", type=int, default=200, help="batch: runs a arm")
+    ap.add_argument("--seed-offset", type=int, default=0, help="batch: first seed index (a second batch continues the first's seeds)")
+    ap.add_argument("--batch-name", default="batch", help="batch: the folder under --out (a second batch is 'batch2'; the report reads every 'batch*')")
     a = ap.parse_args(argv)
     return {"audit": cmd_audit, "board": cmd_board, "cells": cmd_cells, "batch": cmd_batch, "report": cmd_report, "all": cmd_all}[a.cmd](a)
 

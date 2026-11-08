@@ -114,6 +114,57 @@ class ReadingTests(unittest.TestCase):
         self.assertTrue(all(len(s) == 10 and s.isalnum() and s.upper() == s for s in seeds))
         self.assertEqual(seeds[:3], cf.batch_seeds(3))
 
+    def test_a_second_batch_continues_the_first_ones_seeds(self):
+        first, second = cf.batch_seeds(200), cf.batch_seeds(400, 200)
+        self.assertEqual(second[:2], cf.batch_seeds(402)[200:202])
+        self.assertFalse(set(first) & set(second))  # new seeds: the two batches pool without a repeated run
+        self.assertEqual(cf.batch_seeds(5, 0), cf.batch_seeds(5))
+
+    def test_the_cells_paired_reading_clusters_the_draws_by_start(self):
+        starts = {"H1": {"cat": "act1-hallway", "hp": 60, "potions": 1}, "H2": {"cat": "act1-hallway", "hp": 50, "potions": 1},
+                  "H3": {"cat": "act1-hallway", "hp": 50, "potions": 0}, "E1": {"cat": "act1-elite", "hp": 70, "potions": 2}}
+        rows = []
+        for j in range(2):  # H1: the r arm drinks on both draws where the old arm never did; H2: neither drinks; H3 holds no potion
+            rows += [game("a3-v1", "H1", j, True, end_hp=40, used=0), game("a3-v1-r", "H1", j, True, end_hp=44, used=1),
+                     game("a3-v1", "H2", j, True, end_hp=30), game("a3-v1-r", "H2", j, True, end_hp=30),
+                     game("a3-v1", "H3", j, True, end_hp=50), game("a3-v1-r", "H3", j, True, end_hp=50)]
+        rows += [game("a3-v1", "E1", 0, True, end_hp=10), game("a3-v1-r", "E1", 0, False)]
+        c = cf.cells_paired_reading(rows, starts)
+        h = c["act1-hallway"]
+        self.assertEqual(h["win"]["diff"], 0.0)
+        self.assertAlmostEqual(h["hp_lost"]["diff"], (-4 + 0 + 0) / 3)  # per-start mean differences averaged over the three starts
+        self.assertEqual(h["drank_any"]["starts"], 2)  # H3 held no potion
+        self.assertAlmostEqual(h["drank_any"]["diff"], 0.5)
+        self.assertAlmostEqual(h["drank_any"]["se"], 0.5)  # two starts' differences, 1 and 0
+        self.assertEqual(h["drank_any"]["games"], 4)
+        self.assertEqual(h["drank_share_both_won"]["starts"], 2)
+        self.assertAlmostEqual(c["act1-elite"]["win"]["diff"], -1.0)
+        self.assertIsNone(c["act1-elite"]["win"]["se"])  # one start: no standard error
+        self.assertEqual(cf.clustered({})["diff"], None)
+
+
+class ReportMergesBatchesTests(unittest.TestCase):
+    def test_the_report_pools_every_batch_folder_and_pairs_by_seed(self):
+        import argparse
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for folder, seeds in (("batch", ("A", "B")), ("batch2", ("C",))):
+                for arm, extra in (("a3-v1", 0), ("a3-v1-r", 1)):
+                    d = out / folder / arm
+                    d.mkdir(parents=True)
+                    rows = [run(sd, [0, 1 + extra, 4, 60, 80], beat=True) for sd in seeds]
+                    (d / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            (out / "batch3" / "a3-v1").mkdir(parents=True)  # a folder holding only one arm is not read
+            with mock.patch("builtins.print"):
+                cf.cmd_report(argparse.Namespace(out=str(out)))
+            rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(rep["batch"]["folders"], ["batch", "batch2"])
+        self.assertEqual(rep["batch"]["seeds_paired"], 3)
+        self.assertAlmostEqual(rep["batch"]["potions_at_door_diff"]["diff"], 1.0)
+        self.assertIsNone(rep["cells_paired"])
+
 
 class FreeMachineTests(unittest.TestCase):
     def setUp(self):

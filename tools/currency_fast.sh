@@ -2,7 +2,7 @@
 # The run currency's fast tests (docs/rl/RUN_CURRENCY.md; big-step memo step 6): the audit, the board, the exam's Act 1 hallway and
 # elite cells and a 200-run copy batch, a3-v1-r against a3-v1, then the stop rule's verdict in $OUT/report.json.
 #
-# Usage:  OUT=D:/spireline/referee/backlog/scratch-currency-fast bash tools/currency_fast.sh [audit|board|cells|batch|board2000|report|all]
+# Usage:  OUT=D:/spireline/referee/backlog/scratch-currency-fast bash tools/currency_fast.sh [audit|board|cells|batch|board2000|cells12|batch2|report|all]
 # Run it from the worktree that holds the branch (it needs that worktree's out/ built: logs/gym-loop/bin/publish-wt.sh, WTN=<folder>).
 #
 # The QUIET steps are rl/currency_fast.py's own, so the script never needs to be wrapped:
@@ -26,9 +26,11 @@ case "$step" in
   cells)     run cells ;;
   batch)     run batch --runs 200 ;;
   board2000) run board --games 2000 ;;   # extends the 400-game board to 2,000 paired games (the 400 already played are kept)
+  cells12)   run cells --draws 12 ;;     # extends the cells to 12 draws a start (the four already played are kept)
+  batch2)    run batch --runs 400 --seed-offset 200 --batch-name batch2 ;;   # 400 more runs on new seeds (the report reads every batch* folder)
   report)    run report ;;
   all)       run audit; a=$?
              if [ "$a" = 2 ]; then run report; exit 2; fi   # the audit's stop rule ends the run; its reasons are in report.json
              [ "$a" = 0 ] && run board --games 400 && run cells && run batch --runs 200 && run report ;;
-  *) echo "usage: OUT=<dir> bash tools/currency_fast.sh [audit|board|cells|batch|board2000|report|all]" >&2; exit 2 ;;
+  *) echo "usage: OUT=<dir> bash tools/currency_fast.sh [audit|board|cells|batch|board2000|cells12|batch2|report|all]" >&2; exit 2 ;;
 esac
