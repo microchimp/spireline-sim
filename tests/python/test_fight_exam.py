@@ -18,6 +18,7 @@ import random
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from unittest import mock
 
@@ -570,6 +571,365 @@ class ExamFolderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fe.pick_extra([ok, dict(ok)])
         self.assertEqual(len(fe.pick_extra([ok])), 1)
+
+
+# ---------------------------------------------------------------------------------------------------------- the human stratum
+
+
+HUMAN_CELLS = ((1, "hallway", 11), (1, "elite", 62), (1, "boss", 74), (1, "boss", 77), (1, "boss", 79), (1, "boss", 82), (1, "boss", 83),
+               (1, "boss", 84), (2, "hallway", 21), (2, "elite", 63), (2, "boss", 75), (2, "boss", 76), (2, "boss", 81))
+
+
+def _run_ids(n: int, prefix: str = "H") -> list[str]:
+    """Run ids outside the corpus's exam fifth (the stratum asserts that)."""
+    import human_starts as hs  # noqa: PLC0415
+
+    out, i = [], 0
+    while len(out) < n:
+        rid = f"{prefix}{i:05d}"
+        if hs.exam_bucket(rid) != hs.EXAM_BUCKET:
+            out.append(rid)
+        i += 1
+    return out
+
+
+def human_pool(per_cell: int = 60, survive: float = 0.7, seed: int = 4) -> tuple[list[dict], dict]:
+    """Human start records (lite plus a document) for every cell of the stratum and the sidecar's outcomes for them."""
+    rnd = random.Random(seed)
+    runs = iter(_run_ids(per_cell * len(HUMAN_CELLS)))
+    recs, outcomes = [], {}
+    for act, kind, enc in HUMAN_CELLS:
+        for _ in range(per_cell):
+            rid = next(runs)
+            sid = f"human:{rid}|f{10 + act}"
+            recs.append({"id": sid, "cat": f"act{act}-{kind}", "kind": kind, "act": act, "floor": 10 + act, "seed": rid, "run": rid, "ix": -1,
+                         "night": "human", "source": "human", "k": 0, "node_type": 1, "hp": 50, "max_hp": 80, "deck_size": 12, "potions": 1,
+                         "relics": 2, "encounter_id": enc, "turn": 0, "kind_same": True, "replay_same": None, "split": "train", "doc": {"x": sid}})
+            ok = rnd.random() < survive
+            lost = rnd.randint(5, 40) if ok else 50
+            outcomes[sid] = {"human_survived": ok, "human_end_hp": 50 - lost if ok else 0, "human_hp_lost": lost, "human_damage_taken": lost,
+                             "human_post_heal": 6 if ok else 0, "human_turns": 5, "human_potions_used": 0, "human_potions_held_end": 1,
+                             "human_l0": float(50 - lost + 10) if ok else -100.0, "human_l0_unit": 0.8 if ok else 0.0}
+    return recs, outcomes
+
+
+def write_human_files(starts_dir: Path, recs: list[dict], outcomes: dict) -> None:
+    fe.write_stem_set(starts_dir, "human-starts", recs)
+    (starts_dir / "human-outcomes.json").write_text(json.dumps({"rule": "human-outcomes-v1", "written": "2026-11-08T00:00:00Z", "outcomes": outcomes}),
+                                                    encoding="utf-8")
+
+
+class HumanQuotaTests(unittest.TestCase):
+    def test_equal_quotas_then_the_remainder_in_a_fixed_hash_order(self):
+        avail = {f"c{i:02d}": 1000 for i in range(13)}
+        q = fe.human_quota(avail, 50, 400, 7)
+        self.assertEqual(sum(q.values()), 400)
+        self.assertEqual(sorted(set(q.values())), [30, 31])
+        self.assertEqual(sum(1 for v in q.values() if v == 31), 10)
+        self.assertEqual(q, fe.human_quota(avail, 50, 400, 7))
+        self.assertNotEqual(q, fe.human_quota(avail, 50, 400, 8))  # a different seed names other cells for the remainder
+
+    def test_a_small_cell_takes_what_it_has_and_the_others_share_the_rest(self):
+        avail = {"a": 4, "b": 1000, "c": 1000, "d": 1000}
+        q = fe.human_quota(avail, 50, 100, 1)
+        self.assertEqual(q["a"], 4)
+        self.assertEqual(sum(q.values()), 100)
+        self.assertTrue(all(32 <= q[c] <= 33 for c in "bcd"), q)
+
+    def test_the_per_cell_cap_and_a_total_nobody_can_fill(self):
+        self.assertEqual(set(fe.human_quota({c: 500 for c in "abcd"}, 50, 10_000, 1).values()), {50})
+        self.assertEqual(sum(fe.human_quota({"a": 3, "b": 2}, 50, 400, 1).values()), 5)
+        self.assertEqual(fe.human_quota({}, 50, 400, 1), {})
+
+
+class HumanPickTests(unittest.TestCase):
+    def setUp(self):
+        self.recs, self.outcomes = human_pool(60)
+        self.lite = [{k: v for k, v in r.items() if k != "doc"} for r in self.recs]
+
+    def test_the_pick_is_clean_one_start_a_run_fixed_by_its_seed_and_carries_the_humans_result(self):
+        played = {self.recs[0]["run"], self.recs[1]["run"], self.recs[200]["run"]}
+        chosen, report, left_out = fe.pick_human(self.lite, self.outcomes, played=played, per_cell=50, total=400)
+        self.assertEqual(len(chosen), 400)
+        self.assertEqual(len({s["run"] for s in chosen}), 400)
+        self.assertTrue(all(s["run"] not in played for s in chosen))
+        self.assertEqual(left_out["its run was played by the loop"], 3)
+        self.assertEqual({s["stratum"] for s in chosen}, {"human"})
+        self.assertTrue(all(s["clean"] and s["practised"] == 0 and s["half"] == fe.half_of(s["id"]) for s in chosen))
+        s = chosen[0]
+        for k, v in self.outcomes[s["id"]].items():
+            self.assertEqual(s[k], v)
+        self.assertEqual(s["cell"], fe.cell_of(s))
+        self.assertEqual(sorted(report), sorted(f"act{a}-{k}-{e}" if k == "boss" else f"act{a}-{k}" for a, k, e in HUMAN_CELLS))
+        per = Counter(s["cell"] for s in chosen)
+        self.assertEqual(set(per.values()), {30, 31})
+        self.assertTrue(all(not v["short"] for v in report.values()))
+        again, _, _ = fe.pick_human(list(reversed(self.lite)), self.outcomes, played=played, per_cell=50, total=400)
+        self.assertEqual(sorted(s["id"] for s in again), sorted(s["id"] for s in chosen))  # the pool's order does not matter
+        other, _, _ = fe.pick_human(self.lite, self.outcomes, played=played, per_cell=50, total=400, seed=1)
+        self.assertNotEqual(sorted(s["id"] for s in other), sorted(s["id"] for s in chosen))
+
+    def test_a_start_without_an_outcome_or_of_a_played_run_is_never_taken_and_a_short_cell_is_reported(self):
+        outcomes = {k: v for k, v in self.outcomes.items() if k != self.recs[300]["id"]}  # one start with no outcome (not a boss-74 one)
+        boss74 = sorted(r["run"] for r in self.recs if r["kind"] == "boss" and r["encounter_id"] == 74)
+        played = set(boss74[5:])  # five runs of the boss cell stay clean
+        chosen, report, left_out = fe.pick_human(self.lite, outcomes, played=played, per_cell=50, total=400)
+        self.assertEqual(report["act1-boss-74"]["chosen"], 5)
+        self.assertTrue(report["act1-boss-74"]["short"])
+        self.assertEqual(sum(1 for s in chosen if s["cell"] == "act1-boss-74"), 5)
+        self.assertEqual(left_out["no outcome in the sidecar"], 1)
+        self.assertEqual(left_out["its run was played by the loop"], len(boss74) - 5)
+        self.assertTrue(all(not v["short"] for c, v in report.items() if c != "act1-boss-74"))
+        self.assertTrue(all(s["id"] in outcomes for s in chosen))
+
+    def test_the_loops_evidence_is_the_start_counts_and_the_plays_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "starts").mkdir()
+            gl.write_json(root / "state.json", {"next_j": {"human:RA|f05": 2, "human:RB|f05": 0, "2026-11-01/g9:SEED1|f17": 1,
+                                                          "preloss:human:RC|f09|j0|k4": 1}})
+            (root / "starts" / "plays.jsonl").write_text(json.dumps({"start": "human:RD|f33", "j": 0, "root": 1.0, "played": 2.0}) + "\n"
+                                                         + json.dumps({"shard": "s1.npz", "done": True}) + "\n{cut", encoding="utf-8")
+            self.assertEqual(fe.played_runs(root), {"RA", "SEED1", "RC", "RD"})  # RB was drawn into a task list and never played: next_j 0
+            self.assertEqual(fe.played_runs(root / "nowhere"), set())
+
+
+class HumanFolderTests(unittest.TestCase):
+    """`add-human` on a loop folder with an AI exam: the second file, the exclusion list and the proof that the AI exam did not move."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.loop = t / "loop"
+        (self.loop / "starts").mkdir(parents=True)
+        self.pool = [{**s, "doc": {"x": s["id"], "hp": 3}} for s in synthetic_pool()]
+        gl.write_start_set(self.loop / "starts", self.pool)
+        gl.write_json(self.loop / "state.json", {"next_j": {s["id"]: 2 for s in self.pool[:30]}})
+        self.out = t / "exam"
+        with mock.patch.object(gl, "board_run_seeds", lambda: set()):
+            fe.build_exam(self.loop, self.out, per_cell=15)
+        self.recs, self.outcomes = human_pool(60)
+        write_human_files(self.loop / "starts", self.recs, self.outcomes)
+        self.exam_files = [self.out / n for n in ("starts.jsonl", "starts.index.json", "starts.lite.json", "meta.json")]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def sums(self):
+        return {f.name: gl.sha256_file(f) for f in self.exam_files}
+
+    def test_the_stratum_is_a_second_file_and_the_ai_exam_is_byte_for_byte_what_it_was(self):
+        before, ai_before = self.sums(), fe.load_exam(self.out)
+        ex_before = json.loads((self.out / "exclude_runs.json").read_text())
+        meta = fe.build_human(self.loop, self.out, exam_ids=[])
+        self.assertEqual(self.sums(), before)  # starts, index, lite list and meta of the AI exam: untouched
+        self.assertEqual(fe.load_exam(self.out), ai_before)
+        self.assertEqual(meta["ai_files_sha256"], {k: v for k, v in before.items()})
+        human = fe.load_human_exam(self.out)
+        self.assertEqual((meta["starts"], len(human), meta["runs"]), (400, 400, 400))
+        self.assertTrue(set(human).isdisjoint(ai_before))
+        self.assertEqual({s["stratum"] for s in human.values()}, {"human"})
+        self.assertEqual(meta["halves"], dict(Counter(s["half"] for s in human.values())))
+        self.assertEqual(set(meta["by_kind_cell"]), {"act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss"})
+        doc = gl.load_start(str(self.out / "starts-human.jsonl"), sorted(human)[3])  # the document is the exam's own copy, by the byte index
+        self.assertEqual(doc["doc"]["x"], sorted(human)[3])
+        self.assertEqual(doc["stratum"], "human")
+        self.assertIn("human_survived", doc)
+        ex = json.loads((self.out / "exclude_runs.json").read_text())
+        self.assertTrue(set(ex_before["run_seeds"]) <= set(ex["run_seeds"]))  # the old lists stay whole
+        self.assertTrue(set(ex_before["start_ids"]) <= set(ex["start_ids"]))
+        self.assertTrue({s["run"] for s in human.values()} <= set(ex["run_seeds"]))
+        self.assertTrue(set(human) <= set(ex["start_ids"]))
+        self.assertEqual(ex["by_stratum"]["human"], 400)
+        self.assertEqual(ex["by_stratum"]["ai"], ex_before["by_stratum"]["ai"])
+        self.assertEqual(json.loads((self.out / "exclude_runs.json.pre-human.bak").read_text()), ex_before)
+        self.assertEqual(json.loads((self.out / "human-meta.json").read_text())["rule"], fe.HUMAN_RULE)
+        # the sampler's own reader (<loop root>/exam/exclude_runs.json) drops the stratum's runs and starts
+        import practice_mix as pm  # noqa: PLC0415
+
+        excl = pm.read_exclusion(self.out.parent)
+        self.assertTrue(all(pm.excluded({"id": s["id"], "seed": s["seed"], "run": s["run"]}, excl) for s in human.values()))
+
+    def test_the_readings_of_the_ai_exam_do_not_change(self):
+        starts = fe.load_exam(self.out)
+        rnd = random.Random(8)
+        p = {c: 0.3 + 0.05 * i for i, c in enumerate(sorted({s["cell"] for s in starts.values()}))}
+        games = games_for(starts, lambda s: p[s["cell"]], rnd)
+        with open(self.out / "games-v2.jsonl", "w", encoding="utf-8") as fh:
+            for r in games.values():
+                fh.write(json.dumps({**r, "config": "a3-v1", "prior_path": "server", "engine": "abc"}) + "\n")
+        before = self.report("v2")
+        fe.build_human(self.loop, self.out, exam_ids=[])
+        self.assertEqual(self.report("v2"), before)  # the same bytes with the stratum added and no game of it played
+        human = fe.load_human_exam(self.out)
+        hg = games_for(human, lambda s: 0.9 if s["human_survived"] else 0.4, random.Random(9))
+        with open(self.out / "games-v2.jsonl", "a", encoding="utf-8") as fh:
+            for r in hg.values():
+                fh.write(json.dumps({**r, "config": "a3-v1", "prior_path": "server", "engine": "abc", "stratum": "human"}) + "\n")
+        after = self.report("v2")
+        self.assertTrue(after.startswith(before.rstrip("\n")), "the exam's own report must come first, unchanged")
+        tail = after[len(before.rstrip("\n")):]
+        self.assertIn("fight exam, human stratum, player v2: 400 of 400 starts played, 1600 games", tail)
+        self.assertNotIn("1600 games", before)
+        self.assertIn(f"{len(starts)} of {len(starts)} starts played, {len(games)} games", after)  # the header counts the AI exam's games only
+
+    def report(self, player: str) -> str:
+        import argparse  # noqa: PLC0415
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fe.cmd_report(argparse.Namespace(exam_dir=str(self.out), player=player, write_calibration=False, boot=60))
+        self.assertEqual(rc, 0)
+        return buf.getvalue()
+
+    def test_the_comparison_prints_the_exams_own_lines_first_and_the_human_lines_after(self):
+        import argparse  # noqa: PLC0415
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        starts = fe.load_exam(self.out)
+        fe.build_human(self.loop, self.out, exam_ids=[])
+        human = fe.load_human_exam(self.out)
+        rnd = random.Random(2)
+        for label, bump in (("v2", 0.0), ("c1", 0.1)):
+            ga = games_for(starts, lambda s: min(0.95, 0.5 + bump), rnd)
+            gb = games_for(human, lambda s: min(0.95, (0.85 if s["human_survived"] else 0.4) + bump), rnd)
+            with open(self.out / f"games-{label}.jsonl", "w", encoding="utf-8") as fh:
+                for r in list(ga.values()) + list(gb.values()):
+                    fh.write(json.dumps({**r, "config": "a3-v1", "prior_path": "server", "engine": "abc"}) + "\n")
+
+        def run(fn, **kw):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fn(argparse.Namespace(exam_dir=str(self.out), **kw))
+            return rc, buf.getvalue()
+
+        run(fe.cmd_report, player="v2", write_calibration=True, boot=40)
+        rc, text = run(fe.cmd_compare, candidate="c1", champion="v2", no_play=True, boot=40)
+        self.assertEqual(rc, 0)
+        i, j = text.index("fight exam, c1 against v2 on half A"), text.index("human stratum, half A")
+        self.assertLess(i, j)
+        tail = text[j:]
+        self.assertIn("c1 minus v2 on the human stratum", tail)
+        self.assertIn("fight exam, human stratum, player c1", tail)
+        self.assertIn("fight exam, human stratum, player v2", tail)
+        self.assertIn("win rate difference", tail)
+        self.assertNotIn("human", text[:j])  # the exam's own comparison says nothing of the stratum
+
+    def test_the_stratum_is_not_replaced_without_rebuild_and_a_rebuild_keeps_the_old_files(self):
+        fe.build_human(self.loop, self.out, exam_ids=[])
+        with self.assertRaises(FileExistsError):
+            fe.build_human(self.loop, self.out, exam_ids=[])
+        fe.build_human(self.loop, self.out, per_cell=5, total=20, rebuild=True, exam_ids=[])
+        self.assertTrue(any(p.name.startswith("starts-human.jsonl.") and p.name.endswith(".bak") for p in self.out.iterdir()))
+        self.assertTrue(any(p.name.startswith("human-meta.json.") for p in self.out.iterdir()))
+        self.assertEqual(len(fe.load_human_exam(self.out)), 20)
+
+    def test_no_exam_no_outcomes_and_an_exam_fifth_run_stop_it(self):
+        with self.assertRaises(FileNotFoundError):
+            fe.build_human(self.loop, self.out.parent / "none", exam_ids=[])
+        (self.loop / "starts" / "human-outcomes.json").write_text(json.dumps({"outcomes": {}}))
+        with self.assertRaises(FileNotFoundError):
+            fe.build_human(self.loop, self.out, exam_ids=[])
+        write_human_files(self.loop / "starts", self.recs, self.outcomes)
+        with self.assertRaises(AssertionError):
+            fe.build_human(self.loop, self.out, exam_ids=[self.recs[7]["run"]])  # a run the corpus keeps for its exam: never a start
+        self.assertFalse((self.out / "starts-human.jsonl").exists())
+        self.assertFalse((self.out / "exclude_runs.json.pre-human.bak").exists())
+
+    def test_the_games_to_play_include_the_stratum_from_its_own_file_and_the_stratum_option_restricts(self):
+        fe.build_human(self.loop, self.out, per_cell=3, total=39, exam_ids=[])
+        starts, human = fe.load_exam(self.out), fe.load_human_exam(self.out)
+        t = fe.exam_tasks(starts, "v2", "v2", "a3-v1", self.out, set(), human=human)
+        self.assertEqual(len(t), (len(starts) + len(human)) * fe.DRAWS)
+        for arm, sid, j, cat, info in t:
+            self.assertEqual(Path(info["starts"]).name, "starts-human.jsonl" if sid in human else "starts.jsonl")
+            self.assertEqual(info["ns"], "x")
+        only = fe.exam_tasks({}, "v2", "v2", "a3-v1", self.out, set(), human=human, half="A")
+        self.assertTrue(all(t[1] in human and human[t[1]]["half"] == "A" for t in only))
+        self.assertEqual(fe.exam_tasks(starts, "v2", "v2", "a3-v1", self.out, set()), [x for x in t if x[1] in starts])
+        order = [(starts.get(x[1]) or human[x[1]])["kind"] for x in t]
+        self.assertEqual(order, sorted(order, key={"boss": 0, "elite": 1, "hallway": 2}.get))  # long fights first across both files
+        import argparse  # noqa: PLC0415
+
+        a = argparse.Namespace(exam_dir=str(self.out.parent / "empty"), stratum="human", config="a3-v1")
+        (self.out.parent / "empty").mkdir()
+        gl.write_start_set(self.out.parent / "empty", [])
+        self.assertEqual(fe.run_player(a, "v2", Path("p"), "all", self.out.parent / "g.jsonl"), 2)  # no human stratum there: nothing to play
+
+
+class HumanReadingTests(unittest.TestCase):
+    def setUp(self):
+        recs, outcomes = human_pool(40, survive=0.5, seed=3)
+        chosen, _, _ = fe.pick_human([{k: v for k, v in r.items() if k != "doc"} for r in recs], outcomes, played=set(), per_cell=25, total=400)
+        self.human = {s["id"]: s for s in chosen}
+
+    def test_the_player_is_read_against_the_human_on_the_same_starts_by_kind_and_boss(self):
+        rnd = random.Random(1)
+        games = games_for(self.human, lambda s: 0.9 if s["human_survived"] else 0.5, rnd,
+                          tweak=lambda r, s, j: r.update(hp_lost=float(s["human_hp_lost"] - 4) if r["won"] else 50.0))
+        items = fe.human_items(games, self.human)
+        rows = {r["label"]: r for r in fe.human_rows(items, boot=100)}
+        allr = rows["all"]
+        n = len(self.human)
+        self.assertEqual(allr["starts"], n)
+        self.assertEqual(allr["games"], n * fe.DRAWS)
+        sm = fe.start_means(games, self.human)
+        self.assertAlmostEqual(allr["p_won"], sum(m["won"] for m in sm.values()) / n)
+        self.assertAlmostEqual(allr["h_won"], sum(1 for s in self.human.values() if s["human_survived"]) / n)
+        self.assertAlmostEqual(allr["d_won"]["estimate"], allr["p_won"] - allr["h_won"])
+        self.assertAlmostEqual(allr["d_hp_lost"]["estimate"], allr["p_hp_lost"] - allr["h_hp_lost"])
+        self.assertLessEqual(allr["d_won"]["lo"], allr["d_won"]["estimate"])
+        self.assertGreaterEqual(allr["d_won"]["hi"], allr["d_won"]["estimate"])
+        self.assertAlmostEqual(allr["h_hp_lost"], sum(s["human_hp_lost"] for s in self.human.values()) / n)
+        self.assertEqual({"act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss", "all"} <= set(rows), True)
+        self.assertEqual(rows["act1-boss"]["starts"], 6 * 25)
+        self.assertEqual(rows["act1-boss-74"]["starts"], 25)
+        text = fe.human_report_text(games, self.human, "v2", boot=60)
+        self.assertIn("fight exam, human stratum, player v2: ", text)
+        self.assertIn("act1-boss-74 (ceremonial-beast)", text)
+        self.assertIn("act2-boss-76 (knowledge-demon)", text)
+        self.assertIn("a death costs the whole HP going in on both sides", text)
+        self.assertNotIn("act1-hallway-", text)  # only a boss is split further
+
+    def test_a_per_boss_line_under_the_minimum_is_not_printed_and_the_counts_are_the_starts_played(self):
+        small = {sid: s for sid, s in self.human.items() if s["cell"] != "act1-boss-74" or sid in sorted(x for x in self.human if self.human[x]["cell"] == "act1-boss-74")[:10]}
+        games = games_for(small, lambda s: 0.6, random.Random(2))
+        rows = [r["label"] for r in fe.human_rows(fe.human_items(games, small), boot=20)]
+        self.assertNotIn("act1-boss-74", rows)
+        self.assertIn("act1-boss-77", rows)
+        half = {k: v for k, v in games.items() if k[1] < 2}
+        text = fe.human_report_text(half, small, "v2", boot=20)
+        self.assertIn(f"{len(small)} of {len(small)} starts played, {len(small) * 2} games", text)
+        self.assertEqual(fe.human_report_text({}, small, "v2"), f"fight exam, human stratum, player v2: 0 of {len(small)} starts played, 0 games "
+                         f"(half A 0 starts, half B 0); human survived on 0 of the played starts")
+
+    def test_the_comparison_pairs_the_candidate_with_the_champion_on_the_same_starts(self):
+        rnd = random.Random(3)
+        champ = games_for(self.human, lambda s: 0.5, rnd)
+        cand = games_for(self.human, lambda s: 0.8, rnd)
+        text = fe.human_compare_text(champ, cand, self.human, "v2", "c1", half="A", boot=60)
+        self.assertIn("human stratum, half A:", text)
+        self.assertIn("c1 minus v2 on the human stratum", text)
+        self.assertRegex(text, r"win rate difference +: \+\d+\.\d+ points \[")
+        self.assertIn("act1-boss", text)
+        none = fe.human_compare_text({}, cand, self.human, "v2", "c1", half="A", boot=20)
+        self.assertIn("no start of the human stratum has games of both c1 and v2 yet", none)
+        self.assertEqual(fe.human_compare_text(champ, cand, {}, "v2", "c1"), "human stratum: none in the exam")
+
+    def test_a_tag_named_with_allow_quiet_does_not_hold_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            q = Path(tmp) / "QUIET.lock"
+            q.write_text(f"lab-score {gl.stamp()} pid=5\n")
+            with mock.patch.object(fg, "QUIET", q), mock.patch.object(gl, "in_night_window", lambda now=None: False), \
+                    mock.patch.object(fg, "ACTIVE", Path(tmp) / "none"), mock.patch.object(gl, "PAUSE", Path(tmp) / "pause"), \
+                    mock.patch.object(gl, "HALT", Path(tmp) / "halt"), mock.patch.object(fg, "MAIN_LOCK", Path(tmp) / "main.lock"):
+                self.assertEqual(fe.blocked_reason(starting=True), "quiet:lab-score")
+                with mock.patch.object(fe, "ALLOW_QUIET", ["lab-score"]):
+                    self.assertIsNone(fe.blocked_reason(starting=True))
+                self.assertEqual(fe.blocked_reason(starting=True), "quiet:lab-score")  # the default is unchanged
 
 
 class CommandTests(unittest.TestCase):

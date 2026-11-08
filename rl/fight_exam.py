@@ -3,8 +3,9 @@ played on four paired draws, scored by more than win or loss. A parallel instrum
 `PROMOTION_RULE`'s games never and decides nothing; it prints what a candidate does to the champion's exam.
 
     python rl/fight_exam.py select   [--extra-starts PATH] [--per-cell 100] [--allow-practised] [--rebuild]   build the exam
+    python rl/fight_exam.py add-human [--per-cell 50] [--total 400] [--rebuild]               add the human stratum (a second file)
     python rl/fight_exam.py baseline [--judge PATH]                                the judge's value of every opening position
-    python rl/fight_exam.py play     --player v2 [--half A|B|all] [--until STAMP]  one player on the exam (calibration)
+    python rl/fight_exam.py play     --player v2 [--half A|B|all] [--stratum all|ai|human] [--until STAMP]  one player on the exam
     python rl/fight_exam.py report   [--player v2]                                 the readings of one player's games
     python rl/fight_exam.py compare  CAND [--champion v2] [--no-play] [--until STAMP]   a candidate on half A against the champion
 
@@ -46,6 +47,21 @@ selects the starts the champion happened to play at the middle of its range, whi
 difficulties are skewed; `compare` therefore also prints a cross-fitted figure (flags from draws 0 and 1, the difference on draws
 2 and 3, then the other way round) which has no such selection.
 
+The human stratum (`add-human`; D55 addendum 10). The human corpus's own result of a fight is the bar the player is held to: for each
+rebuilt human fight start the sidecar `starts/human-outcomes.json` (rl/human_starts.py) holds whether the human survived the fight,
+the HP they had left, the potions they used and the turns it took. `add-human` picks up to 50 *clean* starts a cell (act by kind, a
+boss per boss; 400 in all: equal quotas, the remainder to cells in a fixed hash order), at most one per run, from the human starts
+whose run the loop has never played (`state.json` `next_j` and `starts/plays.jsonl`), by the same seeded hash, and writes them as a
+second file in the exam's folder (`starts-human.jsonl` with its index and lite list, `human-meta.json`). **Nothing of the AI exam is
+rewritten**: its starts, cells, halves, meta and every reading of the champion on them stay as they were (the files' hashes are
+checked before and after, and recorded). The runs of the human starts are added to `exclude_runs.json` (the practice drops them from the
+next segment). `play` and `compare` play the human stratum with the rest (`--stratum ai|human` restricts); its games go in the same
+games file (rows carry `stratum: "human"`), and every reading of the AI exam leaves them out. `report` and `compare` print the human
+line after the exam's own: survival and HP lost of the human against the player's (the mean over its four draws), by act and kind (and
+by boss), the paired difference of the two with a 95% bootstrap interval over starts (within cells), counts. Deaths count the whole HP going
+in as lost, on both sides. No calibration flags are applied to it (the human is not a draw). It is read by hand: no lab job or gate runs
+the exam, so the stratum adds its games (about 400 starts a half, four draws each) to the hand-run `play` and `compare`.
+
 The lock protocol. A run takes a `fight-exam` line in QUIET.lock (rewritten every ten minutes, removed at the end). It starts
 only when no other tag but the loop's own (`gym-loop`, `gym-loop-train`) and `w3-blocks` stands, not while LAB/nightly/active
 exists, in the night window, with LAB/HALT, LAB/PAUSE or (to start) main.lock; the loop sees the line, stops its running step and
@@ -79,6 +95,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
 
 import fight_gym as fg  # noqa: E402
 import gym_loop as gl  # noqa: E402
+import practice_mix as pmix  # noqa: E402
 
 # Nothing here loads the emulator library at import (the loop's rule): the pure parts run anywhere, the games in spawned processes.
 
@@ -89,6 +106,13 @@ DRAWS = 4
 PER_CELL = 100
 SELECT_SEED = 20261104
 EXTRA_PER_CELL = 100
+HUMAN_RULE = "fight-exam-human-v1"
+HUMAN_STEM = "starts-human"  # the human stratum's start file (and its index and lite list) beside the AI exam's
+HUMAN_PER_CELL = 50
+HUMAN_TOTAL = 400
+HUMAN_SEED = 20261108
+HUMAN_MIN_ROW = 20  # a per-boss line of the human reading is printed from this many starts
+ALLOW_QUIET: list[str] = []  # QUIET.lock tags this run ignores besides its own (`--allow-quiet`, e.g. the lab's daytime score)
 BOOT = 2000
 BOOT_SEED = 20261105
 HALF_PREFIX = "fight-exam-half:"
@@ -448,7 +472,8 @@ def crossfit_difference(champ: dict, cand: dict, starts: dict, boot: int = BOOT)
 def exam_paths(d: Path) -> dict:
     d = Path(d)
     return {"dir": d, "starts": d / "starts.jsonl", "meta": d / "meta.json", "exclude": d / "exclude_runs.json",
-            "baseline": d / "baseline.jsonl", "log": d / "exam.log"}
+            "baseline": d / "baseline.jsonl", "log": d / "exam.log", "human_starts": d / f"{HUMAN_STEM}.jsonl",
+            "human_lite": d / f"{HUMAN_STEM}.lite.json", "human_meta": d / "human-meta.json"}
 
 
 def load_exam(d: Path = EXAM_DIR) -> dict:
@@ -458,6 +483,12 @@ def load_exam(d: Path = EXAM_DIR) -> dict:
     if lite is None:
         raise FileNotFoundError(f"no exam in {d}: run `fight_exam.py select`")
     return {s["id"]: s for s in lite}
+
+
+def load_human_exam(d: Path = EXAM_DIR) -> dict:
+    """{start id: lite record} of the human stratum (empty when `add-human` has not been run); the records carry the human's result."""
+    lite = gl.read_json(exam_paths(d)["human_lite"], None)
+    return {} if lite is None else {s["id"]: s for s in lite}
 
 
 def say(d: Path, msg: str) -> None:
@@ -521,6 +552,164 @@ def build_exam(loop_root: Path = LOOP_ROOT, out: Path = EXAM_DIR, *, per_cell: i
             "pool_starts": len(lite), "extra_file": extra_path is not None}
     gl.write_json(p["meta"], meta)
     say(out, f"select: {len(full)} starts, {meta['runs']} runs excluded from practice, short cells {meta['short_cells']}")
+    return meta
+
+
+# ---------------------------------------------------------------------------------------------------------- the human stratum
+
+
+def played_runs(root: Path = LOOP_ROOT) -> set[str]:
+    """The runs the loop has played a start of: those of `state.json`'s `next_j` entries above zero and of every start in
+    `starts/plays.jsonl` (the plays log keeps what the buffer's retention removed). The evidence `select` uses for the gym's starts,
+    by run: a start of a played run is no longer clean, because the practice learnt from its neighbour in the same run."""
+    st = gl.read_json(Path(root) / "state.json", {}) or {}
+    ids = {k for k, v in (st.get("next_j") or {}).items() if int(v) > 0}
+    for r in gl.iter_jsonl(Path(root) / "starts" / "plays.jsonl"):
+        if "start" in r:
+            ids.add(r["start"])
+    return {pmix.run_of(i) for i in ids}
+
+
+def human_quota(avail: dict[str, int], per_cell: int = HUMAN_PER_CELL, total: int = HUMAN_TOTAL, seed: int = HUMAN_SEED) -> dict[str, int]:
+    """Starts a cell: the same for every cell (the largest number up to `per_cell` that keeps the sum within `total`, a cell with fewer
+    available taking all it has), then the remainder one start at a time to the cells that can take one, in a fixed hash order of
+    the cell names."""
+    cells = sorted(avail)
+    q = max((q for q in range(per_cell + 1) if sum(min(q, avail[c]) for c in cells) <= total), default=0)
+    quota = {c: min(q, avail[c]) for c in cells}
+    left = total - sum(quota.values())
+    order = sorted(cells, key=lambda c: hashlib.sha256(f"{seed}|{c}".encode()).hexdigest())
+    while left > 0:
+        grew = False
+        for c in order:
+            if left > 0 and quota[c] < min(per_cell, avail[c]):
+                quota[c] += 1
+                left -= 1
+                grew = True
+        if not grew:
+            break
+    return quota
+
+
+def pick_human(pool: list[dict], outcomes: dict, *, played: set[str], per_cell: int = HUMAN_PER_CELL, total: int = HUMAN_TOTAL,
+               seed: int = HUMAN_SEED) -> tuple[list[dict], dict, Counter]:
+    """The human stratum's starts from the human start list: clean ones (their run never played by the loop) that have an outcome,
+    by cell (act and kind, a boss per boss), at most one start a run, the `human_quota` of each cell by the seeded hash. Returns (the
+    chosen lite records with their cell, half, `clean` and `stratum` and the human's result), a report by cell, and the count of
+    starts left out by reason."""
+    left_out: Counter = Counter()
+    cells: dict[str, list[dict]] = defaultdict(list)
+    for s in pool:
+        if s["id"] not in outcomes:
+            left_out["no outcome in the sidecar"] += 1
+        elif {pmix.run_of(s["id"]), s.get("run"), s.get("seed")} & played:
+            left_out["its run was played by the loop"] += 1
+        else:
+            cells[cell_of(s)].append(s)
+    ordered = {c: sorted(v, key=lambda s: order_key(seed, s["id"])) for c, v in cells.items()}
+    avail = {c: len({s["run"] for s in v}) for c, v in ordered.items()}
+    quota = human_quota(avail, per_cell, total, seed)
+    target = min(per_cell, total // max(1, len(ordered)))  # what every cell would have if the clean pool filled them all
+    chosen: list[dict] = []
+    report: dict[str, dict] = {}
+    used: set[str] = set()
+    for c in sorted(ordered):
+        took = 0
+        for s in ordered[c]:
+            if took >= quota[c]:
+                break
+            if s["run"] in used:
+                continue
+            used.add(s["run"])
+            took += 1
+            chosen.append({**s, **outcomes[s["id"]], "cell": c, "kind_cell": kind_cell(s), "half": half_of(s["id"]), "practised": 0, "clean": True,
+                           "stratum": "human"})
+        report[c] = {"pool": len(ordered[c]), "runs": avail[c], "quota": quota[c], "chosen": took, "short": took < target}
+    return chosen, report, left_out
+
+
+def write_stem_set(d: Path, stem: str, starts: list[dict]) -> None:
+    """`<stem>.jsonl` (one start a line with its document, sorted by id), its byte index and the list without documents: the shape of
+    `gym_loop.write_start_set` under another name, so the AI exam's own files are not the ones written."""
+    d = Path(d)
+    starts = sorted(starts, key=lambda s: s["id"])
+    index: dict[str, int] = {}
+    out = d / f"{stem}.jsonl"
+    tmp = out.with_suffix(".tmp")
+    with open(tmp, "wb") as fh:
+        for s in starts:
+            index[s["id"]] = fh.tell()
+            fh.write((json.dumps(s) + "\n").encode("utf-8"))
+    os.replace(tmp, out)
+    gl.write_json(d / f"{stem}.index.json", index)
+    gl.write_json(d / f"{stem}.lite.json", [{k: v for k, v in s.items() if k != "doc"} for s in starts])
+
+
+def ai_exam_files(p: dict) -> list[Path]:
+    """The files that make the AI exam what it is (starts, index, lite list, meta, baseline): `add-human` leaves them as they are."""
+    return [p["starts"], p["starts"].with_name("starts.index.json"), p["starts"].with_name("starts.lite.json"), p["meta"], p["baseline"]]
+
+
+def build_human(loop_root: Path = LOOP_ROOT, out: Path = EXAM_DIR, *, starts_dir: Path | None = None, per_cell: int = HUMAN_PER_CELL,
+                total: int = HUMAN_TOTAL, seed: int = HUMAN_SEED, rebuild: bool = False, exam_ids=None) -> dict:
+    """Add the human stratum to the exam folder as a second file; returns its meta. The AI exam's files are checked unchanged, the
+    human starts' runs go on `exclude_runs.json` (merged, the old file kept as `.pre-human.bak` once), and an existing stratum is kept
+    unless `rebuild` (then its files get a dated backup name)."""
+    import human_starts as hs  # noqa: PLC0415 -- pure Python; the corpus is not read here
+
+    p = exam_paths(out)
+    if not p["starts"].exists():
+        raise FileNotFoundError(f"no exam in {out}: the human stratum is added to an exam")
+    if p["human_starts"].exists() and not rebuild:
+        raise FileExistsError(f"{p['human_starts']} exists: the stratum is a fixed ruler; --rebuild replaces it")
+    loop_root = Path(loop_root)
+    sd = Path(starts_dir) if starts_dir else loop_root / "starts"
+    lite = gl.read_json(sd / f"{hs.STEM}.lite.json", [])
+    side = gl.read_json(sd / hs.OUTCOME_FILE, {}) or {}
+    outcomes = side.get("outcomes") or {}
+    if not lite or not outcomes:
+        raise FileNotFoundError(f"no human starts or no outcomes in {sd}: run `human_starts.py outcomes`")
+    ids = hs.read_exam_ids() if exam_ids is None else frozenset(exam_ids)
+    hs.assert_no_exam((s["run"] for s in lite), ids)  # the corpus's exam fifth is never an input
+    played = played_runs(loop_root)
+    chosen, report, left_out = pick_human(lite, outcomes, played=played, per_cell=per_cell, total=total, seed=seed)
+    if not chosen:
+        raise ValueError("no clean human start to add")
+    hs.assert_no_exam((s["run"] for s in chosen), ids)
+    before = {f.name: gl.sha256_file(f) for f in ai_exam_files(p) if f.exists()}
+    src = str(sd / f"{hs.STEM}.jsonl")
+    keys = ("cell", "kind_cell", "half", "practised", "clean", "stratum")
+    full = [{**gl.load_start(src, s["id"]), **{k: s[k] for k in keys}, **outcomes[s["id"]]} for s in chosen]
+    if p["human_starts"].exists():
+        stamp = gl.stamp().replace(":", "")
+        for f in (p["human_starts"], p["human_starts"].with_name(f"{HUMAN_STEM}.index.json"), p["human_lite"], p["human_meta"]):
+            if f.exists():
+                f.rename(f.with_name(f.name + f".{stamp}.bak"))
+    write_stem_set(p["dir"], HUMAN_STEM, full)
+    # the practice sampler drops the stratum's runs from its next segment
+    ex = gl.read_json(p["exclude"], {}) or {}
+    backup = p["exclude"].with_name(p["exclude"].name + ".pre-human.bak")
+    if p["exclude"].exists() and not backup.exists():
+        backup.write_bytes(p["exclude"].read_bytes())
+    runs = sorted({s["run"] for s in full})
+    ex["run_seeds"] = sorted(set(ex.get("run_seeds") or []) | set(runs))
+    ex["start_ids"] = sorted(set(ex.get("start_ids") or []) | {s["id"] for s in full})
+    ex["by_stratum"] = {**(ex.get("by_stratum") or {}), "human": len(full)}
+    ex["starts"] = int(ex.get("starts") or 0) + len(full)
+    ex["human_stratum"] = {"rule": HUMAN_RULE, "written": gl.stamp(), "starts": len(full), "runs": len(runs)}
+    gl.write_json(p["exclude"], ex)
+    after = {f.name: gl.sha256_file(f) for f in ai_exam_files(p) if f.exists()}
+    if after != before:
+        raise RuntimeError(f"the AI exam's files moved while the human stratum was added: {sorted(k for k in after if after[k] != before.get(k))}")
+    by_cell = Counter(s["cell"] for s in full)
+    meta = {"rule": HUMAN_RULE, "written": gl.stamp(), "seed": seed, "per_cell": per_cell, "total": total, "draws": DRAWS, "namespace": NS,
+            "starts": len(full), "runs": len(runs), "halves": dict(Counter(s["half"] for s in full)),
+            "by_kind_cell": dict(sorted(Counter(s["kind_cell"] for s in full).items())), "by_cell": {c: {**report[c], "chosen_total": by_cell.get(c, 0)} for c in sorted(report)},
+            "short_cells": sorted(c for c, v in report.items() if v["short"]), "left_out": dict(left_out), "played_runs": len(played),
+            "outcomes_rule": side.get("rule"), "outcomes_written": side.get("written"), "survived": sum(1 for s in full if s.get("human_survived")),
+            "ai_files_sha256": before, "half_rule": HALF_PREFIX + "<start id>: the AI exam's rule"}
+    gl.write_json(p["human_meta"], meta)
+    say(out, f"add-human: {len(full)} human starts, {len(runs)} runs added to exclude_runs.json, short cells {meta['short_cells']}")
     return meta
 
 
@@ -669,7 +858,7 @@ def blocked_reason(*, starting: bool, until: str | None = None, stop_file: Path 
         return "pause"
     if starting and fg.MAIN_LOCK.exists():
         return "main.lock"
-    tag = gl.other_quiet(allow=(TAG,))
+    tag = gl.other_quiet(allow=(TAG, *ALLOW_QUIET))
     return f"quiet:{tag}" if tag else None
 
 
@@ -754,16 +943,21 @@ def resolve_player(name: str, loop_root: Path = LOOP_ROOT) -> Path:
 
 
 def exam_tasks(starts: dict, label: str, player: str, config: str, exam_dir: Path, done: set, draws: int = DRAWS,
-               half: str = "all", limit: int = 0) -> list:
-    """The games still to play, long fights first (bosses, then elites, then hallways: the run's tail is the short ones).
-    `limit` (a smoke test) keeps that many starts, spread over the cells by the seeded hash."""
-    info = {"starts": str(exam_paths(exam_dir)["starts"]), "player": player, "config": config, "ns": NS, "label": label}
+               half: str = "all", limit: int = 0, human: dict | None = None) -> list:
+    """The games still to play, long fights first (bosses, then elites, then hallways: the run's tail is the short ones). The human
+    stratum's starts (`human`) are played from their own file. `limit` (a smoke test) keeps that many starts, spread over the cells by
+    the seeded hash."""
+    p = exam_paths(exam_dir)
+    base = {"player": player, "config": config, "ns": NS, "label": label}
+    infos = {"ai": {"starts": str(p["starts"]), **base}, "human": {"starts": str(p["human_starts"]), **base}}
     rank = {"boss": 0, "elite": 1, "hallway": 2}
-    sel = [s for s in starts.values() if half == "all" or s["half"] == half]
+    sel = [(s, infos["ai"]) for s in starts.values() if half == "all" or s["half"] == half]
+    sel += [(s, infos["human"]) for s in (human or {}).values() if half == "all" or s["half"] == half]
     if limit:
-        sel = sorted(sel, key=lambda s: order_key(SELECT_SEED, s["id"]))[:limit]
-    tasks = [("a3-v1", s["id"], j, s["cat"], info) for s in sel for j in range(draws) if (s["id"], j) not in done]
-    tasks.sort(key=lambda t: (rank[starts[t[1]]["kind"]], t[2], t[1]))
+        sel = sorted(sel, key=lambda x: order_key(SELECT_SEED, x[0]["id"]))[:limit]
+    tasks = [("a3-v1", s["id"], j, s["cat"], info) for s, info in sel for j in range(draws) if (s["id"], j) not in done]
+    kind = {s["id"]: s["kind"] for s, _ in sel}
+    tasks.sort(key=lambda t: (rank[kind[t[1]]], t[2], t[1]))
     return tasks
 
 
@@ -820,10 +1014,16 @@ def prepare_process() -> None:
 def run_player(a: argparse.Namespace, label: str, player_dir: Path, half: str, games: Path) -> int:
     """Play a player's missing exam games under the lock. Returns 0 (all played), 3 (blocked or stopped before the end)."""
     d = Path(a.exam_dir)
-    starts = load_exam(d)
+    stratum = getattr(a, "stratum", "all")
+    all_starts = load_exam(d)
+    starts = all_starts if stratum in ("all", "ai") else {}
+    human = load_human_exam(d) if stratum in ("all", "human") else {}
+    if stratum == "human" and not human:
+        print(f"{label}: no human stratum in {d}: run `fight_exam.py add-human`")
+        return 2
     done = {(r["start"], int(r["j"])) for r in fg.read_jsonl(games)}
     draws, limit = getattr(a, "draws", DRAWS), getattr(a, "limit", 0)
-    tasks = exam_tasks(starts, label, label, a.config, d, done, draws=draws, half=half, limit=limit)
+    tasks = exam_tasks(starts, label, label, a.config, d, done, draws=draws, half=half, limit=limit, human=human)
     if not tasks:
         print(f"{label}: all {len(done)} games are played")
         return 0
@@ -832,15 +1032,16 @@ def run_player(a: argparse.Namespace, label: str, player_dir: Path, half: str, g
     try:
         with ExamLock(until=until, stop_file=d / "STOP") as lock:
             if not (exam_paths(d)["baseline"]).is_file() and not a.no_baseline:
-                make_baseline(d, a.judge_path, starts)
-            say(d, f"{label}: playing {len(tasks)} games of {len(starts)} starts (half {half}) under {a.config}")
+                make_baseline(d, a.judge_path, all_starts)
+            say(d, f"{label}: playing {len(tasks)} games of {len(starts)} starts"
+                   f"{f' and {len(human)} human starts' if human else ''} (half {half}) under {a.config}")
             stopped = play_exam_tasks(d, lock, tasks, games, player_dir, label, procs=a.procs, k=a.k, prior=a.prior, judge=a.judge or None)
     except Blocked as why:
         print(f"{label}: not started: {why}")
         say(d, f"{label}: not started: {why}")
         return 3
     left = len(exam_tasks(starts, label, label, a.config, d, {(r["start"], int(r["j"])) for r in fg.read_jsonl(games)}, draws=draws,
-                          half=half, limit=limit))
+                          half=half, limit=limit, human=human))
     print(f"{label}: stopped ({stopped}); {left} games left" if stopped else f"{label}: played; {left} left")
     return 3 if stopped or left else 0
 
@@ -984,7 +1185,7 @@ def report_text(games: dict, starts: dict, label: str, cal: dict | None = None, 
     played = [s for s in starts if any((s, j) in games for j in range(DRAWS))]
     half_n = Counter(starts[s]["half"] for s in starts)
     half_g = Counter(starts[s]["half"] for (s, j) in games if s in starts)
-    out = [f"fight exam, player {label}: {len(played)} of {len(starts)} starts played, {len(games)} games "
+    out = [f"fight exam, player {label}: {len(played)} of {len(starts)} starts played, {sum(1 for (s, _j) in games if s in starts)} games "
            f"(half A {half_n['A']} starts / {half_g['A']} games, half B {half_n['B']} / {half_g['B']})"]
     out.append(format_cells(cell_rows(games, starts), "all starts (the calibration's flags not applied)"))
     out.append("")
@@ -1074,6 +1275,114 @@ def _width(b: dict, scale: float) -> float:
     return float("nan") if b["lo"] is None or b["hi"] is None else scale * (b["hi"] - b["lo"])
 
 
+# ----------------------------------------------------------------------------------------------- the human line (readings)
+
+
+def human_items(games: dict, human: dict) -> dict[str, list[dict]]:
+    """The human stratum's starts by cell, each with the player's means over its draws (`p_...`), the human's own result (`h_...`) and the
+    player's minus the human's (`d_...`), for survival (`won`), HP lost (a death loses the whole HP going in on both sides), the gym's
+    L0 (0 to 1), turns and potions spent. Starts the player has no game of are left out."""
+    sm = start_means(games, human)
+    out: dict[str, list[dict]] = defaultdict(list)
+    for sid, m in sm.items():
+        s = human[sid]
+        h_won = 1.0 if s.get("human_survived") else 0.0
+        item = {"start": sid, "draws": m["draws"], "p_won": m["won"], "h_won": h_won, "d_won": m["won"] - h_won}
+        for key, hk in (("hp_lost", "human_hp_lost"), ("L0", "human_l0_unit"), ("turns", "human_turns"), ("potions_used", "human_potions_used")):
+            pv, hv = m[key], s.get(hk)
+            item["p_" + key], item["h_" + key] = pv, hv
+            item["d_" + key] = None if pv is None or hv is None else pv - hv
+        out[s["cell"]].append(item)
+    return out
+
+
+def kind_of_cell(cell: str) -> str:
+    return "-".join(cell.split("-")[:2])
+
+
+def human_row(label: str, groups: dict, boot: int) -> dict:
+    """One line of the human reading over `groups` {cell: [item]}: counts, the means of the two sides and the paired differences with
+    their bootstrap intervals (survival and HP lost)."""
+    items = [it for v in groups.values() for it in v]
+    return {"label": label, "starts": len(items), "games": sum(it["draws"] for it in items),
+            "p_won": mean(it["p_won"] for it in items), "h_won": mean(it["h_won"] for it in items),
+            "p_hp_lost": mean(it["p_hp_lost"] for it in items), "h_hp_lost": mean(it["h_hp_lost"] for it in items),
+            "p_L0": mean(it["p_L0"] for it in items), "h_L0": mean(it["h_L0"] for it in items),
+            "d_won": bootstrap(groups, mean_stat("d_won"), boot=boot), "d_hp_lost": bootstrap(groups, mean_stat("d_hp_lost"), boot=boot)}
+
+
+def human_rows(items: dict[str, list[dict]], boot: int = BOOT, detail: bool = True) -> list[dict]:
+    """The lines: each act-and-kind cell (and under a boss kind each boss with `HUMAN_MIN_ROW` starts, when `detail`), then all."""
+    rows = []
+    kinds = sorted({kind_of_cell(c) for c in items}, key=lambda k: CELL_ORDER.index(k) if k in CELL_ORDER else 99)
+    for k in kinds:
+        groups = {c: v for c, v in items.items() if kind_of_cell(c) == k}
+        rows.append({**human_row(k, groups, boot), "level": 0})
+        if detail and k.endswith("boss"):
+            rows += [{**human_row(c, {c: items[c]}, boot), "level": 1} for c in sorted(groups) if len(items[c]) >= HUMAN_MIN_ROW]
+    rows.append({**human_row("all", items, boot), "level": 0})
+    return rows
+
+
+def human_table(rows: list[dict], title: str) -> str:
+    head = (f"{'cell':<34}{'starts':>7}{'games':>7} | {'surv%':>6}{'human':>7}{'diff pts [95%]':>24} | {'HP lost':>8}{'human':>7}{'diff HP [95%]':>24} |"
+            f"{'L0':>6}{'human':>7}")
+    lines = [title, head, "-" * len(head)]
+    for r in rows:
+        name = ("  " * r["level"]) + cell_label(r["label"])
+        lines.append(f"{name:<34}{r['starts']:>7}{r['games']:>7} | {pct(r['p_won']):>6}{pct(r['h_won']):>7}{ci_text(r['d_won'], 100, 1):>24} | "
+                     f"{num(r['p_hp_lost'], 1):>8}{num(r['h_hp_lost'], 1):>7}{ci_text(r['d_hp_lost'], 1, 1):>24} |"
+                     f"{num(r['p_L0'], 3):>6}{num(r['h_L0'], 3):>7}")
+    return "\n".join(lines)
+
+
+def human_report_text(games: dict, human: dict, label: str, boot: int = BOOT, detail: bool = True) -> str:
+    """The human line of one player: his survival and HP lost against the human's own on the same starts (the human stratum),
+    by act and kind and by boss, with the paired differences (player minus human). Positive survival and negative HP lost mean the
+    player did better than the human."""
+    played = [s for s in human if any((s, j) in games for j in range(DRAWS))]
+    n_games = sum(1 for (s, _j) in games if s in human)
+    half_n = Counter(human[s]["half"] for s in played)
+    head = (f"fight exam, human stratum, player {label}: {len(played)} of {len(human)} starts played, {n_games} games "
+            f"(half A {half_n['A']} starts, half B {half_n['B']}); human survived on {sum(1 for s in played if human[s].get('human_survived'))} "
+            f"of the played starts")
+    if not played:
+        return head
+    items = human_items(games, human)
+    table = human_table(human_rows(items, boot, detail), "player minus human, paired on the same starts (survival in points, HP lost in HP; "
+                        "a death costs the whole HP going in on both sides)")
+    return head + "\n" + table
+
+
+def human_compare_text(champ: dict, cand: dict, human: dict, champ_label: str, cand_label: str, half: str = "A", boot: int = BOOT) -> str:
+    """The human line in a comparison: the candidate against the human (full table), the champion against the human (the same starts,
+    act and kind lines), and the candidate against the champion on those starts, paired (no calibration flags: the human is not a draw)."""
+    sub = {s: v for s, v in human.items() if half == "all" or v["half"] == half}
+    if not sub:
+        return "human stratum: none in the exam"
+    out = [f"human stratum, half {half}: {len(sub)} starts"]
+    out.append(human_report_text(cand, sub, cand_label, boot))
+    if any(s in sub for (s, _j) in champ):
+        out += ["", human_report_text(champ, sub, champ_label, boot, detail=False)]
+    w = {sid: 1.0 for sid in sub}
+    groups = paired_starts(champ, cand, sub, w)
+    n_starts = sum(len(v) for v in groups.values())
+    if n_starts:
+        out += ["", f"{cand_label} minus {champ_label} on the human stratum: {n_starts} starts, {sum(it['draws'] for v in groups.values() for it in v)} paired games"]
+        out.append(f"{'win rate difference':<32}: {ci_text(bootstrap(groups, mean_stat('d_won'), boot=boot), 100, 2, ' points')}")
+        out.append(f"{'HP lost a fight':<32}: {ci_text(bootstrap(groups, mean_stat('d_hp_lost'), boot=boot), 1, 2)}")
+        out.append(f"{'L0 (0 to 1)':<32}: {ci_text(bootstrap(groups, mean_stat('d_L0'), boot=boot), 1, 4)}")
+        kinds: dict[str, dict] = defaultdict(dict)
+        for c, v in groups.items():
+            kinds[kind_of_cell(c)][c] = v
+        for k in sorted(kinds, key=lambda k: CELL_ORDER.index(k) if k in CELL_ORDER else 99):
+            b, h = bootstrap(kinds[k], mean_stat("d_won"), boot=boot), bootstrap(kinds[k], mean_stat("d_hp_lost"), boot=boot)
+            out.append(f"  {k:<30}: win {ci_text(b, 100, 1, ' pts')} over {b['n']} starts; HP lost {ci_text(h, 1, 1)}")
+    else:
+        out.append(f"\nno start of the human stratum has games of both {cand_label} and {champ_label} yet")
+    return "\n".join(out)
+
+
 def load_baseline(d: Path) -> dict | None:
     rows = fg.read_jsonl(exam_paths(d)["baseline"])
     return baseline_by_start(rows) if rows else None
@@ -1095,10 +1404,16 @@ def cmd_report(a: argparse.Namespace) -> int:
     d = Path(a.exam_dir)
     starts = load_exam(d)
     label = a.player or champion_label()
-    games = index_games(fg.read_jsonl(games_path(d, label)))
-    if not games:
+    all_games = index_games(fg.read_jsonl(games_path(d, label)))
+    games = {k: v for k, v in all_games.items() if k[0] in starts}  # the human stratum's rows are read below, not here
+    human = load_human_exam(d)
+    human_games = {k: v for k, v in all_games.items() if k[0] in human}
+    if not games and not human_games:
         print(f"no games of {label} in {games_path(d, label).name}")
         return 1
+    if not games:
+        print(human_report_text(human_games, human, label, boot=getattr(a, "boot", BOOT)))
+        return 0
     cal = calibration(games, starts)
     if a.write_calibration:
         gl.write_json(calibration_path(d, label), {**cal, "player": label, "written": gl.stamp(), "rule": EXAM_RULE})
@@ -1108,6 +1423,8 @@ def cmd_report(a: argparse.Namespace) -> int:
     if short:
         print("\ncells short of the target " + str(meta.get("per_cell")) + ": " + ", ".join(
             f"{cell_label(c)} {meta['by_cell'][c]['chosen_total']}" for c in short))
+    if human_games:
+        print("\n" + human_report_text(human_games, human, label, boot=getattr(a, "boot", BOOT)))
     return 0
 
 
@@ -1116,7 +1433,9 @@ def cmd_compare(a: argparse.Namespace) -> int:
     starts = load_exam(d)
     champ = a.champion or champion_label()
     cand_label = Path(a.candidate).name
-    champ_games = index_games(fg.read_jsonl(games_path(d, champ)))
+    champ_all = index_games(fg.read_jsonl(games_path(d, champ)))
+    champ_games = {k: v for k, v in champ_all.items() if k[0] in starts}
+    human = load_human_exam(d)
     cal = gl.read_json(calibration_path(d, champ), None)
     if cal is None:
         if not champ_games:
@@ -1129,7 +1448,8 @@ def cmd_compare(a: argparse.Namespace) -> int:
         rc = run_player(a, cand_label, cand_dir, "A", games_path(d, cand_label))
         if rc:
             return rc
-    cand_games = index_games(fg.read_jsonl(games_path(d, cand_label)))
+    cand_all = index_games(fg.read_jsonl(games_path(d, cand_label)))
+    cand_games = {k: v for k, v in cand_all.items() if k[0] in starts}
     if not cand_games:
         print(f"no games of {cand_label}")
         return 1
@@ -1139,6 +1459,9 @@ def cmd_compare(a: argparse.Namespace) -> int:
         if len(seen) > 1:
             print(f"WARNING: the two players' games differ in {field}: {sorted(map(str, seen))}")
     print(compare_text(champ_games, cand_games, starts, cal, load_baseline(d), champ, cand_label, half="A", boot=a.boot))
+    if human and any(k[0] in human for k in cand_all):
+        print("\n" + human_compare_text({k: v for k, v in champ_all.items() if k[0] in human}, {k: v for k, v in cand_all.items() if k[0] in human},
+                                         human, champ, cand_label, half="A", boot=a.boot))
     return 0
 
 
@@ -1161,6 +1484,26 @@ def cmd_select(a: argparse.Namespace) -> int:
     for c in sorted(meta["by_cell"], key=cell_sort):
         v = meta["by_cell"][c]
         print(f"{cell_label(c):<32}{v.get('pool', 0):>6}{v.get('clean', 0):>7}{v.get('chosen_total', 0):>8}{'  SHORT' if v.get('short') else ''}")
+    return 0
+
+
+def cmd_add_human(a: argparse.Namespace) -> int:
+    """Add the human stratum. The loop is paused while it runs (the lock) so the plays it is picked against are the plays there are."""
+    kw = dict(per_cell=a.per_cell, total=a.total, rebuild=a.rebuild, starts_dir=Path(a.starts_dir) if a.starts_dir else None)
+    try:
+        if a.no_lock:
+            meta = build_human(LOOP_ROOT, Path(a.exam_dir), **kw)
+        else:
+            with ExamLock(until=None, stop_file=Path(a.exam_dir) / "STOP"):
+                meta = build_human(LOOP_ROOT, Path(a.exam_dir), **kw)
+    except Blocked as why:
+        print(f"not started: {why}")
+        return 3
+    print(json.dumps({k: meta[k] for k in ("starts", "runs", "halves", "by_kind_cell", "short_cells", "left_out", "played_runs", "survived")}, indent=1))
+    print("cell                              pool   runs  quota  chosen")
+    for c in sorted(meta["by_cell"], key=cell_sort):
+        v = meta["by_cell"][c]
+        print(f"{cell_label(c):<32}{v['pool']:>6}{v['runs']:>7}{v['quota']:>7}{v['chosen_total']:>8}{'  SHORT' if v['short'] else ''}")
     return 0
 
 
@@ -1192,7 +1535,10 @@ def main(argv=None) -> int:
 
     def common(p, play: bool = False):
         p.add_argument("--exam-dir", default=str(EXAM_DIR))
+        p.add_argument("--allow-quiet", action="append", default=[], metavar="TAG",
+                       help="a QUIET.lock tag this run does not wait for (repeatable; e.g. the lab's daytime score)")
         if play:
+            p.add_argument("--stratum", choices=("all", "ai", "human"), default="all", help="which starts to play (the human stratum is a second file)")
             p.add_argument("--config", default=DEFAULT_CONFIG, help="the search config the exam plays (the gate's is the daemon's)")
             p.add_argument("--judge", default="", help="the judge checkpoint a judge config's leaves read")
             p.add_argument("--judge-path", default=str(gl.REF / "agent" / "judge" / "v0" / "judge.pt"), help="the baseline's judge")
@@ -1211,6 +1557,13 @@ def main(argv=None) -> int:
     p.add_argument("--allow-practised", action="store_true", help="top a short cell up with the least-played starts (marked practised)")
     p.add_argument("--rebuild", action="store_true", help="replace an existing exam (its files get a dated backup name)")
     p.add_argument("--no-lock", action="store_true", help="do not pause the loop (a scratch folder, the tests)")
+    p = sub.add_parser("add-human")
+    common(p)
+    p.add_argument("--per-cell", type=int, default=HUMAN_PER_CELL)
+    p.add_argument("--total", type=int, default=HUMAN_TOTAL)
+    p.add_argument("--starts-dir", default="", help="the folder of human-starts.* and human-outcomes.json (default: the loop's starts/)")
+    p.add_argument("--rebuild", action="store_true", help="replace an existing stratum (its files get a dated backup name)")
+    p.add_argument("--no-lock", action="store_true", help="do not pause the loop (a scratch folder, the tests)")
     p = sub.add_parser("baseline")
     common(p, True)
     p = sub.add_parser("play")
@@ -1220,6 +1573,7 @@ def main(argv=None) -> int:
     p.add_argument("--half", choices=("A", "B", "all"), default="all")
     p = sub.add_parser("report")
     common(p)
+    p.add_argument("--boot", type=int, default=BOOT, help="bootstrap draws of the human line")
     p.add_argument("--player", default="")
     p.add_argument("--write-calibration", action="store_true", help="store the player's always/never-won flags (the champion's)")
     p = sub.add_parser("compare")
@@ -1229,7 +1583,9 @@ def main(argv=None) -> int:
     p.add_argument("--no-play", action="store_true")
     p.add_argument("--boot", type=int, default=BOOT)
     a = ap.parse_args(argv)
-    return {"select": cmd_select, "baseline": cmd_baseline, "play": cmd_play, "report": cmd_report, "compare": cmd_compare}[a.cmd](a)
+    ALLOW_QUIET[:] = list(getattr(a, "allow_quiet", None) or [])
+    return {"select": cmd_select, "add-human": cmd_add_human, "baseline": cmd_baseline, "play": cmd_play, "report": cmd_report,
+            "compare": cmd_compare}[a.cmd](a)
 
 
 if __name__ == "__main__":
