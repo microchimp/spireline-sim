@@ -145,8 +145,7 @@ def step_play(ctx: Ctx) -> dict:
             raise SystemExit(f"round1 play: gen0.py emu failed (rc {rc})")
         agent, name, runs = play_runs(ctx)
     doc = {"round": ctx.cfg["round"], "created": utc(), "agent": agent.describe(), "config": name, "wanted": int(P["runs"]),
-           "runs": len(runs), "jobs": sorted({r["_job"] for r in runs}), "played_now": played,
-           "seeds": [r["seed"] for r in runs[:5]] and None}
+           "runs": len(runs), "jobs": sorted({r["_job"] for r in runs}), "played_now": played}
     write_json(ctx.p("play/play.json"), doc)
     return ctx.done("play", {"runs": len(runs)})
 
@@ -341,7 +340,7 @@ def promote_cmd(ctx: Ctx, which: str, cand: Path, seeds_file: str) -> list[str]:
            "--sequential", "--keep-rule", B["keep_rule"], "--smoke-seeds", str(B["seeds"] if which == "smoke" else ctx.cfg["smoke"]["seeds"])]
     if which == "block":
         cmd += ["--batch-seeds", str(B["batch_seeds"])]
-    return cmd + ["--lab-runs", str(ctx.lab_runs)]
+    return cmd + ["--prior-server", "auto", "--gpu-python", ctx.cfg["paths"]["gpu_python"], "--server-procs", "20", "--lab-runs", str(ctx.lab_runs)]
 
 
 def step_candidate(ctx: Ctx) -> dict:
