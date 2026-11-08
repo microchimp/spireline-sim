@@ -386,7 +386,8 @@ def cmd_report(a: argparse.Namespace) -> int:
         starts = {s["id"]: s for s in _rows(out / "cells" / "starts.jsonl")}
         cells = cell_reading(_rows(out / "cells" / "games.jsonl"), starts)
     batch = None
-    folders = sorted(d for d in out.glob("batch*") if all((d / arm / "runs.jsonl").is_file() for arm in ARMS))  # batch, batch2, ...: other seeds
+    # batch, batch2, ...: other seeds; a folder counts once both its arms finished (an arm stopped half way has runs but no summary)
+    folders = sorted(d for d in out.glob("batch*") if all((d / arm / "runs.jsonl").is_file() and (d / arm / "summary.json").is_file() for arm in ARMS))
     if folders:
         batch = batch_reading([r for d in folders for r in _rows(d / "a3-v1" / "runs.jsonl")], [r for d in folders for r in _rows(d / "a3-v1-r" / "runs.jsonl")])
         batch["folders"] = [d.name for d in folders]

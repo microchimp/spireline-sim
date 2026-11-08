@@ -155,8 +155,14 @@ class ReportMergesBatchesTests(unittest.TestCase):
                     d = out / folder / arm
                     d.mkdir(parents=True)
                     rows = [run(sd, [0, 1 + extra, 4, 60, 80], beat=True) for sd in seeds]
+                    (d / "summary.json").write_text("{}", encoding="utf-8")
                     (d / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
             (out / "batch3" / "a3-v1").mkdir(parents=True)  # a folder holding only one arm is not read
+            (out / "batch4" / "a3-v1-r").mkdir(parents=True)  # nor one whose arm stopped half way (rows, no summary)
+            (out / "batch4" / "a3-v1-r" / "runs.jsonl").write_text(json.dumps(run("Z", [0, 9, 4, 60, 80], beat=True)) + chr(10), encoding="utf-8")
+            (out / "batch4" / "a3-v1").mkdir(parents=True)
+            (out / "batch4" / "a3-v1" / "runs.jsonl").write_text(json.dumps(run("Z", [0, 1, 4, 60, 80], beat=True)) + chr(10), encoding="utf-8")
+            (out / "batch4" / "a3-v1" / "summary.json").write_text("{}", encoding="utf-8")
             with mock.patch("builtins.print"):
                 cf.cmd_report(argparse.Namespace(out=str(out)))
             rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
