@@ -39,6 +39,11 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
    The rule (`PROMOTION_RULE`) was fixed here before the first checkpoint and amended once (v2, 2026-11-01); `decide` applies it.
    A promoted checkpoint becomes "Fight player, version N": its games get a fight-board row, committed to Spireline main
    (`board_commit`).
+   **The human bar** (D55 addendum 11, `--human-bar on|off`, on): a stage-2 verdict (promote or reject) is followed by the candidate's
+   400 human-stratum fight starts of the fight exam (`rl/fight_exam.py`, four draws, the exam's own configuration), played by the gate's
+   processes; the candidate's, the incumbent's and the human's survival and HP lost on those starts go into the verdict (`human`), the
+   loop log and `gate/verdicts.jsonl`. It is report-only: `PROMOTION_RULE` and `decide` never read it, and a play a stop cuts short is
+   recorded as `human: "stopped"`.
 
 Between steps the daemon drops its QUIET.lock line and waits `--yield-s` so a waiting gate can take the lock; it never holds the
 line through the night (03:10-03:45Z and while LAB/nightly/active exists), and starts nothing while main.lock, LAB/PAUSE or LAB/HALT
@@ -1241,6 +1246,73 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
     return out
 
 
+# ---------------------------------------------------------------------------------------------------------- the human bar at the gate
+
+
+HUMAN_BAR = {"name": "gym-loop-human-bar-v1", "config": "a3-v1", "draws": 4}
+# What the gate plays after a stage-2 verdict: the fight exam's human stratum under the exam's own configuration (`fight_exam
+# .DEFAULT_CONFIG`, `DRAWS`), whatever the gate's own `--player-config` is. Report-only: no part of it enters PROMOTION_RULE or `decide`.
+
+
+def _fight_exam():
+    """`fight_exam`, which imports this module as `gym_loop`: when the daemon runs this file as `__main__` the module is registered under
+    its own name first, so the exam shares these functions and constants instead of loading a second copy."""
+    sys.modules.setdefault("gym_loop", sys.modules[__name__])
+    import fight_exam  # noqa: PLC0415
+
+    return fight_exam
+
+
+def human_bar(loop: Loop, cand: str, cand_dir: Path, inc: str, procs: int, k: int, prior: str, daemon=None) -> dict | str:
+    """The candidate on the fight exam's human stratum, then the human line. Plays the stratum's games the candidate has no row of
+    (`exam/games-<cand>.jsonl`, resumable) with the gate's own lockstep play (`play_tasks`: BelowNormal, the QUIET line, the stop
+    reasons of `why_blocked` through `daemon`), reads the candidate's and the incumbent's games on it (`exam/games-<inc>.jsonl`; the
+    incumbent's side is left out if it has none) and returns the reading (`fight_exam.human_bar_reading` with its `line`), or "stopped"
+    when a stop cut the play short, or "no human stratum" when the exam has none."""
+    fe = _fight_exam()
+    exam = loop.root / "exam"
+    human = fe.load_human_exam(exam)
+    if not human:
+        loop.log(f"gate {cand}: human bar: no human stratum in {exam.name}/ (fight_exam.py add-human); nothing played")
+        return "no human stratum"
+    games = fe.games_path(exam, cand)
+    cfg, draws = HUMAN_BAR["config"], int(HUMAN_BAR["draws"])
+    done = {(r["start"], int(r["j"])) for r in fg.read_jsonl(games)}
+    tasks = fe.exam_tasks({}, cand, cand, cfg, exam, done, draws=draws, human=human)
+    if tasks:
+        loop.log(f"gate {cand}: human bar: {cand} plays {len(tasks)} games on {len(human)} human-stratum starts under {cfg}")
+        stopped = play_tasks(loop, tasks, games, cand_dir, procs, k, prior, f"human-bar-{cand}", steps="fight_exam:exam_game_steps",
+                             daemon=daemon)
+        if stopped:
+            loop.log(f"gate {cand}: human bar: stopped ({stopped}); the games played stay in {games.name}")
+            return "stopped"
+    inc_games = fe.human_games(fg.read_jsonl(fe.games_path(exam, inc)), human, cfg)
+    reading = fe.human_bar_reading(fe.human_games(fg.read_jsonl(games), human, cfg), inc_games, human, draws=draws)
+    reading.update(incumbent=inc, candidate=cand, config=cfg)
+    reading["line"] = fe.human_bar_line(reading, inc)
+    loop.log(f"gate {cand}: {reading['line']}")
+    return reading
+
+
+def human_bar_adopt(loop: Loop, cand: str, ver: str) -> int:
+    """A promoted candidate's human games are found under the new version's name: `exam/games-<ver>.jsonl` gets the rows of
+    `exam/games-<cand>.jsonl` it lacks, relabelled as `reuse_incumbent_games` relabels the gate's (the candidate's file stays).
+    Returns how many rows were added."""
+    exam = loop.root / "exam"
+    src, dst = exam / f"games-{cand}.jsonl", exam / f"games-{ver}.jsonl"
+    if not src.is_file():
+        return 0
+    have = {(r["start"], int(r["j"])) for r in fg.read_jsonl(dst)}
+    take = [{**r, "arm": ver, "player": ver, "reused_from": cand} for r in fg.read_jsonl(src) if (r["start"], int(r["j"])) not in have]
+    if take:
+        end = dst.read_bytes()[-1:] if dst.is_file() else b"\n"
+        with open(dst, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("" if end in (b"\n", b"") else "\n")
+            fh.writelines(json.dumps(r) + "\n" for r in take)
+        loop.log(f"gate {cand}: human bar: {len(take)} human-stratum games of {cand} kept as {ver}'s ({dst.name})")
+    return len(take)
+
+
 # ---------------------------------------------------------------------------------------------------------- the gate's pre-filter
 
 
@@ -1753,6 +1825,14 @@ class Daemon:
                      judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
+        if v.get("stage") == 2 and v.get("verdict") in ("promote", "reject") and getattr(self.a, "human_bar", "on") == "on":
+            # the human line (D55 addendum 11): report-only, after the rule has spoken; a stage-1 reject never plays it
+            self.status("gate", candidate=cand, part="human bar")
+            try:
+                v["human"] = human_bar(self.loop, cand, cand_dir, v["incumbent"], self.a.procs, self.a.gate_k, self.a.prior, daemon=self)
+            except Exception as error:  # noqa: BLE001 -- a reading that fails must never change or lose the verdict
+                v["human"] = f"error: {type(error).__name__}"
+                self.loop.log(f"gate {cand}: human bar: {type(error).__name__}: {error}")
         if self.a.prefilter != "off":
             prefilter_note_verdict(self.loop, cand, v)
         older = sorted(p.name for p in self.loop.checkpoints.glob("c[0-9][0-9][0-9][0-9]") if p.name < cand)
@@ -1760,12 +1840,17 @@ class Daemon:
             self.loop.state["gated"].setdefault(old, {"verdict": "superseded", "by": cand})
         self.loop.state["gated"][cand] = {k: v.get(k) for k in ("verdict", "stage", "why", "pairs", "cand_wins", "inc_wins",
                                                                 "win_diff", "win_se", "l0_diff", "p", "incumbent", "config",
-                                                                "stage1_js")}
+                                                                "stage1_js", "human") if k != "human" or "human" in v}
         self.loop.save()
         with open(self.loop.gates / "verdicts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), **{k: v.get(k) for k in v if k not in ("cand_file", "inc_file")}}) + "\n")
         if v.get("verdict") == "promote":
-            promote(self.loop, cand, cand_dir, v, self.a.board)
+            ver = promote(self.loop, cand, cand_dir, v, self.a.board)
+            if "human" in v:
+                try:
+                    human_bar_adopt(self.loop, cand, ver)
+                except OSError as error:
+                    self.loop.log(f"gate {cand}: human bar: games not kept as {ver}'s ({type(error).__name__}: {error})")
 
     def segment(self) -> None:
         loop = self.loop
@@ -1833,6 +1918,8 @@ class Daemon:
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
+        self.loop.log(f"daemon: human bar {getattr(self.a, 'human_bar', 'on')}: a stage-2 verdict is followed by the human stratum "
+                      f"({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}), report-only")
         mcfg = pmix.config(self.loop.starts)
         self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
                       f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
@@ -1965,6 +2052,9 @@ def main(argv=None) -> int:
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
             p.add_argument("--no-gate", action="store_true")
+            p.add_argument("--human-bar", choices=("on", "off"), default="on",
+                           help="after a stage-2 verdict, play the candidate on the fight exam's human stratum and record the human line "
+                                "(report-only; the rule never reads it)")
             p.add_argument("--no-preloss", action="store_true",
                            help="do not keep the position three decisions before a lost practice fight as a start")
             p.add_argument("--prefilter", choices=("best", "incumbent", "off"), default=PREFILTER["mode"],

@@ -13,10 +13,13 @@ Real games are short arena fights with the fixture prior, on core2 in spawned pr
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import io
 import json
 import multiprocessing as mp
 import os
+import random
 import sys
 import tempfile
 import time
@@ -32,8 +35,10 @@ for _path in (ROOT / "rl", ROOT / "src", ROOT, HERE):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+import fight_exam as fe  # noqa: E402
 import fight_gym as fg  # noqa: E402
 import gym_loop as gl  # noqa: E402
+import test_fight_exam as fx  # noqa: E402
 
 F18 = HERE / "fixtures" / "f18_step_hang.json"
 
@@ -752,6 +757,328 @@ class LoopGameTests(unittest.TestCase):
         self.assertEqual((v["rule"], v["stage1_js"]), ("gym-loop-promote-v2", [0]))  # a new loop's stage 1 plays the first pair
         self.assertEqual(v2["verdict"], v["verdict"])
         self.assertEqual({r["arm"] for r in inc_games}, {"v0"})
+
+
+# ---------------------------------------------------------------------------------------------------------- the human bar at the gate
+
+
+class HumanBarGateTests(unittest.TestCase):
+    """The human line after a stage-2 verdict (D55 addendum 11): a tiny stratum (two starts, one draw) and a fake player. The rule is
+    not read by it and does not read it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.loop = gl.Loop(t / "loop")
+        gl.write_start_set(self.loop.starts, [{**s, "doc": {"x": s["id"], "hp": 3}} for s in fx.synthetic_pool()])
+        self.exam = self.loop.root / "exam"
+        with mock.patch.object(gl, "board_run_seeds", lambda: set()):
+            fe.build_exam(self.loop.root, self.exam, per_cell=15)
+        recs, outcomes = fx.human_pool(60)
+        fx.write_human_files(self.loop.starts, recs, outcomes)
+        fe.build_human(self.loop.root, self.exam, per_cell=1, total=2, exam_ids=[])
+        self.human = fe.load_human_exam(self.exam)
+        self.assertEqual(len(self.human), 2)
+        self.cand_dir = t / "ckpt"
+        self.cand_dir.mkdir()
+        (self.cand_dir / "model.json").write_text("{}", encoding="utf-8")
+        (self.loop.gates / "cand.jsonl").write_text(json.dumps(_row("S0", 0, True)) + "\n", encoding="utf-8")
+        self.calls: list[dict] = []
+        self.statuses: list[dict] = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def verdict(self, stage: int, verdict: str, **kw) -> dict:
+        return {"candidate": "c0190", "incumbent": "v0", "config": "cfg", "engine": "eng", "rule": gl.PROMOTION_RULE["name"], "stage1_pair": 0,
+                "stage1_js": [0, 1], "verdict": verdict, "stage": stage, "why": None, "pairs": 8, "cand_wins": 4, "inc_wins": 3,
+                "win_diff": 0.125, "win_se": 0.05, "l0_diff": 0.0, "p": 0.02, "cand_file": "cand.jsonl", "inc_file": "inc.jsonl", **kw}
+
+    def rows(self, label: str, wins) -> list[dict]:
+        return [{"start": sid, "j": 0, "won": bool(wins(i)), "capped": False, "L0": 0.6 if wins(i) else 0.0, "hp_lost": 10.0 if wins(i) else 50.0,
+                 "config": "a3-v1", "stratum": "human", "engine": "eng", "arm": label, "player": label, "cell": s["cell"], "half": s["half"]}
+                for i, (sid, s) in enumerate(sorted(self.human.items()))]
+
+    def write_games(self, label: str, rows: list[dict]) -> Path:
+        p = self.exam / f"games-{label}.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        return p
+
+    def fake_play(self, stop=None, wins=lambda i: i == 0, boom: bool = False):
+        def play(loop, tasks, target, player_dir, procs, k, prior, what, **kw):
+            self.calls.append({"n": len(tasks), "target": Path(target), "dir": Path(player_dir), "procs": procs, "k": k, "prior": prior,
+                               "what": what, "tasks": tasks, **kw})
+            if boom:
+                raise RuntimeError("the lockstep fell over")
+            if stop:
+                return stop
+            order = {sid: i for i, sid in enumerate(sorted(self.human))}
+            with open(target, "a", encoding="utf-8") as fh:
+                for _arm, sid, j, _cat, info in tasks:
+                    w = wins(order[sid])
+                    fh.write(json.dumps({"start": sid, "j": j, "won": w, "capped": False, "L0": 0.6 if w else 0.0, "hp_lost": 10.0 if w else 50.0,
+                                         "config": info["config"], "stratum": "human", "engine": "eng", "arm": info["label"]}) + "\n")
+            return None
+        return play
+
+    def daemon(self, **kw):
+        a = argparse.Namespace(player_config="cfg", procs=3, gate_k=7, prior="cpu", judge="", prefilter="off", board="off", **kw)
+        d = gl.Daemon.__new__(gl.Daemon)
+        d.a, d.loop = a, self.loop
+        d.status = lambda phase, **k: self.statuses.append({"phase": phase, **k})
+        return d
+
+    def gate(self, v: dict, play=None, human_bar: str | None = "on", draws: int = 1) -> gl.Daemon:
+        kw = {} if human_bar is None else {"human_bar": human_bar}
+        d = self.daemon(**kw)
+        with mock.patch.object(gl, "run_gate", lambda *a, **k: dict(v)), mock.patch.object(gl, "play_tasks", play or self.fake_play()), \
+                mock.patch.dict(gl.HUMAN_BAR, {"draws": draws}):
+            d.gate("c0190", self.cand_dir)
+        return d
+
+    def log(self) -> str:
+        p = self.loop.root / "loop.log"
+        return p.read_text(encoding="utf-8") if p.is_file() else ""
+
+    def recorded(self) -> tuple[dict, dict]:
+        state = json.loads((self.loop.root / "state.json").read_text(encoding="utf-8"))["gated"]["c0190"]
+        last = [json.loads(x) for x in (self.loop.gates / "verdicts.jsonl").read_text(encoding="utf-8").splitlines()][-1]
+        return state, last
+
+    def test_a_stage_one_reject_plays_nothing_and_records_no_human_field(self):
+        self.gate(self.verdict(1, "reject", why="stage 1: -3.0 points"))
+        self.assertEqual(self.calls, [])
+        state, last = self.recorded()
+        self.assertEqual(state["verdict"], "reject")
+        self.assertNotIn("human", state)
+        self.assertNotIn("human", last)
+        self.assertNotIn("human bar", self.log())
+        self.assertFalse((self.exam / "games-c0190.jsonl").exists())
+
+    def test_a_verdict_that_is_not_a_stage_two_promote_or_reject_plays_nothing(self):
+        self.gate(self.verdict(2, "incomplete"))
+        self.gate(self.verdict(1, "continue"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_stage_two_verdict_plays_the_stratum_with_the_gates_processes_and_records_the_line(self):
+        self.write_games("v0", self.rows("v0", lambda i: i == 1))
+        d = self.gate(self.verdict(2, "reject", why="McNemar p 0.4 >= 0.05"))
+        self.assertEqual(len(self.calls), 1)
+        c = self.calls[0]
+        self.assertEqual((c["n"], c["target"].name, c["dir"], c["procs"], c["k"], c["prior"], c["what"]),
+                         (2, "games-c0190.jsonl", self.cand_dir, 3, 7, "cpu", "human-bar-c0190"))
+        self.assertEqual((c["steps"], c["daemon"]), ("fight_exam:exam_game_steps", d))  # the exam's game, stoppable by the daemon's reasons
+        self.assertEqual({(t[1], t[2]) for t in c["tasks"]}, {(sid, 0) for sid in self.human})
+        for t in c["tasks"]:
+            info = t[4]
+            self.assertEqual((Path(info["starts"]).name, info["config"], info["ns"], info["label"], info["player"]),
+                             ("starts-human.jsonl", "a3-v1", fe.NS, "c0190", "c0190"))
+        state, last = self.recorded()
+        self.assertEqual(state["verdict"], "reject")  # the rule's word stands
+        self.assertEqual(state["human"], last["human"])
+        h = state["human"]
+        self.assertEqual((h["starts"], h["stratum_starts"], h["incumbent"], h["candidate"], h["config"]), (2, 2, "v0", "c0190", "a3-v1"))
+        self.assertEqual((h["cand_surv"], h["inc_surv"]), (50.0, 50.0))
+        want_human = 100 * sum(1 for s in self.human.values() if s["human_survived"]) / 2
+        self.assertEqual(h["human_surv"], want_human)
+        self.assertRegex(h["line"], r"^human bar: cand 50\.0 / inc 50\.0 / human \d+\.\d in 100 on 2 starts; cand-inc [+-]\d+\.\d "
+                                    r"\[[+-]\d+\.\d, [+-]\d+\.\d\]; HP lost \d+\.\d / \d+\.\d / \d+\.\d$")
+        self.assertIn("gate c0190: " + h["line"], self.log())
+        self.assertIn({"phase": "gate", "candidate": "c0190", "part": "human bar"}, self.statuses)
+        self.assertEqual(len(fg.read_jsonl(self.exam / "games-c0190.jsonl")), 2)
+        self.assertFalse((self.exam / "games-v1.jsonl").exists())  # a reject names no new version
+
+    def test_a_promote_plays_records_and_keeps_the_games_under_the_new_versions_name(self):
+        self.write_games("v0", self.rows("v0", lambda i: True))
+        self.gate(self.verdict(2, "promote"))
+        state, last = self.recorded()
+        self.assertEqual((state["verdict"], last["verdict"], state["human"]["cand_surv"], state["human"]["inc_surv"]), ("promote", "promote", 50.0, 100.0))
+        self.assertEqual(json.loads((self.loop.root / "state.json").read_text())["incumbent"], "v1")
+        mine, theirs = fg.read_jsonl(self.exam / "games-c0190.jsonl"), fg.read_jsonl(self.exam / "games-v1.jsonl")
+        self.assertEqual(len(theirs), 2)  # found under the new incumbent's name; the candidate's file stays
+        self.assertEqual({(r["start"], r["j"], r["won"]) for r in theirs}, {(r["start"], r["j"], r["won"]) for r in mine})
+        self.assertEqual({(r["arm"], r["player"], r["reused_from"]) for r in theirs}, {("v1", "v1", "c0190")})
+        self.assertIn("2 human-stratum games of c0190 kept as v1's (games-v1.jsonl)", self.log())
+        self.assertEqual(gl.human_bar_adopt(self.loop, "c0190", "v1"), 0)  # once
+        self.assertEqual(len(fg.read_jsonl(self.exam / "games-v1.jsonl")), 2)
+        # the exam reads them as the new incumbent's own
+        h = fe.load_human_exam(self.exam)
+        self.assertEqual(len(fe.human_games(theirs, h, "a3-v1")), 2)
+
+    def test_a_cut_play_records_stopped_and_the_verdict_goes_on_to_promote(self):
+        self.gate(self.verdict(2, "promote"), play=self.fake_play(stop="night-window"))
+        state, last = self.recorded()
+        self.assertEqual((state["human"], last["human"], state["verdict"]), ("stopped", "stopped", "promote"))
+        self.assertEqual(json.loads((self.loop.root / "state.json").read_text())["incumbent"], "v1")  # promoted all the same
+        self.assertIn("human bar: stopped (night-window)", self.log())
+        self.assertFalse((self.exam / "games-v1.jsonl").exists())
+
+    def test_a_play_that_fails_never_loses_or_changes_the_verdict(self):
+        self.gate(self.verdict(2, "reject"), play=self.fake_play(boom=True))
+        state, _ = self.recorded()
+        self.assertEqual((state["verdict"], state["human"]), ("reject", "error: RuntimeError"))
+        self.assertIn("human bar: RuntimeError: the lockstep fell over", self.log())
+
+    def test_the_games_already_played_are_not_played_again(self):
+        self.write_games("c0190", self.rows("c0190", lambda i: True)[:1])
+        self.gate(self.verdict(2, "reject"))
+        self.assertEqual([c["n"] for c in self.calls], [1])
+        self.assertEqual(len(fg.read_jsonl(self.exam / "games-c0190.jsonl")), 2)
+        self.calls.clear()
+        self.gate(self.verdict(2, "reject"))
+        self.assertEqual(self.calls, [])  # every game has its row: read, not played
+        self.assertIn("human bar: cand ", self.recorded()[0]["human"]["line"])
+
+    def test_without_incumbent_games_the_candidates_side_is_given_alone(self):
+        self.gate(self.verdict(2, "reject"))
+        h = self.recorded()[0]["human"]
+        self.assertNotIn("inc_surv", h)
+        self.assertEqual(h["inc_games"], 0)
+        self.assertIn("(no human-stratum games for the incumbent v0)", h["line"])
+        self.assertNotIn("cand-inc", h["line"])
+
+    def test_an_incumbent_on_another_engine_is_flagged(self):
+        self.write_games("v0", [{**r, "engine": "old"} for r in self.rows("v0", lambda i: True)])
+        self.gate(self.verdict(2, "reject"))
+        h = self.recorded()[0]["human"]
+        self.assertFalse(h["same_engine"])
+        self.assertTrue(h["line"].endswith("; engines differ (cand eng, inc old)"))
+
+    def test_the_flag_turns_it_off_and_the_stratum_must_exist(self):
+        self.gate(self.verdict(2, "reject"), human_bar="off")
+        self.assertEqual(self.calls, [])
+        self.assertNotIn("human", self.recorded()[0])
+        self.gate(self.verdict(2, "reject"), human_bar=None)  # a daemon from before the flag: on
+        self.assertEqual(len(self.calls), 1)
+        self.calls.clear()
+        (self.exam / "starts-human.lite.json").unlink()
+        self.gate(self.verdict(2, "reject"))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.recorded()[0]["human"], "no human stratum")
+        self.assertIn("human bar: no human stratum in exam/", self.log())
+
+    def test_the_gates_play_is_the_exams_own_configuration(self):
+        self.assertEqual((gl.HUMAN_BAR["config"], gl.HUMAN_BAR["draws"]), (fe.DEFAULT_CONFIG, fe.DRAWS))  # not the gate's --player-config
+
+    def test_the_daemons_flag_is_on_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "Daemon") as daemon:
+            daemon.return_value.run.return_value = 0
+            gl.main(["run", "--root", tmp])
+            gl.main(["run", "--root", tmp, "--human-bar", "off"])
+            self.assertEqual([c.args[0].human_bar for c in daemon.call_args_list], ["on", "off"])
+
+    def test_the_rule_and_decide_do_not_know_the_human_bar(self):
+        import inspect  # noqa: PLC0415
+
+        self.assertEqual(gl.PROMOTION_RULE, {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
+                                             "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
+                                             "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"})
+        for fn in (gl.decide, gl.paired, gl.mcnemar_one_sided, gl.stage1_js, gl.run_gate):
+            self.assertNotIn("human", inspect.getsource(fn).lower(), fn.__name__)
+        self.assertEqual(list(inspect.signature(gl.decide).parameters), ["cand", "inc", "stage", "rule", "pair"])
+        rule = {**gl.PROMOTION_RULE, "starts": 4, "stage1_seeds": 2, "seeds": 6}
+        starts = ("S0", "S1", "S2", "S3")
+        inc = [{**_row(s, j, i % 2 == 0), "arm": "v0"} for i, s in enumerate(starts) for j in range(6)]
+        cand = [{**_row(s, j, i % 2 == 0 or j >= 2), "arm": "c"} for i, s in enumerate(starts) for j in range(6)]
+        first = [gl.decide(cand, inc, 1, rule, pair=1), gl.decide(cand, inc, 2, rule)]
+        self.write_games("c0190", self.rows("c0190", lambda i: True))  # human games present or not: the same answers
+        self.write_games("v0", self.rows("v0", lambda i: False))
+        self.assertEqual([gl.decide(cand, inc, 1, rule, pair=1), gl.decide(cand, inc, 2, rule)], first)
+        self.assertEqual([x["verdict"] for x in first], ["continue", "promote"])
+        self.assertNotIn("human", first[0])
+
+    def test_the_ai_exams_readings_are_byte_for_byte_the_same_with_and_without_the_human_games(self):
+        starts = fe.load_exam(self.exam)
+        ai_files = [self.exam / n for n in ("starts.jsonl", "starts.index.json", "starts.lite.json", "meta.json")]
+        rnd = random.Random(4)
+        for label, p in (("v0", 0.5), ("c0190", 0.6)):
+            ai = fx.games_for(starts, lambda s, p=p: p, rnd)
+            self.write_games(label, [{**r, "config": "a3-v1", "engine": "eng"} for r in ai.values()])
+        self.write_games("v0", fg.read_jsonl(self.exam / "games-v0.jsonl") + self.rows("v0", lambda i: i == 0))
+
+        def readings():
+            out = {}
+            for what, fn, kw in (("report", fe.cmd_report, {"player": "c0190", "write_calibration": False, "boot": 30}),
+                                 ("compare", fe.cmd_compare, {"candidate": "c0190", "champion": "v0", "no_play": True, "boot": 30})):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    self.assertEqual(fn(argparse.Namespace(exam_dir=str(self.exam), **kw)), 0)
+                out[what] = buf.getvalue()
+            return out
+
+        before_files = [gl.sha256_file(f) for f in ai_files]
+        before = readings()
+        ai_lines = [x for x in (self.exam / "games-c0190.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.gate(self.verdict(2, "reject"))
+        after = readings()
+        self.assertEqual([gl.sha256_file(f) for f in ai_files], before_files)  # the AI exam's files did not move
+        for what in before:
+            self.assertTrue(after[what].startswith(before[what].rstrip("\n")), what)  # the exam's own text first and unchanged
+            self.assertNotIn("human", before[what])
+            self.assertIn("human stratum", after[what][len(before[what].rstrip("\n")):])
+        self.assertEqual((self.exam / "games-c0190.jsonl").read_text(encoding="utf-8").splitlines()[: len(ai_lines)], ai_lines)  # appended only
+        starts_after = {k: r for k, r in fe.index_games(fg.read_jsonl(self.exam / "games-c0190.jsonl")).items() if k[0] in starts}
+        self.assertEqual(len(starts_after), 4 * len(starts))  # the human games sit beside them and are never counted in them
+
+
+class HumanBarRealGameTests(unittest.TestCase):
+    """The gate's human play is the exam's: real short arena fights, the fixture prior, the exam's own game steps in spawned processes."""
+
+    @classmethod
+    def setUpClass(cls):
+        from prior_fixture import export_prior  # noqa: PLC0415 -- torch
+        from test_gym_lockstep import _make_starts  # noqa: PLC0415
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        export_prior(root / "agents" / "fixture", prior_min_visits=0)
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+        p = ctx.Process(target=_make_starts, args=(queue, json.loads(F18.read_text(encoding="utf-8"))["doc"]), daemon=True)
+        p.start()
+        kind, got = queue.get(timeout=120)
+        p.join(30)
+        if kind != "ok":
+            raise unittest.SkipTest(f"native library unavailable: {got}")
+        cls.loop = gl.Loop(root / "loop")
+        cls.exam = cls.loop.root / "exam"
+        cls.exam.mkdir()
+        human = [{**s, "seed": f"RUN{i}", "run": f"RUN{i}", "kind": "hallway", "cell": "act1-hallway", "kind_cell": "act1-hallway",
+                  "half": fe.half_of(s["id"]), "stratum": "human", "split": "train", "human_survived": True, "human_hp_lost": 12,
+                  "human_l0_unit": 0.8, "human_turns": 4, "human_potions_used": 0}
+                 for i, s in enumerate(got) if not s["id"].startswith("F18")]
+        fe.write_stem_set(cls.exam, "starts-human", human)
+        cls.agent = root / "agents" / "fixture"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_gates_play_of_the_stratum_is_the_exams_own_games(self):
+        import gym_lockstep  # noqa: PLC0415
+
+        with mock.patch.object(gl, "why_blocked", lambda *a, **k: None), mock.patch.object(gl, "hold_quiet", lambda on: None), \
+                mock.patch.dict(gl.HUMAN_BAR, {"draws": 1}):
+            reading = gl.human_bar(self.loop, "cfix", self.agent, "nobody", 1, 2, "cpu")
+        rows = fg.read_jsonl(self.exam / "games-cfix.jsonl")
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({(r["stratum"], r["config"], r["exam"], r["arm"], r["player"]) for r in rows},
+                         {("human", "a3-v1", fe.EXAM_RULE, "cfix", "cfix")})
+        self.assertTrue(all(len(r["engine"]) == 12 and r["hp_lost"] == r["start_hp"] - (r["end_hp"] if r["won"] else 0) for r in rows))
+        self.assertEqual((reading["starts"], reading["inc_games"], reading["cand_games"], reading["incumbent"]), (3, 0, 3, "nobody"))
+        self.assertIn("(no human-stratum games for the incumbent nobody)", reading["line"])
+        # the same games by the exam's own route (fight_exam's tasks and game steps, a lockstep run), move for move
+        human = fe.load_human_exam(self.exam)
+        tasks = fe.exam_tasks({}, "direct", "direct", "a3-v1", self.exam, set(), draws=1, human=human)
+        init = ("core2", str(self.agent.parent), self.agent.name, str(self.loop.root))
+        stopped, _ = gym_lockstep.run_lockstep(tasks, self.exam / "direct.jsonl", 1, 2, init,
+                                               {"prior": "cpu", "game_steps": "fight_exam:exam_game_steps", "paths": [str(ROOT / "rl")]})
+        self.assertIsNone(stopped)
+        a, b = fe.index_games(rows), fe.index_games(fg.read_jsonl(self.exam / "direct.jsonl"))
+        self.assertEqual(sorted(a), sorted(b))
+        for key in a:
+            for f in ("won", "end_hp", "turns", "decisions", "moves_sha", "L0", "hp_lost"):
+                self.assertEqual(a[key][f], b[key][f], (key, f))
 
 
 # ---------------------------------------------------------------------------------------------------------- the gate's pre-filter
