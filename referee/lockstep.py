@@ -778,6 +778,9 @@ class EmuLock:
     relic_counters: int | None = None  # the last re-anchor's relic counters put on the game's (the driver's anchor_state), else None
     deck_order: str | None = None  # the last hidden fight-start re-anchor's run-deck order: "set", "same", "other_deck", "unknown_id", else None
     streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
+    _currency = None  # the open fight's run currency (a `run_currency` config, rl/run_currency.py FightCurrency), else None
+    _currency_key: tuple | None = None  # (act, floor, encounter) of the fight `_currency` prices
+    currency_fights = 0  # fights this run priced in the run's terms
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -1580,12 +1583,29 @@ class EmuLock:
             return None
         return None
 
+    def _fight_currency(self, root):
+        """The run currency of the open fight: built from the emulator's run view at the fight's first combat decision (the copy is
+        anchored to the game as the fight opens, so that view is the game's: HP, potions, relics, deck, floor) and kept until the
+        fight, keyed by act, floor and encounter, changes. The memo inside it is shared by all the fight's decisions."""
+        key = (self.s.act_index, int(self.s.info["floor"]), getattr(root, "encounter_id", None))
+        if self._currency is None or self._currency_key != key:
+            import run_currency  # noqa: PLC0415 -- numpy only
+
+            self._currency = run_currency.FightCurrency.for_view(self.s.view(), run_currency.default_head())
+            self._currency_key = key
+            self.currency_fights += 1
+        return self._currency
+
     def _choose_combat(self, kind: str, labels: list, msg: dict) -> int | None:
         self.ai_state_assumed = False
         root = self.s.combat(fork_combat=True).combat_fork(None)
         try:
             pos = self.position_of(root, self.s.info) if self.cfg.needs_position else None
-            res = self.ls.search_live(root.handle, seed=int(self.rng.integers(1 << 30)), **self.cfg.search_kwargs(pos))
+            # A `run_currency` config (`a3-v1-r`) prices the fight in the frozen run head's terms from the run as the fight opens; any other
+            # config asks for exactly the keywords it always did.
+            terminal = self._fight_currency(root) if getattr(self.cfg, "run_currency", False) else None
+            res = self.ls.search_live(root.handle, seed=int(self.rng.integers(1 << 30)),
+                                      **(self.cfg.search_kwargs(pos, terminal=terminal) if terminal is not None else self.cfg.search_kwargs(pos)))
         finally:
             root.close() if hasattr(root, "close") else self.native.destroy(root.handle)
         self.ai_state_assumed = bool(res.ai_state_assumed)
