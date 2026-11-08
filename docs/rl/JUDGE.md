@@ -132,3 +132,29 @@ machine).
   same card can buy x16's simulations at a fraction of x16's play-outs.
 - **Seams (D37).** Potions used and HP lost are its outputs here only for the leaf; the run planner's use needs the judge's drift
   on decks it has not seen, measured against the player's replays first.
+
+## 7. Judge v1: retrained on the fight-gym loop's buffer (2026-11-08, training design 1.3's fallback)
+
+Board A (judge v0 against x16 on 400 paired boss games an arm) failed the adoption rule: j480 3.4 points under x16, j960 2.5 under.
+The rule's fallback is a judge retrained on the loop's x16 fights. `judge_data.py buffer` builds the positions from the loop's
+replay buffer, `judge.py train` trains (unchanged apart from `--version` and `--manifest`, which keep the data's window in the
+checkpoint), `judge.py eval` scores any number of checkpoints on the same positions. Files: `referee/agent/judge/v1/` (`judge.pt`,
+`REPORT.md`, `eval-heldout.json`, `data-manifest.json`); v0's folder is untouched. Tests: `tests/python/test_judge_buffer.py`.
+
+- **Data** (**measured**): the buffer's 183 shards, segments 1 to 185, 2026-10-30T20:19Z to 2026-11-08T11:07Z, the x16 teacher's
+  fights (players v0 and c0001 to c0175) in every start kind the loop draws (night replays, human starts, pre-loss starts): 20,550
+  fights of 6,840 starts of 2,654 runs, **416,279 positions** (one per decision, tokens as the root prior reads them, labelled
+  with the fight's won / end HP fraction / potions held / L0; a shard from before `potions_held` gives the potions it began with
+  less those it used, right in 97.5 in 100). Left out: the exam's runs (`exam/exclude_runs.json`), the M2 board's 200 Act 1 boss
+  starts and board A's start lists, capped fights and fights of cut segments (no value label): 3,227 fights; the check on the output
+  finds no shared start id or run. Held out **by run** (`split_of` on the run seed, one in five: 526 runs, 88,624 positions; the
+  validation tenth by run too): v0 split by start, which puts one run's deck on both sides.
+- **Training** (**measured**): the agent network of v0's init (gen7/candidate-r1), trunk at 0.03 of the head's rate, weight decay
+  0.1, dropout 0.3, 10 one-cycle epochs of batch 256, best epoch by validation loss, win logit Platt-scaled; chosen among seven
+  settings by validation loss alone. 3.5 minutes on the card, BelowNormal.
+- **Held-out, v1 against v0, the same 88,624 positions** (Pearson / Spearman of the L0, win calibration error): all 0.820 / 0.860 /
+  0.028 against v0's 0.802 / 0.849 / 0.083. Act 1 boss 0.717 / 0.714 / 0.033 against 0.673 / 0.690 / 0.114; Act 2 boss 0.615 / 0.600 /
+  0.045 against 0.662 / 0.613 / 0.116 (53 held-out starts); Act 2 elite 0.591 against 0.471 (still over-read: mean P(win) 0.748 for a
+  rate of 0.679); human starts 0.702 against 0.662. On the 77,169 positions of runs v0 never saw: 0.811 against 0.789. What changed
+  most is the level: v0, trained on a3-v1's fights, read x16's boss positions 11 points low at Act 1 and 12 at Act 2; v1 reads
+  them within 1 point. Rank agreement moved little, and the search's own root value still ranks better (0.832 / 0.902).
