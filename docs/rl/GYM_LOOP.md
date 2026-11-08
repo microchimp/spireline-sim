@@ -83,6 +83,18 @@ candidate reaches it).
   run or seed is in `exam/exclude_runs.json` under the loop folder (the fight exam's file; read at every segment; absent: nothing
   excluded). Each segment's log line carries `mix <kind> <source> <n> ...` and the quartiles of the drawn starts' scores, and
   `games/segments.jsonl` the same as data.
+- **Human-shortfall regret** (2026-11-08, D55 addendum 10; `regret.mode` in `starts/mix.json`, default `shortfall`). The corpus's per-floor
+  record gives every human start the human's own result (`starts/human-outcomes.json`, `rl/human_starts.py outcomes`; fields and coverage
+  in [HUMAN_STARTS.md](HUMAN_STARTS.md)). Mode `human-shortfall`: for a start with an entry the score is the mean over its latest
+  `n_last` plays of `max(0, human_l0 - played)`, both in the search's currency (end HP plus ten a held potion, a death -100); the
+  teacher's root is not needed. Mode `max`: the larger of that and the root shortfall, play by play. Starts without an entry keep the
+  root rule; a mode the code does not know scores as `shortfall`. `sample_tasks` reads the sidecar only when the mode asks for it (a long-
+  lived process reads it again only when the file changes). **The daemon imports `practice_mix` and `gym_loop` once, at its start: a running
+  daemon has the mode only if it was started from a tree that contains it; writing `mix.json` for a daemon without it changes nothing.**
+  `tools/human_bar.py` reads the loop's plays against the sidecar and writes `referee/backlog/human-bar/diagnosis.{json,md}`: the
+  human-bar table by act, kind and enemy on the human starts played so far, the starts the human survived where the player's latest plays
+  all died, and those where the player lost 15 HP or more above the human (the loop draws by regret, so its table reads lower than an
+  unselected sample; the exam's human stratum is the unselected reading).
 - **Pre-loss starts.** When a practice fight is lost (not capped), the position three decisions before its last decision is exported
   with `native.get_state_json` (the public state; never the draw order) and kept as a start of the same kind, run and split, with
   the loss as its first score (`score0`: the teacher's value there against the death), until it has been played. The copy can
@@ -175,6 +187,21 @@ short version and the working notes.
   second file in the same record schema as a stratum (the human starts), up to 100 a cell, and puts its runs on the exclusion
   list. The exam keeps its own copy of every start's document (`exam/starts.jsonl`, the gym's format and byte index): the gym
   rebuilds its start set with each night and drops the old nights, the exam does not move.
+- **The human stratum** (2026-11-08, D55 addendum 10). `fight_exam.py add-human` adds up to 50 clean human starts a cell (act by kind, a
+  boss per boss; 400 in all: equal quotas of 30 or 31 over the 13 cells, the remainder to cells in a fixed hash order, at most one start
+  a run, the same seeded hash as the rest) as a **second file** in the exam folder (`starts-human.jsonl` with its index and lite list,
+  `human-meta.json`); *clean* is the run's never having been played by the loop (`state.json` `next_j` and `starts/plays.jsonl`). Each
+  start carries the human's result from the sidecar (survived, HP left, HP lost, potions, turns, value). **The AI exam is not rewritten**:
+  `starts.*`, `meta.json`, the baseline, the halves and every reading of the champion on them stay byte for byte (the files are hashed
+  before and after; the hashes are in `human-meta.json`; a test and `report` before and after prove it). The stratum's runs are merged into
+  `exclude_runs.json` (the old file kept once as `exclude_runs.json.pre-human.bak`), so the practice drops them from its next segment.
+  `play` and `compare` play the stratum with the rest (`--stratum all|ai|human`; its rows go in the same games file with
+  `stratum: "human"`; every reading of the AI exam leaves them out). `report` and `compare` print the exam's own lines first, unchanged,
+  then the human line: survival and HP lost of the human against the player's (the mean over its four draws) by act and kind and by boss,
+  the paired difference (player minus human) with a 95% bootstrap interval over starts resampled within cells, and counts; `compare` adds
+  the candidate against the champion on the stratum. No calibration flag is applied to it (the human is not a draw). **The exam is run by
+  hand** (no lab job and no gate calls it): the stratum adds its 1,600 games to a full `play` (about 25 minutes at the loop's speed) and
+  its half A (about 800 games) to `compare`. `--allow-quiet TAG` lets a run ignore a named QUIET.lock tag (the lab's daytime score).
 - **For the practice sampler.** `exam/exclude_runs.json` lists `run_seeds` (every run behind an exam start) and `start_ids`. The
   daemon's sampler (`sample_tasks`) picks any start of `starts.lite.json` and does not read it yet: **until it skips them the
   practice can play exam starts, and every exam start it plays is no longer clean** (the teacher's moves at that position become

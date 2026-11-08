@@ -3,6 +3,7 @@
 
     python rl/human_starts.py build  [--corpus FILE] [--out-dir DIR] [--procs 4] [--hallway-cap 5000] [--limit-runs N]
     python rl/human_starts.py report [--out-dir DIR]
+    python rl/human_starts.py outcomes [--corpus FILE] [--out-dir DIR] [--limit-runs N]
 
 A human run in the public corpus (D13) records, floor by floor, the HP and gold after the floor, the cards gained, removed,
 transformed, upgraded and enchanted, the relics and potions picked up, and the encounter met. From that, the opening of each
@@ -21,6 +22,13 @@ What is used and what is never used:
   - Acts 1 and 2 only (Act 3 is barely verified on the copy). Elites and bosses in full; hallway fights capped
     (`--hallway-cap`, split over the two acts, picked by a fixed hash so the same corpus gives the same set).
   - Human data is reported as aggregates only; a cell over fewer than `MIN_CELL` runs is not shown.
+
+The human's own result (D55 addendum 10). The same record gives each fight floor's HP after it, damage taken, HP healed, potions used
+and turns, and the run says whether it went on past the floor. `fight_outcome` reads them in the gym's terms (end HP before the run
+engine's post-fight heals, HP lost, survival, potions, turns, value in the search's currency, the gym's L0); `outcomes` makes
+`starts/human-outcomes.json` from one pass over the corpus (the start file is not rewritten), and `start_record` carries the same
+fields for a future build. The reading, the check against the record's own figures and the coverage are in HUMAN_STARTS.md. The record
+has no card plays: nothing here says what move the human made.
 
 What the record cannot say, and the build does about it (every one counted in the report):
   - Enchantments are rebuilt at the amount they were applied with; the ones that grow in play (Goopy) come out low.
