@@ -312,6 +312,236 @@ class ReportTests(unittest.TestCase):
         self.assertIn("< 20", hs.coverage_text(small))
 
 
+class OutcomeTests(unittest.TestCase):
+    """The human's own result of a fight floor (D55 addendum 10): the gym's end HP (before the run engine's post-fight heals), HP lost,
+    survival, potions, turns and the value in the search's currency."""
+
+    @staticmethod
+    def stats(cur, dmg, heal, max_hp=80, **extra):
+        return {"current_hp": cur, "max_hp": max_hp, "damage_taken": dmg, "hp_healed": heal, **extra}
+
+    def out(self, hp_in, ps, survived=True, held=("BURNING_BLOOD",), potions_in=0, room=None):
+        return hs.fight_outcome(hp_in=hp_in, max_hp_in=80, survived=survived, ps=ps, room=room if room is not None else {"turns_taken": 5},
+                                held=held, potions_in=potions_in)
+
+    def test_the_end_hp_is_the_hp_after_the_floor_less_the_post_fight_heal(self):
+        o = self.out(50, self.stats(36, 20, 6))  # 50 - 20 + 6 = 36: Burning Blood's six come off
+        self.assertEqual((o["human_end_hp"], o["human_hp_lost"], o["human_damage_taken"], o["human_post_heal"]), (30, 20, 20, 6))
+        self.assertEqual((o["human_survived"], o["human_turns"], o["human_potions_used"]), (True, 5, 0))
+        o = self.out(50, self.stats(44, 20, 14))  # a heal inside the fight (8) stays: the gym's end HP has it
+        self.assertEqual((o["human_end_hp"], o["human_hp_lost"], o["human_damage_taken"], o["human_post_heal"]), (38, 12, 20, 6))
+
+    def test_a_heal_cut_short_by_the_hp_room_is_all_post_fight(self):
+        o = self.out(78, self.stats(80, 3, 5))  # 78 - 3 = 75, Burning Blood could only heal five
+        self.assertEqual((o["human_end_hp"], o["human_hp_lost"], o["human_post_heal"]), (75, 3, 5))
+
+    def test_the_relics_that_heal_at_the_end_are_black_blood_chosen_cheese_and_meat_on_the_bone(self):
+        self.assertEqual(hs.post_fight_heal(["BLACK_BLOOD"], 30), (12, False))
+        self.assertEqual(hs.post_fight_heal(["BURNING_BLOOD", "CHOSEN_CHEESE"], 7), (7, False))
+        self.assertEqual(hs.post_fight_heal(["BURNING_BLOOD"], 3), (3, False))
+        self.assertEqual(hs.post_fight_heal(["POTION_BELT"], 9), (0, False))  # a relic that does not heal at the end owns none of it
+        self.assertEqual(hs.post_fight_heal(["BURNING_BLOOD", "MEAT_ON_THE_BONE"], 18), (18, True))  # it triggered: the floor healed six and twelve
+        self.assertEqual(hs.post_fight_heal(["BURNING_BLOOD", "MEAT_ON_THE_BONE"], 6), (6, True))  # HP stayed above half: it did not
+        o = self.out(60, self.stats(44, 34, 18), held=("BLACK_BLOOD",))
+        self.assertEqual((o["human_end_hp"], o["human_post_heal"]), (32, 12))
+
+    def test_a_death_loses_the_whole_hp_going_in_and_scores_the_death_value(self):
+        o = self.out(37, self.stats(0, 37, 0), survived=False, potions_in=2)
+        self.assertEqual((o["human_survived"], o["human_end_hp"], o["human_hp_lost"], o["human_post_heal"]), (False, 0, 37, 0))
+        self.assertEqual((o["human_l0"], o["human_l0_unit"]), (hs.DEATH_VALUE, 0.0))
+        self.assertEqual(hs.DEATH_VALUE, -100.0)
+        self.assertNotIn("human_flags", o)
+        self.assertEqual(self.out(37, self.stats(5, 37, 0), survived=False)["human_flags"], ["death_hp_not_zero"])
+
+    def test_the_value_is_the_search_currency_and_the_unit_l0_is_the_gyms(self):
+        o = self.out(70, self.stats(30, 52, 12, potion_used=["POTION.FIRE_POTION"]), potions_in=2)
+        self.assertEqual((o["human_end_hp"], o["human_potions_used"], o["human_potions_held_end"]), (24, 1, 1))
+        self.assertEqual(o["human_l0"], 24 + hs.POTION_VALUE * 1)  # end HP plus ten a held potion, as practice_mix.played_value
+        import fight_gym as fg  # noqa: PLC0415
+
+        for won, hp, pots in ((True, 24, 1), (True, 80, 3), (False, 0, 0), (True, 1, 0)):
+            self.assertEqual(hs.l0_unit(won, hp, pots, 80), fg.l0(won, hp, pots, 80))
+        self.assertAlmostEqual(o["human_l0_unit"], fg.l0(True, 24, 1, 80), places=4)
+        self.assertEqual(hs.POTION_VALUE, fg.POTION_VALUE)
+        import practice_mix as pm  # noqa: PLC0415
+
+        self.assertEqual(pm.played_value({"won": True, "end_hp": 24, "potions_held": 1}), o["human_l0"])
+
+    def test_a_floor_that_lacks_a_figure_has_no_outcome_and_says_why(self):
+        self.assertEqual(self.out(50, {"max_hp": 80, "damage_taken": 3, "hp_healed": 0}), "the floor lacks current_hp")
+        self.assertEqual(self.out(50, {"current_hp": 40, "damage_taken": None, "hp_healed": 0}), "the floor lacks damage_taken")
+        self.assertEqual(self.out(50, {"current_hp": 40, "damage_taken": 3}), "the floor lacks hp_healed")
+        self.assertEqual(hs.fight_outcome(hp_in=None, max_hp_in=None, survived=True, ps=self.stats(1, 1, 0), room={}, held=[], potions_in=0),
+                         "HP going in not known")
+        o = self.out(50, self.stats(40, 16, 6), room={})  # no turn count: the outcome is kept, the turns are not known
+        self.assertIsNone(o["human_turns"])
+
+    def test_an_end_hp_the_figures_cannot_hold_is_cut_and_flagged(self):
+        o = self.out(5, self.stats(3, 8, 6))  # 5 - 8 + 6 = 3, less six: below one for a run that went on (a revive's figures)
+        self.assertEqual((o["human_end_hp"], o["human_flags"]), (1, ["end_hp_raised_to_1"]))
+        o = self.out(80, self.stats(80, 0, 6, max_hp=80), held=("MEAT_ON_THE_BONE",))
+        self.assertEqual(o["human_flags"], ["heal_guess"])
+
+
+class OutcomeRunTests(unittest.TestCase):
+    """The outcomes of a whole run follow the same floors `rebuild_run` builds starts from."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tables = hs.Tables.load()
+
+    @staticmethod
+    def run_with_results(rid, act2=True):
+        run = synthetic_run(rid, act2=act2)
+        a1 = run["map_point_history"][0]
+
+        def put(point, cur, dmg, heal, turns, **extra):
+            ps = point["player_stats"][0]
+            ps.update(current_hp=cur, damage_taken=dmg, hp_healed=heal, **extra)
+            point["rooms"][-1]["turns_taken"] = turns
+
+        put(a1[1], 55, 15, 6, 4)  # 64 in: slimes
+        put(a1[4], 30, 52, 12, 9, potion_used=["POTION.FIRE_POTION"])  # 70 in: the elite, a potion used, six healed inside the fight
+        put(a1[16], 26, 10, 6, 7)  # 30 in: the Act 1 boss
+        if act2:
+            put(run["map_point_history"][1][1], 0, 80, 0, 6)  # 80 in: the Act 2 elite kills
+        return run
+
+    def test_the_outcomes_are_found_for_the_same_floors_the_starts_are_and_equal_the_specs(self):
+        rid = _find_ids(False, 1, "k")[0]
+        run = self.run_with_results(rid)
+        outs, why, checks = hs.outcomes_of_run(run)
+        specs = {s["id"]: s for s in hs.rebuild_run(run, self.tables, Counter())}
+        self.assertEqual(sorted(outs), sorted(specs))
+        self.assertEqual(why, {})
+        for sid, s in specs.items():
+            self.assertEqual(s["outcome"], outs[sid])
+            self.assertEqual(checks[sid]["hp_in"], s["hp"])
+        a, b, c, d = (outs[f"human:{rid}|f{f:02d}"] for f in (2, 5, 17, 19))
+        self.assertEqual((a["human_survived"], a["human_end_hp"], a["human_hp_lost"], a["human_turns"]), (True, 49, 15, 4))
+        self.assertEqual((b["human_end_hp"], b["human_hp_lost"], b["human_potions_used"], b["human_potions_held_end"]), (24, 46, 1, 0))
+        self.assertEqual(b["human_l0"], 24.0)
+        self.assertEqual((c["human_survived"], c["human_end_hp"], c["human_hp_lost"]), (True, 20, 10))  # the boss died: the run went on to Act 2
+        self.assertEqual((d["human_survived"], d["human_end_hp"], d["human_hp_lost"], d["human_l0"]), (False, 0, 80, -100.0))  # last floor of the run
+
+    def test_the_run_without_an_act_two_ends_at_its_boss(self):
+        rid = _find_ids(False, 1, "k")[0]
+        outs, _, _ = hs.outcomes_of_run(self.run_with_results(rid, act2=False))
+        self.assertTrue(outs[f"human:{rid}|f05"]["human_survived"])
+        self.assertFalse(outs[f"human:{rid}|f17"]["human_survived"])  # the boss is the last floor: the run ended there
+
+    def test_a_floor_without_a_figure_is_counted_by_reason_and_an_event_page_leaves_no_start(self):
+        rid = _find_ids(False, 1, "k")[0]
+        run = self.run_with_results(rid)
+        del run["map_point_history"][0][4]["player_stats"][0]["damage_taken"]
+        run["map_point_history"][0][1]["rooms"] = [{"model_id": "EVENT.X", "room_type": "event"},
+                                                    {"model_id": "ENCOUNTER.SLIMES_WEAK", "monster_ids": ["MONSTER.LEAF_SLIME_S"],
+                                                     "room_type": "monster"}]
+        outs, why, _ = hs.outcomes_of_run(run)
+        self.assertEqual(sorted(outs), [f"human:{rid}|f17", f"human:{rid}|f19"])
+        self.assertEqual(why, {f"human:{rid}|f05": "the floor lacks damage_taken"})
+
+    def test_the_start_record_carries_the_fields_for_a_future_build(self):
+        rid = _find_ids(False, 1, "k")[0]
+        spec = next(s for s in hs.rebuild_run(self.run_with_results(rid), self.tables, Counter()) if s["floor"] == 5)
+        doc = {"potions": {"slots": [3, 0], "max_slots": 2}, "piles": {"hand": [{"x": 1}]}, "turn": 0, "encounter_id": spec["encounter_id"]}
+        rec = hs.start_record(spec, doc)
+        for k in hs.OUTCOME_KEYS:
+            self.assertIn(k, rec)
+        self.assertEqual((rec["human_end_hp"], rec["human_hp_lost"], rec["human_survived"]), (24, 46, True))
+        self.assertNotIn("human_outcome_missing", rec)
+        spec["outcome"], spec["outcome_missing"] = None, "the floor lacks hp_healed"
+        rec = hs.start_record(spec, doc)
+        self.assertEqual(rec["human_outcome_missing"], "the floor lacks hp_healed")
+        self.assertNotIn("human_end_hp", rec)
+
+
+class OutcomeSidecarTests(unittest.TestCase):
+    """The pass over the corpus writes `human-outcomes.json` beside the start set, atomically, and the doc section."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.t = Path(self.tmp.name)
+        ok = _find_ids(False, 4, "k")
+        self.exam_listed = _find_ids(False, 1, "l")[0]
+        self.runs = [OutcomeRunTests.run_with_results(r) for r in ok]
+        with gzip.open(self.t / "corpus.jsonl.gz", "wt", encoding="utf-8") as fh:
+            for r in self.runs + [OutcomeRunTests.run_with_results(self.exam_listed)]:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+        (self.t / "ids.txt").write_text(self.exam_listed + "\n", encoding="utf-8")
+        self.out = self.t / "starts"
+        self.out.mkdir()
+        lite = []
+        for run in self.runs[:3]:  # the fourth run's starts are not in the set: its outcomes are not kept
+            rid = hs.run_id(run)
+            for f, act, kind, hp in ((2, 1, "hallway", 64), (5, 1, "elite", 70), (17, 1, "boss", 30), (19, 2, "elite", 80)):
+                lite.append({"id": f"human:{rid}|f{f:02d}", "run": rid, "act": act, "kind": kind, "hp": hp})
+        lite.append({"id": f"human:{self.runs[0]['run_hash']}|f09", "run": self.runs[0]["run_hash"], "act": 1, "kind": "hallway", "hp": 70})
+        (self.out / "human-starts.lite.json").write_text(json.dumps(lite), encoding="utf-8")
+        self.lite = lite
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_main(self, *extra):
+        import contextlib  # noqa: PLC0415
+        import io  # noqa: PLC0415
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hs.main(["outcomes", "--corpus", str(self.t / "corpus.jsonl.gz"), "--exam-ids", str(self.t / "ids.txt"),
+                          "--out-dir", str(self.out), "--doc", str(self.t / "doc.md"), *extra])
+        return rc, buf.getvalue()
+
+    def test_the_sidecar_is_keyed_by_start_id_and_written_whole(self):
+        rc, text = self.run_main()
+        self.assertEqual(rc, 0)
+        doc = json.loads((self.out / "human-outcomes.json").read_text(encoding="utf-8"))
+        self.assertEqual(doc["rule"], hs.OUTCOME_RULE)
+        self.assertEqual(doc["n"], 12)
+        self.assertEqual(len(doc["outcomes"]), 12)
+        self.assertEqual(sorted(doc["outcomes"]), sorted(r["id"] for r in self.lite if r["id"].endswith(("f02", "f05", "f17", "f19"))))
+        rid = self.lite[0]["run"]
+        self.assertEqual(doc["outcomes"][f"human:{rid}|f19"]["human_l0"], -100.0)
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["human-outcomes.json", "human-starts.lite.json"])  # no temp file left
+        self.assertIn("start not found again in the corpus pass: 1", text)  # the f09 start the corpus has no fight on
+        self.assertNotIn(self.exam_listed, text)
+
+    def test_the_doc_section_is_replaced_not_repeated_and_a_build_keeps_it(self):
+        self.run_main()
+        self.run_main()
+        text = (self.t / "doc.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count("## Human outcomes"), 1)
+        self.assertIn("| act1-boss | 3 | < 20 |", text)  # three runs: the cell is hidden
+        self.assertNotIn(self.runs[0]["run_hash"], text)
+        (self.t / "doc.md").write_text("# Human fight starts: coverage\n\nold coverage\n\n" + text[text.index("## Human outcomes"):], encoding="utf-8")
+        hs.write_doc_section(self.t / "doc.md", "## Human outcomes\n\nnew\n")
+        again = (self.t / "doc.md").read_text(encoding="utf-8")
+        self.assertTrue(again.startswith("# Human fight starts: coverage\n\nold coverage\n\n## Human outcomes\n\nnew"))
+        self.assertEqual(again.count("## Human outcomes"), 1)
+
+    def test_a_limited_pass_does_not_touch_the_sidecar_and_the_exam_fifth_is_never_a_start(self):
+        self.run_main("--limit-runs", "2")
+        self.assertFalse((self.out / "human-outcomes.json").exists())
+        self.run_main("--limit-runs", "2", "--force-partial")
+        self.assertTrue((self.out / "human-outcomes.json").exists())
+        bad = json.loads((self.out / "human-starts.lite.json").read_text())
+        bad.append({"id": f"human:{self.exam_listed}|f05", "run": self.exam_listed, "act": 1, "kind": "elite", "hp": 70})
+        (self.out / "human-starts.lite.json").write_text(json.dumps(bad), encoding="utf-8")
+        with self.assertRaises(AssertionError):
+            self.run_main()
+
+    def test_a_start_whose_hp_going_in_differs_from_the_records_is_not_given_an_outcome(self):
+        lite = json.loads((self.out / "human-starts.lite.json").read_text())
+        lite[1]["hp"] = 71  # the start says 71 going into the elite; the floor before it says 70
+        (self.out / "human-starts.lite.json").write_text(json.dumps(lite), encoding="utf-8")
+        _, text = self.run_main()
+        doc = json.loads((self.out / "human-outcomes.json").read_text(encoding="utf-8"))
+        self.assertNotIn(lite[1]["id"], doc["outcomes"])
+        self.assertEqual(len(doc["outcomes"]), 11)
+        self.assertIn("hp_going_in_differs_from_the_start: 1", text)
+
+
 # ---------------------------------------------------------------------------------------------------------- the copy
 
 

@@ -100,3 +100,39 @@ Written by `rl/human_starts.py build` (aggregates only; a cell over fewer than 2
 - roster differs: 2
 
 A fight state can fail for one reason only (the first found). Records marked `approx` are rebuilt without the growth of in-play enchantments, relic counters, or potions an event gave.
+
+## Human outcomes
+
+Written by `rl/human_starts.py outcomes` into `starts/human-outcomes.json` (one entry a start id; the start file itself is not rewritten). Source: Spire Codex public run export for v0.107.1, the four training fifths. Aggregates only; a cell over fewer than 20 runs is not shown.
+
+- starts in the set: 46,410; with an outcome: 46,410 (100.00%)
+- fields: `human_survived` (the run went on past the floor; a boss floor: the boss died), `human_end_hp` (HP when the fight ended, before the run engine's post-fight heals; 0 for a death), `human_hp_lost` (HP going in less end HP; the whole HP going in for a death), `human_damage_taken` (the floor's raw figure), `human_post_heal`, `human_turns`, `human_potions_used`, `human_potions_held_end`, `human_l0` (the search's currency: end HP plus 10 a potion held, a death -100; what practice regret compares with), `human_l0_unit` (the gym's L0 of 0 to 1, `fight_gym.l0`), `human_flags`.
+
+### The reading of end HP and what post-fight heals do to it
+
+The gym ends a fight when the last enemy dies and reads HP then: it has what the fight healed on the way and not what the run engine heals afterwards (Burning Blood 6, Black Blood 12, Meat on the Bone 12 at half HP or less, Chosen Cheese 1). The record's `current_hp` is after those and `hp_healed` is the floor's total, so the human's end HP is `current_hp` less min(`hp_healed`, the relics' post-fight heal).
+
+- survivor floors checked: 39,548; HP in - damage taken + healed = HP after holds on 99.93%
+- mean per survivor floor: HP in - HP after 18.19, damage taken 26.36, post-fight heal 6.27, heal inside the fight 1.90, HP lost as read 24.46
+- so `HP in - current HP` would understate the loss by the post-fight heal (6.27 HP on average) and `damage taken` would overstate it by the heal inside the fight (1.90 on average; 18.1% of fights heal beyond the relics)
+- a heal inside the fight and a potion drunk on the reward screen are not told apart in the record; the Meat on the Bone reading is a guess (`heal_guess`)
+
+### Coverage by act and kind
+
+| act and kind | starts with an outcome | runs | survived % | HP lost (survivors) | turns | potions used |
+|---|---|---|---|---|---|---|
+| act1-boss | 8,216 | 8,216 | 72.2 | 35.1 | 8.3 | 0.92 |
+| act1-elite | 20,169 | 10,316 | 88.6 | 22.7 | 5.2 | 0.69 |
+| act1-hallway | 2,498 | 2,260 | 98.5 | 9.4 | 4.1 | 0.16 |
+| act2-boss | 3,948 | 3,948 | 73.9 | 35.8 | 6.9 | 0.94 |
+| act2-elite | 9,079 | 4,933 | 87.6 | 24.5 | 4.4 | 0.75 |
+| act2-hallway | 2,500 | 2,098 | 96.8 | 12.6 | 4.2 | 0.30 |
+
+### Starts without an outcome, by reason
+
+- none
+
+### Flags and checks
+
+- flag: end_hp_raised_to_1: 13
+- flag: heal_guess: 701
