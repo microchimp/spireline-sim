@@ -144,7 +144,7 @@ def seed_agent(agent_dir: str | Path, bias: float, keep_search: bool):
     if not macro_recipe.is_blended(base.macro):
         raise ValueError(f"{agent_dir}: the macro {base.macro!r} is not a blended chooser; build a candidate with --human-prior first")
     lam, sha8 = macro_recipe.parse_macro(base.macro)
-    macro = macro_recipe.macro_name(lam, sha8, macro_recipe.PICK_SKIPCAL, bias)
+    macro = macro_recipe.macro_name(lam, sha8, macro_recipe.PICK_SKIPCAL, bias, macro_recipe.parse_act_lambdas(base.macro))
     plain = {} if keep_search else {"stakes": None, "hold": None}
     return dataclasses.replace(base, macro=macro, **plain)
 

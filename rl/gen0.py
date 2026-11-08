@@ -877,6 +877,7 @@ def build_cmd(a: argparse.Namespace) -> int:
     cand = gen_loop.build_candidate(a.prior, base, a.agent_root, a.candidate_generation, why=a.why, export=not a.no_export,
                                     vrun_fit=getattr(a, "vrun_fit", None) or None, attempt=attempt, tag=tag,
                                     human_prior=getattr(a, "human_prior", None) or None, lam=parse_lambda(getattr(a, "lam", None)),
+                                    lam_acts=parse_lambda_acts(getattr(a, "lam_act", None)),
                                     pick=getattr(a, "pick", None) or gen_loop.macro_recipe.PICK_ARGMAX,
                                     skip_bias=float(getattr(a, "skip_bias", 0.0) or 0.0), search_schedule=schedule,
                                     potion_hold=(gen_loop.macro_recipe.hold_pct(int(hold)) / 100.0 if hold is not None else None))
@@ -889,6 +890,19 @@ def build_cmd(a: argparse.Namespace) -> int:
         out["marker"] = marker.name
     print(json.dumps(out))
     return 0
+
+
+def parse_lambda_acts(parts: list[str] | None) -> dict[int, float] | None:
+    """`--lambda-act 1=0 --lambda-act 2=0.5` -> {1: 0.0, 2: 0.5} (the act numbers from 1; None when not given)."""
+    out: dict[int, float] = {}
+    for part in parts or []:
+        act, sep, text = str(part).partition("=")
+        if not sep or not act.strip().isdigit():
+            raise ValueError(f"--lambda-act is ACT=LAMBDA (ACT 1 to 3), not {part!r}")
+        if int(act) in out:
+            raise ValueError(f"--lambda-act names act {act} twice")
+        out[int(act)] = parse_lambda(text)  # type: ignore[assignment]
+    return out or None
 
 
 def parse_lambda(text: str | float | None) -> float | None:
@@ -1319,6 +1333,10 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--human-prior", help="the human prior's weights (rl/human_prior.py fit: weights.npz): the candidate's macro blends it with "
                     "the base's V_run (macro vrun+pi_h:lambda=<--lambda>:pi_h=<8 hex>, a recipe of its own for the attempt count)")
     bd.add_argument("--lambda", dest="lam", help="with --human-prior: the blend's weight on log pi_h (inf: the prior alone; 0.5; ...)")
+    bd.add_argument("--lambda-act", dest="lam_act", action="append", default=[], metavar="ACT=LAMBDA",
+                    help="with --human-prior: the blend's weight for one act's deck screens (ACT 1 to 3; repeatable), e.g. --lambda 0.5 "
+                    "--lambda-act 1=0 for the plain judgement in Act 1 and the 0.5 blend from Act 2 (recipe parts :act<N>=<lambda>; an act "
+                    "equal to --lambda is left out; floors 1-17 are Act 1, 18-33 Act 2)")
     bd.add_argument("--tag", help="a recipe tag: the candidate is gen<N>/candidate-<tag> and the marker ready-<base generation>-g<N>-<tag> "
                     "(lowercase words joined by hyphens, e.g. imit, imit-l05); not beside --attempt")
     bd.add_argument("--pick", choices=("argmax", "sample", "skipcal"), default="argmax",

@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -150,6 +150,9 @@ class Agent:
     # Both are part of the agent's identity (`describe`, `recipe`): None is every agent that existed before them.
     stakes: str | None = None
     hold: int | None = None
+    # lambda by act (2026-11-08, D55 addendum 12): the recipe's `:act<N>=<lambda>` parts as ((act number from 1, lambda), ...), sorted; () is
+    # every agent that existed before them (the base `lam` for every act)
+    lam_acts: tuple[tuple[int, float], ...] = ()
 
     def search_config(self, sims):
         """The `search_configs.SearchConfig` this agent plays when the lab asks for `sims` (a config name or a flat budget): `sims` itself
@@ -204,7 +207,7 @@ class Agent:
 
             pick, bias = macro_recipe.parse_pick(self.macro)
             return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W,
-                                                   pick=pick, skip_bias=bias)
+                                                   pick=pick, skip_bias=bias, act_lam=dict(self.lam_acts) or None)
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -268,9 +271,10 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     blended = macro_recipe.is_blended(mode)
     if (mode == "vrun" or blended) and not npz.is_file():
         raise FileNotFoundError(f"macro {mode} needs run_value.npz in {p.name}")
-    human, lam = None, 0.0
+    human, lam, lam_acts = None, 0.0, {}
     if blended:  # the recipe names lambda and the prior's weights (8 hex of their sha256); the folder must hold exactly those
         lam, sha8 = macro_recipe.parse_macro(mode)
+        lam_acts = macro_recipe.parse_act_lambdas(mode)
         named = meta.get("human_prior") or {}  # agent.json's own record of the prior: file, full sha256, lambda
         human = p / str(named.get("file") or "human_prior.npz")
         if not human.is_file():
@@ -282,13 +286,15 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
             raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior lambda {named['lambda']} disagree")
         if named.get("pick") is not None and named["pick"] != macro_recipe.parse_pick(mode)[0]:
             raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior pick {named['pick']} disagree")
+        if named and named.get("lambda_acts", {}) != {str(a): macro_recipe.format_lambda(v) for a, v in sorted(lam_acts.items())}:
+            raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior lambda_acts {named.get('lambda_acts')} disagree")
     mask_version = meta.get("mask_version", 1)
     if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
         raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
     stakes, hold = search_identity(meta, p.name)
     agent = Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
                   float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
-                  human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold)
+                  human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold, lam_acts=tuple(sorted(lam_acts.items())))
     if meta.get("recipe") is not None and meta["recipe"] != agent.recipe():  # the recipe agent.json records is the one the fields give
         raise ValueError(f"{p.name}/agent.json: recipe {meta['recipe']!r} is not the agent's ({agent.recipe()!r})")
     return agent
@@ -1417,7 +1423,8 @@ def built_candidate(agent_root: Path | str, target: int, retrain: int = 0, attem
 def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str,
                     export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1, tag: str = "",
                     human_prior: Path | str | None = None, lam: float | None = None, pick: str = macro_recipe.PICK_ARGMAX,
-                    skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None) -> Path:
+                    skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None,
+                    lam_acts: Mapping[int, float] | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1445,9 +1452,12 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
 
     `pick` and `skip_bias` (with `human_prior`) say how the chooser takes its option (`macro_recipe.PICKS`): the argmax (the default),
     a draw from softmax((V + lambda log pi_h) / 1) ("sample"), or the argmax with `skip_bias` floors added to the skip option ("skipcal");
-    the mode is part of the macro string. `search_schedule` ({"base": a search config name, "mult": {"hall", "elite", "boss"}}) gives the
-    candidate a stakes schedule and `potion_hold` (a fraction of max HP, a whole per cent) the hallway potion hold, both written to
-    agent.json (`gen_loop.search_identity` reads them back), with `recipe`, the ledger's recipe of the whole (`candidate_recipe`)."""
+    the mode is part of the macro string. `lam_acts` ({act number from 1: lambda}, with `human_prior`) gives an act its own lambda: the
+    `:act<N>=<lambda>` parts of the macro string, agent.json `human_prior.lambda_acts` ({"1": "0"}); an act whose lambda is `lam` is
+    dropped from both (`macro_recipe.act_part`), and without the option nothing is written. `search_schedule` ({"base": a search config
+    name, "mult": {"hall", "elite", "boss"}}) gives the candidate a stakes schedule and `potion_hold` (a fraction of max HP, a whole per
+    cent) the hallway potion hold, both written to agent.json (`gen_loop.search_identity` reads them back), with `recipe`, the ledger's
+    recipe of the whole (`candidate_recipe`)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1493,9 +1503,14 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
             chooser["tau"] = 1.0
         if pick == macro_recipe.PICK_SKIPCAL:
             chooser["skip_bias"] = float(macro_recipe.format_bias(skip_bias))
-        macro = macro_recipe.macro_name(float(lam), chooser["sha256"], pick, skip_bias)
+        macro = macro_recipe.macro_name(float(lam), chooser["sha256"], pick, skip_bias, lam_acts)
+        kept_acts = macro_recipe.parse_act_lambdas(macro)
+        if kept_acts:
+            chooser["lambda_acts"] = {str(a): macro_recipe.format_lambda(v) for a, v in sorted(kept_acts.items())}
     elif pick != macro_recipe.PICK_ARGMAX or skip_bias:
         raise ValueError("a pick mode belongs to the blended chooser (--human-prior and --lambda)")
+    elif lam_acts:
+        raise ValueError("a lambda by act belongs to the blended chooser (--human-prior and --lambda)")
     if base_agent.stakes is not None or base_agent.hold is not None:
         raise ValueError("the base has a stakes schedule or a potion hold; build on a plain generation")
     search_meta: dict[str, Any] = {}

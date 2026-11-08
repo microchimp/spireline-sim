@@ -2,12 +2,15 @@
 
 A candidate's agent.json `macro` is `rules`, `vrun` or a blended recipe:
 
-    vrun+pi_h:lambda=<inf|number>:pi_h=<8 hex of the human prior's weights sha256>[:pick=sample|:pick=skipcal<bias>]
+    vrun+pi_h:lambda=<inf|number>:pi_h=<8 hex of the human prior's weights sha256>[:act<N>=<inf|number>...][:pick=sample|:pick=skipcal<bias>]
 
 (`imitation_chooser`: the run judgement V plus lambda times the log of the human prior pi_h on the deck decisions). The optional last
 part says how the deck screen's option is taken: absent, the argmax of V + lambda log pi_h; `pick=sample`, a draw from
 softmax((V + lambda log pi_h) / 1) seeded by the run seed and the floor; `pick=skipcal<bias>`, the argmax with `bias` floors added to
-the skip option's score (the bias a calibration run chose, `rl/skip_calibrate.py`). The string is the recipe's identity wherever the lab
+the skip option's score (the bias a calibration run chose, `rl/skip_calibrate.py`). The optional `act<N>=<lambda>` parts (N 1 to 3, in
+that order, at most one a act, none equal to the base lambda) give an act its own lambda in place of `lambda=`: `lambda=0.5:...:act1=0`
+decides Act 1's deck screens by V alone (lambda 0 is `vrun`) and every later act by V plus 0.5 log pi_h (2026-11-08, D55 addendum 12; the
+act of a decision is its floor's, `act_of_floor`). A recipe without the parts is the recipe it always was, byte for byte. The string is the recipe's identity wherever the lab
 compares agents: an emulator arm's summary names it (`gen0.emu_arm_match`), and the ledger counts promotion attempts per recipe
 (`gen_loop.attempts_before`): the plain macros (`rules`, `vrun`) are one recipe, written "" in the ledger's `macro` column and in every
 row from before the column; each blended string is a recipe of its own.
@@ -29,10 +32,16 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 
 PREFIX = "vrun+pi_h"
+_LAMBDA = r"(?:inf|[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)"
 _MACRO = re.compile(
-    r"vrun\+pi_h:lambda=(inf|[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?):pi_h=([0-9a-f]{8})(?::pick=(sample|skipcal-?[0-9]*\.?[0-9]+))?")
+    r"vrun\+pi_h:lambda=(" + _LAMBDA + r"):pi_h=([0-9a-f]{8})((?::act[1-3]=" + _LAMBDA + r")*)"
+    r"(?::pick=(sample|skipcal-?[0-9]*\.?[0-9]+))?")
+_ACT_PART = re.compile(r":act([1-3])=(" + _LAMBDA + r")")
+ACT_LAST_FLOORS = (17, 33)  # the boss floors of Acts 1 and 2 (run_fields.ACT_BOSS_FLOORS): a floor past them is in the next act
+ACTS = 3
 PICK_ARGMAX, PICK_SAMPLE, PICK_SKIPCAL = "argmax", "sample", "skipcal"
 PICKS = (PICK_ARGMAX, PICK_SAMPLE, PICK_SKIPCAL)
 FIGHT_KINDS = ("hall", "elite", "boss")
@@ -65,40 +74,90 @@ def pick_name(pick: str, skip_bias: float = 0.0) -> str:
     raise ValueError(f"unknown pick mode {pick!r}; one of {', '.join(PICKS)}")
 
 
-def macro_name(lam: float, weights_sha256: str, pick: str = PICK_ARGMAX, skip_bias: float = 0.0) -> str:
-    """The recipe string a candidate's agent.json carries as `macro`."""
+def act_part(acts: Mapping[int, float] | None, lam: float) -> str:
+    """The recipe's `:act<N>=<lambda>` parts for a per-act lambda map (acts numbered from 1): in act order, and an act whose lambda is the
+    base `lam` is not written (the recipe would name the same chooser twice). "" for none."""
+    out = []
+    for act in sorted(acts or {}):
+        if isinstance(act, bool) or act not in range(1, ACTS + 1):
+            raise ValueError(f"a per-act lambda names an act from 1 to {ACTS}, not {act!r}")
+        value = float(acts[act])
+        if not value >= 0:
+            raise ValueError(f"lambda is 0 or more (inf is the prior alone), not {value} for act {act}")
+        if value != lam:
+            out.append(f":act{act}={format_lambda(value)}")
+    return "".join(out)
+
+
+def macro_name(lam: float, weights_sha256: str, pick: str = PICK_ARGMAX, skip_bias: float = 0.0,
+               acts: Mapping[int, float] | None = None) -> str:
+    """The recipe string a candidate's agent.json carries as `macro`. `acts` ({act number from 1: lambda}) gives an act its own lambda."""
     if not lam >= 0:
         raise ValueError(f"lambda is 0 or more (inf is the prior alone), not {lam}")
     if not re.fullmatch(r"[0-9a-f]{8,64}", weights_sha256):
         raise ValueError("the prior's sha256 is lowercase hex")
     if pick != PICK_SKIPCAL and skip_bias:
         raise ValueError("a skip bias belongs to the skipcal pick mode")
-    return f"{PREFIX}:lambda={format_lambda(lam)}:pi_h={weights_sha256[:8]}{pick_name(pick, skip_bias)}"
+    return f"{PREFIX}:lambda={format_lambda(lam)}:pi_h={weights_sha256[:8]}{act_part(acts, lam)}{pick_name(pick, skip_bias)}"
 
 
 def is_blended(name: str | None) -> bool:
     return bool(name) and str(name).startswith(PREFIX)
 
 
-def parse_macro(name: str) -> tuple[float, str]:
-    """(lambda, the 8 hex of the prior's sha256) of a blended recipe string (the pick mode, if any, is `parse_pick`'s)."""
+def _parse_lambda(text: str) -> float:
+    return math.inf if text == "inf" else float(text)
+
+
+def _match(name: str) -> re.Match:
     m = _MACRO.fullmatch(name)
     if not m:
-        raise ValueError(f"{name!r} is not a {PREFIX}:lambda=<inf|number>:pi_h=<8 hex>[:pick=<mode>] recipe")
-    return (math.inf if m[1] == "inf" else float(m[1])), m[2]
+        raise ValueError(f"{name!r} is not a {PREFIX}:lambda=<inf|number>:pi_h=<8 hex>[:act<N>=<lambda>][:pick=<mode>] recipe")
+    return m
+
+
+def parse_macro(name: str) -> tuple[float, str]:
+    """(lambda, the 8 hex of the prior's sha256) of a blended recipe string (the per-act lambdas are `parse_act_lambdas`'s, the pick
+    mode, if any, `parse_pick`'s)."""
+    m = _match(name)
+    parse_act_lambdas(name)  # a recipe that is not in its one canonical form is refused here too
+    return _parse_lambda(m[1]), m[2]
+
+
+def parse_act_lambdas(name: str) -> dict[int, float]:
+    """{act number from 1: lambda} of the `:act<N>=<lambda>` parts of a blended recipe string ({} without any). One canonical form per
+    chooser: the acts in order, none twice, none equal to the base lambda (`act_part` writes no such part)."""
+    m = _match(name)
+    base, found = _parse_lambda(m[1]), _ACT_PART.findall(m[3] or "")
+    acts = [int(a) for a, _ in found]
+    if acts != sorted(set(acts)):
+        raise ValueError(f"{name!r}: the act<N> parts come once each, in act order")
+    out = {int(a): _parse_lambda(v) for a, v in found}
+    if any(v == base for v in out.values()):
+        raise ValueError(f"{name!r}: an act<N> part equal to the base lambda names the same chooser twice; leave it out")
+    return out
 
 
 def parse_pick(name: str) -> tuple[str, float]:
     """(mode, skip bias) of a blended recipe string: ("argmax", 0.0) without a `pick=` part."""
-    m = _MACRO.fullmatch(name)
-    if not m:
-        raise ValueError(f"{name!r} is not a {PREFIX}:lambda=<inf|number>:pi_h=<8 hex>[:pick=<mode>] recipe")
-    p = m[3]
+    m = _match(name)
+    p = m[4]
     if p is None:
         return PICK_ARGMAX, 0.0
     if p == PICK_SAMPLE:
         return PICK_SAMPLE, 0.0
     return PICK_SKIPCAL, float(p[len(PICK_SKIPCAL):])
+
+
+def act_of_floor(floor: int) -> int:
+    """The 0-based act of a floor (the floors count across acts, `run_fields.ACT_BOSS_FLOORS`): floors up to the Act 1 boss's (17) are
+    Act 1, up to the Act 2 boss's (33) Act 2, later ones Act 3. The Act 2 ancient, the first decision of its act, is floor 18."""
+    return sum(int(floor) > last for last in ACT_LAST_FLOORS)
+
+
+def lambda_for_floor(lam: float, acts: Mapping[int, float] | None, floor: int) -> float:
+    """The lambda a deck screen on `floor` is decided with: the act's own when the recipe names one, else the base."""
+    return float((acts or {}).get(act_of_floor(floor) + 1, lam))
 
 
 # ------------------------------------------------------------------------------------------------------------------ search identity
