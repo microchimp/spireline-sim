@@ -5,7 +5,7 @@ played on four paired draws, scored by more than win or loss. A parallel instrum
     python rl/fight_exam.py select   [--extra-starts PATH] [--per-cell 100] [--allow-practised] [--rebuild]   build the exam
     python rl/fight_exam.py add-human [--per-cell 50] [--total 400] [--rebuild]               add the human stratum (a second file)
     python rl/fight_exam.py baseline [--judge PATH]                                the judge's value of every opening position
-    python rl/fight_exam.py play     --player v2 [--half A|B|all] [--stratum all|ai|human] [--until STAMP]  one player on the exam
+    python rl/fight_exam.py play     --player v2 | --player-dir DIR [--half A|B|all] [--stratum all|ai|human] [--until STAMP]  one player on the exam
     python rl/fight_exam.py report   [--player v2]                                 the readings of one player's games
     python rl/fight_exam.py compare  CAND [--champion v2] [--no-play] [--until STAMP]   a candidate on half A against the champion
 
@@ -59,8 +59,19 @@ next segment). `play` and `compare` play the human stratum with the rest (`--str
 games file (rows carry `stratum: "human"`), and every reading of the AI exam leaves them out. `report` and `compare` print the human
 line after the exam's own: survival and HP lost of the human against the player's (the mean over its four draws), by act and kind (and
 by boss), the paired difference of the two with a 95% bootstrap interval over starts (within cells), counts. Deaths count the whole HP going
-in as lost, on both sides. No calibration flags are applied to it (the human is not a draw). It is read by hand: no lab job or gate runs
-the exam, so the stratum adds its games (about 400 starts a half, four draws each) to the hand-run `play` and `compare`.
+in as lost, on both sides. No calibration flags are applied to it (the human is not a draw). The full exam is read by hand: no lab job
+runs it, so the stratum adds its games (about 400 starts a half, four draws each) to the hand-run `play` and `compare`.
+
+The human bar at a judgement (D55 addendum 11; report-only, no rule reads it). (1) The fight loop's gate (`gym_loop.human_bar`, daemon flag
+`--human-bar on|off`) plays the stratum alone, 400 starts by four draws under `a3-v1`, for a candidate that reaches a stage-2 verdict, with
+the gate's own processes and stop reasons (`play --player-dir DIR` is the same play by hand: a checkpoint folder is a player; its games go to
+`games-<folder name>.jsonl`), and `human_bar_reading` / `human_bar_line` give the one line the gate logs and records: candidate, incumbent
+and human survival (in 100) and HP lost on the same starts, and the candidate minus the incumbent paired by start with its 95% interval
+(`cand 55.0 / inc 62.0 / human 79.8 in 100 on 400 starts; cand-inc -7.0 [-11.2, -2.8]; HP lost 41.2 / 38.6 / 33.2`); the incumbent's side is
+left out when it has no games, and games on different engine tags are named. (2) The lab's keep test v2 plays nothing: `lab_human_bar` maps
+the judged player's fight network (sha256 of its `combat_policy.pt`) to the gym player holding the same bytes (`gym_player_of`) and prints that
+player's latest reading with the date of its games file, or says there are no human-stratum games for it; a network no gym player holds gets
+the gym incumbent's reading, labelled as the incumbent's.
 
 The lock protocol. A run takes a `fight-exam` line in QUIET.lock (rewritten every ten minutes, removed at the end). It starts
 only when no other tag but the loop's own (`gym-loop`, `gym-loop-train`) and `w3-blocks` stands, not while LAB/nightly/active
@@ -1383,6 +1394,151 @@ def human_compare_text(champ: dict, cand: dict, human: dict, champ_label: str, c
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------------------------------ the human bar at a judgement (report-only)
+
+
+def human_games(rows: list[dict], human: dict, config: str | None = None) -> dict:
+    """{(start, j): row} of the rows that are games of the human stratum, and with `config` only those played under it."""
+    return index_games([r for r in rows if r.get("start") in human and (config is None or r.get("config", config) == config)])
+
+
+def _tags(games: dict, field: str) -> list[str]:
+    return sorted({str(r.get(field)) for r in games.values() if r.get(field)})
+
+
+def _r(x: float | None, d: int = 2) -> float | None:
+    return None if x is None else round(x, d)
+
+
+def _single_groups(games: dict, human: dict) -> dict:
+    """{cell: [item]} of one player against the human (`human_items`), with the other side's keys empty."""
+    return {c: [{**it, "q_won": None, "q_hp_lost": None} for it in v] for c, v in human_items(games, human).items()}
+
+
+def human_bar_reading(cand: dict, inc: dict | None, human: dict, boot: int = BOOT, draws: int = DRAWS) -> dict:
+    """The human line of one judgement from the games (`{(start, j): row}`) of a candidate and, if it has any, an incumbent, on the
+    human stratum `human`: survival (in points per 100) and HP lost of the candidate, the incumbent and the human on the same starts
+    (those both played; the candidate's alone when the incumbent has no game), and the candidate minus the incumbent on them, paired
+    by start on the draws both have (the mean over the draws), with its 95% bootstrap interval over starts (within cells). A death
+    costs the whole HP going in on both sides. Report-only: nothing here reads or changes a promotion rule."""
+    cand = {k: r for k, r in cand.items() if k[0] in human}
+    inc = {k: r for k, r in (inc or {}).items() if k[0] in human}
+    out: dict = {"rule": HUMAN_RULE, "stratum_starts": len(human), "cand_games": len(cand), "inc_games": len(inc),
+                 "cand_engine": _tags(cand, "engine"), "inc_engine": _tags(inc, "engine") if inc else None,
+                 "complete": bool(human) and all((sid, j) in cand for sid in human for j in range(draws))}
+    out["same_engine"] = (out["cand_engine"] == out["inc_engine"]) if inc else None
+    if not cand:
+        return {**out, "starts": 0}
+    groups: dict = {}
+    if inc:
+        for c, v in paired_starts(inc, cand, human, {sid: 1.0 for sid in human}).items():
+            groups[c] = [{**it, "p_won": it["cand_won"], "q_won": it["champ_won"], "p_hp_lost": it["cand_hp_lost"],
+                          "q_hp_lost": it["champ_hp_lost"], "h_won": 1.0 if human[it["start"]].get("human_survived") else 0.0,
+                          "h_hp_lost": human[it["start"]].get("human_hp_lost")} for it in v]
+    if not groups:  # no incumbent game, or none on a start of the candidate's: the candidate's side alone
+        groups = _single_groups(cand, human)
+        out.update(inc_games=0, inc_engine=None, same_engine=None)
+        inc = {}
+    items = [it for v in groups.values() for it in v]
+
+    def m(key: str) -> float | None:
+        return mean(it.get(key) for it in items)
+
+    out.update(starts=len(items), cand_surv=_r(100 * m("p_won")), human_surv=_r(100 * m("h_won")), cand_hp_lost=_r(m("p_hp_lost")),
+               human_hp_lost=_r(m("h_hp_lost")))
+    if inc:
+        b, h = bootstrap(groups, mean_stat("d_won"), boot=boot), bootstrap(groups, mean_stat("d_hp_lost"), boot=boot)
+
+        def pts(x: float | None) -> float | None:
+            return None if x is None else _r(100 * x)
+
+        out.update(inc_surv=_r(100 * m("q_won")), inc_hp_lost=_r(m("q_hp_lost")), diff_starts=len(items),
+                   diff_surv=pts(b["estimate"]), diff_surv_lo=pts(b["lo"]), diff_surv_hi=pts(b["hi"]),
+                   diff_hp_lost=_r(h["estimate"]), diff_hp_lost_lo=_r(h["lo"]), diff_hp_lost_hi=_r(h["hi"]))
+    return out
+
+
+def human_bar_line(r: dict, inc: str | None = None) -> str:
+    """The reading as one line, e.g. `human bar: cand 55.0 / inc 62.0 / human 79.8 in 100 on 400 starts; cand-inc -7.0 [-11.2, -2.8];
+    HP lost 41.2 / 38.6 / 33.2`. `inc` names the incumbent for the case it has no game."""
+    if not r.get("starts"):
+        return "human bar: no human-stratum games of the candidate"
+    n = f"{r['starts']} starts" if r["starts"] == r["stratum_starts"] else f"{r['starts']} of {r['stratum_starts']} starts"
+    if r.get("inc_surv") is None:
+        who = f" {inc}" if inc else ""
+        return (f"human bar: cand {r['cand_surv']:.1f} / human {r['human_surv']:.1f} in 100 on {n} (no human-stratum games for the "
+                f"incumbent{who}); HP lost {r['cand_hp_lost']:.1f} / {r['human_hp_lost']:.1f}")
+    d = r.get("diff_surv")
+    diff = "n/a" if d is None else f"{d:+.1f}" + ("" if r.get("diff_surv_lo") is None else f" [{r['diff_surv_lo']:+.1f}, {r['diff_surv_hi']:+.1f}]")
+    line = (f"human bar: cand {r['cand_surv']:.1f} / inc {r['inc_surv']:.1f} / human {r['human_surv']:.1f} in 100 on {n}; cand-inc {diff}; "
+            f"HP lost {r['cand_hp_lost']:.1f} / {r['inc_hp_lost']:.1f} / {r['human_hp_lost']:.1f}")
+    if r.get("same_engine") is False:
+        line += f"; engines differ (cand {','.join(r['cand_engine'])}, inc {','.join(r['inc_engine'])})"
+    return line
+
+
+def games_date(path: Path) -> str | None:
+    """The UTC date a games file was last written (the rows carry no time)."""
+    try:
+        return dt.datetime.fromtimestamp(Path(path).stat().st_mtime, tz=dt.timezone.utc).strftime("%Y-%m-%d")
+    except OSError:
+        return None
+
+
+def gym_player_names(exam_dir: Path = EXAM_DIR, loop_root: Path = LOOP_ROOT) -> list[tuple[str, Path]]:
+    """The gym players as (name, folder): every promoted version under `players/` (newest first), then the checkpoints that have a
+    games file in the exam folder."""
+    root = Path(loop_root)
+    versions = [p for p in (root / "players").glob("v*") if p.name[1:].isdigit() and (p / "combat_policy.pt").is_file()]
+    out = [(p.name, p) for p in sorted(versions, key=lambda p: -int(p.name[1:]))]
+    for g in sorted(Path(exam_dir).glob("games-*.jsonl")):
+        name = g.name[len("games-"):-len(".jsonl")]
+        d = root / "checkpoints" / name
+        if (d / "combat_policy.pt").is_file() and all(name != n for n, _ in out):
+            out.append((name, d))
+    return out
+
+
+def gym_player_of(policy_sha: str, exam_dir: Path = EXAM_DIR, loop_root: Path = LOOP_ROOT) -> str | None:
+    """The name of a gym player whose `combat_policy.pt` is the network with this sha256, among the players with games in the exam
+    folder (None: no such player). A run-level agent's fight network is a gym player's when the two files are the same bytes."""
+    for name, d in gym_player_names(exam_dir, loop_root):
+        if gl.policy_sha(d) == policy_sha:
+            return name
+    return None
+
+
+def lab_human_bar(policy_sha: str | None, exam_dir: Path | None = None, loop_root: Path | None = None) -> dict:
+    """The one report-only line of a lab judgement (the keep test v2): the judged player's fight network (the sha256 of its
+    `combat_policy.pt`, named by 12 hex digits and by the gym player that holds the same bytes) and that player's latest reading on the
+    human stratum from the exam's games: survival and HP lost of the player and of the human on the same starts, and the games' date.
+    No game is played. A network no gym player holds gets the gym incumbent's reading, labelled as the incumbent's. Returns {line, ...}."""
+    exam_dir, loop_root = Path(exam_dir or EXAM_DIR), Path(loop_root or LOOP_ROOT)
+    if not policy_sha:
+        return {"line": "human bar: the judged player has no fight network (no combat prior), nothing to read"}
+    net = policy_sha[:12]
+    human = load_human_exam(exam_dir)
+    if not human:
+        return {"line": f"human bar: no human-stratum games for fight network {net} (the exam has no human stratum)", "network": net}
+    name = gym_player_of(policy_sha, exam_dir, loop_root)
+    held = name is not None
+    who = name if held else champion_label(loop_root)
+    path = games_path(exam_dir, who)
+    games = human_games(fg.read_jsonl(path), human, DEFAULT_CONFIG) if path.is_file() else {}
+    desc = f"fight network {net}" + (f" (gym player {name})" if held else " (no gym player holds these bytes)")
+    if not games:
+        extra = "" if held else f"; the gym incumbent {who} has none either"
+        return {"line": f"human bar: no human-stratum games for {desc}{extra}", "network": net, "gym_player": name, "reading_of": who}
+    r = human_bar_reading(games, None, human, boot=0)
+    date = games_date(path)
+    nums = (f"survival {r['cand_surv']:.1f} / human {r['human_surv']:.1f} in 100, HP lost {r['cand_hp_lost']:.1f} / {r['human_hp_lost']:.1f} "
+            f"on {r['starts']} of {r['stratum_starts']} starts, {r['cand_games']} games, engine {','.join(r['cand_engine']) or 'unknown'}, "
+            f"games file written {date or 'unknown date'}")
+    line = f"human bar: {desc}: {nums}" if held else f"human bar: {desc}; the gym incumbent {who}'s reading, not this network's: {nums}"
+    return {"line": line, "network": net, "gym_player": name, "reading_of": who, "date": date,
+            **{k: r[k] for k in ("starts", "cand_games", "cand_surv", "human_surv", "cand_hp_lost", "human_hp_lost", "cand_engine")}}
+
+
 def load_baseline(d: Path) -> dict | None:
     rows = fg.read_jsonl(exam_paths(d)["baseline"])
     return baseline_by_start(rows) if rows else None
@@ -1525,8 +1681,12 @@ def cmd_baseline(a: argparse.Namespace) -> int:
 
 def cmd_play(a: argparse.Namespace) -> int:
     d = Path(a.exam_dir)
-    label = a.label or Path(a.player).name
-    return run_player(a, label, resolve_player(a.player), a.half, games_path(d, label))
+    who = getattr(a, "player_dir", "") or a.player  # a folder (a checkpoint the gate is scoring) or a name under players/, checkpoints/
+    if not who:
+        print("play: --player or --player-dir is needed")
+        return 2
+    label = a.label or Path(who).name
+    return run_player(a, label, resolve_player(who), a.half, games_path(d, label))
 
 
 def main(argv=None) -> int:
@@ -1568,7 +1728,8 @@ def main(argv=None) -> int:
     common(p, True)
     p = sub.add_parser("play")
     common(p, True)
-    p.add_argument("--player", required=True)
+    p.add_argument("--player", default="", help="a name under the loop's players/ then checkpoints/, or a folder")
+    p.add_argument("--player-dir", default="", help="a player's folder (a checkpoint the gate scores); its games go to games-<folder name>.jsonl")
     p.add_argument("--label", default="")
     p.add_argument("--half", choices=("A", "B", "all"), default="all")
     p = sub.add_parser("report")

@@ -932,6 +932,212 @@ class HumanReadingTests(unittest.TestCase):
                 self.assertEqual(fe.blocked_reason(starting=True), "quiet:lab-score")  # the default is unchanged
 
 
+def det_games(starts: dict, win, hp, draws: int = 4, **extra) -> dict:
+    """Deterministic games: `win(start, j)` and `hp(start, j)` (HP lost), rows as the exam writes them."""
+    out = {}
+    for sid, s in starts.items():
+        for j in range(draws):
+            w = bool(win(s, j))
+            out[(sid, j)] = {"start": sid, "j": j, "won": w, "capped": False, "L0": 0.7 if w else 0.0,
+                             "hp_lost": float(hp(s, j) if w else 50), "config": "a3-v1", "stratum": "human", **extra}
+    return out
+
+
+def human_gym_folder(root: Path, per_cell: int = 3, games: bool = True) -> tuple[Path, Path, str]:
+    """A gym-loop folder for the lab's human-bar line: player v2's file is the bytes `net two`, the exam holds a human stratum of 13 x
+    `per_cell` starts and, with `games`, v2's games on it (engine e1; it wins the starts the human survived, 12 HP lost). Returns
+    (loop folder, exam folder, the sha256 of v2's network)."""
+    import hashlib  # noqa: PLC0415
+
+    loop = Path(root) / "gym"
+    exam = loop / "exam"
+    exam.mkdir(parents=True)
+    (loop / "players" / "v2").mkdir(parents=True)
+    (loop / "players" / "v2" / "combat_policy.pt").write_bytes(b"net two")
+    recs, outcomes = human_pool(per_cell + 10, survive=0.6, seed=2)
+    chosen, _, _ = fe.pick_human([{k: v for k, v in r.items() if k != "doc"} for r in recs], outcomes, played=set(), per_cell=per_cell,
+                                 total=13 * per_cell)
+    fe.write_stem_set(exam, "starts-human", [{**s, "doc": {"x": s["id"]}} for s in chosen])
+    if games:
+        rows = det_games({s["id"]: s for s in chosen}, lambda s, j: s["human_survived"], lambda s, j: 12, engine="e1")
+        (exam / "games-v2.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows.values()), encoding="utf-8")
+    return loop, exam, hashlib.sha256(b"net two").hexdigest()
+
+
+class HumanBarReadingTests(unittest.TestCase):
+    """The human line of one judgement (D55 addendum 11): candidate, incumbent and human on the same starts, report-only."""
+
+    def setUp(self):
+        recs, outcomes = human_pool(40, survive=0.5, seed=5)
+        chosen, _, _ = fe.pick_human([{k: v for k, v in r.items() if k != "doc"} for r in recs], outcomes, played=set(), per_cell=25, total=400)
+        self.human = {s["id"]: s for s in chosen}
+        self.n = len(self.human)
+        self.order = sorted(self.human)
+        self.rank = {sid: i for i, sid in enumerate(self.order)}
+
+    def games(self, every: int, hp_lost: int, draws: int = 4, **extra) -> dict:
+        """Wins on all draws of the starts whose rank is not a multiple of `every`, on none of the others."""
+        return det_games(self.human, lambda s, j: self.rank[s["id"]] % every != 0, lambda s, j: hp_lost, draws, **extra)
+
+    def test_the_reading_is_the_arithmetic_of_the_same_starts_and_the_line_has_the_agreed_shape(self):
+        cand, inc = self.games(3, 20), self.games(5, 14)
+        r = fe.human_bar_reading(cand, inc, self.human, boot=200)
+        n = self.n
+        wins = lambda k: sum(1 for i in range(n) if i % k != 0)  # noqa: E731
+        self.assertEqual((r["starts"], r["stratum_starts"], r["cand_games"], r["inc_games"], r["complete"]), (n, n, 4 * n, 4 * n, True))
+        self.assertAlmostEqual(r["cand_surv"], 100 * wins(3) / n, delta=0.01)
+        self.assertAlmostEqual(r["inc_surv"], 100 * wins(5) / n, delta=0.01)
+        self.assertAlmostEqual(r["human_surv"], 100 * sum(1 for s in self.human.values() if s["human_survived"]) / n, delta=0.01)
+        self.assertAlmostEqual(r["diff_surv"], r["cand_surv"] - r["inc_surv"], delta=0.02)
+        self.assertLessEqual(r["diff_surv_lo"], r["diff_surv"])
+        self.assertGreaterEqual(r["diff_surv_hi"], r["diff_surv"])
+        self.assertEqual(r["diff_starts"], n)
+        # a death costs the whole HP going in (50): HP lost is the mean over the starts of 50 (a loss) or the HP lost (a win)
+        self.assertAlmostEqual(r["cand_hp_lost"], (50 * (n - wins(3)) + 20 * wins(3)) / n, delta=0.011)
+        self.assertAlmostEqual(r["inc_hp_lost"], (50 * (n - wins(5)) + 14 * wins(5)) / n, delta=0.011)
+        self.assertAlmostEqual(r["human_hp_lost"], sum(s["human_hp_lost"] for s in self.human.values()) / n, delta=0.011)
+        self.assertAlmostEqual(r["diff_hp_lost"], r["cand_hp_lost"] - r["inc_hp_lost"], delta=0.02)
+        line = fe.human_bar_line(r, "v2")
+        self.assertRegex(line, rf"^human bar: cand \d+\.\d / inc \d+\.\d / human \d+\.\d in 100 on {n} starts; cand-inc [+-]\d+\.\d "
+                               r"\[[+-]\d+\.\d, [+-]\d+\.\d\]; HP lost \d+\.\d / \d+\.\d / \d+\.\d$")
+        self.assertNotIn("engines differ", line)  # no engine field on these rows: nothing to differ
+        self.assertEqual(fe.human_bar_reading(cand, inc, self.human, boot=200), r)  # fixed by its bootstrap seed
+
+    def test_the_reading_is_on_the_starts_and_draws_both_played_and_never_leaves_the_stratum(self):
+        cand = self.games(3, 20)
+        inc = {k: v for k, v in self.games(5, 14).items() if self.rank[k[0]] < 100 and k[1] < 2}  # 100 starts, two draws
+        alien = {("other|f1", 0): {"start": "other|f1", "j": 0, "won": True, "capped": False, "hp_lost": 0.0}}
+        r = fe.human_bar_reading({**cand, **alien}, {**inc, **alien}, self.human, boot=50)
+        self.assertEqual((r["starts"], r["diff_starts"], r["cand_games"], r["inc_games"], r["complete"]), (100, 100, 4 * self.n, 200, True))
+        sub = {s: self.human[s] for s in self.order if self.rank[s] < 100}
+        again = fe.human_bar_reading({k: v for k, v in cand.items() if k[0] in sub and k[1] < 2}, inc, sub, boot=50)
+        for key in ("cand_surv", "inc_surv", "human_surv", "cand_hp_lost", "inc_hp_lost", "human_hp_lost", "diff_surv"):
+            self.assertEqual(r[key], again[key], key)  # the same starts and draws, the same numbers
+        self.assertIn(f"on 100 of {self.n} starts", fe.human_bar_line(r))
+
+    def test_an_incumbent_with_no_game_leaves_its_side_out_and_says_so(self):
+        cand = self.games(3, 20)
+        for inc in (None, {}, {("alien|f1", 0): {"start": "alien|f1", "j": 0, "won": True, "capped": False}}):
+            r = fe.human_bar_reading(cand, inc, self.human, boot=50)
+            self.assertEqual((r["starts"], r["inc_games"], r["same_engine"]), (self.n, 0, None))
+            self.assertNotIn("inc_surv", r)
+            self.assertNotIn("diff_surv", r)
+            line = fe.human_bar_line(r, "v2")
+            self.assertIn("(no human-stratum games for the incumbent v2)", line)
+            self.assertNotIn("cand-inc", line)
+        # the candidate alone is the stratum reading of `human_items`
+        items = fe.human_items(cand, self.human)
+        self.assertAlmostEqual(r["cand_surv"], 100 * fe.mean(it["p_won"] for v in items.values() for it in v), delta=0.01)
+        # games that never meet (the incumbent's draws are not the candidate's) fall back the same way
+        meet = {k: v for k, v in self.games(5, 14).items() if k[1] == 3}
+        r = fe.human_bar_reading({k: v for k, v in cand.items() if k[1] < 3}, meet, self.human, boot=50)
+        self.assertEqual((r["inc_games"], r["starts"], r["cand_games"]), (0, self.n, 3 * self.n))
+        none = fe.human_bar_reading({}, cand, self.human)
+        self.assertEqual(none["starts"], 0)
+        self.assertEqual(fe.human_bar_line(none), "human bar: no human-stratum games of the candidate")
+
+    def test_engines_that_differ_are_named_and_a_partial_play_is_marked(self):
+        cand, inc = self.games(3, 20, engine="e1"), self.games(5, 14, engine="e0")
+        r = fe.human_bar_reading(cand, inc, self.human, boot=30)
+        self.assertEqual((r["cand_engine"], r["inc_engine"], r["same_engine"]), (["e1"], ["e0"], False))
+        self.assertTrue(fe.human_bar_line(r).endswith("; engines differ (cand e1, inc e0)"))
+        same = fe.human_bar_reading(cand, {k: {**v, "engine": "e1"} for k, v in inc.items()}, self.human, boot=30)
+        self.assertTrue(same["same_engine"])
+        half = {k: v for k, v in cand.items() if k[1] < 2}
+        self.assertFalse(fe.human_bar_reading(half, inc, self.human, boot=30)["complete"])
+        self.assertTrue(fe.human_bar_reading(half, inc, self.human, boot=30, draws=2)["complete"])
+
+    def test_games_of_another_config_are_not_the_strata_reading(self):
+        rows = list(self.games(3, 20).values()) + [{**r, "config": "judge-v0"} for r in self.games(2, 5).values()]
+        only = fe.human_games(rows, self.human, "a3-v1")
+        self.assertEqual(len(only), 4 * self.n)
+        self.assertTrue(all(r["config"] == "a3-v1" for r in only.values()))
+        self.assertEqual(len(fe.human_games(rows, {}, "a3-v1")), 0)
+
+    # -- the lab's judgement line
+    def lab_folder(self, tmp: Path, hp: int = 18) -> tuple[Path, Path, str]:
+        """A loop folder with players v1 and v2 (v2's bytes are the net), an exam with the human stratum and v2's games on it."""
+        import hashlib  # noqa: PLC0415
+
+        loop = tmp / "loop"
+        exam = loop / "exam"
+        exam.mkdir(parents=True)
+        for name, blob in (("v1", b"net one"), ("v2", b"net two")):
+            (loop / "players" / name).mkdir(parents=True)
+            (loop / "players" / name / "combat_policy.pt").write_bytes(blob)
+        fe.write_stem_set(exam, "starts-human", [{**s, "doc": {"x": s["id"]}} for s in self.human.values()])
+        rows = list(self.games(3, hp, engine="e1").values())
+        (exam / "games-v2.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        return loop, exam, hashlib.sha256(b"net two").hexdigest()
+
+    def test_the_keep_tests_line_names_the_network_and_its_gym_player_and_reads_the_exams_games(self):
+        import hashlib  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, exam, sha = self.lab_folder(Path(tmp))
+            note = fe.lab_human_bar(sha, exam, loop)
+            self.assertTrue(note["line"].startswith(f"human bar: fight network {sha[:12]} (gym player v2): survival "), note["line"])
+            n = self.n
+            want = 100 * sum(1 for i in range(n) if i % 3 != 0) / n
+            self.assertIn(f"survival {want:.1f} / human ", note["line"])
+            self.assertIn("HP lost ", note["line"])
+            self.assertIn(f"on {n} of {n} starts, {4 * n} games, engine e1, games file written ", note["line"])
+            self.assertRegex(note["line"], r"games file written \d{4}-\d{2}-\d{2}$")
+            self.assertEqual((note["gym_player"], note["reading_of"], note["network"]), ("v2", "v2", sha[:12]))
+            self.assertEqual(note["date"], fe.games_date(exam / "games-v2.jsonl"))
+            # a network that is a gym player's but has no human-stratum games
+            one = fe.lab_human_bar(hashlib.sha256(b"net one").hexdigest(), exam, loop)
+            self.assertEqual(one["line"], f"human bar: no human-stratum games for fight network {one['network']} (gym player v1)")
+            # a network that is no gym player's: the incumbent's reading, labelled as the incumbent's
+            gl.write_json(loop / "state.json", {"incumbent": "v2"})
+            odd = fe.lab_human_bar("ab" * 32, exam, loop)
+            self.assertIn("(no gym player holds these bytes); the gym incumbent v2's reading, not this network's: survival ", odd["line"])
+            self.assertEqual((odd["gym_player"], odd["reading_of"]), (None, "v2"))
+            (exam / "games-v2.jsonl").unlink()
+            self.assertEqual(fe.lab_human_bar("ab" * 32, exam, loop)["line"],
+                             f"human bar: no human-stratum games for fight network {'ab' * 6} (no gym player holds these bytes); "
+                             "the gym incumbent v2 has none either")
+            self.assertEqual(fe.lab_human_bar(sha, exam, loop)["line"], f"human bar: no human-stratum games for fight network {sha[:12]} (gym player v2)")
+            self.assertEqual(fe.lab_human_bar(None, exam, loop)["line"], "human bar: the judged player has no fight network (no combat prior), nothing to read")
+            self.assertIn("(the exam has no human stratum)", fe.lab_human_bar(sha, Path(tmp), loop)["line"])
+
+    def test_a_checkpoint_with_games_is_a_gym_player_too_and_versions_sort_by_number(self):
+        import hashlib  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            loop, exam, sha = self.lab_folder(Path(tmp))
+            (loop / "players" / "v10").mkdir()
+            (loop / "players" / "v10" / "combat_policy.pt").write_bytes(b"net ten")
+            (loop / "checkpoints" / "c0007").mkdir(parents=True)
+            (loop / "checkpoints" / "c0007" / "combat_policy.pt").write_bytes(b"net seven")
+            (loop / "checkpoints" / "c0008").mkdir()
+            (loop / "checkpoints" / "c0008" / "combat_policy.pt").write_bytes(b"net eight")
+            (exam / "games-c0007.jsonl").write_text("", encoding="utf-8")  # only a checkpoint with games is looked at
+            self.assertEqual([n for n, _ in fe.gym_player_names(exam, loop)], ["v10", "v2", "v1", "c0007"])
+            self.assertEqual(fe.gym_player_of(hashlib.sha256(b"net seven").hexdigest(), exam, loop), "c0007")
+            self.assertIsNone(fe.gym_player_of(hashlib.sha256(b"net eight").hexdigest(), exam, loop))
+
+    def test_play_takes_a_folder_as_the_player(self):
+        import argparse  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ck = Path(tmp) / "checkpoints" / "c0190"
+            ck.mkdir(parents=True)
+            seen = []
+            with mock.patch.object(fe, "run_player", lambda a, label, d, half, games: seen.append((label, d, games.name)) or 0):
+                a = argparse.Namespace(exam_dir=str(Path(tmp) / "exam"), player="", player_dir=str(ck), label="", half="all")
+                self.assertEqual(fe.cmd_play(a), 0)
+                self.assertEqual(seen, [("c0190", ck, "games-c0190.jsonl")])
+                self.assertEqual(fe.cmd_play(argparse.Namespace(exam_dir=tmp, player="", player_dir="", label="", half="all")), 2)
+                fe.cmd_play(argparse.Namespace(exam_dir=tmp, player=str(ck), player_dir="", label="x", half="A"))  # --player takes a folder as before
+                self.assertEqual(seen[-1][0], "x")
+            args = []
+            for flag in ("--player-dir", "--player"):
+                with mock.patch.object(fe, "cmd_play", lambda a: args.append((a.player, a.player_dir)) or 0):
+                    fe.main(["play", flag, "p"])
+            self.assertEqual(args, [("", "p"), ("p", "")])
+
+
 class CommandTests(unittest.TestCase):
     """`report` and `compare` end to end on an exam built from a synthetic loop folder and synthetic games files."""
 
