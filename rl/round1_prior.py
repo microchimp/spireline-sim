@@ -71,6 +71,17 @@ def sets_from_items(items: list[rd.Item], label_winners: bool = False) -> RowSet
     return rs.freeze()
 
 
+def active_sources(weights: dict, sets: dict) -> list[str]:
+    """The decision sets (`agent`, `label`) the fit trains on: non-empty and with a weight above 0. The human decisions are always trained on."""
+    return [k for k, v in sets.items() if len(v) and weights.get(k, 0.0) > 0]
+
+
+def stop_score(human_score: float, extra: dict, weights: dict) -> float:
+    """The early-stopping score: the human validation score plus the held-out NLL of every source the fit trains on (a source with weight 0
+    is measured and reported, and does not steer the stop)."""
+    return human_score + sum(m["nll"] for k, m in extra.items() if "nll" in m and weights.get(k, 0.0) > 0)
+
+
 class SetGpu:
     def __init__(self, rs: RowSet, dev: Any) -> None:
         import torch  # noqa: PLC0415
@@ -130,7 +141,7 @@ def set_metrics(net: Any, sg: SetGpu, rs: RowSet, batch: int = 4096) -> dict:
     out: dict[str, Any] = {"n": int(len(nll_a))}
     if len(nll_a):
         out.update(nll=float(nll_a.mean()), top1=float(hit_a.mean()))
-        for scr in ("card", "rest"):
+        for scr in ("card", "rest", "ancient"):
             sel = np.array([m[0] == scr for m in rs.meta])
             if sel.sum() >= 20:
                 out[scr] = {"n": int(sel.sum()), "nll": float(nll_a[sel].mean()), "top1": float(hit_a[sel].mean())}
@@ -165,7 +176,8 @@ def fit(cfg: dict, *, human_dir: Path, train_sets: dict[str, RowSet], val_sets: 
         p.requires_grad_(False)
     opt = torch.optim.AdamW(net.parameters(), lr=P["lr"], weight_decay=P["weight_decay"])
     W = P["weights"]
-    sg = {k: SetGpu(v, dev) for k, v in train_sets.items() if len(v)}
+    # a source with weight 0 is neither trained on nor part of the early-stopping score (its held-out figures are still reported)
+    sg = {k: SetGpu(train_sets[k], dev) for k in active_sources(W, train_sets)}
     vg = {k: SetGpu(v, dev) for k, v in val_sets.items() if len(v)}
     pools = {k: ds_tr.kind_idx[k][valid_tr[ds_tr.kind_idx[k]]] for k in kinds if k in ds_tr.kind_idx}
 
@@ -174,13 +186,8 @@ def fit(cfg: dict, *, human_dir: Path, train_sets: dict[str, RowSet], val_sets: 
 
     def val_score(n: Any) -> tuple[float, dict]:
         m = human_val(n)
-        s = hp.score_total(m)
-        extra = {}
-        for k, g in vg.items():
-            extra[k] = set_metrics(n, g, val_sets[k])
-            if "nll" in extra[k]:
-                s += extra[k]["nll"]
-        return s, {"human": m, **extra}
+        extra = {k: set_metrics(n, g, val_sets[k]) for k, g in vg.items()}
+        return stop_score(hp.score_total(m), extra, W), {"human": m, **extra}
 
     before_score, before = val_score(net)
     best, best_state, since, history = {"score": before_score, "epoch": 0}, {k: v.detach().clone() for k, v in net.state_dict().items()}, 0, []
@@ -234,7 +241,8 @@ def fit(cfg: dict, *, human_dir: Path, train_sets: dict[str, RowSet], val_sets: 
     return {"weights": str(wpath), "sha256": rd_sha(wpath), "best_epoch": best["epoch"], "epochs_run": len(history), "history": history,
             "val_score_before": before_score, "val_score_after": after_score,
             "heldout": {"before": before, "after": after}, "human_train_decisions": {k: int(len(v)) for k, v in pools.items()},
-            "set_sizes": {k: len(v) for k, v in train_sets.items()}, "wall_seconds": round(time.time() - t0, 1), "device": str(dev)}
+            "set_sizes": {k: len(v) for k, v in train_sets.items()}, "trained_on": ["human", *sg], "source_weights": dict(W),
+            "wall_seconds": round(time.time() - t0, 1), "device": str(dev)}
 
 
 def rd_sha(path: Path | str) -> str:
@@ -247,10 +255,12 @@ def rd_sha(path: Path | str) -> str:
     return h.hexdigest()
 
 
-def label_leg_report(items: list[rd.Item], nets: Any, old_prior: Path, new_prior: Path, lam: float, grid: list[float]) -> dict:
+def label_leg_report(items: list[rd.Item], nets: Any, old_prior: Path, new_prior: Path, lam: float, grid: list[float],
+                     lam_acts: dict[int, float] | None = None) -> dict:
     """Held-out label leg of the new prior against the old one, under the judgement `nets`: the mean centred label value A of the picks
     of the old blend, the new blend (at `lam` and at each grid lambda), the judgement alone and the new prior alone, with paired
-    differences from the old blend (standard error, 95% interval)."""
+    differences from the old blend (standard error, 95% interval). `lam_acts` ({act number from 1: lambda}) gives the new blend (the
+    candidate's, not the incumbent's) its per-act lambda."""
     from human_prior_infer import PriorScorer  # noqa: PLC0415
     from run_train import models  # noqa: PLC0415
 
@@ -260,7 +270,8 @@ def label_leg_report(items: list[rd.Item], nets: Any, old_prior: Path, new_prior
     vals = [list(models.expected_floors(nets.value.floor_probs(it.rows), 53.0)) for it in items]
     lo = [list(old.row_logits(it.rows)) for it in items]
     ln = [list(new.row_logits(it.rows)) for it in items]
-    arms: dict[str, Any] = {"old_blend": (vals, lo, lam), "new_blend": (vals, ln, lam), "judgement_only": (vals, ln, 0.0),
+    new_lam: Any = (lambda it: float((lam_acts or {}).get(it.act + 1, lam))) if lam_acts else lam
+    arms: dict[str, Any] = {"old_blend": (vals, lo, lam), "new_blend": (vals, ln, new_lam), "judgement_only": (vals, ln, 0.0),
                             "new_prior_only": (vals, ln, math.inf)}
     for g in grid:
         arms[f"new_lambda_{g:g}"] = (vals, ln, float(g))

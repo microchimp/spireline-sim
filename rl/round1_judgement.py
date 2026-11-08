@@ -1,6 +1,9 @@
 """refit-judgement (docs/rl/ROUND.md; memo 3.4 and 3.5 step 3): the run judgement V refit on the new fighter's exploring runs and the
-human chosen-option rows, with a source input (human or self), the human weight picked on held-out self-play runs, the kept fit the
-average of its seeds' weights, and a held-out report (clears Act 1 and Act 2 log-loss, the D33 keep record, the label leg).
+human chosen-option rows, with a source input (human or self), the human weight picked on held-out self-play runs (`select_human_weight`:
+the lowest clears-Act-2 log-loss among the weights that keep clears Act 1 no worse than the incumbent's; D55 addendum 12), the kept fit the
+average of its seeds' weights, and a held-out report (clears Act 1 and Act 2 log-loss, the selection, the D33 keep record, the guards, the
+label leg). The ranking check (keep test (2), its skip guard) and the label bound ((3)) are reported by `guards_report` and decide `kept`
+only when `judgement.guards` is "gate".
 
     python rl/round1.py refit-judgement --config round1.json --round-dir DIR
 
@@ -163,9 +166,89 @@ def self_arrays(values: Any, fight: Any, chunk: int = 8192) -> dict[str, np.ndar
             "final": np.asarray(values.final_floor, np.int64), "floor": np.asarray(values.floor, np.int64)}
 
 
+def _finite(x: Any) -> bool:
+    return x is not None and not np.isnan(x)
+
+
+def select_human_weight(grid: list[dict], incumbent: dict, rule: str = "clears_act2", act1_tolerance: float = 0.0) -> dict:
+    """The selection step over the human-weight grid. `grid` rows carry `human_weight`, `clears_act1`, `clears_act2` and `mean` (held-out
+    log-loss of the seed-averaged fits, lower is better); `incumbent` the same figures for the fit the round starts from.
+
+    Rule "clears_act2" (D55 addendum 12): among the weights whose clears-Act-1 log-loss is not worse than the incumbent's by more than
+    `act1_tolerance`, the lowest clears-Act-2 log-loss; if no weight keeps clears Act 1, the one with the lowest clears-Act-1 log-loss
+    (`fallback` says so). Rule "mean" is the first draft's lowest mean of both heads. A figure that could not be computed (NaN: under 20
+    held-out rows) ranks last. Returns `chosen`, the whole `grid` of weights, `table` (every weight's figures and whether it was eligible),
+    the `incumbent`'s figures, the `rule`, a `fallback` (None, or why the rule could not choose) and a `reason` in words."""
+    if not grid:
+        raise ValueError("the human-weight grid is empty")
+    ceiling = incumbent.get("clears_act1")
+    table = []
+    for g in grid:
+        ok = _finite(g["clears_act1"]) and (not _finite(ceiling) or g["clears_act1"] <= ceiling + act1_tolerance + 1e-12)
+        table.append({"human_weight": g["human_weight"], "clears_act1": g["clears_act1"], "clears_act2": g["clears_act2"], "mean": g["mean"],
+                      "eligible": bool(ok)})
+
+    def worst_last(key: str):
+        return lambda r: (not _finite(r[key]), r[key] if _finite(r[key]) else 0.0)
+
+    fallback = None
+    if rule == "mean":
+        pick = min(table, key=worst_last("mean"))
+        reason = f"lowest mean held-out clears log-loss ({pick['mean']:.4f})"
+    else:
+        pool = [r for r in table if r["eligible"]]
+        if not pool:
+            pick = min(table, key=worst_last("clears_act1"))
+            fallback = "no weight keeps clears-Act-1 log-loss within the incumbent's; the lowest clears-Act-1 log-loss is kept"
+            reason = fallback
+        else:
+            pick = min(pool, key=worst_last("clears_act2"))
+            if not _finite(pick["clears_act2"]):
+                fallback = "clears-Act-2 log-loss could not be computed on the held-out runs; the first eligible weight is kept"
+                pick = pool[0]
+            reason = fallback or (f"lowest held-out clears-Act-2 log-loss ({pick['clears_act2']:.4f}) among the {len(pool)} of {len(table)} "
+                                  f"weights with clears Act 1 not worse than the incumbent's ({ceiling if _finite(ceiling) else 'n/a'})")
+    return {"rule": rule, "chosen": pick["human_weight"], "grid": [g["human_weight"] for g in grid], "table": table,
+            "incumbent": {k: incumbent.get(k) for k in ("clears_act1", "clears_act2", "mean")}, "act1_tolerance": act1_tolerance,
+            "fallback": fallback, "reason": reason}
+
+
+def guards_report(keep_doc: dict, leg: dict, J: dict) -> dict:
+    """The keep test's guards, as numbers (D55 addendum 12: reported, and they decide `kept` only when `J["guards"]` is "gate").
+
+    * `ranking`: keep test (2), the ranking check of `run_train.ranking` (rest rate, heal rate, human agreement): its verdict and each check;
+    * `skip_guard`: the candidate's card skip rate against the incumbent's on the ranking set, a fall of more than `skip_guard_points` per
+      100 fails unless the label leg favours the candidate (the strategy memo's (2)); None figures when the ranking check did not run;
+    * `label_bound`: keep test (3), the new judgement with the new prior against the incumbent's blend on the held-out labelled decisions,
+      the lower end of the paired 95% interval against `label_bound_floors` (a floor a decision); the memo's section 4: at 240 decisions this
+      refuses a level candidate about 83 times in 100, which is why it is reported and not a gate.
+    `pass` is the guards together (a figure that is not there passes): what `kept` needs under "gate"."""
+    mode = J["guards"]
+    rk = keep_doc.get("ranking")
+    ranking = {"ran": rk is not None and rk.get("status") not in (None, "not_run"), "status": (rk or {}).get("status"),
+               "pass": None if rk is None else bool(rk.get("pass")),
+               "checks": [{k: c.get(k) for k in ("name", "candidate", "incumbent", "diff", "limit", "pass")} for c in (rk or {}).get("checks") or []]}
+    row = (leg or {}).get("all") or {}
+    diff = row.get("new_judgement_new_prior_minus_incumbent_blend") or {}
+    bound = float(J["label_bound_floors"])
+    lo = diff.get("lo95")
+    label_bound = {"n": row.get("n"), "diff_floors": diff.get("mean"), "se": diff.get("se"), "lo95": lo, "bound": bound,
+                   "ok": None if lo is None else bool(lo > bound), "reading": "report only unless guards is gate"}
+    favours = None if lo is None else bool(lo > 0)
+    skip = (((rk or {}).get("shard") or {}).get("skip_rate") or {})
+    fall = None if skip.get("incumbent") is None or skip.get("candidate") is None else 100.0 * (skip["incumbent"] - skip["candidate"])
+    limit = float(J["skip_guard_points"])
+    skip_guard = {"fall_points": fall, "limit_points": limit, "n": skip.get("n"), "label_leg_favours": favours,
+                  "ok": None if fall is None else bool(fall <= limit or favours)}
+    parts = [ranking["pass"], label_bound["ok"], skip_guard["ok"]]
+    return {"mode": mode, "ranking": ranking, "skip_guard": skip_guard, "label_bound": label_bound,
+            "pass": all(p for p in parts if p is not None), "decides_kept": mode == "gate"}
+
+
 def refit(cfg: dict, *, values: Any, fight_net: Any, value_net_state: dict, hum: dict, out_dir: Path, meta: dict) -> dict:
-    """The fit: for each human weight, `seeds` fits from the incumbent; the weight with the lowest mean held-out clears log-loss is kept
-    and its seeds' weights averaged. Writes run_value.pt/.npz (plain RunValueNet) and source_input.npz; returns the report."""
+    """The fit: for each human weight of the grid, `seeds` fits from the incumbent; `select_human_weight` picks the weight (its rule is
+    `judgement.weight_rule`) and its seeds' weights are averaged. Writes run_value.pt/.npz (plain RunValueNet) and source_input.npz;
+    returns the report (`selection`: the chosen weight, the grid and every weight's figures)."""
     import torch  # noqa: PLC0415
 
     from run_train import models  # noqa: PLC0415
@@ -188,7 +271,8 @@ def refit(cfg: dict, *, values: Any, fight_net: Any, value_net_state: dict, hum:
         grid.append({"human_weight": hw, "seeds": [s["mean"] for s in scores], "mean": nanmean([s["mean"] for s in scores]),
                      "clears_act1": nanmean([s["clears_act1"] for s in scores]),
                      "clears_act2": nanmean([s["clears_act2"] for s in scores])})
-    best = min(grid, key=lambda g: (bool(np.isnan(g["mean"])), g["mean"]))
+    selection = select_human_weight(grid, incumbent_score, J.get("weight_rule", "clears_act2"), float(J.get("act1_tolerance", 0.0)))
+    best = next(g for g in grid if g["human_weight"] == selection["chosen"])
     kept_state = average_states([f["state"] for f in fits[best["human_weight"]]])
     final_score = held_out_score(kept_state, self_d)
     value = models.RunValueNet(256, 0.1)
@@ -199,7 +283,8 @@ def refit(cfg: dict, *, values: Any, fight_net: Any, value_net_state: dict, hum:
                                                                      "seeds": list(J["seeds"])})
     np.savez(out_dir / "source_input.npz", src_w=kept_state["src_w"].numpy().astype(np.float32),
              note=np.array("first-layer weights times 1 for a human row, 0 for self; play is 0 (not applied in run_value.npz)"))
-    return {"npz": str(npz), "value": value, "human_weight": best["human_weight"], "grid": grid, "incumbent_heldout": incumbent_score,
+    return {"npz": str(npz), "value": value, "human_weight": best["human_weight"], "grid": grid, "selection": selection,
+            "incumbent_heldout": incumbent_score,
             "kept_heldout": final_score, "self_rows": int(len(self_d["target"])), "self_rows_heldout": int(self_d["val"].sum()),
             "human_rows": int(len(hum["cls"])), "human_decisions": int(hum["n_decisions"]), "device": str(dev),
             "wall_seconds": round(time.time() - t0, 1)}

@@ -25,7 +25,8 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 REF = Path("D:/spireline/referee")
-LABEL_SCHEMA = 2  # ROUND.md "labels file": hindsight's record (LABEL_VERSION 1) plus the schedule, the heldout flag and the clear winner
+LABEL_SCHEMA = 3  # ROUND.md "labels file": hindsight's record (LABEL_VERSION 1) plus the play schedule, the continuations' schedule and the heldout flag
+LABEL_KINDS = ("card", "rest", "route", "shop", "ancient")  # hindsight.LABEL_KINDS (a test pins them equal): the kinds a label cell can name
 
 # Every weight, lambda and strength of the round is here and nowhere else (the brief: never a constant in code). Defaults are the memo
 # 3.4 / 3.5 figures where the memo gives one; the others are marked in docs/rl/ROUND.md as the builder's, for the weights call.
@@ -37,15 +38,30 @@ DEFAULTS: dict[str, Any] = {
               "prior_weights": (REF / "human-prior" / "pi_h-v0" / "weights.npz").as_posix(),
               "gpu_python": "D:/spireline/venv-gpu/Scripts/python.exe", "emu_python": "D:/spireline/src/sts2/.venv/Scripts/python.exe"},
     "play": {"runs": 2000, "explore_tau": 0.1, "explore_eps": 0.02, "config": "a3-v1", "procs": 16},
-    "label": {"k": 2, "decisions": 1200, "per_run": 2, "procs": 6, "max_options": 6, "own_schedule": True, "order_seed": 1,
-              "heldout_fraction": 0.2, "task_cap_s": 3600.0,
-              "quota": {"card/a1": 450, "shop/a1": 300, "rest/a1": 180, "route/a1": 150, "card/a2": 60, "shop/a2": 30, "route/a2": 20, "rest/a2": 10}},
-    "prior": {"lambda": 0.5, "lambda_rule": "fixed", "lambda_grid": [0.0, 0.25, 0.5, 1.0],
-              "weights": {"human": 1.0, "agent": 0.5, "label": 1.0}, "kl_beta": 1.0, "label_gap_se": 2.0,
+    # D55 addendum 12 (docs/design/2026-11-08-labels-vs-blocks.md section 6): two labels a run PER ACT (per_act; per_run is read only when per_act
+    # is 0), at least half of all labels in Act 2 (act2_min_share, checked against the quota), the ancient a label kind beside cards and rests,
+    # the continuations on the x8 boss schedule (cont_boss_mult) while the replayed exploring play stays at the player's own x16
+    "label": {"k": 2, "decisions": 1200, "per_run": 2, "per_act": 2, "procs": 6, "max_options": 6, "own_schedule": True, "cont_boss_mult": 8,
+              "order_seed": 1, "heldout_fraction": 0.2, "task_cap_s": 3600.0, "act2_min_share": 0.5,
+              "rates": {"card": 0.30, "rest": 0.50, "route": 0.07, "shop": 0.60, "ancient": 1.0},
+              "quota": {"card/a1": 200, "rest/a1": 120, "ancient/a1": 40, "shop/a1": 140, "route/a1": 100,
+                        "card/a2": 240, "rest/a2": 140, "ancient/a2": 100, "shop/a2": 70, "route/a2": 50}},
+    # prior.weights: the human rows are the signal that bought the gain; the blend's own choices and the K 2 labels carry weight 0 (the memo's
+    # section 4: the agent term moves pi_h toward V's argmax, the label term cannot move a fit on ~150,000 human decisions), so the refit is
+    # pi_h on the larger human file behind the KL anchor; a source with weight 0 is not trained on and does not steer the early stop.
+    # lambda_acts: {"1": 0.0} would give Act 1 the plain judgement (the recipe's act1 part) once the act gate's block holds; {} until then.
+    "prior": {"lambda": 0.5, "lambda_rule": "fixed", "lambda_acts": {}, "lambda_grid": [0.0, 0.25, 0.5, 1.0],
+              "weights": {"human": 1.0, "agent": 0.0, "label": 0.0}, "kl_beta": 1.0, "label_gap_se": 2.0,
               "lr": 1e-4, "epochs": 8, "batch": 512, "patience": 3, "weight_decay": 1e-4, "max_agent_decisions": 40000, "seed": 20261108,
               "human_fifths_train": [1, 2, 3], "human_fifth_val": 4, "kinds": ["card", "ancient", "rest", "route"]},
-    "judgement": {"device": "cuda", "human_weights": [0.25, 1.0, 4.0], "seeds": [1, 2, 3], "epochs": 6, "lr": 3e-4, "batch": 1024, "beta": 0.0,
+    # judgement.human_weights is the grid of a selection step: the weight with the lowest held-out clears-Act-2 log-loss among those whose
+    # clears-Act-1 log-loss is not worse than the incumbent's by more than act1_tolerance (weight_rule "clears_act2"; "mean" is the first draft's
+    # mean of both heads); the chosen weight, the grid and every weight's figures go into the report. guards: the ranking check (keep test
+    # (2), its skip guard among them) and the label bound (3) are reported and do not decide `kept` ("report"); "gate" restores them.
+    "judgement": {"device": "cuda", "human_weights": [0.25, 1.0, 4.0], "weight_rule": "clears_act2", "act1_tolerance": 0.0,
+                  "seeds": [1, 2, 3], "epochs": 6, "lr": 3e-4, "batch": 1024, "beta": 0.0,
                   "fight_net": "keep", "end_hp_weight": 0.25, "heldout_fraction": 0.1, "ranking_check": True, "weight_decay": 1e-4,
+                  "guards": "report", "label_bound_floors": -0.1, "skip_guard_points": 5.0,
                   "human_kinds": ["card", "ancient", "route"], "threads": 4},
     "smoke": {"seeds": 200, "seeds_file": (REF / "lab" / "seeds" / "R1-smoke-{date}.json").as_posix(), "keep_rule": "v2", "procs": 16},
     "block": {"seeds": 3000, "seeds_file": (REF / "lab" / "seeds" / "R1-block-{date}.json").as_posix(), "keep_rule": "v2", "procs": 16,
@@ -62,7 +78,7 @@ def _merge(base: dict, over: dict, path: str = "") -> dict:
             continue
         if k not in base:
             raise ValueError(f"round config: unknown key {path}{k}")
-        if isinstance(base[k], dict) and isinstance(v, dict) and k not in ("quota", "weights"):
+        if isinstance(base[k], dict) and isinstance(v, dict) and k not in ("quota", "weights", "lambda_acts"):
             out[k] = _merge(base[k], v, path + k + ".")
         else:
             out[k] = copy.deepcopy(v)
@@ -90,6 +106,31 @@ def validate(cfg: dict) -> None:
         raise ValueError("judgement.fight_net: only 'keep' is built (the incumbent's FightNet fills H for self and human rows alike)")
     if not (0 < lab["heldout_fraction"] < 1) or lab["k"] < 1:
         raise ValueError("label.heldout_fraction is in (0, 1) and label.k >= 1")
+    if lab["per_act"] < 0 or lab["per_run"] < 0 or lab["cont_boss_mult"] < 0:
+        raise ValueError("label.per_act, per_run and cont_boss_mult are 0 or more")
+    if lab["cont_boss_mult"] and not lab["own_schedule"]:
+        raise ValueError("label.cont_boss_mult lowers the player's own stakes schedule: it needs label.own_schedule")
+    for cell, n in lab["quota"].items():
+        kind, _, act = cell.partition("/a")
+        if kind not in LABEL_KINDS or act not in ("1", "2") or int(n) < 0:
+            raise ValueError(f"label.quota cell {cell!r}: <kind>/a1 or <kind>/a2, kind one of {', '.join(LABEL_KINDS)}")
+    shares = act_shares(lab["quota"])
+    if shares["total"] and shares["a2"] < lab["act2_min_share"] - 1e-9:
+        raise ValueError(f"label.quota puts {shares['a2']:.3f} of the labels in Act 2; label.act2_min_share asks for {lab['act2_min_share']}")
+    if set(p["lambda_acts"]) - {"1", "2", "3"} or any(not (isinstance(v, (int, float)) and v >= 0) for v in p["lambda_acts"].values()):
+        raise ValueError("prior.lambda_acts is {act '1' to '3': lambda >= 0}")
+    if j["weight_rule"] not in ("clears_act2", "mean"):
+        raise ValueError("judgement.weight_rule is 'clears_act2' (the lowest held-out clears-Act-2 log-loss, clears Act 1 not worse) or 'mean'")
+    if j["guards"] not in ("report", "gate"):
+        raise ValueError("judgement.guards is 'report' (the ranking check and the label bound are reported only) or 'gate'")
+
+
+def act_shares(quota: dict[str, int]) -> dict[str, float]:
+    """The labels a quota asks for in Act 1 and Act 2 and Act 2's share of them: {"a1", "a2" (shares), "n1", "n2", "total"}."""
+    n1 = sum(int(v) for c, v in quota.items() if c.endswith("/a1"))
+    n2 = sum(int(v) for c, v in quota.items() if c.endswith("/a2"))
+    total = n1 + n2
+    return {"n1": n1, "n2": n2, "total": total, "a1": n1 / total if total else 0.0, "a2": n2 / total if total else 0.0}
 
 
 def config_text() -> str:
@@ -190,7 +231,7 @@ def _decision_rows(rec: dict, entry: dict, nets: Any) -> tuple[Any, np.ndarray, 
 
     dec = shards.entry_decision(entry)
     screen = ic.screen_of(dec)
-    if screen not in ("card", "rest"):
+    if screen not in ("card", "rest", "ancient"):
         return None
     view = dec.view or shards.state_view(rec, entry)
     return dec, option_rows(nets, view, list(dec.options)), screen, view
@@ -198,7 +239,7 @@ def _decision_rows(rec: dict, entry: dict, nets: Any) -> tuple[Any, np.ndarray, 
 
 def agent_items(runs_root: Path | str, jobs: Sequence[str], nets: Any, *, keep: float, hold: bool | None, fraction: float,
                 limit: int, order_salt: str = "round1-agent") -> list[Item]:
-    """The player's own deck-screen choices from its recorded runs: one Item per card or rest decision, `chosen` the option the
+    """The player's own deck-screen choices from its recorded runs: one Item per card, ancient or rest decision, `chosen` the option the
     blended chooser took. `hold` True keeps held-out runs only, False the others, None all; `keep` is the share of decisions
     sampled (a stable hash of run and ordinal); `limit` caps the count."""
     import hindsight  # noqa: PLC0415
@@ -292,14 +333,16 @@ def blend_pick(item: Item, values: Sequence[float], logits: Sequence[float], lam
 
 
 def leg_picks(items: Sequence[Item], arms: dict[str, tuple[Sequence[Sequence[float]], Sequence[Sequence[float]], float]]) -> dict:
-    """The held-out label leg. `arms[name] = (values per item, logits per item, lambda)`: the picks of each arm among the played options,
+    """The held-out label leg. `arms[name] = (values per item, logits per item, lambda)` (lambda a number, or a function of the item for a
+    per-act lambda): the picks of each arm among the played options,
     their mean centred label value A, and every arm's difference from the first, with the standard error and 95% interval. The
     player's own pick of the run and the best option (oracle) are reported beside them. Cells under 20 decisions are not shown."""
     def block(sel: list[int]) -> dict | None:
         if len(sel) < 20:
             return None
         res: dict[str, Any] = {"n": len(sel)}
-        picks = {n: np.array([items[i].A[blend_pick(items[i], v[i], l[i], lam)] for i in sel]) for n, (v, l, lam) in arms.items()}
+        picks = {n: np.array([items[i].A[blend_pick(items[i], v[i], l[i], lam(items[i]) if callable(lam) else lam)] for i in sel])
+                 for n, (v, l, lam) in arms.items()}
         for n, x in picks.items():
             res[n] = mean_se(x)
         first = next(iter(picks))
@@ -316,6 +359,7 @@ def leg_picks(items: Sequence[Item], arms: dict[str, tuple[Sequence[Sequence[flo
     out: dict[str, Any] = {}
     for name, sel in (("all", list(range(len(items)))), ("card", [i for i, it in enumerate(items) if it.screen == "card"]),
                       ("rest", [i for i, it in enumerate(items) if it.screen == "rest"]),
+                      ("ancient", [i for i, it in enumerate(items) if it.screen == "ancient"]),
                       ("act1", [i for i, it in enumerate(items) if it.act == 0]), ("act2", [i for i, it in enumerate(items) if it.act >= 1])):
         b = block(sel)
         if b is not None:

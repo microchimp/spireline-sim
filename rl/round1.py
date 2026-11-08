@@ -7,7 +7,8 @@
     python rl/round1.py config [--write FILE]
 
 Every step reads the files of the steps before it from the round folder and writes its own (table in ROUND.md); `chain.json` records each
-step's inputs and outputs. Every weight, lambda and strength is a key of the config file (`round1_data.DEFAULTS`). `--dry-run` runs the
+step's inputs and outputs, every one with its sha256 and size (an input also names the step that left it), and a step refuses to start on an
+input that no longer has the sha256 its producer recorded. Every weight, lambda and strength is a key of the config file (`round1_data.DEFAULTS`). `--dry-run` runs the
 step on the tiny sample of `TINY` in `<round-dir>/dry/` and starts nothing real: no block, no real game, no write under the agent or lab folders.
 """
 
@@ -39,13 +40,15 @@ IO = {
     "refit-prior": (["play/play.json", "labels/labels.jsonl"], ["prior/weights.npz", "prior/refit.json"]),
     "refit-judgement": (["play/play.json", "labels/labels.jsonl", "prior/weights.npz"],
                         ["judgement/run_value.npz", "judgement/vrun_fit.json", "judgement/refit.json"]),
-    "candidate": (["prior/weights.npz", "judgement/vrun_fit.json"], ["candidate/candidate.json"]),
+    "candidate": (["prior/weights.npz", "prior/refit.json", "judgement/vrun_fit.json", "judgement/run_value.npz"], ["candidate/candidate.json"]),
     "smoke": (["candidate/candidate.json"], ["smoke/smoke.json"]),
-    "block": (["smoke/smoke.json"], ["block/block.json"]),
+    "block": (["candidate/candidate.json", "smoke/smoke.json"], ["block/block.json"]),
 }
+PRODUCER = {rel: step for step, (_needs, leaves) in IO.items() for rel in leaves}  # the step that leaves each file
+CANDIDATE_SKIP = ("promotion.json",)  # what a judgement writes into the candidate folder (its arms/ is a folder)
 # the tiny sample of a --dry-run (docs/rl/ROUND.md): two runs under a 4-simulation search, K 1, one human shard, one epoch
-TINY = {"play": {"runs": 2, "config": "flat-4", "procs": 2}, "label": {"k": 1, "procs": 1, "per_run": 1, "max_options": 3, "quota": {"card/a1": 2},
-                                                                        "heldout_fraction": 0.5},
+TINY = {"play": {"runs": 2, "config": "flat-4", "procs": 2}, "label": {"k": 1, "procs": 1, "per_run": 1, "per_act": 0, "max_options": 3,
+                                                                        "quota": {"card/a1": 2}, "heldout_fraction": 0.5, "act2_min_share": 0.0},
         "prior": {"epochs": 1, "batch": 64, "max_agent_decisions": 200, "label_gap_se": 0.0},
         "judgement": {"human_weights": [1.0], "seeds": [1], "epochs": 1, "batch": 256, "ranking_check": False, "device": "cpu"}}
 
@@ -75,6 +78,22 @@ def sha256(path: Path | str) -> str:
     return h.hexdigest()
 
 
+def file_record(path: Path | str) -> dict:
+    """A handoff file as chain.json keeps it: its sha256 and size."""
+    return {"sha256": sha256(path), "bytes": Path(path).stat().st_size}
+
+
+def folder_files(folder: Path | str, skip: tuple[str, ...] = CANDIDATE_SKIP) -> dict[str, dict]:
+    """The files of a folder (top level) with their sha256 and size: a built candidate's identity, checked again at the smoke and the block."""
+    return {f.name: file_record(f) for f in sorted(Path(folder).iterdir()) if f.is_file() and f.name not in skip}
+
+
+def config_sha256(cfg: dict) -> str:
+    import hashlib  # noqa: PLC0415
+
+    return hashlib.sha256(json.dumps(cfg, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 class Ctx:
     """The config, the round folder and (for a dry run) the scratch agent and lab it stands in."""
 
@@ -89,19 +108,39 @@ class Ctx:
     def p(self, rel: str) -> Path:
         return self.dir / rel
 
+    def chain(self) -> dict:
+        return read_json(self.p("chain.json")) if self.p("chain.json").is_file() else {"steps": {}}
+
     def need(self, step: str) -> None:
+        """Refuse to start without the step's inputs, or on an input whose sha256 is no longer the one its producer recorded."""
         missing = [r for r in IO[step][0] if not self.p(r).is_file()]
         if missing:
             raise SystemExit(f"round1 {step}: missing {missing} in {self.dir} (run the step before it)")
+        steps = self.chain()["steps"]
 
-    def done(self, step: str, extra: dict | None = None) -> dict:
-        outs = {r: (self.p(r).is_file() and sha256(self.p(r))) for r in IO[step][1]}
+        def recorded(rel: str) -> str | None:  # an entry written before the files carried sizes is the bare hash
+            got = (steps.get(PRODUCER[rel]) or {}).get("outputs", {}).get(rel)
+            return got.get("sha256") if isinstance(got, dict) else got
+
+        changed = [r for r in IO[step][0] if recorded(r) not in (None, sha256(self.p(r)))]
+        if changed:
+            raise SystemExit(f"round1 {step}: {changed} changed since {sorted({PRODUCER[r] for r in changed})} recorded them in chain.json "
+                             f"(run that step again, or restore the file)")
+
+    def done(self, step: str, extra: dict | None = None, artifacts: dict | None = None) -> dict:
+        """Record the step in chain.json: every input and output file with its sha256 and size (an input names the step that left it),
+        `sha256` the first output's, the config's sha256, and `artifacts` (files outside the round folder the step produced or read,
+        e.g. the candidate folder's files)."""
+        outs = {r: (self.p(r).is_file() and file_record(self.p(r))) for r in IO[step][1]}
         if not all(outs.values()):
             raise SystemExit(f"round1 {step}: did not leave {[r for r, v in outs.items() if not v]}")
-        chain = read_json(self.p("chain.json")) if self.p("chain.json").is_file() else {"steps": {}}
-        chain["steps"][step] = {"at": utc(), "inputs": {r: sha256(self.p(r)) for r in IO[step][0]}, "outputs": outs, **(extra or {})}
+        chain = self.chain()
+        entry = {"at": utc(), "config_sha256": config_sha256(self.cfg),
+                 "inputs": {r: {**file_record(self.p(r)), "from": PRODUCER.get(r)} for r in IO[step][0]}, "outputs": outs,
+                 "sha256": outs[IO[step][1][0]]["sha256"], **({"artifacts": artifacts} if artifacts else {}), **(extra or {})}
+        chain["steps"][step] = entry
         write_json(self.p("chain.json"), chain)
-        return chain["steps"][step]
+        return entry
 
     def agent(self) -> Any:
         import gen_loop  # noqa: PLC0415
@@ -163,11 +202,12 @@ def step_label(ctx: Ctx) -> dict:
     quota = ",".join(f"{k}={v}" for k, v in L["quota"].items())
     ns = argparse.Namespace(out=str(out), agent_root=str(ctx.agent_root), agent_dir=str(Path(agent.path).relative_to(ctx.agent_root).as_posix()),
                             generation=agent.generation, runs_root=str(ctx.lab_runs), config=ctx.cfg["play"]["config"], k=int(L["k"]),
-                            procs=int(L["procs"]), per_run=int(L["per_run"]), max_options=int(L["max_options"]), quota=quota, quota_per_cell=0,
+                            procs=int(L["procs"]), per_run=int(L["per_run"]), per_act=int(L["per_act"]), max_options=int(L["max_options"]),
+                            quota=quota, quota_per_cell=0,
                             limit_runs=0, order_seed=int(L["order_seed"]), task_cap_s=float(L["task_cap_s"]), until="", judge="", doors=False,
-                            lib=str(ctx.lib), no_hold=ctx.dry, own_schedule=bool(L["own_schedule"]), run_config=name, macro=agent.macro,
-                            stakes=agent.stakes, prior_sha=agent.describe()["prior_sha256"],
-                            rates=json.dumps({"card": 1.0, "rest": 1.0, "shop": 1.0, "route": 1.0}) if ctx.dry else None)
+                            lib=str(ctx.lib), no_hold=ctx.dry, own_schedule=bool(L["own_schedule"]), cont_boss_mult=int(L["cont_boss_mult"]),
+                            run_config=name, macro=agent.macro, stakes=agent.stakes, prior_sha=agent.describe()["prior_sha256"],
+                            rates=json.dumps({k: 1.0 for k in rd.LABEL_KINDS}) if ctx.dry else json.dumps(L["rates"]))
     rc = hindsight.pilot_cmd(ns)
     if rc:
         raise SystemExit(f"round1 label: the label run did not start (hindsight returned {rc})")
@@ -182,13 +222,19 @@ def consolidate_labels(out: Path, L: dict, name: str) -> None:
     sd = rd.pooled_pair_sd(recs)
     with open(out / "labels.jsonl.tmp", "w", encoding="utf-8") as fh:
         for r in recs:
-            fh.write(json.dumps({**r, "schema": rd.LABEL_SCHEMA, "schedule": name, "heldout": rd.heldout(r["run"]["seed"], L["heldout_fraction"])}) + "\n")
+            # schedule: the search config the exploring play (and its replay) ran under; cont_schedule: the one the continuations ran under
+            # (a record written before the continuations had a schedule of their own played the same one)
+            fh.write(json.dumps({**r, "schema": rd.LABEL_SCHEMA, "schedule": name, "cont_schedule": r.get("cont_schedule", name),
+                                 "heldout": rd.heldout(r["run"]["seed"], L["heldout_fraction"])}) + "\n")
     (out / "labels.jsonl.tmp").replace(out / "labels.jsonl")
     cells: dict[str, int] = {}
     for r in recs:
         c = f"{r['kind']}/a{r['act'] + 1}"
         cells[c] = cells.get(c, 0) + 1
+    by_act = {a: sum(n for c, n in cells.items() if c.endswith(f"/{a}")) for a in ("a1", "a2")}
     write_json(out / "label-summary.json", {"decisions": len(recs), "k": int(L["k"]), "schedule": name, "pooled_pair_sd": sd, "cells": cells,
+                                            "by_act": {**by_act, "act2_share": (by_act["a2"] / len(recs)) if recs else None},
+                                            "schedules": {"play": name, "continuations": sorted({r.get("cont_schedule", name) for r in recs})},
                                             "heldout": sum(rd.heldout(r["run"]["seed"], L["heldout_fraction"]) for r in recs),
                                             "schema": rd.LABEL_SCHEMA})
 
@@ -200,6 +246,16 @@ def judge_nets(ctx: Ctx, judge_npz: Path, prior: Path, lam: float) -> Any:
     import imitation_chooser as ic  # noqa: PLC0415
 
     return ic.BlendedPolicy(str(judge_npz), str(prior), lam, W=53.0).nets
+
+
+def label_mix(recs: list[dict]) -> dict:
+    """Label records by act and by kind and act: {"a1", "a2", "cells": {"card/a1": n ...}} (cells under 20 are kept: these are our own runs)."""
+    cells: dict[str, int] = {}
+    for r in recs:
+        c = f"{r['kind']}/a{r['act'] + 1}"
+        cells[c] = cells.get(c, 0) + 1
+    return {"a1": sum(n for c, n in cells.items() if c.endswith("/a1")), "a2": sum(n for c, n in cells.items() if c.endswith("/a2")),
+            "cells": dict(sorted(cells.items()))}
 
 
 def step_refit_prior(ctx: Ctx) -> dict:
@@ -220,7 +276,10 @@ def step_refit_prior(ctx: Ctx) -> dict:
     wins = sum(it.winner is not None for it in t_items)
     jobs = play["jobs"]
     n = int(P["max_agent_decisions"])
-    a_train = rd.agent_items(ctx.lab_runs, jobs, nets, keep=1.0, hold=False, fraction=cfg["label"]["heldout_fraction"], limit=n)
+    # a source with weight 0 is not trained on: its training decisions are not read (the held-out ones still are, for the report)
+    a_train = (rd.agent_items(ctx.lab_runs, jobs, nets, keep=1.0, hold=False, fraction=cfg["label"]["heldout_fraction"], limit=n)
+               if float(P["weights"]["agent"]) > 0 else [])
+    lam_acts = {int(a): float(v) for a, v in P["lambda_acts"].items()}
     a_held = rd.agent_items(ctx.lab_runs, jobs, nets, keep=1.0, hold=True, fraction=cfg["label"]["heldout_fraction"], limit=max(1, n // 4))
     human_dir = Path(cfg["paths"]["human_prior_dir"]) / cfg["paths"]["human_decisions"]
     if ctx.dry:  # one human shard, hard-linked into the scratch folder
@@ -236,13 +295,15 @@ def step_refit_prior(ctx: Ctx) -> dict:
     val_sets = {"agent": rp.sets_from_items(a_held), "label": rp.sets_from_items(h_items)}
     res = rp.fit(cfg, human_dir=human_dir, train_sets=train_sets, val_sets=val_sets, old_path=old, out_dir=ctx.p("prior"),
                  dev_name="cpu" if ctx.dry else None)
-    leg = rp.label_leg_report(h_items, nets, old, Path(res["weights"]), float(P["lambda"]), list(P["lambda_grid"]))
+    leg = rp.label_leg_report(h_items, nets, old, Path(res["weights"]), float(P["lambda"]), list(P["lambda_grid"]), lam_acts or None)
     lam, why = rp.choose_lambda(cfg, leg)
     report = {"round": cfg["round"], "written": utc(), "config": P, "weights": res["weights"], "sha256": res["sha256"], "old_prior": str(old),
-              "old_prior_sha256": sha256(old), "lambda": lam, "lambda_reason": why, "attribution": rp.SPIRE_CODEX,
+              "old_prior_sha256": sha256(old), "lambda": lam, "lambda_acts": {str(a): v for a, v in sorted(lam_acts.items())},
+              "lambda_reason": why, "attribution": rp.SPIRE_CODEX,
               "labels": {"records": len(recs), "train": len(train), "heldout": len(held), "pooled_pair_sd": sd, "clear_winners": wins,
                          "rebuild_train": t_stats, "rebuild_heldout": h_stats},
               "agent_choices": {"train": len(a_train), "heldout": len(a_held)}, "fit": {k: v for k, v in res.items() if k != "weights"},
+              "label_mix": {"train": label_mix(train), "heldout": label_mix(held)},
               "label_leg": leg, "meaning": "label_leg: mean centred label value A (floors) of each arm's pick among the played options on "
                                          "held-out runs; *_minus_old_blend is the paired difference from the current blend"}
     write_json(ctx.p("prior/refit.json"), report)
@@ -297,18 +358,12 @@ def step_refit_judgement(ctx: Ctx) -> dict:
     window_seeds = [str(x) for d, m in mans for name in m.get("combat_parts", []) for x in gen_loop.read_part(d / name)["seeds"]]
     if J["ranking_check"] and not ctx.dry:
         keep_doc["ranking"] = gen_loop.ranking_block(out / "run_value.npz", agent.macro_npz, ctx.lab_runs, out, exclude_seeds=window_seeds)
-    kept = bool(gen_loop.vrun_keep_passed(keep_doc, out)) if "ranking" in keep_doc else bool(ctx.dry)  # a dry run carries the fit on: it proves the handoff, not the test
-    write_json(out / gen_loop.VRUN_FIT_JSON, {
-        "recipe": "round1: the incumbent's FightNet and run head refit on the current player's exploring runs (pure Monte Carlo, beta "
-                  f"{J['beta']}) with human chosen-option rows (weight {res['human_weight']}) behind a source input; ROUND.md",
-        "written": utc(), "prior_sha256": sha, "beta": J["beta"],
-        "window": {"blocks": len(mans), "generations": gens, "exploring_only": True, "stakes": agent.stakes,
-                   "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g) for g in gens},
-                   "jobs": sorted(d.parent.name for d, _ in mans)},
-        "keep": keep_doc, "kept": kept, **({"dry_run": True} if ctx.dry else {}), "sha256": sha256(out / "run_value.npz")})
-    # the label leg: held-out labels, the new judgement against the incumbent's, with the incumbent prior and the new prior
+    # the label leg: held-out labels, the new judgement against the incumbent's, with the incumbent prior and the new prior (the label bound reads it)
     recs = [r for r in rd.label_records(ctx.p("labels")) if rd.heldout(r["run"]["seed"], cfg["label"]["heldout_fraction"])]
-    lam = float(read_json(ctx.p("prior/refit.json"))["lambda"])
+    prior_ref = read_json(ctx.p("prior/refit.json"))
+    lam = float(prior_ref["lambda"])
+    lam_acts = {int(a): float(v) for a, v in (prior_ref.get("lambda_acts") or {}).items()}
+    new_lam: Any = (lambda it: float(lam_acts.get(it.act + 1, lam))) if lam_acts else lam
     old_prior, new_prior = Path(cfg["paths"]["prior_weights"]), ctx.p("prior/weights.npz")
     nets_old, nets_new = judge_nets(ctx, Path(agent.macro_npz), old_prior, lam), judge_nets(ctx, out / "run_value.npz", new_prior, lam)
     items, stats = rd.label_items(recs, ctx.lab_runs, nets_old)
@@ -319,15 +374,31 @@ def step_refit_judgement(ctx: Ctx) -> dict:
     v_new = [list(models.expected_floors(nets_new.value.floor_probs(i.rows), 53.0)) for i in items]
     lo, ln = [list(po.row_logits(i.rows)) for i in items], [list(pn.row_logits(i.rows)) for i in items]
     leg = rd.leg_picks(items, {"incumbent_blend": (v_old, lo, lam), "new_judgement_old_prior": (v_new, lo, lam),
-                               "new_judgement_new_prior": (v_new, ln, lam), "new_judgement_alone": (v_new, ln, 0.0)}) if items else {}
+                               "new_judgement_new_prior": (v_new, ln, new_lam), "new_judgement_alone": (v_new, ln, 0.0)}) if items else {}
+    # keep test (1), D33's out-of-fold test of the fit, decides `kept`; (2) the ranking check with its skip guard and (3) the label bound are
+    # reported (judgement.guards "report", the default after the labels-against-blocks memo) or decide too ("gate")
+    guards = rj.guards_report(keep_doc, leg, J)
+    core = bool(keep_doc.get("all_computable_pass")) and (out / "run_value.npz").is_file()
+    kept = (core and (guards["pass"] if guards["decides_kept"] else True)) or bool(ctx.dry and "ranking" not in keep_doc)  # a dry run carries the fit on: it proves the handoff, not the test
+    write_json(out / gen_loop.VRUN_FIT_JSON, {
+        "recipe": "round1: the incumbent's FightNet and run head refit on the current player's exploring runs (pure Monte Carlo, beta "
+                  f"{J['beta']}) with human chosen-option rows (weight {res['human_weight']}) behind a source input; ROUND.md",
+        "written": utc(), "prior_sha256": sha, "beta": J["beta"], "human_weight": res["human_weight"], "human_weight_grid": res["selection"]["grid"],
+        "window": {"blocks": len(mans), "generations": gens, "exploring_only": True, "stakes": agent.stakes,
+                   "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g) for g in gens},
+                   "jobs": sorted(d.parent.name for d, _ in mans)},
+        "keep": keep_doc, "guards": guards, "kept": kept, **({"dry_run": True} if ctx.dry else {}), "sha256": sha256(out / "run_value.npz")})
     report = {"round": cfg["round"], "written": utc(), "config": J, "sha256": sha256(out / "run_value.npz"), "window_runs": values.runs,
+              "selection": res["selection"],
               "fit": {k: v for k, v in res.items() if k not in ("value",)}, "keep": {k: keep_doc.get(k) for k in ("status", "all_computable_pass")},
-              "label_leg": leg, "label_rebuild": stats, "attribution": rp.SPIRE_CODEX,
-              "meaning": "fit.grid: held-out self-play log-loss of the clears-Act-1 and clears-Act-2 heads by human weight; kept_heldout "
-                         "is the average-of-seeds fit; label_leg: mean centred label value A of the blended picks, differences from the "
-                         "incumbent blend"}
+              "guards": guards, "kept": kept, "label_leg": leg, "label_rebuild": stats, "attribution": rp.SPIRE_CODEX,
+              "meaning": "selection: the human weight chosen (rule weight_rule: the lowest held-out clears-Act-2 log-loss among the weights whose "
+                         "clears-Act-1 log-loss is not worse than the incumbent's), the grid and each weight's figures; fit.grid: held-out self-play "
+                         "log-loss of the clears-Act-1 and clears-Act-2 heads by human weight; kept_heldout is the average-of-seeds fit; guards: the "
+                         "ranking check, the skip guard and the label bound as numbers (they decide `kept` only when guards.decides_kept); "
+                         "label_leg: mean centred label value A of the blended picks, differences from the incumbent blend"}
     write_json(out / "refit.json", report)
-    return ctx.done("refit-judgement", {"sha256": report["sha256"], "kept": kept})
+    return ctx.done("refit-judgement", {"kept": kept, "human_weight": res["human_weight"]})
 
 
 # --------------------------------------------------------------------------------------------------------- candidate, smoke, block
@@ -358,17 +429,20 @@ def step_candidate(ctx: Ctx) -> dict:
     tag = C["tag"] + ("-dry" if ctx.dry else "")
     cand = gen_loop.build_candidate(base, base, ctx.agent_root, int(C["target_generation"]), why=C["why"], export=not ctx.dry,
                                     vrun_fit=ctx.p("judgement"), tag=tag, human_prior=ctx.p("prior/weights.npz"), lam=float(ref["lambda"]),
+                                    lam_acts={int(a): float(v) for a, v in (ref.get("lambda_acts") or {}).items()} or None,
                                     search_schedule={"base": sched["base"], "mult": sched["mult"]} if sched else None)
+    files = folder_files(cand)
     marker_dir = (ctx.dir / "train") if ctx.dry else Path(ctx.cfg["paths"]["lab_runs"]).parent / "train"
     write_marker = bool(C["marker"]) and not ctx.dry  # the lab's train job would judge the candidate itself; the chain's smoke and block do
     marker = marker_dir / f"ready-{read_json(base / 'agent.json').get('generation', 11)}-g{C['target_generation']}-{tag}"
     write_json(ctx.p("candidate/candidate.json"), {"dir": str(cand), "tag": tag, "marker": str(marker), "marker_written": write_marker,
-                                                    "lambda": ref["lambda"], "prior_sha256": ref["sha256"],
+                                                    "lambda": ref["lambda"], "lambda_acts": ref.get("lambda_acts") or {}, "prior_sha256": ref["sha256"],
+                                                    "recipe": gen_loop.candidate_recipe(gen_loop.load_agent(cand)), "files": files,
                                                     "judgement_sha256": sha256(ctx.p("judgement/run_value.npz")), "incumbent": str(agent.path)})
     if write_marker:
         marker_dir.mkdir(parents=True, exist_ok=True)
         marker.write_text(utc() + "\n", encoding="utf-8")
-    return ctx.done("candidate", {"dir": str(cand)})
+    return ctx.done("candidate", {"dir": str(cand)}, artifacts={f"candidate-folder/{n}": r for n, r in files.items()})
 
 
 def step_judged(ctx: Ctx, which: str) -> dict:
@@ -377,7 +451,12 @@ def step_judged(ctx: Ctx, which: str) -> dict:
     import gen0  # noqa: PLC0415
 
     ctx.need(which)
-    cand = Path(read_json(ctx.p("candidate/candidate.json"))["dir"])
+    cdoc = read_json(ctx.p("candidate/candidate.json"))
+    cand = Path(cdoc["dir"])
+    files = folder_files(cand)
+    if files != cdoc["files"]:
+        raise SystemExit(f"round1 {which}: the candidate folder {cand.name} is not the one the candidate step recorded "
+                         f"(changed: {sorted(n for n in set(files) | set(cdoc['files']) if files.get(n) != cdoc['files'].get(n))})")
     seeds = ctx.cfg[which]["seeds_file"].replace("{date}", dt.date.today().isoformat())
     cmd = promote_cmd(ctx, which, cand, seeds)
     args = gen0.build_parser().parse_args(cmd[2:])  # the command parses, flag for flag
@@ -391,7 +470,7 @@ def step_judged(ctx: Ctx, which: str) -> dict:
                             "--out", seeds], cwd=str(ROOT), check=True)
         doc["started"], doc["rc"] = True, subprocess.run(cmd, cwd=str(ROOT)).returncode
     write_json(ctx.p(f"{which}/{which}.json"), doc)
-    return ctx.done(which, {"started": doc["started"]})
+    return ctx.done(which, {"started": doc["started"]}, artifacts={f"candidate-folder/{n}": r for n, r in files.items()})
 
 
 STEP_FN = {"play": step_play, "label": step_label, "refit-prior": step_refit_prior, "refit-judgement": step_refit_judgement,
