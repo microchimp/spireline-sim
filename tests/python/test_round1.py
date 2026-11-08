@@ -297,5 +297,55 @@ class ChainTests(unittest.TestCase):
             self.assertIn("play", json.loads(ctx.p("chain.json").read_text(encoding="utf-8"))["steps"])
 
 
+class StepPlumbingTests(unittest.TestCase):
+    def test_dry_run_config_is_valid_and_tiny(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctx = round1.Ctx(rd.load_config(), Path(d), dry=True)
+            self.assertEqual(ctx.dir, Path(d) / "dry")
+            self.assertEqual(ctx.cfg["label"]["k"], 1)
+            self.assertEqual(ctx.cfg["play"]["runs"], 2)
+            self.assertEqual(ctx.cfg["judgement"]["device"], "cpu")
+            rd.validate(ctx.cfg)
+
+    def test_exploring_runs_pick_one_player_by_schedule_macro_and_stakes(self):
+        import hindsight
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+
+            def job(name, config, macro, stakes, gen=13):
+                j = root / name
+                j.mkdir()
+                (j / "job.json").write_text(json.dumps({"params": {"cmd": ["x", "--explore-tau", "0.1"]}, "rc": 0}), encoding="utf-8")
+                (j / "summary.json").write_text(json.dumps({"agent": {"generation": gen, "prior_sha256": "p", "macro": macro, "stakes": stakes,
+                                                                      "tau": 0.1, "eps": 0.02}}), encoding="utf-8")
+                (j / "runs.jsonl").write_text(json.dumps({"seed": name, "ix": 0, "end": "death", "config": config}) + "\n", encoding="utf-8")
+
+            job("a-selfplay", "a3-v1@h1e4b16", "m", "a3-v1@h1e4b16")
+            job("b-selfplay", "a3-v1", "m", None)  # gen 11's plain player
+            job("c-selfplay", "a3-v1@h1e4b16", "other", "a3-v1@h1e4b16")  # another macro
+            got = hindsight.exploring_runs(root, 13, "p", config="a3-v1@h1e4b16", macro="m", stakes="a3-v1@h1e4b16")
+            self.assertEqual([r["_job"] for r in got], ["a-selfplay"])
+            self.assertEqual([r["_job"] for r in hindsight.exploring_runs(root, 13, "p", config="a3-v1")], ["b-selfplay"])  # the default is as it was
+
+    def test_consolidate_labels_writes_the_documented_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "labels.d").mkdir()
+            with open(out / "labels.d" / "S1.jsonl", "w", encoding="utf-8") as fh:
+                for i in range(3):
+                    r = rec({0: 1.0, 1: -1.0}, seed=f"S{i}")
+                    r["id"] = f"S{i}|d001|card|f03"
+                    fh.write(json.dumps(r) + "\n")
+                fh.write(json.dumps({**rec({0: 1.0, 1: -1.0}, seed="X"), "id": "X|d002|card|f05", "refused": "no_return:timeout"}) + "\n")
+            L = rd.load_config()["label"]
+            round1.consolidate_labels(out, L, "a3-v1@h1e4b16")
+            rows = [json.loads(x) for x in (out / "labels.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 3)  # the refused decision is dropped
+            self.assertTrue(all(r["schema"] == rd.LABEL_SCHEMA and r["schedule"] == "a3-v1@h1e4b16" and "heldout" in r for r in rows))
+            summ = json.loads((out / "label-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual((summ["decisions"], summ["cells"]), (3, {"card/a1": 3}))
+
+
 if __name__ == "__main__":
     unittest.main()
