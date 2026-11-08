@@ -1110,10 +1110,11 @@ class RolloutTests(unittest.TestCase):
     def test_the_search_rolls_out_with_the_corrected_weights(self):
         fight = Fight(0, NIBBITS_WEAK, [STRIKE] * 5, potions=(BLOCK_POTION,))
         try:
+            # The rollout reads its weights through `_tempo_weights` (the list form `live_rollout_weights` makes probabilities of).
             with mock.patch.object(
                 live_search,
-                "live_rollout_weights",
-                wraps=live_search.live_rollout_weights,
+                "_tempo_weights",
+                wraps=live_search._tempo_weights,
             ) as weights:
                 search_live(
                     fight.handle,

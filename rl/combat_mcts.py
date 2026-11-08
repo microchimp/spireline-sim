@@ -305,7 +305,8 @@ class Combat:
 
     def legal(self) -> list[int]:
         mask = native.valid_actions(self.handle, MAX_ACTIONS)
-        return [i for i in range(MAX_ACTIONS) if mask[i]]
+        values = mask[:]  # one read of the buffer, not one per action
+        return [i for i in range(MAX_ACTIONS) if values[i]]
 
     def step(self, action: int) -> bool:
         self.done = native.step(self.handle, action, self.obs, self.reward)

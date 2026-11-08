@@ -128,6 +128,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
 from functools import cache
+from itertools import compress
 from multiprocessing import connection
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -210,6 +211,11 @@ _SELECTION_COUNT = native.OBS_SELECTION_COUNT_OFFSET
 _SELECTION = native.OBS_SELECTION_OFFSET
 _MAX_CANDIDATES = native.OBS_MAX_SELECTION_CANDIDATES
 _ORBS = native.OBS_ORB_CAPACITY_OFFSET
+# Extents the reads below slice over (one slice is one call into ctypes, an index a call each).
+_HAND_END = _HAND + _MAX_HAND * _CARD  # the hand's slots are _HAND, _HAND + _CARD, ... below this
+_ENEMIES_END = _ENEMIES + native.MAX_ENEMIES * _ENEMY
+_BUFF_SPAN = 2 * _ENEMY_BUFFS  # an enemy's buffs are (id, amount) pairs from 5 into its slot
+_POTIONS_END = POTION_OFFSET + 2 * MAX_POTIONS  # the potion block is (id, ...) pairs
 
 
 @dataclass
@@ -470,7 +476,8 @@ def _card_at(obs, offset: int) -> tuple[int, int, int, int]:
 
 
 def _hand_size(obs) -> int:
-    return sum(1 for slot in range(_MAX_HAND) if obs[_HAND + slot * _CARD])
+    ids = obs[_HAND:_HAND_END:_CARD]  # one read of every slot's def id; an empty slot's is 0
+    return len(ids) - ids.count(0)
 
 
 def _living_targets(obs) -> list[int]:
@@ -482,17 +489,29 @@ def _living_targets(obs) -> list[int]:
     heals. The Reviving check is kept for a position that carries both, such as a snapshot
     taken from the live game.
     """
+    return _living_in(obs[_ENEMIES:_ENEMIES_END])  # every enemy's slot in one read
+
+
+def _living_in(block) -> list[int]:
+    """`_living_targets` over the enemies' slots as one list."""
     reviving = _reviving()
     targets = []
+    base = 0
     for index in range(native.MAX_ENEMIES):
-        base = _ENEMIES + index * _ENEMY
-        if obs[base] <= 0:
-            continue
-        buffs = range(base + 5, base + 5 + 2 * _ENEMY_BUFFS, 2)
-        if any(obs[buff] == reviving and obs[buff + 1] > 0 for buff in buffs):
-            continue
-        targets.append(index)
+        if block[base] > 0:
+            ids = block[base + 5 : base + 5 + _BUFF_SPAN : 2]  # the buffs are (id, amount) pairs
+            if reviving not in ids or not any(
+                buff == reviving and amount > 0
+                for buff, amount in zip(ids, block[base + 6 : base + 6 + _BUFF_SPAN : 2])
+            ):
+                targets.append(index)
+        base += _ENEMY
     return targets
+
+
+def _legal_actions(mask) -> list[int]:
+    """The actions a mask (the emulator's valid-action buffer) allows, in action order."""
+    return list(compress(range(MAX_ACTIONS), mask[:]))  # one read of the buffer, then the actions whose entry is not 0
 
 
 def _legal_moves(obs, mask) -> list[_Move]:
@@ -500,7 +519,11 @@ def _legal_moves(obs, mask) -> list[_Move]:
 
     Each move is keyed by what it does, so visibly identical cards share a key.
     """
-    legal = [action for action in range(MAX_ACTIONS) if mask[action]]
+    return _moves_of(obs, _legal_actions(mask))
+
+
+def _moves_of(obs, legal: list[int]) -> list[_Move]:
+    """`_legal_moves` from the legal actions themselves, for a caller that has them already."""
     moves = []
     if obs[_SELECTION_KIND]:
         # An open selection replaces the action space: candidates, then a decline.
@@ -518,24 +541,29 @@ def _legal_moves(obs, mask) -> list[_Move]:
                 )
         return moves
 
-    hand = _hand_size(obs)
+    slots = obs[_HAND:_HAND_END]  # the hand's slots in one read
+    ids = slots[::_CARD]
+    hand = len(ids) - ids.count(0)
     targets = _living_targets(obs)
     aimed_cards, aimed_potions = _aimed_cards(), _aimed_potions()
     for action in legal:
         if action < hand:
-            card = _card_at(obs, _HAND + action * _CARD)
-            aims = targets if card[0] in aimed_cards and targets else [-1]
-            moves.extend(
-                _Move(("card", card, t), action, t, "card", card[0]) for t in aims
-            )
+            offset = action * _CARD
+            card = (slots[offset], slots[offset + 1], slots[offset + 2], slots[offset + 3])
+            if targets and card[0] in aimed_cards:
+                for t in targets:
+                    moves.append(_Move(("card", card, t), action, t, "card", card[0]))
+            else:
+                moves.append(_Move(("card", card, -1), action, -1, "card", card[0]))
         elif action == hand:
             moves.append(_Move(("end_turn",), action, -1, "end_turn", None))
         else:
             potion = obs[POTION_OFFSET + 2 * (action - hand - 1)]
-            aims = targets if potion in aimed_potions and targets else [-1]
-            moves.extend(
-                _Move(("potion", potion, t), action, t, "potion", None) for t in aims
-            )
+            if targets and potion in aimed_potions:
+                for t in targets:
+                    moves.append(_Move(("potion", potion, t), action, t, "potion", None))
+            else:
+                moves.append(_Move(("potion", potion, -1), action, -1, "potion", None))
     return moves
 
 
@@ -630,29 +658,103 @@ def live_rollout_weights(sim: Combat, legal: list[int]) -> np.ndarray:
     selection open and no legal action at index ten or above, the weights are exactly
     `combat_mcts`'s. Returns probabilities.
     """
-    obs = sim.obs
-    weights = np.ones(len(legal), dtype=np.float64)
-    if not obs[_SELECTION_KIND]:
-        hand = _hand_size(obs)
-        types = _card_types()
-        needed = incoming_damage(obs) > obs[2]  # obs[2] is the player's block
-        for i, action in enumerate(legal):
-            if action < hand:
-                card_type = types.get(obs[_HAND + action * _CARD], "")
-                weights[i] = _tempo_weight(card_type, needed=needed)
-            else:
-                weights[i] = W_OTHER  # End Turn, or a potion
+    weights = np.array(_action_weights(sim.obs, legal), dtype=np.float64)
     return weights / weights.sum()
 
 
-def _tempo_weight(card_type: str, *, needed: bool) -> float:
-    if card_type == "Attack":
-        return W_ATTACK
-    if card_type == "Power":
-        return W_POWER
-    if card_type == "Skill":
-        return W_SKILL_NEEDED if needed else W_SKILL_IDLE
-    return W_OTHER
+def _action_weights(obs, legal: list[int]) -> list[float]:
+    """The rollout's weight of each legal action before it is made a probability, as `live_rollout_weights` reads them."""
+    if obs[_SELECTION_KIND]:
+        return [1.0] * len(legal)
+    ids = obs[_HAND:_HAND_END:_CARD]
+    return _tempo_weights(obs, legal, ids, len(ids) - ids.count(0))
+
+
+def _tempo_weights(obs, legal: list[int], ids: list[int], hand: int) -> list[float]:
+    """The weights of a position with no selection open: `ids` are the hand slots' def ids and `hand` their count.
+
+    Whether the block the enemies announce outruns the player's is looked up only for the first Skill, since only a Skill's weight
+    depends on it.
+    """
+    types = _card_types()
+    needed = None
+    weights = []
+    for action in legal:
+        if action < hand:
+            card_type = types.get(ids[action], "")
+            if card_type == "Attack":
+                weights.append(W_ATTACK)
+            elif card_type == "Power":
+                weights.append(W_POWER)
+            elif card_type == "Skill":
+                if needed is None:
+                    needed = incoming_damage(obs) > obs[2]  # obs[2] is the player's block
+                weights.append(W_SKILL_NEEDED if needed else W_SKILL_IDLE)
+            else:
+                weights.append(W_OTHER)
+        else:
+            weights.append(W_OTHER)  # End Turn, or a potion
+    return weights
+
+
+def _numpy_sum(values: list[float]) -> float:
+    """The sum numpy's `values.sum()` gives for a float64 vector, to the last bit, without building the vector.
+
+    numpy adds up to seven numbers one after another, and eight or more as eight running sums over interleaved elements,
+    combined as ((0 + 1) + (2 + 3)) + ((4 + 5) + (6 + 7)), then the remainder in order (blocks of 128 are split in halves, which
+    never happens here: an action list is at most `MAX_ACTIONS` long, and a longer one is left to numpy).
+    """
+    count = len(values)
+    if count < 8:
+        total = 0.0
+        for value in values:
+            total += value
+        return total
+    if count > 128:
+        return float(np.array(values, dtype=np.float64).sum())
+    r0, r1, r2, r3, r4, r5, r6, r7 = values[:8]
+    stop = count - count % 8
+    for i in range(8, stop, 8):
+        r0 += values[i]
+        r1 += values[i + 1]
+        r2 += values[i + 2]
+        r3 += values[i + 3]
+        r4 += values[i + 4]
+        r5 += values[i + 5]
+        r6 += values[i + 6]
+        r7 += values[i + 7]
+    total = ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7))
+    for i in range(stop, count):
+        total += values[i]
+    return total
+
+
+def _normalized(weights: list[float]) -> list[float]:
+    """`weights / weights.sum()` as numpy computes it, as Python floats."""
+    total = _numpy_sum(weights)
+    return [weight / total for weight in weights]
+
+
+def _draw_index(weights: list[float], rng: np.random.Generator) -> int:
+    """The index `rng.choice(len(weights), p=weights / weights.sum())` returns, with the one draw it makes.
+
+    numpy's `Generator.choice` with probabilities adds them up in order, divides by the last sum, draws one uniform with `random()`
+    and takes the first sum above it (`searchsorted(..., side="right")`). Each of those steps is repeated here on Python floats,
+    which add and divide as numpy's float64 does, so the index and the generator's state afterwards are the same, for far less
+    than choice's validation costs. (`tests/python/test_search_tidy.py` holds it to `choice` on random weights.)
+    """
+    total = _numpy_sum(weights)
+    sums = []
+    running = 0.0
+    for weight in weights:
+        running += weight / total
+        sums.append(running)
+    last = sums[-1]
+    uniform = rng.random()
+    for index, partial in enumerate(sums):
+        if partial / last > uniform:
+            return index
+    return len(sums) - 1
 
 
 def _rollout_target(obs, action: int) -> int:
@@ -666,37 +768,52 @@ def _rollout_target(obs, action: int) -> int:
     """
     if obs[_SELECTION_KIND]:
         return -1
-    hand = _hand_size(obs)
+    ids = obs[_HAND:_HAND_END:_CARD]
+    return _aimed_target(obs, action, ids, len(ids) - ids.count(0))
+
+
+def _aimed_target(obs, action: int, ids: list[int], hand: int) -> int:
+    """`_rollout_target` for a position with no selection open, given the hand slots' def ids and their count."""
     if action < hand:
-        aimed = obs[_HAND + action * _CARD] in _aimed_cards()
+        aimed = ids[action] in _aimed_cards()
     elif action > hand:
         aimed = obs[POTION_OFFSET + 2 * (action - hand - 1)] in _aimed_potions()
     else:
         return -1
-    targets = _living_targets(obs) if aimed else []
-    if not targets:
+    if not aimed:
         return -1
-    return min(targets, key=lambda i: (_enemy_health(obs, i), i))
-
-
-def _enemy_health(obs, index: int) -> int:
-    base = _ENEMIES + index * _ENEMY
-    return obs[base] + obs[base + 2]  # HP plus block
+    block = obs[_ENEMIES:_ENEMIES_END]
+    best, best_health = -1, 0
+    for index in _living_in(block):
+        base = index * _ENEMY
+        health = block[base] + block[base + 2]  # HP plus block
+        if best < 0 or health < best_health:
+            best, best_health = index, health
+    return best
 
 
 def _rollout(world: Combat, rng: np.random.Generator) -> None:
     """Play on to the end of the fight with the tempo policy, or to the step cap."""
+    obs = world.obs
+    handle = world.handle
     for _ in range(STEP_CAP):
         if world.done:
             return
-        legal = world.legal()
+        legal = _legal_actions(native.valid_actions(handle, MAX_ACTIONS))
         if not legal:
             return
-        if len(legal) > 1:
-            action = int(rng.choice(legal, p=live_rollout_weights(world, legal)))
+        if obs[_SELECTION_KIND]:  # an open selection: its candidates are weighted alike, and nothing is aimed
+            action = legal[_draw_index([1.0] * len(legal), rng)] if len(legal) > 1 else legal[0]
+            target = -1
         else:
-            action = int(rng.choice(legal))
-        _step(world, action, _rollout_target(world.obs, action))
+            ids = obs[_HAND:_HAND_END:_CARD]
+            hand = len(ids) - ids.count(0)
+            if len(legal) > 1:
+                action = legal[_draw_index(_tempo_weights(obs, legal, ids, hand), rng)]
+            else:
+                action = legal[0]  # a lone move: `rng.choice` draws nothing for it
+            target = _aimed_target(obs, action, ids, hand)
+        _step(world, action, target)
 
 
 def _play_signature(root: Combat, key: tuple, action: int, target: int) -> tuple:
@@ -813,7 +930,8 @@ def _outcome(world: Combat, potion_value: float) -> _Outcome:
     if world.done and not world.won():
         return _Outcome(DEATH_VALUE, died=True, truncated=False, hp=0)
     obs = world.obs
-    held = sum(1 for slot in range(MAX_POTIONS) if obs[POTION_OFFSET + 2 * slot])
+    potions = obs[POTION_OFFSET:_POTIONS_END:2]  # each slot's potion id; 0 is empty
+    held = len(potions) - potions.count(0)
     hp = world.hp()
     return _Outcome(
         hp + potion_value * held,
@@ -896,11 +1014,15 @@ def _ask_prior(handle: int, legal: list[int]):
 
 def _node_legal(world: Combat) -> tuple[object, list[int]]:
     mask = native.valid_actions(world.handle, MAX_ACTIONS)
-    return mask, [action for action in range(MAX_ACTIONS) if mask[action]]
+    return mask, _legal_actions(mask)
 
 
 def _prior_by_key(world: Combat, mask: object, weights: dict[int, float]) -> dict[tuple, float]:
-    moves = _legal_moves(world.obs, mask)
+    return _prior_of_moves(_legal_moves(world.obs, mask), weights)
+
+
+def _prior_of_moves(moves: list[_Move], weights: dict[int, float]) -> dict[tuple, float]:
+    """`_prior_by_key` for a caller that has the position's moves already (`_moves_of` of its legal actions)."""
     aims = Counter(move.action for move in moves)
     prior: dict[tuple, float] = {}
     for move in moves:
@@ -919,11 +1041,17 @@ def _node_prior(world: Combat, prior_fn: Callable) -> dict[tuple, float]:
     return _prior_by_key(world, mask, _prior_weights(prior_fn, world.handle, legal))
 
 
-def _node_prior_steps(world: Combat):
-    """`_node_prior` as steps: the same calls, with the prior asked for by a request."""
-    mask, legal = _node_legal(world)
-    weights = yield from _ask_prior(world.handle, legal)
-    return _prior_by_key(world, mask, weights)
+def _node_prior_steps(world: Combat, legal: list[int] | None = None, moves: list[_Move] | None = None):
+    """`_node_prior` as steps: the same calls, with the prior asked for by a request.
+
+    `legal` and `moves` are the position's legal actions and (not yet merged) moves when the caller has read them already; the
+    request gets a list of its own, as a fresh read would have been.
+    """
+    if legal is None:
+        mask, legal = _node_legal(world)
+        moves = _legal_moves(world.obs, mask)
+    weights = yield from _ask_prior(world.handle, list(legal))
+    return _prior_of_moves(moves, weights)
 
 
 def _root_priors(root: Combat, children: list[_RootMove]):
@@ -933,8 +1061,7 @@ def _root_priors(root: Combat, children: list[_RootMove]):
     and it is asked about the root's own legal actions, which a copy can lose (the skip).
     Steps: the prior is asked for by a request (see `_drive`).
     """
-    mask = native.valid_actions(root.handle, MAX_ACTIONS)
-    legal = [action for action in range(MAX_ACTIONS) if mask[action]]
+    legal = _legal_actions(native.valid_actions(root.handle, MAX_ACTIONS))
     probe = root.fork(_PROBE_SEED)
     try:
         weights = yield from _ask_prior(probe.handle, legal)
@@ -979,9 +1106,11 @@ def _puct_choice(
     first_play = node.value / node.visits if node.visits else 0.0
     explore = c_puct * math.sqrt(node.visits + 1)
     best, best_score = moves[0], -math.inf
+    child_of, share_of = node.children.get, prior.get
     for move in moves:
-        child = node.children.get(move.key)
-        share = prior.get(move.key, 0.0)
+        key = move.key
+        child = child_of(key)
+        share = share_of(key, 0.0)
         if child is None or not child.visits:
             score = first_play + explore * share
         else:
@@ -991,14 +1120,25 @@ def _puct_choice(
     return best
 
 
-def _heuristic_prior(world: Combat) -> dict[tuple, float]:
+def _heuristic_prior(
+    world: Combat,
+    legal: list[int] | None = None,
+    moves: list[_Move] | None = None,
+) -> dict[tuple, float]:
     """Return the rollout's tempo weights on this world's moves as PUCT's prior, by key.
 
     What a node reads before it has `prior_min_visits` visits, as
     `combat_mcts.heuristic_prior` is for the prior loop's search: most nodes of a tree are
     visited once or twice, and a network call there costs more than the playout it steers.
+
+    The weights are `live_rollout_weights`, checked and made probabilities again as `_checked_weights` does a prior's answer (which
+    changes them in the last bit), here on Python floats; `legal` and `moves` are the position's, for a caller that has read them.
     """
-    return _node_prior(world, lambda _handle, legal: live_rollout_weights(world, legal))
+    if legal is None:
+        mask, legal = _node_legal(world)
+        moves = _legal_moves(world.obs, mask)
+    weights = _normalized(_normalized(_action_weights(world.obs, legal)))
+    return _prior_of_moves(moves, dict(zip(legal, weights)))
 
 
 def _tree_choice(
@@ -1007,13 +1147,16 @@ def _tree_choice(
     moves: list[_Move],
     rng: np.random.Generator,
     policy: _Policy,
+    legal: list[int] | None = None,
+    all_moves: list[_Move] | None = None,
 ) -> _Move:
     """Choose the next move inside the tree: UCT, or PUCT when there is a prior.
 
     A node asks the prior once, when it first has `prior_min_visits` visits, and keeps the
     answer. Before that it reads the tempo weights of the world it is in, uncached.
     Steps: the prior is asked for by a request (see `_drive`); without one nothing is
-    yielded.
+    yielded. `legal` and `all_moves` are the world's legal actions and its moves before they are merged by key, when the caller has
+    them (`_simulate` does): the prior reads the same ones.
     """
     if policy.prior_fn is None:
         fresh = [move for move in moves if move.key not in node.children]
@@ -1022,8 +1165,8 @@ def _tree_choice(
         return _ucb_choice(node, moves, policy.c)
     if node.prior is None:
         if node.visits < policy.prior_min_visits:
-            return _puct_choice(node, moves, policy.c_puct, _heuristic_prior(world))
-        node.prior = yield from _node_prior_steps(world)
+            return _puct_choice(node, moves, policy.c_puct, _heuristic_prior(world, legal, all_moves))
+        node.prior = yield from _node_prior_steps(world, legal, all_moves)
     return _puct_choice(node, moves, policy.c_puct)
 
 
@@ -1070,10 +1213,12 @@ def _simulate(
         path = [node]
         _step_into(world, node, action, node.target)
         while not world.done:
-            moves = _distinct(_world_moves(world))
+            legal = _legal_actions(native.valid_actions(world.handle, MAX_ACTIONS))
+            all_moves = _moves_of(world.obs, legal)
+            moves = _distinct(all_moves)
             if not moves:
                 break
-            move = yield from _tree_choice(world, node, moves, rng, policy)
+            move = yield from _tree_choice(world, node, moves, rng, policy, legal, all_moves)
             fresh = move.key not in node.children
             if fresh:
                 node.children[move.key] = _Node(move.action, move.target, move.kind)
