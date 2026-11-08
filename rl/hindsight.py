@@ -61,9 +61,13 @@ REPLAY_WALL_CAP_S = 1800.0  # gen0.RUN_WALL_CAP_S
 MAX_OPTIONS = 6  # a screen with more options is shortlisted: the unchanged options and the head's best
 ACT_BOSS_FLOORS = (17, 33, 48)  # run_fields.ACT_BOSS_FLOORS: a decision on or past the act's boss floor has nothing left to play
 MAX_NEXT_ACT_DECISIONS = 6  # decisions into the next act to find one the head can value
-KIND_OF_TYPE = {"card_reward": "card", "rest": "rest", "map": "route", "shop": "shop"}
+# `ancient` (2026-11-08, D55 addendum 12): the ancient's relic screen (Neow in Act 1, the Act 2 ancient), a deck screen the blended chooser
+# decides. It is appended: the kind codes of the others (the streams' entropy) are what they were, and DEFAULT_RATES leaves it at 0, so a
+# caller that names no rate for it labels none, as before.
+KIND_OF_TYPE = {"card_reward": "card", "rest": "rest", "map": "route", "shop": "shop", "neow": "ancient"}
 KINDS = ("card", "rest", "route", "shop")
-KIND_CODE = {k: i + 1 for i, k in enumerate(KINDS)}
+LABEL_KINDS = KINDS + ("ancient",)
+KIND_CODE = {k: i + 1 for i, k in enumerate(LABEL_KINDS)}
 DEFAULT_RATES = {"card": 0.30, "rest": 0.50, "route": 0.07, "shop": 0.60}  # the chance a decision on the replay is taken, per kind
 TAG = Path(__file__).stem  # this job's QUIET.lock line: the module's name (not a quoted word: the solver-bound pin test scans for one)
 UNCHANGED_KINDS = frozenset({"card.skip", "select.offer_done", "reward.proceed", "shop.leave", "rest.leave"})
@@ -291,10 +295,26 @@ class SearchFighter:
         return made
 
 
+def continuation_stakes(agent_stakes: str | None, boss_mult: int | None) -> str | None:
+    """The stakes tag the label continuations search under: the agent's own schedule with its boss multiplier lowered to `boss_mult`
+    (D55 addendum 12: the labels' continuations run the x8 schedule of `gen14/candidate-stakes-b8` while the exploring play, the kept
+    player and the gym's teacher stay at the agent's own x16). None for no change: no `boss_mult` (0 or None), or an agent without a stakes
+    schedule or one already at or under `boss_mult`."""
+    import macro_recipe  # noqa: PLC0415
+
+    if not boss_mult or agent_stakes is None:
+        return None
+    base, mult = macro_recipe.parse_stakes_tag(agent_stakes)
+    if mult["boss"] <= int(boss_mult):
+        return None
+    return macro_recipe.stakes_tag(base, {**mult, "boss": int(boss_mult)})
+
+
 def build_player(agent_dir: str | Path, *, config: str = "a3-v1", judge_path: str | Path | None = None, keep_doors: bool = False,
-                 explore: tuple[float, float] | None = None, own_schedule: bool = False) -> Player:
+                 explore: tuple[float, float] | None = None, own_schedule: bool = False, stakes: str | None = None) -> Player:
     """The real player of a generation directory: its combat prior with the config's search, its run head. With `explore`
-    (tau, eps) the run choices are sampled as the exploring self-play job did (a replay); without, argmax (a continuation)."""
+    (tau, eps) the run choices are sampled as the exploring self-play job did (a replay); without, argmax (a continuation).
+    `stakes` (a stakes tag, with `own_schedule`) replaces the agent's own stakes schedule for the fights this player plays."""
     import gen_loop  # noqa: PLC0415
 
     agent = gen_loop.load_agent(agent_dir)
@@ -304,6 +324,10 @@ def build_player(agent_dir: str | Path, *, config: str = "a3-v1", judge_path: st
         raise ValueError(f"{agent_dir}: hindsight labels need a vrun or blended agent (the head values the next act)")
     agent = gen_loop.exploring_agent(agent, *explore) if explore else dataclasses.replace(agent, tau=0.0, eps=0.0)
     policy = agent.macro_policy()
+    if stakes is not None:
+        if not own_schedule:
+            raise ValueError("a stakes schedule of its own needs own_schedule")
+        agent = dataclasses.replace(agent, stakes=stakes)  # the policy is built: only the fights' search changes
     judge = None
     if judge_path:
         import judge_client  # noqa: PLC0415
@@ -574,12 +598,24 @@ class Plan:
     k: int = DEFAULT_K
     quota: dict[str, int] = field(default_factory=dict)  # "card/a1" -> decisions wanted; empty: no limit
     per_run: int = 2  # decisions labelled from one run (the replay is paid once), at most one per kind and act
+    per_act: int = 0  # > 0: this many a run in EACH act instead (per_run is then not read): the round's two a run per act
     rates: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_RATES))
     max_options: int = MAX_OPTIONS
     acts: tuple[int, ...] = tuple(range(MAX_ACT_INDEX + 1))
 
     def cell(self, kind: str, act: int) -> str:
         return f"{kind}/a{act + 1}"
+
+    def act_taken(self, taken: Counter, act: int) -> int:
+        """The decisions of this run labelled so far in the act."""
+        return sum(n for cell, n in taken.items() if cell.endswith(f"/a{act + 1}"))
+
+    def run_full(self, taken: Counter, act: int | None = None) -> bool:
+        """Whether the run has all the labels the plan takes from it: `per_run` in all, or with `per_act` the cap of every labelled act (of
+        `act` alone when named)."""
+        if self.per_act:
+            return all(self.act_taken(taken, a) >= self.per_act for a in ((act,) if act is not None else self.acts))
+        return sum(taken.values()) >= self.per_run
 
     def wants(self, run_id: str, ordinal: int, kind: str | None, act: int, floor: int, taken: Counter,
               have: Callable[[], Counter] | Counter) -> str | None:
@@ -592,7 +628,7 @@ class Plan:
         if act < len(ACT_BOSS_FLOORS) and floor >= ACT_BOSS_FLOORS[act]:
             return "post_boss"
         cell = self.cell(kind, act)
-        if sum(taken.values()) >= self.per_run or taken[cell]:
+        if taken[cell] or (self.run_full(taken, act) if self.per_act else sum(taken.values()) >= self.per_run):
             return "run_cap"
         if uniform(run_id, ordinal) >= self.rates.get(kind, 0.0):
             return "coin"
@@ -667,7 +703,8 @@ def count_cells(recs: Iterable[dict]) -> Counter:
 _W: dict[str, Any] = {}
 
 
-def _init_worker(out: str, agent_dir: str, config: str, judge: str, keep_doors: bool, plan: dict, lib: str, own_schedule: bool = False) -> None:
+def _init_worker(out: str, agent_dir: str, config: str, judge: str, keep_doors: bool, plan: dict, lib: str, own_schedule: bool = False,
+                 cont_stakes: str = "") -> None:
     if lib:
         os.environ["STS2_LIB_PATH"] = lib
     os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
@@ -675,15 +712,17 @@ def _init_worker(out: str, agent_dir: str, config: str, judge: str, keep_doors: 
 
     procutil.lower_priority()  # BelowNormal (Windows priority class)
     _W.update(out=Path(out), agent_dir=agent_dir, config=config, own_schedule=bool(own_schedule), judge=judge or None, keep_doors=keep_doors,
+              cont_stakes=cont_stakes or None,
               plan=Plan(k=plan["k"], quota=plan["quota"], per_run=plan["per_run"], rates=plan["rates"],
-                        max_options=plan["max_options"], acts=tuple(plan["acts"])), players={})
+                        max_options=plan["max_options"], acts=tuple(plan["acts"]), per_act=int(plan.get("per_act", 0))), players={})
 
 
 def _player(explore: tuple[float, float] | None) -> Player:
     cache = _W["players"]
     if explore not in cache:
         cache[explore] = build_player(_W["agent_dir"], config=_W["config"], judge_path=_W["judge"] if explore is None else None,
-                                      keep_doors=_W["keep_doors"] and explore is None, explore=explore, own_schedule=_W["own_schedule"])
+                                      keep_doors=_W["keep_doors"] and explore is None, explore=explore, own_schedule=_W["own_schedule"],
+                                      stakes=_W["cont_stakes"] if explore is None else None)  # only the continuations search under their own
     return cache[explore]
 
 
@@ -719,28 +758,30 @@ def run_task(task: tuple) -> dict:
             why = "one_option"
         if why is not None:
             passed[why] += 1
-            return sum(taken.values()) >= plan.per_run
+            return plan.run_full(taken)
         kind = pt.kind
         assert kind is not None
         taken[plan.cell(kind, act)] += 1
         if decision_id(seed, pt.ordinal, kind, int(pt.view.floor)) in done_ids:
-            return sum(taken.values()) >= plan.per_run
+            return plan.run_full(taken)
         t1 = time.perf_counter()
         try:
             rec = label_decision(pt.session, pt.decision, pt.view, pt.pick, cont, run_id=seed, ordinal=pt.ordinal, kind=kind,
                                  k=plan.k, max_options=plan.max_options)
         except Exception as error:  # noqa: BLE001 -- refused by reason, never lost
             refused["error:" + type(error).__name__] += 1
-            return sum(taken.values()) >= plan.per_run
+            return plan.run_full(taken)
         state["seconds"] += time.perf_counter() - t1
         rec["run"] = {"seed": seed, "ix": ix, "job": record["_job"], "final_floor": record.get("floor")}
+        if _W["own_schedule"] and getattr(cont.agent, "config_name", None):
+            rec["cont_schedule"] = cont.agent.config_name(_W["config"])  # e.g. a3-v1@h1e4b8: the search the continuations played
         if rec.get("refused"):
             refused[rec["refused"]] += 1
         else:
             state["labelled"] += 1
         with open(sink_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
-        return sum(taken.values()) >= plan.per_run
+        return plan.run_full(taken)
 
     res = replay_run(seed, ix, replayer, record, hook, config=_W["config"], own_schedule=_W["own_schedule"])
     return {"_task": ["hs", seed, ix], "seed": seed, "ix": ix, "job": record["_job"], "labelled": state["labelled"],
@@ -954,7 +995,7 @@ def file_sha256(path: Path | str) -> str:
 
 
 def manifest_of(agent_dir: Path, agent_root: Path, plan: Plan, *, config: str, judge: Path | None, lib: Path | None, runs: list[dict],
-                tree: str | None) -> dict:
+                tree: str | None, own_schedule: bool = False, cont_stakes: str | None = None) -> dict:
     """The manifest of a label file: the policy shas, the seeds' namespace, K, the engine build and the runs the decisions come from."""
     import gen_loop  # noqa: PLC0415
 
@@ -973,13 +1014,15 @@ def manifest_of(agent_dir: Path, agent_root: Path, plan: Plan, *, config: str, j
             "exam_agent": {"dir": rel, "generation": agent.generation, "prior_sha256": meta.get("policy_sha256"), "config": config,
                            "mask_version": agent.mask_version},
             "run_head": {"file": "run_value.npz", "sha256": file_sha256(agent.macro_npz) if agent.macro_npz else None, "W": agent.W},
-            "continuation": {"tau": 0.0, "eps": 0.0, "note": "argmax, no exploration"},
+            "continuation": {"tau": 0.0, "eps": 0.0, "note": "argmax, no exploration",
+                             **({"schedule": dataclasses.replace(agent, stakes=cont_stakes).config_name(config) if cont_stakes else agent.config_name(config),
+                                 "play_schedule": agent.config_name(config)} if own_schedule else {})},
             "judge": None if judge is None else {"file": Path(judge).name, "sha256": file_sha256(judge)},
         },
         "seeds": {"namespace": NAMESPACE, "agent_seed_of_the_replay": AGENT_SEED,
                   "continuation": "resample seed and search streams from (run id, floor, decision kind, k) only; the same for every option"},
         "engine": {"lib_sha256": file_sha256(dll) if dll is not None and dll.is_file() else None},
-        "plan": {"k": plan.k, "quota": plan.quota, "per_run": plan.per_run, "rates": plan.rates, "max_options": plan.max_options,
+        "plan": {"k": plan.k, "quota": plan.quota, "per_run": plan.per_run, "per_act": plan.per_act, "rates": plan.rates, "max_options": plan.max_options,
                  "acts": list(plan.acts), "horizon": "the end of the decision's act, its boss included"},
         "source": {"kind": "the AI's own exploring runs (lab self-play, replayed on the copy and checked against their records)",
                    "runs_available": len(runs), "jobs": sorted({r["_job"] for r in runs}),
@@ -1038,7 +1081,14 @@ def pilot_cmd(a: argparse.Namespace) -> int:
     quota = parse_quota(a.quota) or ({f"{k}/a{act + 1}": a.quota_per_cell for k in KINDS for act in range(MAX_ACT_INDEX + 1)}
                                      if a.quota_per_cell else {})
     rates = {**DEFAULT_RATES, **json.loads(a.rates)} if getattr(a, "rates", None) else dict(DEFAULT_RATES)
-    plan = Plan(k=a.k, quota=quota, per_run=a.per_run, max_options=a.max_options, rates=rates)
+    plan = Plan(k=a.k, quota=quota, per_run=a.per_run, max_options=a.max_options, rates=rates, per_act=int(getattr(a, "per_act", 0) or 0))
+    import gen_loop  # noqa: PLC0415
+
+    own = bool(getattr(a, "own_schedule", False))
+    cont_stakes = continuation_stakes(gen_loop.load_agent(agent_dir).stakes, getattr(a, "cont_boss_mult", 0)) if own else None
+    if getattr(a, "cont_boss_mult", 0) and not own:
+        print("hindsight: --cont-boss-mult needs --own-schedule", file=sys.stderr)
+        return 2
     order = sorted(runs, key=lambda r: _digest("order", a.order_seed, r["seed"], r["ix"]))
     if a.limit_runs:
         order = order[: a.limit_runs]
@@ -1047,7 +1097,7 @@ def pilot_cmd(a: argparse.Namespace) -> int:
     mf = out / "manifest.json"
     if not mf.is_file():
         mf.write_text(json.dumps(manifest_of(agent_dir, agent_root, plan, config=a.config, judge=judge, lib=lib, runs=runs,
-                                             tree=_git_head()), indent=1), encoding="utf-8")
+                                             tree=_git_head(), own_schedule=own, cont_stakes=cont_stakes), indent=1), encoding="utf-8")
     import fight_gym  # noqa: PLC0415 -- its supervised pool (deadlines, a stop poll); its own guards are not used
 
     tf = out / "tasks.jsonl"
@@ -1070,7 +1120,7 @@ def pilot_cmd(a: argparse.Namespace) -> int:
     try:
         reason = fight_gym.run_tasks(tasks, run_task, tf, a.procs, hard_of=lambda t: a.task_cap_s, capped_of=capped_row, init=_init_worker,
                                      init_args=(str(out), str(agent_dir), a.config, str(judge) if judge else "", bool(a.doors),
-                                                dataclasses.asdict(plan), str(lib) if lib else "", bool(getattr(a, "own_schedule", False))),
+                                                dataclasses.asdict(plan), str(lib) if lib else "", own, cont_stakes or ""),
                                      stop=stop, refresh=lambda: hold(True) if (_beat() and not a.no_hold) else None)
     finally:
         if not a.no_hold:
@@ -1101,6 +1151,7 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--k", type=int, default=DEFAULT_K)
     pl.add_argument("--procs", type=int, default=6)
     pl.add_argument("--per-run", type=int, default=2)
+    pl.add_argument("--per-act", type=int, default=0, help="labels taken from one run in EACH labelled act (0: --per-run in all; at most one per kind and act)")
     pl.add_argument("--max-options", type=int, default=MAX_OPTIONS)
     pl.add_argument("--quota", default="", help="cells wanted, e.g. card/a1=50,rest/a2=50")
     pl.add_argument("--quota-per-cell", type=int, default=0, help="every kind x act cell (Acts 1 and 2) wants this many decisions")
@@ -1112,7 +1163,9 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--doors", action="store_true", help="keep the combat snapshot at each boss door (large)")
     pl.add_argument("--lib", default="", help="the native build the exploring runs were played with (STS2_LIB_PATH)")
     pl.add_argument("--rates", default=None, help='JSON: the chance a decision of each kind is taken, e.g. {"card": 1.0} (default DEFAULT_RATES)')
-    pl.add_argument("--own-schedule", action="store_true", help="the round's labels: replay and continuations search under the agent's own stakes schedule and hold")
+    pl.add_argument("--own-schedule", action="store_true", help="the round's labels: replay and continuations search under the agent's own stakes schedule and hold (the continuations' boss multiplier: --cont-boss-mult)")
+    pl.add_argument("--cont-boss-mult", type=int, default=0, help="with --own-schedule: the continuations search the agent's own stakes schedule "
+                    "with the boss multiplier lowered to this (8: the x8 schedule of candidate-stakes-b8); the replay stays at the agent's own (0: all own)")
     pl.add_argument("--run-config", default=None, help="the `config` the exploring runs' rows carry (the agent's schedule name, e.g. a3-v1@h1e4b16); default a3-v1")
     pl.add_argument("--macro", default=None, help="only runs whose summary names this macro")
     pl.add_argument("--stakes", default=None, help="only runs whose summary names this stakes tag")
