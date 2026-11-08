@@ -25,9 +25,11 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT, Path(__file__).resolve().parent):
 os.environ.setdefault("STS2_LIB_PATH", str(ROOT / "out"))
 os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 
+import fight_exam as fe  # noqa: E402
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
 import keep_v2_fixtures as fx  # noqa: E402
+from test_fight_exam import human_gym_folder  # noqa: E402
 import pool_fakes as pf  # noqa: E402
 from tools.lab import pairing_check as pc  # noqa: E402
 from tools.lab import keep_v2 as k2  # noqa: E402
@@ -776,6 +778,10 @@ class PromoteV2Tests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.agents = self.root / "agent"
         self.agents.mkdir()
+        for name in ("EXAM_DIR", "LOOP_ROOT"):  # the judgement's human-bar line reads the gym's folder: not the real one in a test
+            patcher = mock.patch.object(fe, name, self.root / "no-gym")
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.seeds, self.cand_rows, self.base_rows = fx.arms()
         (self.root / "seeds").mkdir()
         self.seed_file = self.root / "seeds" / "Etest-2.json"
@@ -797,6 +803,50 @@ class PromoteV2Tests(unittest.TestCase):
         with mock.patch.object(gen_loop, "run_arm", arms):
             doc = gen_loop.promote(cand, None, self.seed_file, agent_root=self.agents, boot=500, sequential=True, keep_rule="v2", **kw)
         return doc, arms
+
+    def test_the_judgement_carries_one_report_only_line_on_the_human_stratum(self):
+        loop, exam, sha = human_gym_folder(self.root)
+        cand = stub_candidate(self.root, "c1", sha, generation=4)  # its fight network is the bytes of the gym's player v2
+        with mock.patch.object(fe, "EXAM_DIR", exam), mock.patch.object(fe, "LOOP_ROOT", loop):
+            doc, _ = self.run_promote(self.cand_rows, self.base_rows, cand)
+        line = doc["human_bar"]["line"]
+        self.assertTrue(line.startswith(f"human bar: fight network {sha[:12]} (gym player v2): survival "), line)
+        self.assertIn("on 39 of 39 starts, 156 games, engine e1, games file written ", line)
+        self.assertEqual(json.loads((cand / "promotion.json").read_text())["human_bar"]["line"], line)
+        self.assertEqual(doc["decision_text"], "promoted")  # the verdict is the keep test's alone
+        self.assertTrue(all(doc["decision"]["checks"].values()), doc["decision"]["checks"])
+        self.assertNotIn("human", json.dumps(doc["decision"]) + json.dumps(doc["keep_v2"]))
+        row = gen_loop.read_promotions(self.agents / "promotions.tsv")[-1]
+        self.assertFalse(any("human" in k or "human" in v for k, v in row.items()))  # the ledger row is as it was
+
+    def test_a_player_without_games_on_the_stratum_says_so_and_a_line_that_cannot_be_read_never_stops_the_verdict(self):
+        loop, exam, sha = human_gym_folder(self.root, games=False)
+        cand = stub_candidate(self.root, "c1", sha, generation=4)
+        with mock.patch.object(fe, "EXAM_DIR", exam), mock.patch.object(fe, "LOOP_ROOT", loop):
+            doc, _ = self.run_promote(self.cand_rows, self.base_rows, cand)
+        self.assertEqual(doc["human_bar"]["line"], f"human bar: no human-stratum games for fight network {sha[:12]} (gym player v2)")
+        self.assertEqual(doc["decision_text"], "promoted")
+
+    def test_a_line_that_cannot_be_read_never_stops_the_verdict(self):
+        cand = stub_candidate(self.root, "c1", "sha-a", generation=4)
+        with mock.patch.object(fe, "lab_human_bar", side_effect=OSError("disk gone")):
+            doc, _ = self.run_promote(self.cand_rows, self.base_rows, cand)
+        self.assertEqual(doc["human_bar"]["line"], "human bar: not read (OSError)")
+        self.assertEqual(doc["decision_text"], "promoted")
+        self.assertTrue(all(doc["decision"]["checks"].values()), doc["decision"]["checks"])
+
+    def test_the_line_names_the_incumbents_network_too_when_it_is_another_and_says_when_there_is_none(self):
+        loop, exam, sha = human_gym_folder(self.root)
+        cand = gen_loop.load_agent(stub_candidate(self.root, "c1", sha, generation=4))
+        base = gen_loop.load_agent(stub_candidate(self.root, "c2", "ee" * 32, generation=3))
+        with mock.patch.object(fe, "EXAM_DIR", exam), mock.patch.object(fe, "LOOP_ROOT", loop):
+            same = gen_loop.human_bar_note(cand, cand)["line"]
+            both = gen_loop.human_bar_note(cand, base)["line"]
+            none = gen_loop.human_bar_note(gen_loop.Agent(), base)["line"]
+            self.assertEqual(same, gen_loop.human_bar_note(cand)["line"])  # one network: one clause
+        self.assertEqual(both.count("human bar:"), 1)
+        self.assertIn(" | base fight network eeeeeeeeeeee (no gym player holds these bytes); the gym incumbent v2's reading, not this network's: ", both)
+        self.assertTrue(none.startswith("human bar: the judged player has no fight network (no combat prior)"))
 
     def test_a_route_a_gain_is_promoted_early_with_the_record_and_the_ledger_row(self):
         cand = stub_candidate(self.root, "c1", "sha-a", generation=4)

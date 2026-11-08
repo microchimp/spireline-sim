@@ -973,7 +973,10 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
                            smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
-    print(json.dumps({k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}, indent=1))
+    out = {k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}
+    if "human_bar" in doc:  # the keep test v2's report-only line on the fight exam's human stratum
+        out["human_bar"] = doc["human_bar"]["line"]
+    print(json.dumps(out, indent=1))
     return 0
 
 
@@ -990,6 +993,8 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
         out["keep_v2"] = {"route": k2["route"], "frontier": k2["frontier"]["name"], "k2": k2["kills"]["B2"], "d_deep": k2["deep"]["mean"],
                           "deep_lower": k2["deep"]["lower_route"], "floor_lower95": k2["floor"]["lower95"], "crash": k2["crash"],
                           "drift": k2["drift"]["verdict"], "act1_review": k2["act1_review"]["fires"]}
+    if "human_bar" in doc:  # report-only: the judged player's fight network against the human on the fight exam's human stratum
+        out["human_bar"] = doc["human_bar"]["line"]
     if "seeds" in doc["rejudged"]:  # a block the funnel stopped early: say which seeds were judged
         out["seeds_judged"] = doc["rejudged"]["seeds"]["text"]
     print(json.dumps(out, indent=1))

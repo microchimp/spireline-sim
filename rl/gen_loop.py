@@ -2159,6 +2159,24 @@ def keep_cells(keep: dict[str, Any], attempt: int) -> dict[str, Any]:
     return {"attempt": attempt, "drift": keep["drift"]["verdict"], "guard": k2.summary(keep), **k2.ledger_cells(keep)}
 
 
+def human_bar_note(cand_agent: Agent, base_agent: Agent | None = None) -> dict[str, Any]:
+    """The keep test v2's report-only line on the fight exam's human stratum (D55 addendum 11): the judged player's fight network (the
+    sha256 of its combat prior; the lab's candidates share one) as the gym player that holds the same bytes, and that player's latest
+    reading against the human from the exam's games, or "no human-stratum games for ...". Nothing is played; no rule reads it, and a
+    failure to read yields a line saying so, never an error in the verdict. The base agent's network is named too when it is another."""
+    try:
+        import fight_exam  # noqa: PLC0415 -- pure Python (the exam's readings)
+
+        sha = cand_agent.describe()["prior_sha256"]
+        note = fight_exam.lab_human_bar(sha)
+        base_sha = base_agent.describe()["prior_sha256"] if base_agent is not None else None
+        if base_sha and base_sha != sha:
+            note["line"] += " | base " + fight_exam.lab_human_bar(base_sha)["line"].removeprefix("human bar: ")
+        return note
+    except Exception as error:  # noqa: BLE001
+        return {"line": f"human bar: not read ({type(error).__name__})"}
+
+
 def row_rule(row: dict[str, str]) -> str:
     """The keep rule a promotions.tsv row was judged under: "v2" where the `rule` column says so, "v1" in every other row (older rows
     have no such column)."""
@@ -2385,6 +2403,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         if stopped_early:  # the figures above are those of the seeds played, not of the whole block
             doc["sequential"]["note"] = (f"stopped at {played} of {len(seeds)} seeds: floor, boss_kill and wins are the figures at the stop; "
                                          "the mean of a block that stopped on a bound is biased away from 0 (the decision's error rates hold)")
+    if v2:
+        doc["human_bar"] = human_bar_note(cand_agent, base_agent)  # report-only: no rule reads it
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
@@ -2508,6 +2528,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             ledger.write_bytes((Path(agent_root) / "promotions.tsv").read_bytes())
         else:
             ledger.unlink(missing_ok=True)
+    if v2:
+        doc["human_bar"] = human_bar_note(cand_agent, base_agent)  # report-only: no rule reads it
     write_json(dest / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     append_promotion(ledger,

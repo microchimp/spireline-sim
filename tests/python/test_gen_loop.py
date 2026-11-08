@@ -21,9 +21,11 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT, Path(__file__).resolve().parent):
 os.environ.setdefault("STS2_LIB_PATH", str(ROOT / "out"))
 os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 
+import fight_exam as fe  # noqa: E402
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
 import keep_v2_fixtures as fx  # noqa: E402
+from test_fight_exam import human_gym_folder  # noqa: E402
 
 HAVE_NATIVE = (ROOT / "out" / "Sts2Emulator.dll").exists() or bool(os.environ.get("STS2_LIB_PATH") and (Path(os.environ["STS2_LIB_PATH"]) / "Sts2Emulator.dll").exists())
 
@@ -931,6 +933,10 @@ class KeepRuleV2Tests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        for name in ("EXAM_DIR", "LOOP_ROOT"):  # the judgement's human-bar line reads the gym's folder: not the real one in a test
+            patcher = mock.patch.object(fe, name, self.root / "no-gym")
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.agents = self.root / "agent"
         self.agents.mkdir()
         self.seeds, self.cand_rows, self.base_rows = fx.arms()
@@ -1044,6 +1050,32 @@ class KeepRuleV2Tests(unittest.TestCase):
         # the drift check reads the rows before this block, not its own: Eprev (1000 of 2000) and the two other candidates' blocks (100 of 200 each)
         self.assertEqual((k["drift"]["pooled_kills"], k["drift"]["pooled_n"], k["drift"]["verdict"]), (1200, 2400, "clear"))
         self.assertEqual(new["drift"], "clear")
+
+    def test_rejudge_v2_carries_the_report_only_human_bar_line_and_the_command_prints_it(self):
+        loop, exam, _ = human_gym_folder(self.root)
+        cand = self.judged_candidate()  # its claimed network (sha-a) is no gym player's: the gym incumbent's reading, labelled so
+        out = self.root / "dry"
+        with mock.patch.object(fe, "EXAM_DIR", exam), mock.patch.object(fe, "LOOP_ROOT", loop):
+            doc = self.rejudge(cand, out=out)
+            line = doc["human_bar"]["line"]
+            self.assertTrue(line.startswith("human bar: fight network sha-a (no gym player holds these bytes); the gym incumbent v2's reading, "
+                                            "not this network's: survival "), line)
+            self.assertIn("on 39 of 39 starts, 156 games, engine e1, games file written ", line)
+            self.assertEqual(json.loads((out / "promotion.json").read_text())["human_bar"]["line"], line)
+            self.assertEqual(doc["decision_text"], "promoted")  # the keep test's verdict, as without the line
+            self.assertEqual(doc["keep_v2"]["route"], "A")
+            args = SimpleNamespace(cand=str(cand), base=None, seeds_file=str(self.seed_file), agent_root=str(self.agents), config="a3-v1",
+                                   note="keep test v2", lab=None, review_guard=None, keep_rule="v2", out=str(self.root / "dry2"))
+            buf = io.StringIO()
+            with mock.patch.object(gen0, "_setup"), mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play")):
+                with contextlib.redirect_stdout(buf):
+                    self.assertEqual(gen0.rejudge_cmd(args), 0)
+        printed = json.loads(buf.getvalue())
+        self.assertEqual(printed["human_bar"], line)
+        self.assertEqual(printed["keep_v2"]["route"], "A")
+        # the ledger row is as it was: no cell of it names the human bar
+        row = gen_loop.read_promotions(out / "promotions.tsv")[-1]
+        self.assertFalse(any("human" in k or "human" in v for k, v in row.items()))
 
     def test_rejudge_v2_dry_run_writes_only_to_its_own_folder(self):
         cand = self.judged_candidate()
