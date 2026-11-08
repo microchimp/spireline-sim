@@ -258,10 +258,11 @@ class SearchFighter:
     """The exam agent's fight play, as `gen0.play_emu_run` plays a fight: each combat decision is `live_search.search_live` on a
     combat fork of the position under the agent's search config and prior, and the best move is stepped on the run handle."""
 
-    def __init__(self, agent: Any, config: str = "a3-v1"):
+    def __init__(self, agent: Any, config: str = "a3-v1", own_schedule: bool = False):
         import search_configs  # noqa: PLC0415
 
-        self.cfg = search_configs.get(config)
+        # own_schedule (the round's labels): the agent's own stakes schedule and hold, as `gen0.play_emu_run` plays them
+        self.cfg = agent.search_config(config) if own_schedule else search_configs.get(config)
         self.extra = agent.search_extra()
 
     def __call__(self, s: Any, rng: Any, deadline: float | None = None) -> int:
@@ -276,7 +277,7 @@ class SearchFighter:
                 raise Timeout("the continuation outlived its wall cap")
             root = s.combat(fork_combat=True).combat_fork(None)
             try:
-                pos = search_configs.position_of(root, s.info) if self.cfg.schedule else None
+                pos = search_configs.position_of(root, s.info) if (self.cfg.schedule or self.cfg.needs_position) else None
                 kw = self.cfg.search_kwargs(pos, env_prior=False)  # the agent argument alone decides the prior
                 kw.update(self.extra)
                 res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
@@ -291,14 +292,16 @@ class SearchFighter:
 
 
 def build_player(agent_dir: str | Path, *, config: str = "a3-v1", judge_path: str | Path | None = None, keep_doors: bool = False,
-                 explore: tuple[float, float] | None = None) -> Player:
+                 explore: tuple[float, float] | None = None, own_schedule: bool = False) -> Player:
     """The real player of a generation directory: its combat prior with the config's search, its run head. With `explore`
     (tau, eps) the run choices are sampled as the exploring self-play job did (a replay); without, argmax (a continuation)."""
     import gen_loop  # noqa: PLC0415
 
     agent = gen_loop.load_agent(agent_dir)
-    if agent.macro != "vrun":
-        raise ValueError(f"{agent_dir}: hindsight labels need a vrun agent (the head values the next act)")
+    import macro_recipe  # noqa: PLC0415
+
+    if agent.macro != "vrun" and not macro_recipe.is_blended(agent.macro):
+        raise ValueError(f"{agent_dir}: hindsight labels need a vrun or blended agent (the head values the next act)")
     agent = gen_loop.exploring_agent(agent, *explore) if explore else dataclasses.replace(agent, tau=0.0, eps=0.0)
     policy = agent.macro_policy()
     judge = None
@@ -314,17 +317,17 @@ def build_player(agent_dir: str | Path, *, config: str = "a3-v1", judge_path: st
 
     from run_train import vocab  # noqa: PLC0415
 
-    return Player(policy=policy, play_fight=SearchFighter(agent, config), head=lambda view, d: head_value(policy, view, d),
+    return Player(policy=policy, play_fight=SearchFighter(agent, config, own_schedule), head=lambda view, d: head_value(policy, view, d),
                   won_floor=float(vocab.WON_FLOOR), judge=judge, keep_doors=keep_doors, agent=agent)
 
 
-def session_for(seed: str, agent: Any, config: str = "a3-v1", ascension: int = ASCENSION) -> Any:
+def session_for(seed: str, agent: Any, config: str = "a3-v1", ascension: int = ASCENSION, own_schedule: bool = False) -> Any:
     """The run session of an exploring run: the budget and mask version `gen0.play_emu_run` builds it with."""
     import gen0  # noqa: PLC0415
     import search_configs  # noqa: PLC0415
     from run_train import engine  # noqa: PLC0415
 
-    cfg = search_configs.get(config)
+    cfg = agent.search_config(config) if own_schedule else search_configs.get(config)
     return engine.RunSession(seed, ascension, engine.CombatBudget(cfg.sims, cfg.sims), **gen0.session_kwargs(agent))
 
 
@@ -502,7 +505,7 @@ def prefix_check(fields: Any, record: dict) -> str | None:
 
 
 def replay_run(seed: str, ix: int, replayer: Player, record: dict, hook: Callable[[Point], bool | None], *,
-               config: str = "a3-v1", agent_seed: int = AGENT_SEED, ascension: int = ASCENSION) -> dict:
+               config: str = "a3-v1", agent_seed: int = AGENT_SEED, ascension: int = ASCENSION, own_schedule: bool = False) -> dict:
     """Replay a recorded exploring run on the copy and call `hook` at each of its run decisions, before the decision is applied.
 
     The loop is `gen0.play_emu_run`'s, with the same streams (`default_rng([agent_seed, ix])` for the searches' seeds,
@@ -519,7 +522,7 @@ def replay_run(seed: str, ix: int, replayer: Player, record: dict, hook: Callabl
     t0 = time.perf_counter()
     rng = np.random.default_rng([agent_seed, ix])
     explore = np.random.default_rng([agent_seed, ix, 1])
-    s = session_for(seed, replayer.agent, config, ascension)
+    s = session_for(seed, replayer.agent, config, ascension, own_schedule)
     fields, slugs = run_fields.RunFields(), run_fields.card_slugs()
     res: dict[str, Any] = {"end": "?", "decisions": 0, "floor": 0, "checked": 0}
     ordinal = 0
@@ -605,7 +608,8 @@ class Plan:
         return [c for c, n in self.quota.items() if have[c] < n]
 
 
-def exploring_runs(runs_root: Path, generation: int, prior_sha: str | None = None) -> list[dict]:
+def exploring_runs(runs_root: Path, generation: int, prior_sha: str | None = None, config: str = "a3-v1",
+                   macro: str | None = None, stakes: str | None = None) -> list[dict]:
     """The recorded exploring runs of one generation's fight player: the rows of every lab self-play job whose command names
     `--explore-tau`, each with its job and its exploration (tau, eps). A job played by another prior is left out when `prior_sha`
     is given."""
@@ -622,11 +626,13 @@ def exploring_runs(runs_root: Path, generation: int, prior_sha: str | None = Non
         agent = summ.get("agent", {})
         if agent.get("generation") != generation or (prior_sha and agent.get("prior_sha256") != prior_sha):
             continue
+        if (macro is not None and agent.get("macro") != macro) or (stakes is not None and agent.get("stakes") != stakes):
+            continue  # the round's labels: only the runs of the player (macro and stakes schedule) the labels belong to
         explore = (float(agent.get("tau", 0.0)), float(agent.get("eps", 0.0)))
         for line in (job / "runs.jsonl").read_text(encoding="utf-8").splitlines():
             with contextlib.suppress(ValueError):
                 r = json.loads(line)
-                if r.get("end") in ("win", "death") and not r.get("crash") and not r.get("lost") and r.get("config") == "a3-v1":
+                if r.get("end") in ("win", "death") and not r.get("crash") and not r.get("lost") and r.get("config") == config:
                     out.append({**r, "_job": job.name, "_explore": explore})
     return out
 
@@ -661,14 +667,14 @@ def count_cells(recs: Iterable[dict]) -> Counter:
 _W: dict[str, Any] = {}
 
 
-def _init_worker(out: str, agent_dir: str, config: str, judge: str, keep_doors: bool, plan: dict, lib: str) -> None:
+def _init_worker(out: str, agent_dir: str, config: str, judge: str, keep_doors: bool, plan: dict, lib: str, own_schedule: bool = False) -> None:
     if lib:
         os.environ["STS2_LIB_PATH"] = lib
     os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
     from sts2_gym import procutil  # noqa: PLC0415
 
     procutil.lower_priority()  # BelowNormal (Windows priority class)
-    _W.update(out=Path(out), agent_dir=agent_dir, config=config, judge=judge or None, keep_doors=keep_doors,
+    _W.update(out=Path(out), agent_dir=agent_dir, config=config, own_schedule=bool(own_schedule), judge=judge or None, keep_doors=keep_doors,
               plan=Plan(k=plan["k"], quota=plan["quota"], per_run=plan["per_run"], rates=plan["rates"],
                         max_options=plan["max_options"], acts=tuple(plan["acts"])), players={})
 
@@ -677,7 +683,7 @@ def _player(explore: tuple[float, float] | None) -> Player:
     cache = _W["players"]
     if explore not in cache:
         cache[explore] = build_player(_W["agent_dir"], config=_W["config"], judge_path=_W["judge"] if explore is None else None,
-                                      keep_doors=_W["keep_doors"] and explore is None, explore=explore)
+                                      keep_doors=_W["keep_doors"] and explore is None, explore=explore, own_schedule=_W["own_schedule"])
     return cache[explore]
 
 
@@ -736,7 +742,7 @@ def run_task(task: tuple) -> dict:
             fh.write(json.dumps(rec) + "\n")
         return sum(taken.values()) >= plan.per_run
 
-    res = replay_run(seed, ix, replayer, record, hook, config=_W["config"])
+    res = replay_run(seed, ix, replayer, record, hook, config=_W["config"], own_schedule=_W["own_schedule"])
     return {"_task": ["hs", seed, ix], "seed": seed, "ix": ix, "job": record["_job"], "labelled": state["labelled"],
             "refused": dict(refused), "passed": dict(passed), "replay": res, "label_seconds": round(state["seconds"], 1)}
 
@@ -1027,10 +1033,12 @@ def pilot_cmd(a: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     agent_root = Path(a.agent_root)
     agent_dir = agent_root / a.agent_dir
-    runs = exploring_runs(Path(a.runs_root), a.generation)
+    runs = exploring_runs(Path(a.runs_root), a.generation, getattr(a, "prior_sha", None) or None, getattr(a, "run_config", None) or "a3-v1",
+                          getattr(a, "macro", None) or None, getattr(a, "stakes", None) or None)
     quota = parse_quota(a.quota) or ({f"{k}/a{act + 1}": a.quota_per_cell for k in KINDS for act in range(MAX_ACT_INDEX + 1)}
                                      if a.quota_per_cell else {})
-    plan = Plan(k=a.k, quota=quota, per_run=a.per_run, max_options=a.max_options)
+    rates = {**DEFAULT_RATES, **json.loads(a.rates)} if getattr(a, "rates", None) else dict(DEFAULT_RATES)
+    plan = Plan(k=a.k, quota=quota, per_run=a.per_run, max_options=a.max_options, rates=rates)
     order = sorted(runs, key=lambda r: _digest("order", a.order_seed, r["seed"], r["ix"]))
     if a.limit_runs:
         order = order[: a.limit_runs]
@@ -1062,7 +1070,7 @@ def pilot_cmd(a: argparse.Namespace) -> int:
     try:
         reason = fight_gym.run_tasks(tasks, run_task, tf, a.procs, hard_of=lambda t: a.task_cap_s, capped_of=capped_row, init=_init_worker,
                                      init_args=(str(out), str(agent_dir), a.config, str(judge) if judge else "", bool(a.doors),
-                                                dataclasses.asdict(plan), str(lib) if lib else ""),
+                                                dataclasses.asdict(plan), str(lib) if lib else "", bool(getattr(a, "own_schedule", False))),
                                      stop=stop, refresh=lambda: hold(True) if (_beat() and not a.no_hold) else None)
     finally:
         if not a.no_hold:
@@ -1103,6 +1111,12 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--judge", default="", help="the fight judge's checkpoint: its estimate of the boss fight is recorded at each boss door")
     pl.add_argument("--doors", action="store_true", help="keep the combat snapshot at each boss door (large)")
     pl.add_argument("--lib", default="", help="the native build the exploring runs were played with (STS2_LIB_PATH)")
+    pl.add_argument("--rates", default=None, help='JSON: the chance a decision of each kind is taken, e.g. {"card": 1.0} (default DEFAULT_RATES)')
+    pl.add_argument("--own-schedule", action="store_true", help="the round's labels: replay and continuations search under the agent's own stakes schedule and hold")
+    pl.add_argument("--run-config", default=None, help="the `config` the exploring runs' rows carry (the agent's schedule name, e.g. a3-v1@h1e4b16); default a3-v1")
+    pl.add_argument("--macro", default=None, help="only runs whose summary names this macro")
+    pl.add_argument("--stakes", default=None, help="only runs whose summary names this stakes tag")
+    pl.add_argument("--prior-sha", default=None, help="only runs of this combat prior")
     pl.add_argument("--no-hold", action="store_true", help="do not write the QUIET.lock line (a caller that holds one for the whole session)")
     pl.set_defaults(fn=pilot_cmd)
     rp = sub.add_parser("report", help="the aggregates of the label files under --out")
