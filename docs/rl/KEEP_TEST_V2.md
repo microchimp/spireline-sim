@@ -52,8 +52,30 @@ header. `boss_cand`, `boss_base` and `p_boss` stay Act 1, so `lineage_blocks` (t
 `keep_v2` (both routes' numbers, the frontier with its pooled counts and the arms it read, the crash guard, the drift check, the attempt, the
 Act 1 and damage figures and `act1_review`) and `keep_rule`; its `sequential` key gains `keep_rule` and `frontier`.
 
+## The human bar (report-only; D55 addendum 11, 2026-11-08)
+
+Every automatic judgement of a fight player prints the human line. Under v2, `promote` and `rejudge` add one key to `promotion.json`,
+`human_bar` (`line`, and `network`, `gym_player`, `reading_of`, `date` and the figures where there is a reading), and `gen0.py promote` and
+`rejudge` print its `line` beside the verdict. The line names the judged player's **fight network** (the first 12 hex digits of the sha256 of
+its combat prior's `combat_policy.pt`, `Agent.describe()["prior_sha256"]`) and the **gym player** that holds the same bytes (`players/<name>`,
+or a checkpoint with games in the exam folder), then that player's latest reading on the fight exam's human stratum, from its games file
+(`exam/games-<name>.jsonl`, rows of config `a3-v1`): survival and HP lost of the player and of the human on the same starts, the starts and
+games counted, the engine tag and the date the games file was last written (rows carry no time):
+
+    human bar: fight network 64d057e174ac (gym player v2): survival 62.0 / human 79.8 in 100, HP lost 38.6 / 33.2 on 400 of 400 starts, 1600 games, engine e911430a94a1, games file written 2026-11-08
+
+or `human bar: no human-stratum games for fight network 64d057e174ac (gym player v1)` when that player has none. **No game is played**:
+the lab's candidates share one fight network (generations 11, 12 and 13 all carry the bytes of the gym's version 2, sha256 `64d057e1...`),
+so the reading is the gym player's, played by the fight loop's gate or by hand. A network no gym player holds gets the **gym incumbent's**
+reading, labelled as the incumbent's (`human bar: fight network X (no gym player holds these bytes); the gym incumbent v2's reading, not
+this network's: ...`), and the base agent's network is named in the same line (` | base ...`) when it is another. The line is read from
+`fight_exam.LOOP_ROOT` / `EXAM_DIR` (the loop's folder, default `D:/spireline/referee/gym-loop`); a failure to read it gives
+`human bar: not read (ErrorName)` and never touches the verdict. No rule, guard, check or ledger column reads it (the ledger row is as before:
+the line lives in `promotion.json` and the command output only). v1 judgements are unchanged.
+
 ## Tests
 
 `tests/python/test_keep_v2.py` (the rule, the frontier, the routes, the guards, section 6's verdicts from constructed differences, and
-the lab's saved arms where they exist), `test_funnel.py` (`V2RuleTests`, `PromoteV2Tests`), `test_gen_loop.py` (`KeepRuleV2Tests`,
-`test_train_passes_keep_rule_to_promote`); synthetic arms in `tests/python/keep_v2_fixtures.py` (counts only; no saved row is committed).
+the lab's saved arms where they exist), `test_funnel.py` (`V2RuleTests`, `PromoteV2Tests`, including the human-bar line), `test_gen_loop.py`
+(`KeepRuleV2Tests`, `test_train_passes_keep_rule_to_promote`, the line through `rejudge` and its command); the line's pieces in
+`test_fight_exam.py` (`HumanBarReadingTests`); synthetic arms in `tests/python/keep_v2_fixtures.py` (counts only; no saved row is committed).

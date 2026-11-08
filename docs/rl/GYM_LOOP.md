@@ -30,7 +30,11 @@ and the gate's games on disk are kept.
 check out the new fork main in its worktree, publish the worktree's own `out/` and Release EmuDump (restore, NativeAOT publish,
 EmuDump build), check `gym_loop.engine_tag()` changed, start it again. No code change: the gate's files are per engine tag, so
 the incumbent's games are played once more on the new engine at the next gate (stage 1's 400, then stage 2's 1,600 when a
-candidate reaches it).
+candidate reaches it). **The move check** (D51 did it by hand on the 400 stage-1 pairs: outcome 400 of 400, end HP 400 of 400, move hash
+398 of 400): `python tools/gym_engine_move_check.py gate/inc-vN-CFG-OLDTAG.jsonl gate/inc-vN-CFG-NEWTAG.jsonl [--list 10]` matches the
+incumbent's games on the two tags by (start, j) and prints the matched count, the agreement of outcome, end HP and move hash, the
+games whose moves differ though outcome and end HP agree, and the root value's largest and median difference (float noise shows as
+about 1e-7). On the D51 pair (tags aaa0d2e4a460 and 1b3d1f01c90b, all 2,000 games) it reads: outcome 1998 of 2000, end HP 1995, move hash 1973.
 
 ## 2. The locks (decided)
 
@@ -166,6 +170,33 @@ The power, estimated: with about a quarter of pairs discordant, a +3-point candi
 promoted 5% of the time. A gate costs about 0.4 machine-hours (stage 1) plus 1.6 (stage 2) at a3-v1; the incumbent's 2,000 games are
 played once per incumbent.
 
+**The human line** (D55 addendum 11, 2026-11-08; `human_bar`, `human_bar_adopt`, `HUMAN_BAR`; daemon flag `--human-bar on|off`, default
+on). After a **stage-2** verdict (promote or reject; never after a stage-1 reject, a stopped or an incomplete gate) the daemon plays the
+candidate on the fight exam's human stratum (400 clean human fight starts, four draws, 1,600 games, the exam's own configuration `a3-v1`
+whatever the gate's `--player-config` is, `exam/starts-human.jsonl`) with the gate's own processes (`play_tasks` with
+`fight_exam:exam_game_steps`: `--procs`, BelowNormal, its QUIET line, the same stop reasons as the gate's play: STOP, the night, PAUSE,
+HALT, another line), writes the games to `exam/games-<checkpoint>.jsonl` (resumable: a game with a row is not played again) and reads them
+beside the incumbent's (`exam/games-<incumbent>.jsonl`, rows of config `a3-v1`) and the human's own results:
+
+    gate c0190: human bar: cand 55.0 / inc 62.0 / human 79.8 in 100 on 400 starts; cand-inc -7.0 [-11.2, -2.8]; HP lost 41.2 / 38.6 / 33.2
+
+Survival in points per 100 and HP lost (a death costs the whole HP going in, on all three sides) are on the starts both players have
+games on; the difference is paired by start on the draws both have, a 95% bootstrap interval over starts resampled within cells. The
+reading goes into the verdict dict as `human` and so into `state.json`'s `gated[cand]` and `gate/verdicts.jsonl` (the dict has the
+numbers, counts, the engine tags of both sides, `same_engine`, `complete` and the line); the loop log carries the line. **It is
+report-only**: `PROMOTION_RULE` and `decide` do not read it and a failure of the play or the reading (recorded as `human: "error: ..."`)
+never changes or loses the verdict. A play a stop cuts short is recorded as `human: "stopped"` and the verdict goes on (the games played
+stay in the file; `fight_exam.py play --player-dir <checkpoint folder> --stratum human` finishes them, `report --player <name>` reads
+them). With no incumbent games the line gives the candidate's side alone and says so; with the incumbent's games on another engine tag
+(its human games were played before an engine move) it ends `; engines differ (cand X, inc Y)` and the difference is then not a clean
+comparison (to make it one, keep the old `exam/games-vN.jsonl` under another name and play the incumbent's stratum again on the
+current engine with `fight_exam.py play --player vN --stratum human`).
+On a **promotion** the candidate's human games are copied to `exam/games-<new version>.jsonl` (relabelled, `reused_from` the checkpoint)
+so the new incumbent's stratum games are found under its name. Cost, measured: the champion's 1,600 stratum games took 1,928 s at six
+processes (the daytime score running beside them), so a stage-2 candidate's gate gets about 32 minutes longer at `--procs 6` (a stage-2
+gate was 20 to 25 minutes per arm), plus about a second for the reading; stage-1 rejects, most gates, add nothing. The lab's keep test
+prints the same kind of line without playing (docs/rl/KEEP_TEST_V2.md).
+
 ## 6. What is measured
 
 - `games/segments.jsonl`: fights and samples per segment, by kind; fights per hour is their sum over the wall time.
@@ -199,9 +230,14 @@ short version and the working notes.
   `stratum: "human"`; every reading of the AI exam leaves them out). `report` and `compare` print the exam's own lines first, unchanged,
   then the human line: survival and HP lost of the human against the player's (the mean over its four draws) by act and kind and by boss,
   the paired difference (player minus human) with a 95% bootstrap interval over starts resampled within cells, and counts; `compare` adds
-  the candidate against the champion on the stratum. No calibration flag is applied to it (the human is not a draw). **The exam is run by
-  hand** (no lab job and no gate calls it): the stratum adds its 1,600 games to a full `play` (about 25 minutes at the loop's speed) and
-  its half A (about 800 games) to `compare`. `--allow-quiet TAG` lets a run ignore a named QUIET.lock tag (the lab's daytime score).
+  the candidate against the champion on the stratum. No calibration flag is applied to it (the human is not a draw). **The full exam is
+  run by hand** (no lab job calls it): the stratum adds its 1,600 games to a full `play` (about 25 minutes at the loop's speed) and
+  its half A (about 800 games) to `compare`. **The gate calls the stratum alone** (2026-11-08, D55 addendum 11): after a stage-2 verdict
+  the daemon plays the candidate on it and prints the human line, report-only (section 5, "The human line"). `play` takes
+  `--player-dir DIR` (a checkpoint folder; its games go to `games-<folder name>.jsonl`) as well as `--player NAME-OR-FOLDER`.
+  `--allow-quiet TAG` lets a run ignore a named QUIET.lock tag (the lab's daytime score). The lab's keep test v2 prints one report-only line
+  naming the judged player's fight network and its latest reading on the stratum (docs/rl/KEEP_TEST_V2.md); `tools/gym_engine_move_check.py`
+  compares two games files of one player on two engines (outcome, end HP and move hash per start).
 - **First reading** (2026-11-08, champion v2 at a3-v1, four draws a start, 400 starts, 1,600 games in 1,928 s of wall time with the lab's
   daytime score running beside it). Survival, player against human on the same starts: Act 1 hallway 100.0 / 100.0, elite 77.4 / 80.6
   (-3.2 points, interval -14.5 to +8.1), boss 50.1 / 71.4 (-21.2, -26.9 to -15.8); Act 2 hallway 98.4 / 100.0, elite 71.0 / 77.4
