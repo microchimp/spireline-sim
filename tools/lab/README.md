@@ -11,6 +11,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict`; `TreeCpu`, the always-on loop's CPU the load guard leaves out |
+| `alerts.py` | `LAB/alerts/`: the alert a job kind raises after two failures in a row, the list of jobs killed at their time limit, and the banner the daily readers print at the top |
 | `frozen.py` | D52: the frozen copy of the lab tree the practice filler runs from (one per presorted build, outside the lab folder) |
 | `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
@@ -76,7 +77,7 @@ refset score, in parallel; the refset score and the corpus results are copied in
 and blocks everything on that sha (retry after 30 min, doubling); the checks' own exit 1 (a regression) is a result, not a failure.
 
 After a presort, a rotation by value: `fights, fights, probes, fights, mutation, fights, invariants`. A job type that cannot
-run (tool or input missing, backing off after two failed jobs in a row) is skipped with a log line and the rotation moves on.
+run (tool or input missing, stopped after two failed jobs in a row, see "Alerts" below) is skipped with a log line and the rotation moves on.
 `probes`, `mutation` and `invariants`, and the `retest` strategy, run **once per presorted tree**: `state.json`'s `last_ok_sha` keeps, for
 each, the tree its last rc 0 job ran on, and a pick on that tree skips it ("ran on this tree already (<sha>)", written once an hour at
 most). A retest is due again on the same tree only for a group marked for one since the last retest job finished (`retest_seen` in the
@@ -155,7 +156,13 @@ job that finished since the last one started; each gets its `yield.tsv` row when
 finish). The list of jobs whose row is owed is kept in `state.json` (`report_pending`) and put back on the queue when the runner starts
 again (a restart for a landing used to drop it, and with it the rows). It stops at once on any guard except a held `main.lock` (user, pause, load, disk, halt: the covered jobs wait for the next
 chain), gives way to a presort (the tools run from the tree the presort checks out, builds and publishes into: the report is stopped at once and its jobs wait for the next one, which starts when the presort ends and reads the new tree; a report is 40 to 70 minutes and nearly always running, so letting it end was most of a presort's wall time. After `--report-cut-cap` stops by presorts in a row (default 2) the next presort waits for the report; `--presort-report wait` is the old way), is never started while a nightly window is open
-(`LAB/nightly/active`) and is stopped when a nightly-real job starts. The report's CPU is kept out of the jobs' CPU accounts (the
+(`LAB/nightly/active`) and is stopped when a nightly-real job starts. **It waits for an idle machine (D55 addendum 18).** A report starts
+only when no judgement (train), score-real or nightly-real job is running and the cores the runner measures free (`cores.total` less the
+running job's cores and, while it steps, the always-on loop's) are at least the report's own need (`cores.report`, 2); a report running
+when a train or score-real job starts is stopped and its jobs wait (it starved beside a judgement and died at its two-hour limit:
+`kits rc=1 in 7211 s, cpu=380 s` on 2026-11-09). Otherwise it stays queued; the log says so once per reason (`report beside: held (a train
+job is running); N job(s) wait, tried again at the next pick`) and it is tried again at every pick. A queued report never holds a
+presort or a judgement: the pick does not look at it. The report's CPU is kept out of the jobs' CPU accounts (the
 mix schedules on them). A fault in the machinery turns it off for the process and the groups and kits are steps of each job again.
 Off for `--once`, `--trial` and `--dry-run`. `corpus-import` stays a step of the fights job (prune checks the groups file's time).
 
@@ -206,7 +213,7 @@ older) means self-play first, and the runner log says so; the log also says the 
 Ranking input of the nightly blocks (each folder is already ranked in place; to rank one again or join its arm by hand): `python tools/lab/rank.py LAB/nightly/<block>/<agent> --out <dir> --emu-dir LAB/nightly/<block>/<agent>-emu` (by_family.md/json are written beside top20.md; weights unchanged).
 
 A command reports through `{job}/result.json` (an object; keys named like the yield columns). All guards (PAUSE, HALT, main.lock,
-user input, load, disk, parent) apply to these kinds as to every job, between steps and while the command runs. The runner is
+user input, load, disk, parent) apply to these kinds as to every job, between steps and while the command runs (the one exception: a train job that holds the lab-train line is not paused by load, see "The judgement holds the machine"). The runner is
 sequential, so a job never runs beside another job of the ladder or the rotation (the filler below is the exception). New `yield.tsv`
 columns come after `screen_groups`; an older file is widened with NA, and old rows keep their values.
 
@@ -228,7 +235,11 @@ marker. Its Job Object forces BelowNormal on every process in it (the prior serv
 main.lock; it stops for every guard but main.lock, for a live QUIET.lock line whose tag is not in `selfplay.quiet_ignore`
 (`gym-loop`, `lab-score`), when `LAB/nightly/active` appears, two minutes before the night is due (`LAB/nightly/last-ok` + `every_h`, now when `LAB/nightly/pending` is up, or the retry
 after a skipped try) and when a nightly-real job starts; it does not start within `selfplay.night_margin_min` (30) of the due time,
-within 120 s of a stop, near the disk limits, or on a tree that is not a presorted build. A stopped block is asked first: the runner writes `STOP` in the block's folder and waits up to 25 s
+within 120 s of a stop, near the disk limits, on a tree that is not a presorted build, or **within an hour of a presort** (D55 addendum 18:
+the fork's local main has moved past the presorted tree and the last presort ended `--presort-gap-min` (60) ago or more, or will have by then;
+a build that failed waits for its retry first; the log says `filler: not started (a presort of <sha> is due within 60 min ...)` once). A
+block started just before a presort used to be stopped seconds later (killed after 25 s on 2026-11-09 18:26Z). It also yields to the
+`lab-train` line below. A stopped block is asked first: the runner writes `STOP` in the block's folder and waits up to 25 s
 (`runner.FILLER_STOP_GRACE_S`) for a block that wrote `stop-honored` (a `gen0.py emu --record` that reads the file) to put its finished
 runs in the shards and end, then kills the Job Object; only the runs in flight are lost (before, every run since the last 50-run flush
 was: 1,828 of the filler's 4,496 by 2026-11-04). A block that is killed hard still loses at most `gen_loop.FLUSH_AGE_S` (120 s) of finished
@@ -249,11 +260,53 @@ old copy is removed when no block uses it. A presort that fails leaves a running
 not a build). `--filler-tree off`: the D48 way, the filler runs from the tree and every presort stops it (with `cores.presort` 16 in
 `LAB/jobs.json`, the D48 table, a presort also leaves the filler no cores).
 
+## Alerts: repeated failures stop a kind, a time limit is listed (D55 addendum 18, `alerts.py`)
+
+A job type, or a fights strategy, that fails **twice in a row** is no longer picked and the runner raises `LAB/alerts/<kind>.txt`: the kind,
+the two job folders (`runs/<name>`), their return codes and durations, and the last three lines of each failed command's log (user paths
+made anonymous). The backoff has no end: the kind is held (`<kind>: not runnable (stopped after repeated failures (LAB/alerts/<kind>.txt);
+remove the file to let it run again)`) until **the file is removed by hand**; the runner then logs `alert <kind>.txt removed: <kind> is
+picked again` once and the failure count starts over (the next failure is the first). One success in between starts the count over without
+an alert. The runner logs the alert once (`ALERT <kind>: failed 2 times in a row; ...`). Before this a kind (score-real: eight four-hour
+failures by 2026-11-09) was retried after every backoff with only `rc=1` and `backing off after repeated failures` in `runner.log`.
+A presort keeps its own per-sha retry rule (its builds retry after 30 minutes, doubling) and raises the alert on its second failure in a
+row without being held by it; a report or a filler block that fails is as before (the filler's `selfplay` kind is held like any other).
+
+`LAB/alerts/timeouts.txt` lists every command killed at its time limit, **the first time too**: one entry (time, kind, job folder, command,
+the limit and the time it ran, the last log lines) for a job command, a report command (groups, kits) or a practice block, and one
+`ALERT timeout:` line in the log.
+
+The daily readers print the standing alerts at the top: `LAB/status.txt` starts with `ALERT <kinds> (LAB/alerts) | ` while any file
+is there, and `LAB/summary.md` and `LAB/clock.md` start with an `ALERTS` block (between `<!-- lab-alerts -->` markers: the groups step and
+the daily clock write it, and the runner refreshes it in place when an alert is raised or removed).
+
+## The judgement holds the machine: the `lab-train` line (D55 addendum 18)
+
+While a train job runs (the judgement of a candidate), the runner writes `lab-train <UTC> pid=<the runner's pid>` into the shared
+`QUIET.lock` (the protocol of `gen0.py score --quiet-lock`, `rl/quiet_lock.py`, but with no waiting: the job only announces itself), rewrites
+it every 10 minutes (`runner.TRAIN_BEAT_S`; the fight loop reads a line over 2 hours old as dead) and removes it when the job ends however
+it ends: finished, stopped by a guard or a signal, a crash (the `finally` of `execute`), the runner leaving. A runner that is killed hard
+leaves the line; the stale-line sweep (`clear_stale_quiet_lock`, a `lab-*` line over 45 minutes old whose process is gone) clears it. Other
+sessions' lines in the file are kept. No `LAB/jobs.json` change is needed: the runner writes the line, not the job's command.
+
+**Who yields to it.** The gym daemon and the builders' heavy play (they wait on foreign lines), the practice filler (`cores.quiet_blocker`
+reads it like any foreign tag: `lab-train` is not in `selfplay.quiet_ignore` or `cores.DEFAULT_QUIET_IGNORE`) and the report jobs (they do not
+start beside a train job, above). **Who does not.** The train job itself, and the runner's own picks (the next train sitting, a due presort):
+the pick logic never reads QUIET.lock, so the line holds none of them. The gate scripts (`gate-py.sh`) wait on foreign lines unless they
+ignore this tag; that change is the orchestrator's.
+
+**The load guard.** While the runner holds the line the load guard (other processes over `--load-pct`, 50%, for `--load-window`, 120 s) does
+not pause the train job: the others yield to the judgement, so a pause for their load was backwards (148 load interrupts of a 9-hour judgement
+by 2026-11-09). The guard still reads the load, and it still stops the practice filler and the report (they give way to it, as before). It
+applies as before to every other job and to the filler and the report; user input, PAUSE, HALT, disk and the parent guard apply to the train
+job as to every job.
+
 ## Lab folder
 
 ```
 LAB/state.json status.txt runner.log targets.json groups.json summary.md coverage-setup.json coverage-random.json
     mix.json yield.tsv   PAUSE HALT (when present)
+LAB/alerts/<kind>.txt timeouts.txt   a kind that failed twice in a row (held until removed by hand); jobs killed at their time limit (tools/lab/alerts.py)
 LAB/stamps/<step>.json   what a step that skips on unchanged inputs last ran with (tools/lab/stepcache.py)
 LAB/cache/groups/jobs/<job>.json, sym/<aa>/<key>.json.gz   the grouping step's cache (tools/lab/groupcache.py): per finished job its
     sources, per source its symptoms; deleting the folder restores the old behaviour (one slow run), lab_groups.py --force clears it
@@ -322,4 +375,8 @@ files written as PowerShell writes them, the always-on stay mode), load window m
 plans on a fake tree (one per strategy and the reasons one cannot run), the mix file, the scheduler's CPU shares, the yield
 rows, the runner on trivial commands (done.rc last, resume, supersede, PAUSE now / with grace, HALT, backoff, always-on
 waiting out a HALT), a real Job Object test (kill a process from outside: its grandchild dies), and the task script under
-`-WhatIf` for both triggers.
+`-WhatIf` for both triggers. `tests/python/test_lab_cuts.py` (D55 addendum 18): the alerts (two failures in a row stop the picks and write the
+file, a success in between resets the count, a removed file lifts the hold, the time-limit list, the banners), the report's holds (judgement,
+score, nightly, cores, the loop's cores, a queued report never holds a pick, a running report gives way), no filler within an hour of a
+presort, the `lab-train` line (appears with the job, refreshed, gone after a simulated kill, a crash and the runner leaving) and the load guard
+that does not pause the judgement but still stops the filler and the report.

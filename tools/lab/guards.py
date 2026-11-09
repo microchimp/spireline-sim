@@ -172,12 +172,16 @@ class Guards:
         self._disk_at = float("-inf")
         self._disk_verdict = Verdict()
         self.readings: dict[str, object] = {}
+        self.load_hit = False  # the last poll found the load sustained (whether or not the caller let it stop the job)
 
     def on(self, name: str) -> bool:
         return name not in self.disabled
 
-    def poll(self, lock_stops: bool = True) -> Verdict:
+    def poll(self, lock_stops: bool = True, load_exempt: bool = False) -> Verdict:
+        """The first guard that says stop. `load_exempt`: the caller's job holds the machine (the lab-train line, tools/lab/runner.py): a
+        sustained load is still read and kept in `load_hit` (the filler and the report give way to it) but does not make the verdict."""
         lab = self.lab
+        self.load_hit = False
         if self.load is not None and self.on("load"):
             self.load.sample()  # always, so a long pause does not leave the window stale
         if self.on("halt") and (lab / "HALT").exists():
@@ -202,7 +206,9 @@ class Guards:
             mean, secs = self.load.mean()
             self.readings["load"] = (round(mean * 100), round(secs))
             if self.load.sustained(self.load_pct / 100.0):
-                return Verdict("load", f"other processes {mean * 100:.0f}% of the CPU over {secs:.0f}s")
+                self.load_hit = True
+                if not load_exempt:
+                    return Verdict("load", f"other processes {mean * 100:.0f}% of the CPU over {secs:.0f}s")
         if self.on("disk"):
             v = self._disk()
             if not v.ok:

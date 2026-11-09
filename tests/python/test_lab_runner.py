@@ -630,8 +630,8 @@ class RunnerCase(unittest.TestCase):
         self.assertEqual(r.state["counters"]["fights"], 5)  # a failed batch counts nothing
         self.assertNotIn("fights", r.state["backoff"])
         r.execute(r.new_run("fights", "abc"))
-        self.assertIn("fights", r.state["backoff"])  # the second failure in a row backs the job off
-        self.assertIn("backing off", r.unavailable("fights", "abc"))
+        self.assertIn("fights", r.state["backoff"])  # the second failure in a row backs the job off, and raises the alert (test_lab_cuts.py)
+        self.assertIn("stopped after repeated failures", r.unavailable("fights", "abc"))
         r.state["backoff"]["fights"] = 0
         pl.PLANS["fights"] = lambda c: [pl.Step("a", [self.py("good", "pass", core=True)])]
         r.execute(r.new_run("fights", "abc"))

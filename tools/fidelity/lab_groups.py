@@ -63,6 +63,7 @@ for p in (ROOT, ROOT / "referee"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+from tools.lab import alerts as lab_alerts  # noqa: E402
 from tools.lab import stepcache as sc  # noqa: E402
 from tools.lab.groupcache import GroupCache, Listing  # noqa: E402
 from tools.fidelity.lab_targets import (  # noqa: E402
@@ -1410,7 +1411,7 @@ def main(argv=None) -> int:
                       "host_gaps": rel(a.host_gaps, lab), "host_gap_entries_stale": hosts.stale_entries},
            "groups": groups}
     write_json(a.out, doc)
-    text = summary_md(doc, symptoms)
+    text = lab_alerts.with_banner(summary_md(doc, symptoms), lab)  # the lab's standing alerts (LAB/alerts) are the first lines
     a.summary.parent.mkdir(parents=True, exist_ok=True)
     a.summary.write_text(text, encoding="utf-8")
     # what the output says is its groups; its time, sha and the summary's header are new every run

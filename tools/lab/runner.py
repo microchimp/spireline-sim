@@ -57,7 +57,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True  # before the runner's own imports: no __pycache__ in the checkout it only reads
 
-from tools.lab import clock_report, cores, frozen, guards, jobs, mix, plans, prune, retest, winsys  # noqa: E402
+from tools.lab import alerts, clock_report, cores, frozen, guards, jobs, mix, plans, prune, retest, winsys  # noqa: E402
 from tools.lab import stepcache as sc  # noqa: E402
 
 JOB_TYPES = ("presort", "fights", "runs", "probes", "mutation", "invariants", *jobs.NEW_KINDS)
@@ -75,6 +75,13 @@ DEFAULTS = {
 }
 FILLER_RETRY_S = 120.0  # after a guard, the night, a QUIET.lock line or a failure stopped the filler, it waits this long to start again
 FILLER_TICK_S = 5.0  # the filler's rules are read at most this often (jobs.json, the night's markers, QUIET.lock)
+FILLER_PRESORT_LOOKAHEAD_S = 3600.0  # no practice block starts when a presort would be chosen within this long (D55 addendum 18)
+MAIN_SHA_CACHE_S = 20.0  # the filler's look at the fork's local main (one git call) is repeated at most this often
+# The groups and kits beside a job (the report) start only on an idle machine: not while one of these runs, and not under the cores it needs.
+REPORT_HOLD_JOBS = ("train", "score-real", "nightly-real")
+TRAIN_TAG = "lab-train"  # the QUIET.lock line a running train job (the judgement) holds: the practice loop and the builders yield to it
+TRAIN_BEAT_S = 600.0  # ... refreshed this often (the fight loop reads a line over 2 h old as dead; the brief asks 30 minutes at most)
+INDEFINITE = 4102444800.0  # 2100-01-01: the backoff of a kind that raised an alert lasts until the alert file is removed
 # Stopping the filler asks first: STOP in the block's folder makes `gen0.py emu` write its finished runs to the shards, start no new run and
 # end when the runs in flight have; the runner waits this long for that, then kills the Job Object as before. Only a block that wrote
 # FILLER_HONORED (a gen0.py that reads STOP) is waited for; an older one is killed at once. A hard kill used to lose every run finished
@@ -416,6 +423,12 @@ class Runner:
         self.filler_root: Path | None = (None if ft.lower() == "off" else
                                          self.lab.root.parent / "filler-tree" if ft.lower() == "auto" else Path(ft))  # frozen copies (D52)
         self.main_cores = 0  # cores of the job the main lane runs now (0 between jobs)
+        self.report_note = ""  # the last reason a due report did not start, logged once
+        self.train_lock: Any = None  # the QuietLock holding our `lab-train` line while a train job runs (rl/quiet_lock.py)
+        self._train_beat = 0.0
+        self._load_exempt_logged = False
+        self._alert_sig: tuple | None = None
+        self._main_sha_seen: tuple[float, str | None, tuple] | None = None
 
     # ---- plumbing
 
@@ -453,6 +466,11 @@ class Runner:
             where += f" filler={self.filler.run.name}@{self.filler.cores}"
         line = (f"{utc()} {state} {where} since={self.since} tree={main} jobs_done={sum(c['jobs_done'].values())} "
                 f"fights={c['fights']} runs={c.get('runs', 0)} interrupts={intr}" + (f" | {extra}" if extra else ""))
+        try:
+            top = alerts.status_prefix(self.lab.root)  # an alert stands: the first words of the line, for whoever reads only that
+        except Exception:  # noqa: BLE001
+            top = ""
+        line = f"{top} | {line}" if top else line
         try:
             atomic_write(self.lab.status_path, line + "\n")
         except OSError:
@@ -497,8 +515,17 @@ class Runner:
     def poll(self) -> guards.Verdict:
         if self.stop_signal:
             return guards.Verdict("signal", self.stop_signal, leave=True)
-        v = self.guards.poll(self.lock_stops)
-        self.guards_ok = v.ok or v.kind == "lock"
+        exempt = self.train_lock is not None  # a train job that holds the lab-train line is the one the others yield to: load does not pause it
+        v = self.guards.poll(self.lock_stops, load_exempt=exempt)
+        self.guards_ok = (v.ok or v.kind == "lock") and not self.guards.load_hit  # the filler and the report still give way to load
+        if exempt and self.guards.load_hit:
+            if not self._load_exempt_logged:
+                self._load_exempt_logged = True
+                rd = self.guards.readings.get("load") or ("?", "?")
+                self.log(f"load guard: other processes {rd[0]}% of the CPU over {rd[1]}s; the train job holds the {TRAIN_TAG} line and goes on "
+                         "(the filler and the report give way)")
+        else:
+            self._load_exempt_logged = False
         if self.report and not self.guards_ok:  # the report gives the machine back at once (it starts over when the lab is free)
             self.kill_report(str(v))
         if self.filler and not self.guards_ok:  # so does the filler (and waits FILLER_RETRY_S before the next block)
@@ -798,7 +825,30 @@ class Runner:
                 if not want:
                     break
 
+    def alert_hold(self, key: str) -> str | None:
+        """Why `key` (a job type, or the strategy of a fights job) is not picked: it failed twice in a row and LAB/alerts/<key>.txt stands. The
+        hold ends when the file is removed by hand (the failure count starts again); the runner logs the lifting once."""
+        st = self.state
+        held = st.setdefault("alerted", {})
+        path = alerts.alert_path(self.lab.root, key)
+        if path.exists():
+            if key not in held:  # a file the state does not know (a state file lost, a file written by hand): it holds all the same
+                held[key] = utc()
+            return f"stopped after repeated failures (LAB/alerts/{path.name}); remove the file to let it run again"
+        if key in held:
+            held.pop(key, None)
+            st["backoff"].pop(key, None)
+            st.setdefault("fail_streak", {})[key] = 0
+            (st.get("fail_recent") or {}).pop(key, None)
+            self.lab.save_state(st)
+            self.refresh_banners()
+            self.log(f"alert {path.name} removed: {key} is picked again")
+        return None
+
     def unavailable(self, job: str, sha: str, strategy: str | None = None, tree: Path | None = None) -> str | None:
+        why = self.alert_hold(strategy or job)
+        if why is not None:
+            return why
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
         if time.time() < until:
             return f"backing off after repeated failures until {utc(until)}"
@@ -872,6 +922,9 @@ class Runner:
             return "the tree is not a presorted build"
         if self.clock() < self.filler_next:
             return "waiting after the last stop"
+        why = self.presort_soon()
+        if why:
+            return why
         disk = self.guards.readings.get("disk")
         if isinstance(disk, tuple) and (disk[0] > 0.9 * self.a.lab_gb or disk[1] < 1.1 * self.a.free_gb):
             return f"the lab is near its disk limit (lab {disk[0]} GB of {self.a.lab_gb:g}, drive free {disk[1]} GB)"
@@ -882,6 +935,31 @@ class Runner:
         if why:
             return why
         return None
+
+    def cached_main_sha(self) -> str | None:
+        """The fork's local main, looked up at most every MAIN_SHA_CACHE_S (the filler asks at every tick)."""
+        now, st = self.clock(), self.state
+        mark = (st.get("tree_sha"), st.get("last_presorted_sha"))  # a presort that ended since the look is a reason to look again
+        if self._main_sha_seen is None or now - self._main_sha_seen[0] >= MAIN_SHA_CACHE_S or self._main_sha_seen[2] != mark:
+            self._main_sha_seen = (now, self.main_sha(), mark)
+        return self._main_sha_seen[1]
+
+    def presort_soon(self, horizon_s: float = FILLER_PRESORT_LOOKAHEAD_S) -> str | None:
+        """Why a practice block should not start: a presort would be chosen within `horizon_s`. That is when the fork's local main has moved
+        past the presorted tree and the last presort ended `--presort-gap-min` ago or more, or will have by then (and a build that failed has
+        waited out its retry). The wording is the same until the presort runs, so the log says it once."""
+        a, st = self.a, self.state
+        sha = self.cached_main_sha()
+        if not sha or (st.get("last_presorted_sha") == sha and st.get("tree_sha") == sha):
+            return None
+        now = time.time()
+        due = self.last_presort_end() + max(0.0, a.presort_gap_min) * 60
+        bad = st["bad_shas"].get(sha)
+        if bad:
+            due = max(due, float(bad.get("retry_after", 0)))
+        if due - now > horizon_s:
+            return None
+        return f"a presort of {sha[:7]} is due within {horizon_s / 60:g} min (main moved past the presorted tree)"
 
     def filler_tree_for(self, sha: str) -> tuple[Path | None, str]:
         """(the tree the filler runs from, why not): the lab tree itself in the old mode, else the frozen copy of the presorted build
@@ -945,6 +1023,7 @@ class Runner:
                 f.sj.terminate()
                 rc = f.running.proc.wait(timeout=30)
                 f.run.rec(f.step.name)["note"] = f"killed after the {f.running.cmd.timeout:.0f}s limit"
+                self.note_timeout(f.run, f.running.cmd, now - f.running.t0)
             if rc is not None:
                 self.end_filler(rc)
                 f = None
@@ -1104,6 +1183,62 @@ class Runner:
         self._filler_tick = float("-inf")
         self.service_filler(start=False)
 
+    # ---- the lab-train line: the judgement holds the machine
+
+    def quiet_module(self):
+        """rl/quiet_lock.py of the checkout the runner reads (the protocol of `gen0.py score --quiet-lock`), or None where it is missing."""
+        import importlib.util  # noqa: PLC0415
+
+        path = ROOT / "rl" / "quiet_lock.py"
+        try:
+            spec = importlib.util.spec_from_file_location("lab_quiet_lock", path)
+            mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            return mod
+        except Exception:  # noqa: BLE001
+            return None
+
+    def take_train_line(self) -> None:
+        """While a train job runs, QUIET.lock carries `lab-train <UTC> pid=<runner>`: the gym daemon and the builders that wait on foreign lines
+        pause of their own accord; the filler and the report jobs give way to it too. No waiting: the judgement only announces itself. The
+        line is rewritten every TRAIN_BEAT_S and removed by `drop_train_line` when the job ends, however it ends."""
+        if self.a.dry_run or self.train_lock is not None:
+            return
+        mod = self.quiet_module()
+        if mod is None:
+            self.log(f"QUIET.lock: {TRAIN_TAG} line not written (rl/quiet_lock.py is not readable)")
+            return
+        lock = mod.QuietLock(self.quiet_lock_path(), TRAIN_TAG)
+        try:
+            lock.announce()
+        except OSError as e:
+            self.log(f"QUIET.lock: {TRAIN_TAG} line not written ({type(e).__name__})")
+            return
+        self.train_lock, self._train_beat = lock, self.clock()
+        self.log(f"QUIET.lock: {TRAIN_TAG} line written for the train job; the practice loop, the builders, the filler and the report wait for it")
+
+    def service_train_line(self) -> None:
+        """Refresh the line every TRAIN_BEAT_S while the job runs (also while it waits out a pause)."""
+        lock = self.train_lock
+        if lock is None or self.clock() - self._train_beat < TRAIN_BEAT_S:
+            return
+        self._train_beat = self.clock()
+        try:
+            lock.announce()
+        except OSError as e:
+            self.log(f"QUIET.lock: {TRAIN_TAG} line not refreshed ({type(e).__name__})")
+
+    def drop_train_line(self) -> None:
+        lock, self.train_lock = self.train_lock, None
+        if lock is None:
+            return
+        try:
+            lock.release()
+        except OSError as e:
+            self.log(f"QUIET.lock: {TRAIN_TAG} line not removed ({type(e).__name__}); the next stale-line sweep clears it")
+            return
+        self.log(f"QUIET.lock: {TRAIN_TAG} line removed")
+
     # ---- running a job
 
     def new_run(self, job: str, sha: str) -> Run:
@@ -1136,6 +1271,7 @@ class Runner:
                 self.log(f"paused: {v}" + (f" ({tag})" if tag else ""))  # the tag names the session that paused, to split pause time
             self.status(f"paused({v.kind})", v.detail)
             time.sleep(self.a.wait_poll)
+            self.service_train_line()
 
     def cpu_secs(self) -> float:
         """CPU seconds of everything the runner has started for its jobs (its Job Object, less the reports that ran beside them,
@@ -1170,8 +1306,13 @@ class Runner:
                 self.report_gives_way_to_presort()
             elif run.job == "nightly-real":
                 self.kill_report("a nightly window opens")
+            elif run.job in REPORT_HOLD_JOBS:  # it would starve beside the job and die at its time limit: it starts over on an idle machine
+                self.kill_report(f"a {run.job} job starts")
+            if run.job == "train":
+                self.take_train_line()
             return self._execute(run)
         finally:
+            self.drop_train_line()  # however the job ended: finished, stopped by a guard or by a signal, a crash
             self.running_job = None
             self.main_cores = 0
             self.lock_stops = True
@@ -1251,10 +1392,10 @@ class Runner:
                 b["fails"] += 1
                 b["retry_after"] = time.time() + min(6 * 3600, 1800 * 2 ** (b["fails"] - 1))
                 st["tree_sha"] = None  # the tree's sources moved but its build did not: nothing may run on it
+        self.account(run)  # before the streak: an alert names the job's duration
         self.streak(run, rc)
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
-        self.account(run)
         beside = self.report_beside and rc == 0 and run.job in REPORT_JOBS  # its groups and kits run beside the next job
         self.record(run, rc, yield_now=not beside)
         run.finish(rc)
@@ -1268,17 +1409,63 @@ class Runner:
             self.service_report()
 
     def streak(self, run: Run, rc: int) -> None:
-        """A strategy (or job type) that fails twice in a row backs off, doubling from 10 minutes up to 6 hours."""
+        """A strategy (or job type) that fails twice in a row stops being picked and raises an alert (LAB/alerts/<kind>.txt, tools/lab/alerts.py):
+        the backoff lasts until the file is removed by hand (`alert_hold`). One success in between starts the count again. A presort has its own
+        per-sha retry, which still decides when it is tried again; its second failure in a row raises the alert too, without holding it."""
         st = self.state
         streak = st.setdefault("fail_streak", {})
+        recent = st.setdefault("fail_recent", {})
         key = (run.data.get("params") or {}).get("strategy") or run.job  # a strategy that keeps failing backs off alone
         if rc == 0:
             streak[key] = 0
+            recent.pop(key, None)
             st["backoff"].pop(key, None)
-        elif run.job != "presort":  # a presort has its own per-sha retry
-            streak[key] = streak.get(key, 0) + 1
-            if streak[key] >= 2:
-                st["backoff"][key] = time.time() + min(6 * 3600, 600 * 2 ** (streak[key] - 2))
+            return
+        streak[key] = streak.get(key, 0) + 1
+        recent[key] = [*(recent.get(key) or []), {"job": run.name, "rc": rc, "secs": run.data.get("wall_secs", 0)}][-2:]
+        if streak[key] >= 2:
+            self.raise_alert(key, run.job != "presort")
+
+    def raise_alert(self, key: str, blocks: bool) -> None:
+        """Write LAB/alerts/<key>.txt for the two failures in `fail_recent`, hold the kind while it stands (`blocks`) and say so once in the log."""
+        st = self.state
+        path = alerts.alert_path(self.lab.root, key)
+        fresh = not path.exists()
+        try:
+            alerts.write_failure(self.lab.root, key, st["fail_recent"].get(key, []), blocks=blocks)
+        except OSError as e:
+            self.log(f"ALERT {key}: could not be written ({type(e).__name__})")
+        if blocks:
+            st.setdefault("alerted", {})[key] = utc()
+            st["backoff"][key] = INDEFINITE
+        self.refresh_banners()
+        if fresh:
+            self.log(f"ALERT {key}: failed {st['fail_streak'].get(key, 2)} times in a row; "
+                     + (f"no longer picked until LAB/alerts/{path.name} is removed by hand" if blocks else f"see LAB/alerts/{path.name}"))
+
+    def refresh_banners(self) -> None:
+        """The alerts at the top of summary.md and clock.md (the files the groups step and the daily clock write): redone when the alert files
+        changed, so an alert shows (and goes) without waiting for the next groups run."""
+        try:
+            sig = tuple((a["name"], a["first"], a["count"]) for a in alerts.listing(self.lab.root))
+            if sig == self._alert_sig:
+                return
+            self._alert_sig = sig
+            for name in ("summary.md", "clock.md"):
+                alerts.refresh(self.lab.root / name, self.lab.root)
+        except Exception:  # noqa: BLE001  (a banner is a convenience)
+            self.log("alert banner not refreshed: " + traceback.format_exc()[-300:])
+
+    def note_timeout(self, run: Run, cmd: plans.Cmd, ran_s: float) -> None:
+        """A command killed at its time limit goes on LAB/alerts/timeouts.txt (the first time too) and is said once in the log."""
+        kind = (run.data.get("params") or {}).get("strategy") or run.job
+        try:
+            alerts.write_timeout(self.lab.root, kind, run.name, cmd.name, float(cmd.timeout or 0), ran_s, run.dir / "logs" / f"{cmd.name}.log")
+        except OSError as e:
+            self.log(f"ALERT timeout of {cmd.name}: could not be listed ({type(e).__name__})")
+            return
+        self.refresh_banners()
+        self.log(f"ALERT timeout: {kind}/{cmd.name} of {run.name} was killed at its {float(cmd.timeout or 0):.0f}s limit (LAB/alerts/{alerts.TIMEOUTS})")
 
     def record(self, run: Run, rc: int, yield_now: bool = True) -> None:
         """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv (at once, or when the
@@ -1315,10 +1502,36 @@ class Runner:
     # ---- the report: groups and kits beside the next job
 
     def report_allowed(self) -> bool:
-        """A report may start: none runs, a job left groups to do, the guards allow work, no presort is moving the tree and no
-        nightly window is open (the real-game arms have the machine to themselves)."""
+        """A report may start: none runs, a job left groups to do, the guards allow work, no presort is moving the tree, no nightly window is
+        open (the real-game arms have the machine to themselves) and the machine is idle enough (`report_hold`)."""
         return (self.report_beside and self.report is None and bool(self.report_due) and self.guards_ok
-                and self.running_job not in ("presort", "nightly-real") and not jobs.nightly_active(self.lab.root))
+                and self.running_job not in ("presort", "nightly-real") and not jobs.nightly_active(self.lab.root)
+                and self.report_hold() is None)
+
+    def report_hold(self) -> str | None:
+        """Why a due report waits for an idle machine (D55 addendum 18): a judgement (train), a score or a nightly job runs, or the cores the
+        runner measures free are under the report's own need (the machine less the running job's cores and the always-on loop's while it
+        steps). The first time it holds a due report the log says so; it is tried again at every call. A queued report never holds a pick."""
+        why = None
+        try:
+            doc = cores.load_doc(self.lab.root)
+            if self.running_job in REPORT_HOLD_JOBS:
+                why = f"a {self.running_job} job is running"
+            else:
+                pid, stepping = cores.loop_state(Path(self.a.loop_status), winsys.parent_alive)
+                free = cores.total_cores(doc) - self.main_cores - (cores.loop_cores(doc) if pid and stepping else 0)
+                need = cores.report_cores(doc)
+                if free < need:
+                    why = f"{max(0, free)} cores free, the report needs {need}"
+        except Exception:  # noqa: BLE001  (a reading that fails never holds a report: it was never held before)
+            why = None
+        if self.report is None and self.report_due and self.report_beside:
+            note = why or ""
+            if note != self.report_note:
+                self.report_note = note
+                if why:
+                    self.log(f"report beside: held ({why}); {len(self.report_due)} job(s) wait, tried again at the next pick")
+        return why
 
     def service_report(self) -> None:
         """Called wherever the runner waits or loops: start the report when one is due, move a running one on. A fault here turns
@@ -1335,6 +1548,9 @@ class Runner:
 
     def _service_report(self) -> None:
         rep = self.report
+        if rep is not None and self.running_job in REPORT_HOLD_JOBS and self.running_job != "nightly-real":
+            self.kill_report(f"a {self.running_job} job is running: the report waits for an idle machine")
+            return
         if rep is None:
             if self.report_allowed():
                 self.start_report()
@@ -1349,6 +1565,7 @@ class Runner:
             winsys.kill_tree_by_pid(r.proc.pid)
             rc = r.proc.wait(timeout=30)
             rep.run.rec(r.cmd.name)["cmds"].setdefault(r.cmd.name, {})["note"] = f"killed after the {r.cmd.timeout:.0f}s limit"
+            self.note_timeout(rep.run, r.cmd, now - r.t0)
         if rc is None:
             return
         rec = rep.run.rec(r.cmd.name)
@@ -1585,6 +1802,7 @@ class Runner:
             run.save()
             while running:
                 time.sleep(self.a.poll)
+                self.service_train_line()
                 self.service_report()
                 self.service_filler()
                 now = self.clock()
@@ -1594,6 +1812,7 @@ class Runner:
                         winsys.kill_tree_by_pid(r.proc.pid)
                         rc = r.proc.wait(timeout=30)
                         rec["cmds"][r.cmd.name]["note"] = f"killed after the {r.cmd.timeout:.0f}s limit"
+                        self.note_timeout(run, r.cmd, now - r.t0)
                     if rc is not None:
                         running.remove(r)
                         failed |= self.finish_cmd(run, ctx, r, rc, rec, now)
@@ -1943,7 +2162,7 @@ class Runner:
             rep = clock_report.report_for(self.lab.root)
             if rep is None:
                 return
-            atomic_write(p, clock_report.render(rep) + "\n")
+            atomic_write(p, alerts.with_banner(clock_report.render(rep) + "\n", self.lab.root))
             if rep["alarms"]:
                 alarmed = [k for k in rep["flagged"] if rep["by_step"][k]["alarm"]]
                 self.log(f"clock: {rep['alarms']} step(s) flagged over the last {rep['window_days']} days (clock.md): " + ", ".join(
@@ -1959,6 +2178,7 @@ class Runner:
             return self.leave(v)
         self.clear_stale_quiet_lock()
         self.daily_clock()
+        self.refresh_banners()
         self.service_report()
         self.service_filler(start=False)  # between jobs: a block that ended is closed, none starts before the pick
         sha = self.main_sha()
@@ -1999,6 +2219,7 @@ class Runner:
         return False
 
     def leave(self, v: guards.Verdict) -> int:
+        self.drop_train_line()
         self.kill_report(f"the runner stops: {v}")
         self.stop_filler(f"the runner stops: {v}")
         self.flush_report_rows()

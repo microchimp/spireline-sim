@@ -307,6 +307,14 @@ class GuardTest(Base):
         release = self.hold(r, guard)
         run = r.new_run(kind, "abc")
         log = run.dir / "logs" / f"{kind}.log"
+        if guard == "load" and kind == "train":  # the judgement holds the machine (the lab-train line): load does not pause it (test_lab_cuts.py)
+            v = r.execute(run)
+            self.assertIsNone(v, f"{kind} under {guard}")
+            self.assertTrue(log.exists(), f"{kind} did not start under {guard}")
+            self.assertTrue((run.dir / "done.rc").exists())
+            self.assertNotIn("load", r.state["counters"]["interrupts"])
+            release()
+            return
         if guard == "lock":  # not a stop for this kind: it runs to its end with the lock up, and nothing is counted as an interrupt
             v = r.execute(run)
             self.assertIsNone(v, f"{kind} under {guard}")

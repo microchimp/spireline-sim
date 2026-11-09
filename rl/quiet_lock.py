@@ -88,6 +88,11 @@ class QuietLock:
         own = f"{self.tag} {utc_now(self.clock())} pid={os.getpid()}"  # the runner clears a line whose pid is gone
         self.path.write_text("".join(x + "\n" for x in [own, *self._others()]), encoding="utf-8")
 
+    def announce(self) -> None:
+        """Write our line without asking and without waiting (the lab's `lab-train` line: a job that only announces itself, whatever other
+        lines stand); the same call refreshes it. `release` removes it."""
+        self._write()
+
     def acquire(self) -> bool:
         deadline = self.clock() + self.wait_h * 3600
         while True:

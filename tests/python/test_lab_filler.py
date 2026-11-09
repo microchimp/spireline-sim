@@ -283,6 +283,7 @@ class FillerBase(unittest.TestCase):
                            "--filler-tree", self.FILLER_TREE, *extra])
         r = rn.Runner(a)
         r.state["tree_sha"] = r.state["last_presorted_sha"] = self.sha
+        r.main_sha = lambda: r.state["tree_sha"]  # the fork's local main has not moved past the presorted tree (a presort due soon holds the filler)
         self.addCleanup(lambda: r.stop_filler("test end", retry=False))
         return r
 
