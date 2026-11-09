@@ -71,6 +71,8 @@ SE_MODE = "pooled"  # how the gap's error is estimated (`gap_stats`); "own" is t
 SE_MODES = ("pooled", "own")
 CPU_CAP_S = 300.0  # a search past this many CPU seconds stops there and is marked capped
 MIN_ROOT_MOVES = 2  # a decision with fewer distinct root moves is not a turn
+LOSS_MIN_VISITS = 20  # the teacher's move needs this many visits at the converged rung for its value to be read
+MATERIAL_HP = 5.0  # an overturn that costs this much value (HP) or more at the converged rung is called material
 QUOTAS = {"act1-boss": 100, "act2-boss": 100, "act1-elite": 50, "act2-elite": 50, "act1-hallway": 50, "act2-hallway": 50}  # turns
 HUMAN_META_POOLS = {  # exam/human-meta.json by_cell pool counts summed per act and kind (the human fights the stratum was drawn from)
     "act1-boss": 7197, "act1-elite": 17957, "act1-hallway": 2107, "act2-boss": 3317, "act2-elite": 7695, "act2-hallway": 1963}
@@ -320,7 +322,7 @@ def group_summary(turns: Sequence[dict], gap_se: float = GAP_SE, se_mode: str = 
     cpu_conv = [c["cpu_to"] for c in conv if c["rel"] is not None]
     own_conv = [c["own_cpu"] for c in conv if c["rel"] is not None and c["own_cpu"] is not None]
     # the overturn: the converged move (the top rung's for a turn that never converged) against the teacher's move in the game
-    over_game, over_game_conv, over_r1, over_r1_conv, losses = [], [], [], [], []
+    over_game, over_game_conv, over_r1, over_r1_conv, losses, unmeasured = [], [], [], [], [], 0
     for t, c in zip(turns, conv, strict=True):
         game, r1 = rung_of(t, "game"), rung_of(t, 1)
         if c["move"] is None:
@@ -333,8 +335,10 @@ def group_summary(turns: Sequence[dict], gap_se: float = GAP_SE, se_mode: str = 
             if diff:
                 top = rung_of(t, c["last"])
                 mine = next((ch for ch in top["children"] if same_move(ch, game["best"])), None)
-                if mine and mine["n"] >= 20 and mine["v"] is not None and c["move"]["v"] is not None:
+                if mine and mine["n"] >= LOSS_MIN_VISITS and mine["v"] is not None and c["move"]["v"] is not None:
                     losses.append(c["move"]["v"] - mine["v"])
+                else:
+                    unmeasured += 1
         if r1 and not r1["capped"]:
             diff = not same_move(r1["best"], c["move"])
             over_r1.append(diff)
@@ -361,7 +365,8 @@ def group_summary(turns: Sequence[dict], gap_se: float = GAP_SE, se_mode: str = 
         "own_cpu_conv_median": quantile(own_conv, 0.5), "own_cpu_conv_p90": quantile(own_conv, 0.9),
         "overturn_game": _share(sum(over_game), len(over_game)), "overturn_game_converged": _share(sum(over_game_conv), len(over_game_conv)),
         "overturn_1x": _share(sum(over_r1), len(over_r1)), "overturn_1x_converged": _share(sum(over_r1_conv), len(over_r1_conv)),
-        "loss_median": quantile(losses, 0.5), "loss_mean": _mean(losses), "loss_n": len(losses),
+        "loss_median": quantile(losses, 0.5), "loss_mean": _mean(losses), "loss_n": len(losses), "loss_unmeasured": unmeasured,
+        "overturn_material": _share(sum(1 for x in losses if x >= MATERIAL_HP), len(over_game)),
         "rung_cpu_mean": {str(r): _mean(v) for r, v in rung_cpu.items()}, "rung_cpu_median": {str(r): quantile(v, 0.5) for r, v in rung_cpu.items()},
         "load_median": quantile(loads, 0.5), "load_min": min(loads) if loads else None, "load_max": max(loads) if loads else None,
         "capped_rungs": sum(1 for t in turns for r in t["rungs"] if r["capped"]), "pos_kinds": dict(kinds),
@@ -728,9 +733,11 @@ def tables(summary: dict, strict: dict | None = None) -> str:
           lambda g: [_f(g["cpu_to_median"]), _f(g["cpu_to_p90"]), _f(g["cpu_to_mean"]), _f(g["cpu_to_conv_median"]),
                      _f(g["cpu_to_conv_p90"]), _f(g["own_cpu_conv_median"]), _f(g["own_cpu_conv_p90"])])
     table("Overturn of the teacher's move by the converged move (the top rung's for a turn never converged)",
-          ["vs the game's move: all turns", "converged turns only", "vs the 1x rung's move: all", "converged only", "value lost (HP; median, mean, n)"],
+          ["vs the game's move: all turns", "converged turns only", "vs the 1x rung's move: all", "converged only", "value lost (HP; median, mean, n measured)",
+           "overturns losing 5 HP or more"],
           lambda g: [fmt_share(g["overturn_game"]), fmt_share(g["overturn_game_converged"]), fmt_share(g["overturn_1x"]),
-                     fmt_share(g["overturn_1x_converged"]), f"{_f(g['loss_median'], 2)}, {_f(g['loss_mean'], 2)}, {g['loss_n']}"])
+                     fmt_share(g["overturn_1x_converged"]), f"{_f(g['loss_median'], 2)}, {_f(g['loss_mean'], 2)}, {g['loss_n']}",
+                     fmt_share(g["overturn_material"])])
     table("CPU-s of one search at each rung (mean over turns), the fight's CPU-s, and the machine's busy share while the rungs ran",
           [f"{r:g}x" for r in RELS] + ["game CPU-s (whole fight)", "load median (min-max)", "capped rungs"],
           lambda g: [_f(g["rung_cpu_mean"][str(r)], 2) for r in RELS] + [_f(g["game_cpu_mean"]),

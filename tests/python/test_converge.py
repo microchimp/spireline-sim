@@ -312,7 +312,10 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual((g2["overturn_game"]["k"], g2["overturn_game"]["n"]), (2, 2))  # b: played 1, converged on 2; c: played 2, top rung says 1
         self.assertEqual((g2["overturn_game_converged"]["k"], g2["overturn_game_converged"]["n"]), (1, 1))  # only b converged
         self.assertEqual((g2["overturn_1x"]["k"], g2["overturn_1x"]["n"]), (0, 2))  # b's 1x move is the converged one, and c's 1x move is the top rung's
-        self.assertEqual(g2["loss_n"], 2)
+        self.assertEqual(g2["loss_n"], 2)  # b loses 6 HP (move 1 at 4x: 4 against 10), c loses 1
+        self.assertEqual((g2["loss_median"], g2["loss_mean"]), (3.5, 3.5))
+        self.assertEqual((g2["overturn_material"]["k"], g2["overturn_material"]["n"]), (1, 2))
+        self.assertEqual(g2["loss_unmeasured"], 0)
 
     def test_the_load_and_cap_figures(self):
         g1 = self.s["groups"]["act1-boss"]
