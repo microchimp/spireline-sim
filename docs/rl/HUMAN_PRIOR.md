@@ -532,10 +532,26 @@ What the table says: the winners' choices are easier to predict than the average
 on the winners: a ninth of the data costs more than the sharper target gives back. Fitting on winners from scratch is data-starved, not
 refuted. The warm start (the baseline's weights fine-tuned on the winners, an arm the brief did not list and the rule does not cover)
 gains 0.011 nats on the winners' choices (interval above) and loses 0.016 on all runs, inside the 0.02 limit; had it been one of the fits
-the rule would have picked it. Two cautions: the epoch was chosen on fifth 4's winners, the same runs (a) scores, so the 0.011 is optimistic by
-an amount not measured here (a clean check halves fifth 4 by run hash, early-stopping on one half and scoring the other); and 0.011 nats is
-small beside what the lab's blocks resolve. `python rl/strong_sets.py candidate --set s-win-ft` builds the generation 14 copy from it on an
-explicit word, marking it as not the rule's pick; nothing is built now.
+the rule would have picked it. Two cautions: the epoch was chosen on fifth 4's winners, the same runs (a) scores, so the 0.011 is optimistic
+(checked next); and 0.011 nats is small beside what the lab's blocks resolve.
+
+**Half-split check of the warm start (2026-11-09).** Fifth 4 is split in two halves by a fixed hash of the run id (A and B, about equal); the
+warm start is fitted again with early stopping on one half only (the winners of that half; `fit --val-half`) and scored on the other half,
+both ways, beside the baseline on the same runs (the baseline fit of `evaluate`, whose epoch was chosen on all of fifth 4, which if anything
+favours the baseline). The check holds when on both swaps the warm start is below the baseline by more than the rule's tie margin (0.002) on the
+won runs and not above it by more than 0.02 on all runs.
+
+| scored half (early-stopped on the other) | won runs: runs, decisions | log-loss baseline / warm start | top-1 | warm start minus baseline | all runs: runs, decisions | log-loss baseline / warm start | top-1 | warm start minus baseline |
+|---|---|---|---|---|---|---|---|---|
+| B (stopped on A) | 176, 6,278 | 0.8768 / 0.8689 | 60.4 / 61.3 | -0.0078 [-0.0144, -0.0008] | 1,749, 33,445 | 0.9451 / 0.9634 | 57.3 / 57.2 | +0.0183 [+0.0148, +0.0217] |
+| A (stopped on B) | 160, 5,684 | 0.8691 / 0.8565 | 61.4 / 62.7 | -0.0126 [-0.0186, -0.0066] | 1,688, 31,666 | 0.9467 / 0.9639 | 57.6 / 57.4 | +0.0171 [+0.0138, +0.0205] |
+
+**It holds**: the gain on the winners' choices survives (0.008 and 0.013 nats, the intervals exclude zero on both swaps, a little under the
+0.011 of the optimistic reading) and the cost on all runs stays under the 0.02 limit on both (0.018 and 0.017; the upper end of one interval,
+0.022, is over it, so the margin is thin). The warm start gives up about 0.017 nats on the average player's choices for about 0.010 on the
+winners'. The candidate `gen14/candidate-best-players` is built from the warm start's weights (the whole-fifth-4 fit, `56afab28`, not the two
+half fits): generation 13's recipe with only the prior replaced, `train.json` marked "warm start on winners; half-split checked", no marker, no
+`promotion.json`, no arms (`python rl/strong_sets.py candidate --set s-win-ft --label "warm start on winners; half-split checked"`).
 
 ### Caveats
 
@@ -557,10 +573,12 @@ python rl/human_prior.py build --corpus <a10_pool> --exam-ids <ids> --out-dir <w
 python rl/human_prior.py build --corpus <s_high>   --exam-ids <ids> --out-dir <work>/prior-high --procs 1 --clean --reference none --ascensions 11-20
 python rl/strong_sets.py fit --name baseline|s-win|s-high|s-win+s-high [--threads N]      # CPU, one process each
 python rl/strong_sets.py fit --name s-win-ft --init-from <work>/fits/baseline/weights.npz  # the informational arm
+python rl/strong_sets.py fit --name s-win-ft --init-from <work>/fits/baseline/weights.npz --val-half A    # and B: the half-split check
+python rl/strong_sets.py halves                                        # scores each on the other half, beside the baseline
 python rl/strong_sets.py counts ; python rl/strong_sets.py evaluate --incumbent <pi_h-v0/weights.npz>
 python rl/strong_sets.py candidate [--set NAME]                        # only when the rule picked a fit (or --set)
 ```
 
-`donors.npz` is copied beside each build's `decisions` folder. `tests/python/test_strong_sets.py` (31 tests, under a second) pins the filter's
+`donors.npz` is copied beside each build's `decisions` folder. `tests/python/test_strong_sets.py` (35 tests, under a second) pins the filter's
 rules and counts, the scrubbing, the build's level option, the loader's parts and the disjoint held-out fifth, the per-decision measures
-against `metrics_from_scores`, the cell suppression, the bootstrap, the selection rule's cases and the candidate copy.
+against `metrics_from_scores`, the cell suppression, the bootstrap, the selection rule's cases, the halves and the candidate copy.

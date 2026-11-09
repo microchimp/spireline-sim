@@ -343,6 +343,61 @@ class Measures(unittest.TestCase):
         self.assertEqual((0.0, 0.0, 0.0), (zero["mean"], zero["lo95"], zero["hi95"]))
 
 
+class HalfSplit(unittest.TestCase):
+    def test_halves_are_fixed_balanced_and_apart_from_the_exam_fifth(self):
+        ids = [f"r{i:06d}" for i in range(4000)]
+        halves = [ss.half_of(r) for r in ids]
+        self.assertEqual(halves, [ss.half_of(r) for r in ids])  # fixed
+        self.assertTrue(0.45 < sum(halves) / len(halves) < 0.55)
+        in_exam = [hs.exam_bucket(r) == hs.EXAM_BUCKET for r in ids]
+        # the half does not follow the exam fifth's own hash: both halves occur among the runs of any one fifth
+        fifth = [r for r, h in zip(ids, in_exam) if h]
+        self.assertEqual({0, 1}, {ss.half_of(r) for r in fifth})
+
+    def test_subset_keeps_decisions_whole_and_rows_contiguous(self):
+        ds, scores = _scored_dataset()
+        keep = ds.dec[:, hp.C["run"]] % 2 == 0
+        sub = ss.subset_decisions(ds, keep, None)
+        self.assertEqual(int(keep.sum()), len(sub.dec))
+        self.assertEqual(int(ds.dec[keep, hp.C["n"]].sum()), len(sub.dense))
+        self.assertEqual(np.cumsum(np.r_[0, sub.dec[:-1, hp.C["n"]]]).tolist(), sub.dec[:, hp.C["start"]].tolist())
+        # the same scores per row give the same per-decision numbers as on the whole dataset, decision by decision
+        rows = np.concatenate([np.arange(s0, s0 + n) for s0, n in zip(ds.dec[keep, hp.C["start"]], ds.dec[keep, hp.C["n"]])])
+        full = ss.per_decision(ds, scores, np.ones(len(ds.dec), dtype=bool))
+        part = ss.per_decision(sub, scores[rows], np.ones(len(sub.dec), dtype=bool))
+        mask = np.zeros(6, dtype=bool)
+        mask[::2] = True
+        self.assertAlmostEqual(float(ss.pooled(full, mask)["nll"].mean()), float(ss.pooled(part, None)["nll"].mean()), places=9)
+
+    def test_report_and_verdict(self):
+        ds, scores = _scored_dataset()
+        valid = np.ones(len(ds.dec), dtype=bool)
+        base = ss.per_decision(ds, scores, valid)
+        better = ss.per_decision(ds, scores * 1.5, valid)  # a sharper scorer: a different log-loss
+        run_half = np.array([0, 1, 0, 1, 0, 1])
+        run_won = np.array([True, True, False, True, False, True])
+        same = ss.half_report(base, base, run_half, run_won, 1)
+        self.assertEqual("B", same["scored_half"])
+        self.assertEqual(0.0, same["a_won_runs"]["arm_minus_baseline"]["mean"])
+        self.assertEqual(3, same["a_won_runs"]["runs"])  # half B holds runs 1, 3 and 5, and all three won
+        self.assertEqual(3, same["b_all_runs"]["runs"])
+        diff = ss.half_report(base, better, run_half, run_won, 0)
+        self.assertEqual(1, diff["a_won_runs"]["runs"])  # half A holds runs 0, 2 and 4; only run 0 won
+        self.assertEqual(3, diff["b_all_runs"]["runs"])
+        self.assertNotEqual(0.0, diff["b_all_runs"]["arm_minus_baseline"]["mean"])
+
+    def test_verdict_needs_both_swaps(self):
+        def swap(a, b):
+            ci = lambda m: {"mean": m, "lo95": m - 0.004, "hi95": m + 0.004}  # noqa: E731
+            return {"scored_half": "A", "a_won_runs": {"arm_minus_baseline": ci(a)}, "b_all_runs": {"arm_minus_baseline": ci(b)}}
+
+        self.assertTrue(ss.half_verdict([swap(-0.012, 0.016), swap(-0.009, 0.010)])["holds"])
+        self.assertFalse(ss.half_verdict([swap(-0.012, 0.016), swap(-0.001, 0.010)])["holds"])  # inside the tie margin on one swap
+        self.assertFalse(ss.half_verdict([swap(-0.012, 0.016), swap(+0.003, 0.010)])["holds"])  # worse on one swap
+        self.assertFalse(ss.half_verdict([swap(-0.012, 0.025), swap(-0.009, 0.010)])["holds"])  # over the limit on all runs
+        self.assertFalse(ss.half_verdict([])["holds"])
+
+
 class Selection(unittest.TestCase):
     def rows(self, base=(1.20, 1.10), swin=(1.15, 1.115), shigh=(1.30, 1.40), union=(1.14, 1.12)):
         return {"baseline": {"a": base[0], "b": base[1], "size": 3000}, "s-win": {"a": swin[0], "b": swin[1], "size": 330},

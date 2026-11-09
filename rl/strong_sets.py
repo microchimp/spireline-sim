@@ -5,6 +5,7 @@
     python rl/strong_sets.py fit      --name baseline|s-win|s-high|s-win+s-high [--work DIR] [--threads N]
     python rl/strong_sets.py evaluate [--work DIR] [--incumbent weights.npz]
     python rl/strong_sets.py counts   [--work DIR]
+    python rl/strong_sets.py halves   [--arm s-win-ft]       (after `fit --name s-win-ft --init-from ... --val-half A|B`)
     python rl/strong_sets.py candidate [--base gen13/candidate-stakes] [--out gen14/candidate-best-players]
 
 The export's per-player key is blank on solo runs, so strength is read from what a run achieved. Two sets, from the Ironclad solo
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -230,6 +232,30 @@ def runs_of(ds: "hp.Dataset") -> set[str]:
     return {ds.run_ids[i] for i in np.unique(ds.dec[:, hp.C["run"]])}
 
 
+HALF_SALT = "spireline-best-players-half|"  # a fixed hash of the run id, apart from the exam fifth's: halves A (0) and B (1) of a fifth
+
+
+def half_of(run_id: str) -> int:
+    """Which half (0 = A, 1 = B) of a fifth a run is in, by a fixed hash of its id."""
+    return int(hashlib.sha256((HALF_SALT + str(run_id)).encode()).hexdigest()[:8], 16) % 2
+
+
+def run_halves(ds: "hp.Dataset") -> np.ndarray:
+    """The half of every run id of a loaded dataset (indexed like the `run` column of its decisions)."""
+    return np.array([half_of(r) for r in ds.run_ids], dtype=np.int64)
+
+
+def subset_decisions(ds: "hp.Dataset", keep: np.ndarray, donors: dict | None) -> "hp.Dataset":
+    """The dataset of the decisions where `keep` (bool per decision) holds: rows re-sliced decision-contiguous, run indices kept."""
+    dec = ds.dec[keep].copy()
+    ns = dec[:, hp.C["n"]]
+    sel = np.concatenate([np.arange(s, s + n) for s, n in zip(ds.dec[keep, hp.C["start"]], ns)]) if len(dec) else np.zeros(0, dtype=np.int64)
+    dec[:, hp.C["start"]] = np.concatenate([[0], np.cumsum(ns)[:-1]]) if len(dec) else np.zeros(0, dtype=np.int64)
+    out = hp.Dataset(dec, ds.dense[sel], ds.counts[sel], ds.role[sel], ds.ident[sel], ds.run_ids)
+    out._index(donors)
+    return out
+
+
 def no_overlap(train_run_ids: Iterable[str], held_run_ids: Iterable[str]) -> int:
     """Raise when a held-out run is among a fit's training runs (it never should be: the fifths are disjoint); returns the held-out count."""
     held = set(held_run_ids)
@@ -255,6 +281,9 @@ def cmd_fit(a: argparse.Namespace) -> int:
     donors = hp.load_donors(work / "prior-a10" / "donors.npz")
     ds_tr = load_parts(work, a.name, hp.TRAIN_FIFTHS, donors)
     ds_va = load_parts(work, a.name, [hp.VAL_FIFTH], donors)
+    if a.val_half:  # early stopping on one half of fifth 4 only, the other half is left for scoring (the half-split check)
+        want = {"A": 0, "B": 1}[a.val_half]
+        ds_va = subset_decisions(ds_va, run_halves(ds_va)[ds_va.dec[:, hp.C["run"]]] == want, donors)
     exam = hs.read_exam_ids(a.exam_ids)
     hs.assert_no_exam(ds_tr.run_ids, exam)
     hs.assert_no_exam(ds_va.run_ids, exam)
@@ -268,7 +297,7 @@ def cmd_fit(a: argparse.Namespace) -> int:
     args = types.SimpleNamespace(seed=a.seed, epochs=a.epochs, patience=a.patience, batch=a.batch, with_shops=False)
     init = f"prior:{a.init_from}" if a.init_from else "gen11"
     res = hp.fit_one(gt, gv, init, 1.0, args, kinds, Path(a.judge))
-    out = Path(a.work) / "fits" / a.name
+    out = Path(a.work) / "fits" / (a.name + (f"-half{a.val_half}" if a.val_half else ""))
     out.mkdir(parents=True, exist_ok=True)
     meta = {"kinds": kinds, "feature_version": hp.stack().F.FEATURE_VERSION, "map": "donor", "source": SPIRE_CODEX, "variant": "gen11-w1" if not a.init_from else "warm-w1",
             "strong_set": a.name, "judge": str(a.judge), "inputs": "judge dense 350 + counts 1513; one logit per option"}
@@ -276,6 +305,7 @@ def cmd_fit(a: argparse.Namespace) -> int:
     valid_tr = ~hp._bool_unavailable(ds_tr, False, True, True)
     fit_doc = {"written_by": "rl/strong_sets.py fit (aggregates only)", "source": SPIRE_CODEX, "set": a.name, "parts": ARMS[a.name],
                "train_fifths": list(hp.TRAIN_FIFTHS), "validation_fifth": hp.VAL_FIFTH, "device": "cpu", "threads": a.threads, "seed": a.seed,
+               "validation_half": a.val_half or "whole fifth 4",
                "init": "the generation 11 judgement's trunk" if not a.init_from else f"warm start from the fitted prior {hp_sha(Path(a.init_from))}",
                "kinds_fitted": kinds, "runs": {"train": runs_tr, "validation": runs_va},
                "trained_on_decisions": {k: int(valid_tr[ds_tr.kind_idx[k]].sum()) for k in kinds},
@@ -439,6 +469,66 @@ def set_cells(ds: "hp.Dataset") -> dict:
     return out
 
 
+def half_report(pd_base: dict, pd_arm: dict, run_half: np.ndarray, run_won: np.ndarray, score_half: int, draws: int = 2000) -> dict:
+    """One swap of the half-split check: the baseline and an arm scored on the runs of `score_half` only, (a) their won runs and (b) all of
+    them: runs, decisions, log-loss and top-1 of each, and the arm minus the baseline paired by decision with a 95% interval over runs."""
+    in_half = run_half == score_half
+    out: dict = {"scored_half": "AB"[score_half]}
+    for label, mask in (("a_won_runs", in_half & run_won), ("b_all_runs", in_half)):
+        pb, pa = pooled(pd_base, mask), pooled(pd_arm, mask)
+        out[label] = {"runs": int(len(np.unique(pb["run"]))), "decisions": int(len(pb["nll"])),
+                      "baseline": {"log_loss": float(pb["nll"].mean()), "top1": float(pb["hit"].mean())},
+                      "arm": {"log_loss": float(pa["nll"].mean()), "top1": float(pa["hit"].mean())},
+                      "arm_minus_baseline": paired_bootstrap(pb["run"], pa["nll"] - pb["nll"], len(run_half), draws)}
+    return out
+
+
+def half_verdict(swaps: list[dict], tie: float = TIE_NATS, limit_b: float = LIMIT_B_NATS) -> dict:
+    """The half-split check holds when, on every swap, the arm's log-loss on the won runs (a) is below the baseline's by more than the rule's
+    tie margin and on all runs (b) it is not worse by more than the rule's limit."""
+    rows = [{"scored_half": s["scored_half"], "a_diff": s["a_won_runs"]["arm_minus_baseline"]["mean"],
+             "a_better": s["a_won_runs"]["arm_minus_baseline"]["mean"] < -tie, "a_ci_excludes_zero": s["a_won_runs"]["arm_minus_baseline"]["hi95"] < 0,
+             "b_diff": s["b_all_runs"]["arm_minus_baseline"]["mean"],
+             "b_within_limit": s["b_all_runs"]["arm_minus_baseline"]["mean"] <= limit_b + 1e-12} for s in swaps]
+    return {"holds": bool(rows) and all(r["a_better"] and r["b_within_limit"] for r in rows), "swaps": rows,
+            "rule": f"on both swaps the arm's log-loss on the won runs is lower than the baseline's by more than {tie} nats and on all runs not "
+                    f"worse by more than {limit_b} nats"}
+
+
+def cmd_halves(a: argparse.Namespace) -> int:
+    """The half-split check of an arm (default s-win-ft): fifth 4 of the pool split into halves A and B by run-id hash; the arm was fitted with
+    early stopping on one half (`fit --val-half`) and is scored on the other, both ways, beside the baseline on the same runs."""
+    hs.below_normal()
+    work = Path(a.work)
+    donors = hp.load_donors(work / "prior-a10" / "donors.npz")
+    ds = heldout_sets(work, donors)
+    hs.assert_no_exam(ds.run_ids, hs.read_exam_ids(a.exam_ids))
+    valid = ~hp._bool_unavailable(ds, False, True, True)
+    run_won = np.zeros(len(ds.run_ids), dtype=bool)
+    run_won[ds.dec[ds.dec[:, hp.C["won"]] == 1, hp.C["run"]]] = True
+    run_half = run_halves(ds)
+    base = per_decision(ds, hp.row_scores_np(ds, donors, hp.NumpyPrior(work / "fits" / "baseline" / "weights.npz")), valid)
+    swaps = []
+    for fit_half, score_half in (("A", 1), ("B", 0)):  # early-stopped on the first, scored on the second
+        arm_path = work / "fits" / f"{a.arm}-half{fit_half}" / "weights.npz"
+        arm = per_decision(ds, hp.row_scores_np(ds, donors, hp.NumpyPrior(arm_path)), valid)
+        rep_ = half_report(base, arm, run_half, run_won, score_half)
+        rep_["early_stopped_on_half"] = fit_half
+        rep_["arm_sha256_8"] = hp_sha(arm_path)
+        swaps.append(rep_)
+    combined = {}  # the two swaps together: every run of fifth 4 scored by the arm that never early-stopped on it (decision-weighted)
+    for label in ("a_won_runs", "b_all_runs"):
+        n = sum(s_[label]["decisions"] for s_ in swaps)
+        combined[label] = {"decisions": n, "arm_minus_baseline": sum(s_[label]["arm_minus_baseline"]["mean"] * s_[label]["decisions"] for s_ in swaps) / n}
+    verdict = half_verdict(swaps)
+    doc = {"written_by": "rl/strong_sets.py halves (aggregates only)", "source": SPIRE_CODEX, "arm": a.arm, "halves": "fifth 4 split by a fixed hash of the run id",
+           "baseline": "the baseline fit of evaluate (its epoch was chosen on all of fifth 4: if anything this favours the baseline)",
+           "swaps": swaps, "verdict": verdict, "combined": combined}
+    (work / f"halves-{a.arm}.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    print(json.dumps({"verdict": verdict, "swaps": [{k: s[k] for k in ("scored_half", "early_stopped_on_half", "a_won_runs", "b_all_runs")} for s in swaps]}, indent=1))
+    return 0
+
+
 def cmd_counts(a: argparse.Namespace) -> int:
     """The sets' counts for the doc: runs and decisions in the training fifths and in the held-out fifth, per published cell, and how many of
     the cells fall under MIN_CELL runs (those are merged or suppressed, never published)."""
@@ -597,6 +687,8 @@ def build_candidate(base: Path, out: Path, weights: Path, info: dict, generation
                            "replaces_sha256": old_full,
                            "fit": info.get("fit", "rl/strong_sets.py fit (the generation 11 start, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)"),
                            "note": GATE_NOTE}
+    if info.get("label"):
+        train["strong_set"]["label"] = info["label"]
     model = json.loads((base / "model.json").read_text(encoding="utf-8"))
     model["iteration"] = generation
     for name, doc in (("agent.json", agent), ("train.json", train), ("model.json", model)):
@@ -630,7 +722,8 @@ def cmd_candidate(a: argparse.Namespace) -> int:
            "fit, every other part of generation 13's recipe unchanged; " + picked + " of docs/rl/HUMAN_PRIOR.md, section Strong sets by achievement")
     agent = build_candidate(Path(a.base), Path(a.out), Path(a.work) / "fits" / sel / "weights.npz",
                             {"set": sel, "source": f"strong-sets/{sel}/weights.npz", "why": why, "counts": counts,
-                             "fit": f"rl/strong_sets.py fit ({fit['init']}, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)"})
+                             "fit": f"rl/strong_sets.py fit ({fit['init']}, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)",
+                             "label": getattr(a, "label", "")})
     print(json.dumps({"candidate": Path(a.out).name, "macro": agent["macro"], "recipe": agent["recipe"], "set": sel}))
     return 0
 
@@ -655,20 +748,26 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--patience", type=int, default=3)
     t.add_argument("--batch", type=int, default=256)
     t.add_argument("--seed", type=int, default=20261105)
+    t.add_argument("--val-half", default="", choices=["", "A", "B"], help="early-stop on this half of fifth 4 only (run-id hash); the fit lands in fits/<name>-half<A|B>")
     t.add_argument("--init-from", default="", help="a warm start from a fitted prior's weights.npz (an informational arm; the four fits start from the generation 11 trunk)")
     e = sub.add_parser("evaluate")
     e.add_argument("--work", default=str(WORK))
     e.add_argument("--exam-ids", default=str(EXAM_IDS))
     e.add_argument("--incumbent", default="")
+    h = sub.add_parser("halves")
+    h.add_argument("--work", default=str(WORK))
+    h.add_argument("--exam-ids", default=str(EXAM_IDS))
+    h.add_argument("--arm", default="s-win-ft")
     k = sub.add_parser("counts")
     k.add_argument("--work", default=str(WORK))
     c = sub.add_parser("candidate")
     c.add_argument("--work", default=str(WORK))
+    c.add_argument("--label", default="", help="a label recorded in train.json's strong_set (e.g. the half-split check that backs an arm)")
     c.add_argument("--set", default="", choices=[""] + sorted(ARMS), help="build this arm although the rule did not pick it (recorded as such)")
     c.add_argument("--base", default="D:/spireline/referee/agent/gen13/candidate-stakes")
     c.add_argument("--out", default="D:/spireline/referee/agent/gen14/candidate-best-players")
     a = ap.parse_args(argv)
-    return {"filter": cmd_filter, "fit": cmd_fit, "evaluate": cmd_evaluate, "counts": cmd_counts, "candidate": cmd_candidate}[a.cmd](a)
+    return {"filter": cmd_filter, "fit": cmd_fit, "evaluate": cmd_evaluate, "counts": cmd_counts, "halves": cmd_halves, "candidate": cmd_candidate}[a.cmd](a)
 
 
 if __name__ == "__main__":
