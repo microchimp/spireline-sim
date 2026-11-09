@@ -245,23 +245,30 @@ def price_check(bought: list[tuple[int, int, bool]], removal: int | None, spent:
 # --------------------------------------------------------------------------------------------------------------- the corpus
 
 
-def iter_run_lines(corpus: Path, exam: frozenset, stats: Counter, limit: int = 0) -> Iterator[str]:
-    """The raw JSON line of every usable run (Ironclad, Ascension 10, standard, finished, no modifiers, vanilla acts) that is not in the
-    exam fifth. The same filters as `human_starts.read_runs`; the exam fifth's lines are dropped here, before any worker sees them."""
+def iter_run_lines(corpus: Path, exam: frozenset, stats: Counter, limit: int = 0, ascensions: tuple[int, ...] = (10,)) -> Iterator[str]:
+    """The raw JSON line of every usable run (Ironclad, Ascension 10 or the levels in `ascensions`, standard, finished, no modifiers,
+    vanilla acts) that is not in the exam fifth. The same filters as `human_starts.read_runs`; the exam fifth's lines are dropped here,
+    before any worker sees them."""
     import human_starts as hs  # noqa: PLC0415
 
     opener = gzip.open if str(corpus).endswith(".gz") else open
+    asc = tuple(ascensions)
     with opener(corpus, "rt", encoding="utf-8") as fh:
         for line in fh:
             stats["lines"] += 1
-            if '"ascension":10,' not in line or '"character":"CHARACTER.IRONCLAD"' not in line:
+            if '"character":"CHARACTER.IRONCLAD"' not in line:
+                continue
+            if asc == (10,):
+                if '"ascension":10,' not in line:
+                    continue
+            elif not any(f'"ascension":{a},' in line for a in asc):
                 continue
             try:
                 r = json.loads(line)
             except ValueError:
                 stats["unparsable"] += 1
                 continue
-            if not hs.human_ok(r):
+            if not hs.human_ok(r, asc):
                 continue
             stats["ironclad_a10"] += 1
             if hs.is_exam(hs.run_id(r), exam):
@@ -1268,6 +1275,21 @@ def mark_price_unverified(out_dir: Path, verified: bool) -> None:
         os.replace(tmp, p)
 
 
+def parse_ascensions(text: str) -> tuple[int, ...]:
+    """'10' -> (10,); '11-20' -> (11, ..., 20); '11,13' -> (11, 13). The default build reads Ascension 10 only."""
+    out: list[int] = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = (int(x) for x in part.split("-", 1))
+            out.extend(range(lo, hi + 1))
+        elif part:
+            out.append(int(part))
+    if not out:
+        raise ValueError(f"no Ascension level in {text!r}")
+    return tuple(out)
+
+
 def cmd_build(a: argparse.Namespace) -> int:
     import multiprocessing as mp  # noqa: PLC0415
 
@@ -1327,7 +1349,7 @@ def cmd_build(a: argparse.Namespace) -> int:
                 print(f"human_prior: chunk {d.key} lost: {d.status} {d.value}", file=sys.stderr)
 
     try:
-        for line in iter_run_lines(Path(a.corpus), exam, parent, a.limit_runs):
+        for line in iter_run_lines(Path(a.corpus), exam, parent, a.limit_runs, parse_ascensions(getattr(a, "ascensions", "10"))):
             chunk.append(line)
             if len(chunk) >= a.chunk_runs:
                 job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events),
@@ -1433,19 +1455,25 @@ class Dataset:
         self.has_map = dense.shape[1] == N_DENSE_V1  # v1 shards carry the true map block with every row; v0's come from a donor
 
     @classmethod
-    def load(cls, dec_dir: Path, fifths: Iterable[int], donors: dict | None = None, kinds: Iterable[str] | None = None):
-        """The decisions of `fifths` (and, with `kinds`, only those kinds) from the shards of `dec_dir`."""
+    def load(cls, dec_dir: Path | Iterable[tuple[Path, bool]], fifths: Iterable[int], donors: dict | None = None, kinds: Iterable[str] | None = None):
+        """The decisions of `fifths` (and, with `kinds`, only those kinds) from the shards of `dec_dir`. `dec_dir` may also be a list of
+        `(folder, won_only)` parts (the strong sets of `rl/strong_sets.py`): the parts' decisions are joined, and a won-only part keeps
+        the decisions of winning runs."""
         fifths = set(fifths)
         kind_ids = [KIND[k] for k in kinds] if kinds is not None else None
+        parts = [(Path(dec_dir), False)] if isinstance(dec_dir, (str, Path)) else [(Path(d), bool(w)) for d, w in dec_dir]
         decs, denses, counts_, roles, idents = [], [], [], [], []
         run_ids: list[str] = []
         row_off = 0
-        for p in sorted(Path(dec_dir).glob("shard-*.npz")):
+        shards = [(p, won_only) for d, won_only in parts for p in sorted(d.glob("shard-*.npz"))]
+        for p, won_only in shards:
             with np.load(p, allow_pickle=False) as z:
                 dec = z["dec"]
                 keep = np.isin(dec[:, C["fifth"]], list(fifths))
                 if kind_ids is not None:
                     keep &= np.isin(dec[:, C["kind"]], kind_ids)
+                if won_only:
+                    keep &= dec[:, C["won"]] == 1
                 if not keep.any():
                     continue
                 d = dec[keep].copy()
@@ -1462,7 +1490,7 @@ class Dataset:
                 idents.append(z["ident"][sel])
                 row_off += len(sel)
         if not decs:
-            raise SystemExit(f"human_prior: no shard in {dec_dir} holds fifths {sorted(fifths)}")
+            raise SystemExit(f"human_prior: no shard in {[str(d) for d, _ in parts]} holds fifths {sorted(fifths)}")
         if len({d.shape[1] for d in denses}) != 1:
             raise SystemExit(f"human_prior: the shards of {dec_dir} mix the v0 and the v1 layout")
         ds = cls(np.concatenate(decs), np.concatenate(denses), np.concatenate(counts_), np.concatenate(roles), np.concatenate(idents), run_ids)
@@ -1699,6 +1727,16 @@ def init_from_judge(net, npz: Path) -> None:
         raise ValueError(f"the judge's trunk does not fit: missing {missing}, unexpected {unexpected}")
 
 
+def init_from_prior(net, npz: Path) -> None:
+    """Start from a fitted prior's exported weights (`export_net`'s `weights.npz`: the layers by their torch names): every tensor of `net`."""
+    import torch  # noqa: PLC0415
+
+    with np.load(npz, allow_pickle=False) as z:
+        state = {k: torch.from_numpy(z[k]) for k in z.files if k != "meta"}
+    state.pop("extra.won.weight", None)
+    net.load_state_dict(state, strict=True)
+
+
 class NumpyPrior:
     """The prior in numpy (the exported weights.npz): one logit per row of the judge's dense and counts inputs.
 
@@ -1878,7 +1916,10 @@ def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Names
     if init == "gen11":
         init_from_judge(net, judge)
         net.to(dev)
-    lr = 3e-4 if init == "gen11" else 1e-3
+    elif init.startswith("prior:"):  # a warm start from a fitted prior's weights (`strong_sets.py fit --init-from`)
+        init_from_prior(net, Path(init[len("prior:"):]))
+        net.to(dev)
+    lr = 3e-4 if init == "gen11" or init.startswith("prior:") else 1e-3
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     ds_train, ds_val = gt.ds, gv.ds
     gt.set_winner_weight(winner_weight)
@@ -2143,6 +2184,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--reference", default=str(REF_COUNTS))
     b.add_argument("--procs", type=int, default=4)
     b.add_argument("--chunk-runs", type=int, default=40)
+    b.add_argument("--ascensions", default="10", help="the Ascension levels read: 10 (the default), a list 11,12 or a range 11-20 (the strong sets, docs/rl/HUMAN_PRIOR.md)")
     b.add_argument("--limit-runs", type=int, default=0)
     b.add_argument("--lib", default="", help="a native build to load (STS2_LIB_PATH); by default none is loaded")
     b.add_argument("--clean", action="store_true")

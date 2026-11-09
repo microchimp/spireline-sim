@@ -115,10 +115,10 @@ def assert_no_exam(run_ids: Iterable[str], ids: Iterable[str]) -> int:
 # ------------------------------------------------------------------------------------------------------------------ the corpus
 
 
-def human_ok(r: dict) -> bool:
-    """Ironclad, Ascension 10, standard mode, one player, finished (not abandoned), no modifiers."""
+def human_ok(r: dict, ascensions: Iterable[int] = (10,)) -> bool:
+    """Ironclad, Ascension 10 (or the levels in `ascensions`), standard mode, one player, finished (not abandoned), no modifiers."""
     pl = r.get("players") or []
-    return (r.get("ascension") == 10 and r.get("game_mode") == "standard" and not r.get("was_abandoned") and not r.get("modifiers")
+    return (r.get("ascension") in tuple(ascensions) and r.get("game_mode") == "standard" and not r.get("was_abandoned") and not r.get("modifiers")
             and len(pl) == 1 and pl[0].get("character") == "CHARACTER.IRONCLAD")
 
 
