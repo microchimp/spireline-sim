@@ -20,6 +20,9 @@ than turns takes its fights by hash order (a boss cell stratified over its bosse
 and 91 Act 2 boss fights, so those cells give a **second turn** (a different decision of the same fight) from the first 19, 19, 19, 19 and
 9 fights in hash order to reach their 50 and 100. Bosses are played first, so a partial result is the boss table.
 
+`run --kinds boss` plays only the boss fights (the first measurement was cut to the bosses, 2026-11-09: the sample file lists every kind and
+`run` takes the kinds it is asked for, in the order boss, elite, hallway).
+
 `run` plays each fight with the teacher (draw 0 of the exam's namespace `x`), records every decision (the move, the distinct root moves,
 the observation's hash, the search's statistics), and keeps turns chosen by a hash coin uniformly among the fight's decisions with two or
 more distinct root moves (a decision with one legal move is not a choice). The turn is re-found by replaying the fight's moves from its
