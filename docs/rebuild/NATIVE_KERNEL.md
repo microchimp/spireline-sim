@@ -169,3 +169,41 @@ speed), R6 if needed (the smoke and review fixes): 5-6 reviewed rounds, about 7-
   the start; a stopped-step document is refused). `RunForkCombatCore2Tests` and `DeterminizedStopCore2Tests` run those
   suites with the engine on core2. `test_native_engine.py` walks a run under `STS2_ENGINE=core2` with clones, forks and a
   combat handle, nothing refused.
+
+## 15. Step cost: what the copy no longer recomputes (engine-speed lane, D55 addendum 23 item 3a)
+
+The search plays the copy through `Sts2_Step`, `Sts2_ValidActions` and `Sts2_Clone`; after the search's Python tidy the engine's step was 76% of a profiled
+fight. A sampling profile of the library inside a running player (an out-of-process sampler: it suspends the process's main thread about
+every millisecond, walks the stack with the library's unwind data and names frames from its PDB) put the time in four places, and nothing
+below changes a rule, the order of an effect, a random draw, or what `step`, `valid_actions`, `clone` and `get_state_json` return. Each change is held
+to the form it replaced by `Sts2Emulator.Tests/Core2/EngineSpeedTests.cs`, and the whole by the fight exam's human stratum played before and after
+(1,600 games, `tools/gym_engine_move_check.py`: outcome, end HP and move hash).
+
+| Change | Where | What it relies on |
+| --- | --- | --- |
+| Definition lookup by array: `Cards.Get` (also `Enemies`, `Potions`, `Powers`, `Relics`, `Relics.TryGet`) read the id's position in a table built at type initialisation instead of scanning the table with a closure (it was 18% of the library's time: `CanPlayFromHand`, `EndTurn`, `IsEthereal`, ...). `Cards.Ref` returns the definition without copying it | `Core/DefIndex.cs`, `Generated/*.g.cs`, `scripts/extract_data.py` | the first definition of an id answers, as `Array.Find` returned it (a repeated id is tested); ids under 16,384 are an array, others a dictionary; the tables are arrays nothing writes to after type initialisation. The generator and the generated files carry the same text |
+| The card-uid safety net reads before it rewrites: `CardUidInvariant.Normalise` runs at the start of every hook pass; it now checks every live card's uid (in 1 to the counter, none twice) on a stack bit set and rewrites only when one breaks that | `Core2/CardUidInvariant.cs` | the rewrite of an intact combat put every card back as it was, so skipping it changes no card; it also bumped each pile list's version, which nothing reads (the change probes are on the orbs and the run deck, not on the piles). A breach, a counter of 16,384 or more, or a non-positive uid takes the old walk, unchanged |
+| Hook passes list only the kinds that can survive the filter: a pass for a hook with no handler of a kind (power, monster, relic, potion, orb, card, affliction, enchantment, modifier, badge, scaling) used to list every listener of every kind (every card of every pile, seven affliction gaps) and drop the unhandled ones | `Core2/OldState.cs` (`Combat`, `Run`, `RunModels` take a kind set), `Core2/Listeners.cs`, `Core2/HandlerTable.cs` | the filter dropped every listener of a kind with no handler for the hook (`Find` is null) and `Flush` reported no gap of such a kind (`AnyOf` is false), so leaving the kind out leaves the pass as it was; the handler table only grows while it is being registered; a handler source this does not know (a test's) is asked for every kind. The pile group (card, affliction, enchantment) is listed whole when any of the three is wanted, and the filter drops the rest as before. Tested for every one of the 2,048 kind sets against the full listing |
+| Handler lookup by (hook, kind), then model id, and the kinds of a hook as a bit set (`Find`, `AnyOf`, `KindsOf`) instead of a three-part tuple key | `Core2/HandlerTable.cs` | the same registrations as the old dictionary (`Add` fills both) |
+| A pass is one `PassScope` (not generic: only the listing of a part knows the handler type): the kept listeners sit in a small array found by who (a dictionary past 16), the view that notes what a visit finds changed is made with the first kept listener, the two scratch lists are reused, and the parts are an enum, not delegates | `Core2/Listeners.cs`, `Core2/OldState.cs` (`PassView`) | a visit asks the membership of kept listeners only, so a pass that kept none needs neither the map nor the view; a part takes the scratch lists out of the field while it uses them and puts them back cleared, so a pass built from inside a gap callback allocates its own; the same listener listed twice in a pass is still refused |
+| `OldState.Powers` for up to 24 buffs scans the earlier entries instead of keeping a set and a count table | `Core2/OldState.cs` | the entries of one BuffId all map alike (the mapping is a function of the id), so an entry's `k` is the number of earlier entries of its id, and an entry repeats when an earlier counted entry of another id has the same model and the same `k`; longer lists keep the old form. Tested against the old form on 400 random lists |
+| `OldModelIds.Power(BuffId)` reads an array | `Core2/OldState.cs` | filled from the dictionary it replaces for every `BuffId`; a value outside the enum is NotModelled, as a miss was |
+| `RelicEffects.Has` / `HasRelic` scan the relic list | `Core/Effects/RelicEffects.cs` | a list scan for the first relic with the id, as `Any` was, with no closure or enumerator |
+| `ActionQueueSet.Copy` (every `state.Clone()`, one per step for the replay record) shares the history records that finished or were canceled and stand in no queue, and clones the rest. The history grows with the fight and was cloned whole, record by record, through a dictionary | `Core2/ActionQueueSet.cs` | every write to a record (state, id, answer) is to one in a queue or just enqueued, and `Enqueue` refuses a record a second time, so a finished or canceled record outside the queues is never written again by either state; readers (`WaitAll`, `OnHookPause`, EmuDump's dump, the tests) see equal records |
+
+The hash-pinned files a C# edit stales were regenerated: the split hash of `Core/Effects/RelicEffects.cs` in `tools/kernel/sites.py` (the edit is
+`Has`/`HasRelic`, far from `BiteForFurCoat`'s anchors; `CombatEngine.cs`, with `DoomThePlayerAtTurnEnd`, is untouched), `sites.json`, the three
+`tools/solver` scans and the key encoder's field hash; `CardUidInvariant.cs` is classed in `order_readers.json` (it reads uids as a set).
+
+What is left in the profile is spread thin: the per-step `state.Clone()` (the replay record, about a fifth of the library's time), the allocation the
+passes still make (`Cursor`, `Build`), `CardUidInvariant`'s read-only check, and `CreatureCmd.Damage`'s hook passes themselves. A pass per hook
+is the kernel's shape (the game iterates its listeners per hook); a cache of the per-hook listing across hooks is not done because the state
+changes between them.
+
+Measured (2026-11-09, the search-tidy lane's 20 fight-exam starts, one process each, `time.process_time`, before and after side by side): 693.7 and 694.2
+CPU-s before, 256.6 and 256.8 after (-63.0%; boss -63.2%, elite -61.5%, hallway -56%); in a sampled pair the library held 79.8% of the main thread's samples
+before and 47.3% after, i.e. the engine's own time 545 to 120 CPU-s (-78%), the search's Python and the network (138 CPU-s) unchanged. At the 11-07
+profile's mix a run costs 49 CPU-s, about 18 after. Identity: the human stratum (400 starts x 4 draws, player `v2`, config `a3-v1`, the CPU prior) played
+before and after, 1,600 / 1,600 games alike in outcome, end HP and move hash (root values equal to the last bit; 1,814,963 simulations and 43,967
+decisions in both). Proof and profiling tools, not committed: an out-of-process sampling profiler (suspend the thread, walk the stack with dbghelp over
+the library's unwind data, name the frames from the PDB) and `identity_play.py` (the exam's own lockstep game steps on a chosen build, rows to a file).
