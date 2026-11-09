@@ -169,46 +169,85 @@ class FightScreenTests(unittest.TestCase):
 
 
 class PriorScreenTests(unittest.TestCase):
+    """screen:prior is the selection rule of the strong sets (D55 addendum 15 item 3) on the held-out leg: better on the won runs by more than the
+    0.002 tie margin, worse on all runs by no more than 0.02 nats; rejected when the primary or the guard fails."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, True))
         self.base = folder(self.tmp, "base", generation=3)
         self.cand = folder(self.tmp, "cand", prior=b"p2", generation=4)
-        self.dec = self.tmp / "dec"
-        self.dec.mkdir()
-        (self.dec / "shard-0.npz").write_bytes(b"x")
+        self.work = self.tmp / "work"
+        (self.work / "prior-a10" / "decisions").mkdir(parents=True)
+        (self.work / "prior-a10" / "donors.npz").write_bytes(b"x")
 
-    def run_with(self, cand_total: float, base_total: float):
-        totals = {self.cand / "human_prior.npz": cand_total, self.base / "human_prior.npz": base_total}
+    def run_with(self, won: float, allr: float, base_a: float = 0.87, base_b: float = 0.95):
+        """The screen with the candidate `won` nats from the incumbent on the won runs and `allr` on all runs (negative: better)."""
+        def legs(paths, work):
+            self.assertEqual([Path(x).parent.name for x in paths], ["cand", "base"])
+            return [{"a": base_a + won, "b": base_b + allr, "runs_won": 384, "runs_all": 3601}, {"a": base_a, "b": base_b, "runs_won": 384, "runs_all": 3601}]
+        return screens.run_prior(self.cand, self.base, work=self.work, legs=legs)
 
-        def score(path, dec_dir, kinds):
-            return {"total": totals[Path(path)], "kinds": {k: totals[Path(path)] / len(kinds) for k in kinds}, "decisions": 1234}
+    def test_the_best_players_case_passes_better_on_the_won_runs_and_worse_on_all_within_the_limit(self):
+        r = self.run_with(-0.008, 0.017)  # candidate-best-players on the half splits: won -0.008 to -0.013, all +0.017 to +0.018
+        self.assertFalse(r["rejected"])
+        self.assertEqual((r["primary_ok"], r["guard_ok"]), (True, True))
+        self.assertEqual(r["ledger_rule"], "screen:prior won=-0.008 all=+0.017")
+        self.assertIn("screen:prior passed", r["line"])
+        self.assertEqual((r["runs_won"], r["runs_all"]), (384, 3601))
+        self.assertFalse(self.run_with(-0.013, 0.018)["rejected"])
 
-        with mock.patch.object(screens, "shared_kinds", return_value=["card", "route"]):
-            return screens.run_prior(self.cand, self.base, dec_dir=self.dec, score=score)
+    def test_the_primary_must_beat_the_incumbent_by_more_than_the_tie_margin(self):
+        for won in (0.0, 0.004, -0.001, -0.002):  # equal, worse, better by less than the margin, by exactly the margin
+            r = self.run_with(won, 0.0)
+            self.assertTrue(r["rejected"], won)
+            self.assertFalse(r["primary_ok"], won)
+            self.assertIn("the won-run log-loss is not better by more than 0.002", r["line"])
+        self.assertFalse(self.run_with(-0.0021, 0.0)["rejected"])
 
-    def test_a_worse_log_loss_is_rejected_and_a_better_or_equal_one_passes(self):
-        r = self.run_with(2.31, 2.30)
+    def test_the_guard_is_worse_by_no_more_than_two_hundredths_on_all_runs(self):
+        r = self.run_with(-0.03, 0.0201)
         self.assertTrue(r["rejected"])
-        self.assertEqual((r["rule"], r["decisions"], r["decisions_folder"]), ("screen:prior", 1234, "dec"))
-        self.assertAlmostEqual(r["diff"], 0.01)
-        self.assertIn("screen:prior REJECTED", r["line"])
-        self.assertEqual(sorted(r["per_kind"]), ["card", "route"])
-        for cand_total in (2.29, 2.30):
-            r = self.run_with(cand_total, 2.30)
-            self.assertFalse(r["rejected"], cand_total)
-            self.assertIn("screen:prior passed", r["line"])
+        self.assertEqual((r["primary_ok"], r["guard_ok"]), (True, False))
+        self.assertIn("the all-run log-loss is worse by more than 0.02", r["line"])
+        self.assertEqual(r["ledger_rule"], "screen:prior won=-0.030 all=+0.020")
+        self.assertFalse(self.run_with(-0.03, 0.02)["rejected"])  # exactly the limit is allowed
 
-    def test_no_held_out_decisions_or_a_missing_prior_is_skipped(self):
-        r = screens.run_prior(self.cand, self.base, dec_dir=self.tmp / "none")
-        self.assertIn("the held-out human decisions are not here", r["skipped"])
+    def test_both_failing_says_both(self):
+        r = self.run_with(0.01, 0.05)
+        self.assertTrue(r["rejected"])
+        self.assertIn("not better by more than", r["line"])
+        self.assertIn("worse by more than", r["line"])
+
+    def test_the_rule_is_the_strong_sets_own(self):
+        import strong_sets as ss  # noqa: PLC0415
+        r = self.run_with(-0.01, 0.0)
+        self.assertEqual((r["tie"], r["limit"]), (ss.TIE_NATS, ss.LIMIT_B_NATS))
+        self.assertEqual((ss.TIE_NATS, ss.LIMIT_B_NATS), (0.002, 0.02))
+
+    def test_no_held_out_set_or_a_missing_prior_is_skipped(self):
+        r = screens.run_prior(self.cand, self.base, work=self.tmp / "none")
+        self.assertIn("the held-out set (prior-a10/decisions and donors.npz) is not under none", r["skipped"])
         (self.cand / "human_prior.npz").unlink()
-        r = screens.run_prior(self.cand, self.base, dec_dir=self.dec)
+        r = screens.run_prior(self.cand, self.base, work=self.work)
         self.assertEqual(r["skipped"], "one of the two has no human_prior.npz")
 
     def test_the_exam_fifth_is_never_an_input(self):
         import human_prior as hp  # noqa: PLC0415
-        self.assertNotEqual(hp.VAL_FIFTH, hp.EXAM_BUCKET)  # the scorer loads the validation fifth only, and asserts the exam ids absent
+        self.assertNotEqual(hp.VAL_FIFTH, hp.EXAM_BUCKET)  # the leg is fifth 4; heldout_legs asserts the exam ids absent before it scores
+
+    def test_the_lab_s_candidate_best_players_passes_on_the_real_held_out_set(self):
+        import strong_sets as ss  # noqa: PLC0415
+        agent = Path(os.environ.get("SPIRELINE_REFEREE", "D:/spireline/referee")) / "agent"
+        cand, base = agent / "gen14" / "candidate-best-players", agent / "gen13" / "candidate-stakes"
+        if not (cand / "human_prior.npz").is_file() or not (base / "human_prior.npz").is_file() or not (ss.WORK / "prior-a10" / "decisions").is_dir():
+            self.skipTest("the lab's candidates and the held-out set are not here")
+        self.assertEqual(screens.kind_of(cand, base), "prior")  # it differs from generation 13's candidate in the human prior only
+        r = screens.run_prior(cand, base)
+        self.assertFalse(r["rejected"], r["line"])
+        self.assertLess(r["won"], -0.002)
+        self.assertGreater(r["all"], 0.0)
+        self.assertLessEqual(r["all"], 0.02)
 
 
 class PromoteScreenTests(unittest.TestCase):
@@ -268,14 +307,15 @@ class PromoteScreenTests(unittest.TestCase):
         tsv = self.agents / "promotions.tsv"
         self.assertEqual(gen_loop.attempts_before(gen_loop.read_promotions(tsv), 4, "sha-other"), 1)
 
-    def test_a_prior_only_candidate_with_a_worse_log_loss_is_rejected(self):
+    def test_a_prior_only_candidate_that_fails_the_screen_is_rejected_with_both_numbers_in_the_rule_column(self):
         (self.cand / "combat_policy.pt").write_bytes(b"x")
         (self.cand / "human_prior.npz").write_bytes(b"new prior")
         (self.base / "human_prior.npz").write_bytes(b"old prior")
-        with mock.patch.object(screens, "run_prior", return_value=self.reading("prior", True, diff=0.01)):
+        canned = self.reading("prior", True, won=-0.001, all=0.002, ledger_rule="screen:prior won=-0.001 all=+0.002")
+        with mock.patch.object(screens, "run_prior", return_value=canned):
             doc, arms, _ = self.promote()
         self.assertEqual((doc["decision_text"], arms.calls, doc["decision"]["rule"]), ("rejected", [], "screen:prior"))
-        self.assertEqual(gen_loop.read_promotions(self.agents / "promotions.tsv")[0]["rule"], "screen:prior")
+        self.assertEqual(gen_loop.read_promotions(self.agents / "promotions.tsv")[0]["rule"], "screen:prior won=-0.001 all=+0.002")
 
     def test_a_passed_screen_plays_the_arms_and_keeps_its_figures(self):
         with mock.patch.object(screens, "run_fight", return_value=self.reading("fight", False, diff=1.0, se=3.0)):

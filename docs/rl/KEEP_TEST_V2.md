@@ -145,19 +145,25 @@ notes are bookkeeping. A screen runs only when one part differs and it is the fi
   candidate's games did not all get played (the run was blocked or stopped: exit 3) or the two sides' engine tags differ (a difference across
   engines is not a difference of networks). It takes the exam's mutex and a `fight-exam` QUIET.lock line like any exam run; the judgement's own
   `lab-train` line does not hold it (`--allow-quiet`).
-* **`screen:prior`** (only the human prior differs). Both priors are scored on the held-out human choices of the prior's own fit: the validation
-  fifth (fifth 4) of `human-prior/decisions-v1` (else `decisions`), never the exam fifth (`assert_no_exam`), the kinds both priors were fitted on,
-  `human_prior.score_total` (the summed mean negative log-likelihood), CPU numpy, about a minute a prior. The candidate is rejected when its
-  log-loss is **worse** (higher) than the incumbent's.
+* **`screen:prior`** (only the human prior differs). Both priors are scored on the held-out human choices of fifth 4 of the all-player Ascension 10
+  pool, the leg `rl/strong_sets.py` selects priors by (D55 addendum 15 item 3; `strong_sets.heldout_sets`, `per_decision`, `pooled`, so the numbers
+  are the ones `strong_sets evaluate` prints; the exam fifth is asserted absent; CPU numpy, seconds). The **primary** is the log-loss on the
+  held-out **won** runs: the candidate must be better than the incumbent's prior by more than the tie margin (`strong_sets.TIE_NATS`, 0.002 nats).
+  The **guard** is the log-loss on **all** held-out runs: the candidate may be worse by at most `strong_sets.LIMIT_B_NATS` (0.02 nats). It is
+  rejected when the primary fails or the guard fails. Both differences (candidate minus incumbent, nats) go in the summary and, for a rejection, in the
+  ledger's rule column as `screen:prior won=-0.0xx all=+0.0xx`. Checked on the lab's folders: `gen14/candidate-best-players` (prior 56afab28)
+  against `gen13/candidate-stakes` (2ebfe6d7) differs in the prior only and passes (won -0.0079, all +0.0152 on the whole fifth: 384 won of 3,601
+  runs; the half splits give won -0.008 to -0.013, all +0.017 to +0.018). It is not applied (the arms are played) when the held-out set or either
+  `human_prior.npz` is missing.
 
 A rejection is a rejected judgement and plays no arm: `promotion.json` has `decision_text` rejected, `n_seeds` 0, the decision's `rule`
 `screen:fight` / `screen:prior` and `screen` with the figures (survival of both, the difference, its SE and z; or both log-losses per kind); the
-ledger row has `seeds` 0, an empty `seed_block` (the block stays fresh), the screen's rule in its `rule` column and its line in `guard`; the attempt
+ledger row has `seeds` 0, an empty `seed_block` (the block stays fresh), the screen's rule in its `rule` column (`screen:fight`, or `screen:prior won=... all=...`) and its line in `guard`; the attempt
 is spent as for any rejection (`attempts_before` counts the candidate). A screen that passes goes on to the arms with its line added to the row's
 `guard` cell and `screen` in `promotion.json`; one that is skipped says why in the job log (`screen:fight: not applied (...)`) and in `screen`; one
 that fails with an error is logged and recorded (`screen.error`) and never fails the judgement. `--no-screen` on `train` and `promote` switches
 the screens off. Checked on the lab's folders: `gen14/candidate-prior-act2` against `gen13/candidate-stakes` differs in settings only (lambda by
-act: no screen); the held-out scorer reads `decisions-v1`'s fifth 4 (51,188 decisions) in a minute a prior.
+act: no screen).
 
 ## Tests
 
@@ -166,4 +172,4 @@ the lab's saved arms where they exist), `test_funnel.py` (`V2RuleTests`, `Promot
 (`KeepRuleV2Tests`, `test_train_passes_keep_rule_to_promote`, the line through `rejudge` and its command); the line's pieces in
 `test_fight_exam.py` (`HumanBarReadingTests`); synthetic arms in `tests/python/keep_v2_fixtures.py` (counts only; no saved row is committed).
 `tests/python/test_futility.py` (the futility stop: the routes' bounds, a level candidate stopping at 1,000 seeds, a better one and one better on floors only or on deep_f only never stopping, the ledger line's columns, the switches, the model table, the recorded blocks).
-`tests/python/test_screens.py` (which screen a pair of folders gets, the fight screen's two-SE rule on constructed games, the prior screen's scorer, `promote` rejecting before any arm, the ledger row, the flags).
+`tests/python/test_screens.py` (which screen a pair of folders gets, the fight screen's two-SE rule on constructed games, the prior screen's primary and guard with the best-players case and the lab's real held-out set where present, `promote` rejecting before any arm, the ledger row, the flags).

@@ -2417,7 +2417,7 @@ def screen_rejection(cand: Path, cand_agent: Agent, base_agent: Agent, screen_do
     append_promotion(Path(agent_root) / "promotions.tsv",
                      {"written": doc["written"], "cand_gen": cand_agent.generation, "base_gen": base_agent.generation, "seed_block": "", "seeds": 0,
                       "decision": "rejected", "cand_sha": cand_sha, "cand_dir": cand.name, "run_head_sha": head_sha, "macro": recipe, "attempt": attempt,
-                      "drift": "", "guard": str(screen_doc.get("line", srule)).replace("\t", " "), "rule": srule})
+                      "drift": "", "guard": str(screen_doc.get("line", srule)).replace("\t", " "), "rule": screen_doc.get("ledger_rule", srule)})
     return doc
 
 

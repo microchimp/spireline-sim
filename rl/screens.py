@@ -7,9 +7,11 @@ in one part only has a cheap test of that part:
                 (400 starts, four draws; `fight_exam.py play --stratum human`, the machinery of the human-bar line) and is rejected when its
                 survival is below the incumbent's, on the same starts and draws, by more than two standard errors (the bootstrap's over
                 starts, within cells). The incumbent's side is the games of the gym player that holds its network bytes.
-  screen:prior  only the human prior differs (human_prior.npz): both priors are scored on the held-out human choices of the prior's own fit
-                (the validation fifth, never the exam fifth; `human_prior.score_total`, the summed mean negative log-likelihood of the kinds
-                the two priors share) and the candidate is rejected when its log-loss is worse than the incumbent's.
+  screen:prior  only the human prior differs (human_prior.npz): both priors are scored on the held-out human choices of fifth 4 (never the exam
+                fifth), the leg `rl/strong_sets.py` selects priors by (D55 addendum 15 item 3): the primary measure is the log-loss on the held-out
+                WON runs, where the candidate must be better than the incumbent's prior by more than the tie margin (0.002 nats); the guard is the
+                log-loss on ALL held-out runs, where it may be worse by at most 0.02 nats. The candidate is rejected when the primary fails or the guard
+                fails; both differences go in the summary and the ledger's rule column (`screen:prior won=-0.0xx all=+0.0xx`).
 
 Anything else (several parts differ, or only the settings, the run value or the stakes): no screen. A screen that cannot be read (no human
 stratum, no games for the incumbent's network, engine tags that differ, a run that was blocked or stopped, the held-out decisions absent)
@@ -25,6 +27,8 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 SCREEN_FIGHT = "screen:fight"
 SCREEN_PRIOR = "screen:prior"
@@ -155,59 +159,69 @@ def run_fight(cand: Path, base_sha: str, label: str, play: Callable[[str], int],
 # ---------------------------------------------------------------------------------------------------------- screen:prior
 
 
-def prior_reading(cand_total: float, base_total: float, per_kind: dict | None = None, decisions: int = 0) -> dict:
-    """The verdict from the two priors' held-out log-losses (lower is better): rejected when the candidate's is worse."""
-    return {"rule": SCREEN_PRIOR, "kind": "prior", "cand_logloss": round(cand_total, 5), "inc_logloss": round(base_total, 5),
-            "diff": round(cand_total - base_total, 5), "decisions": decisions, "per_kind": per_kind or {}, "rejected": bool(cand_total > base_total)}
+def prior_reading(cand: dict, base: dict, *, tie: float | None = None, limit: float | None = None) -> dict:
+    """The verdict from the two priors' held-out log-losses (`cand`, `base`: {"a": on the won runs, "b": on all runs}, lower is better):
+    `won` = the candidate's minus the incumbent's on the won runs and `all` the same on all runs. The primary passes when the candidate is better
+    by more than `tie` (`strong_sets.TIE_NATS`, 0.002); the guard holds when it is worse by no more than `limit` (`strong_sets.LIMIT_B_NATS`,
+    0.02). Rejected when the primary fails or the guard fails."""
+    import strong_sets as ss  # noqa: PLC0415
+
+    tie = ss.TIE_NATS if tie is None else tie
+    limit = ss.LIMIT_B_NATS if limit is None else limit
+    won, allr = cand["a"] - base["a"], cand["b"] - base["b"]
+    primary, guard = bool(won < -tie - 1e-12), bool(allr <= limit + 1e-12)
+    return {"rule": SCREEN_PRIOR, "kind": "prior", "won": round(won, 5), "all": round(allr, 5), "cand_won": round(cand["a"], 5), "inc_won": round(base["a"], 5),
+            "cand_all": round(cand["b"], 5), "inc_all": round(base["b"], 5), "tie": tie, "limit": limit, "primary_ok": primary, "guard_ok": guard,
+            "runs_won": cand.get("runs_won"), "runs_all": cand.get("runs_all"), "rejected": not (primary and guard),
+            "ledger_rule": f"{SCREEN_PRIOR} won={won:+.3f} all={allr:+.3f}"}
 
 
 def prior_line(r: dict) -> str:
     verdict = "REJECTED" if r["rejected"] else "passed"
-    return (f"{SCREEN_PRIOR} {verdict}: held-out human-choice log-loss {r['cand_logloss']:.4f} (candidate) / {r['inc_logloss']:.4f} (incumbent), "
-            f"difference {r['diff']:+.4f}, on {r['decisions']} decisions of the validation fifth (lower is better)")
+    why = "" if not r["rejected"] else " (" + "; ".join(x for x in (
+        None if r["primary_ok"] else f"the won-run log-loss is not better by more than {r['tie']:g}",
+        None if r["guard_ok"] else f"the all-run log-loss is worse by more than {r['limit']:g}") if x) + ")"
+    return (f"{SCREEN_PRIOR} {verdict}{why}: held-out human-choice log-loss, candidate minus incumbent, won runs {r['won']:+.4f} (needs below -{r['tie']:g}), "
+            f"all runs {r['all']:+.4f} (at most +{r['limit']:g}); {r.get('runs_won')} won of {r.get('runs_all')} held-out runs of fifth 4; lower is better")
 
 
-def heldout_logloss(prior_path: Path, dec_dir: Path, kinds: list[str]) -> dict:
-    """One prior's held-out human-choice log-loss: `human_prior.score_total` over the validation fifth's decisions of `kinds` (the exam fifth is
-    asserted absent), with each kind's mean negative log-likelihood. CPU, numpy."""
+def heldout_legs(prior_paths: list[Path], work: Path | None = None) -> list[dict]:
+    """Each prior's held-out log-loss on the won runs (a) and on all runs (b) of fifth 4 of the all-player Ascension 10 pool, exactly as
+    `strong_sets evaluate` reads them (`heldout_sets`, `per_decision`, `pooled`; the kinds card, ancient, rest). The exam fifth is asserted absent.
+    The dataset is loaded once for all the priors. CPU, numpy."""
     import human_prior as hp  # noqa: PLC0415
     import human_starts as hs  # noqa: PLC0415
+    import strong_sets as ss  # noqa: PLC0415
 
-    ds = hp.Dataset.load(dec_dir, [hp.VAL_FIFTH], None, kinds)
-    hs.assert_no_exam(ds.run_ids, hs.read_exam_ids(hp.EXAM_IDS))
+    work = Path(work or ss.WORK)
+    donors = hp.load_donors(work / "prior-a10" / "donors.npz")
+    ds = ss.heldout_sets(work, donors)
+    hs.assert_no_exam(ds.run_ids, hs.read_exam_ids(ss.EXAM_IDS))
     valid = ~hp._bool_unavailable(ds, False, True, True)  # noqa: SLF001
-    prior = hp.NumpyPrior(Path(prior_path))
-    m = hp.metrics_from_scores(ds, hp.row_scores_np(ds, None, prior), valid)
-    scored = ("card", "ancient", "rest_kind", "rest_smith_target", "shop", "route")  # the kinds `score_total` adds up
-    return {"total": hp.score_total(m), "kinds": {k: m[k]["nll"] for k in scored if k in m},
-            "decisions": int(sum(m[k]["n"] for k in ("card", "ancient", "rest_kind", "shop", "route") if k in m))}
+    won_dec = ds.dec[:, hp.C["won"]] == 1
+    run_won = np.zeros(len(ds.run_ids), dtype=bool)
+    run_won[ds.dec[won_dec, hp.C["run"]]] = True
+    out = []
+    for path in prior_paths:
+        pd = ss.per_decision(ds, hp.row_scores_np(ds, donors, hp.NumpyPrior(Path(path))), valid)
+        pa, pb = ss.pooled(pd, run_won), ss.pooled(pd, None)
+        out.append({"a": float(pa["nll"].mean()), "b": float(pb["nll"].mean()), "decisions_a": int(len(pa["nll"])), "decisions_b": int(len(pb["nll"])),
+                    "runs_won": int(run_won.sum()), "runs_all": int(len(ss.runs_of(ds)))})
+    return out
 
 
-def shared_kinds(cand_path: Path, base_path: Path) -> list[str]:
-    """The decision kinds both priors were fitted on (their `meta["kinds"]`), in the fit's order."""
-    import human_prior as hp  # noqa: PLC0415
-
-    a, b = hp.NumpyPrior(Path(cand_path)).meta.get("kinds"), hp.NumpyPrior(Path(base_path)).meta.get("kinds")
-    default = ["card", "ancient", "rest", "route"]
-    return [k for k in (a or default) if k in (b or default)]
-
-
-def run_prior(cand: Path, base: Path, *, dec_dir: Path | None = None, score: Callable[[Path, Path, list[str]], dict] = heldout_logloss) -> dict:
-    """The prior screen end to end: both priors on the held-out human decisions. `score(prior path, decisions folder, kinds)` is the scorer."""
-    import human_prior as hp  # noqa: PLC0415
+def run_prior(cand: Path, base: Path, *, work: Path | None = None, legs: Callable[[list[Path], Path | None], list[dict]] = heldout_legs) -> dict:
+    """The prior screen end to end: both priors on the held-out leg. `legs(prior paths, work)` is the scorer (the tests inject one)."""
+    import strong_sets as ss  # noqa: PLC0415
 
     out: dict[str, Any] = {"rule": SCREEN_PRIOR, "kind": "prior"}
-    dirs = [Path(dec_dir)] if dec_dir else [hp.OUT_DIR / "decisions-v1", hp.OUT_DIR / "decisions"]
-    dec = next((d for d in dirs if d.is_dir() and any(d.glob("shard-*.npz"))), None)
-    if dec is None:
-        return {**out, "skipped": "the held-out human decisions are not here (" + ", ".join(str(d) for d in dirs) + ")"}
+    w = Path(work or ss.WORK)
+    if not ((w / "prior-a10" / "decisions").is_dir() and (w / "prior-a10" / "donors.npz").is_file()):
+        return {**out, "skipped": f"the held-out set (prior-a10/decisions and donors.npz) is not under {w.name}"}
     cp, bp = Path(cand) / "human_prior.npz", Path(base) / "human_prior.npz"
     if not (cp.is_file() and bp.is_file()):
         return {**out, "skipped": "one of the two has no human_prior.npz"}
-    kinds = shared_kinds(cp, bp)
-    c, b = score(cp, dec, kinds), score(bp, dec, kinds)
-    r = prior_reading(c["total"], b["total"], {k: {"cand": c["kinds"].get(k), "inc": b["kinds"].get(k)} for k in sorted(set(c["kinds"]) | set(b["kinds"]))},
-                      c.get("decisions", 0))
-    r["decisions_folder"] = dec.name
+    c, b = legs([cp, bp], w)
+    r = prior_reading(c, b)
     r["line"] = prior_line(r)
     return r
