@@ -21,7 +21,14 @@ and 91 Act 2 boss fights, so those cells give a **second turn** (a different dec
 9 fights in hash order to reach their 50 and 100. Bosses are played first, so a partial result is the boss table.
 
 `run --kinds boss` plays only the boss fights (the first measurement was cut to the bosses, 2026-11-09: the sample file lists every kind and
-`run` takes the kinds it is asked for, in the order boss, elite, hallway).
+`run` takes the kinds it is asked for, in the order boss, elite, hallway); the elites and hallways were played the next day on the same
+code (`run --kinds elite,hallway`), 124 fights, 200 turns.
+
+The bosses were timed on the engine build before the engine-speed change (`854a6baf`), the elites and hallways on the build after it.
+`calibrate` plays 24 stored boss fights again on the current build and searches their turns at x16, x32 and x64 with the stored seeds:
+all 24 games and all 72 searches came out alike (same moves, simulations, visits and values), and the CPU ratio of the same searches
+was 0.371. `report` reads `calibration.json` and prices a corpus that mixes kinds with the boss CPU-s times that ratio (the table
+says so and prints the unscaled figures beside it).
 
 `run` plays each fight with the teacher (draw 0 of the exam's namespace `x`), records every decision (the move, the distinct root moves,
 the observation's hash, the search's statistics), and keeps turns chosen by a hash coin uniformly among the fight's decisions with two or
