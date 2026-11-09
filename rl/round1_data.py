@@ -66,6 +66,9 @@ DEFAULTS: dict[str, Any] = {
     "smoke": {"seeds": 200, "seeds_file": (REF / "lab" / "seeds" / "R1-smoke-{date}.json").as_posix(), "keep_rule": "v2", "procs": 16},
     "block": {"seeds": 3000, "seeds_file": (REF / "lab" / "seeds" / "R1-block-{date}.json").as_posix(), "keep_rule": "v2", "procs": 16,
               "batch_seeds": 300},
+    # futility: the block's stop for a candidate that cannot reach a promotion (gen0.py promote --no-futility / --futility-min-seeds;
+    # gen_loop.futility_check, docs/rl/KEEP_TEST_V2.md); on, from min_seeds paired seeds
+    "futility": {"enabled": True, "min_seeds": 1000},
     "candidate": {"tag": "round1", "target_generation": 14, "marker": False, "base": "gen11/candidate", "incumbent": "current.json",
                   "why": "D55 addendum 11 / memo row 5: the round's deck refit (prior on labels and blended choices, judgement on the new fighter's runs with human rows)"},
 }
@@ -121,6 +124,8 @@ def validate(cfg: dict) -> None:
         raise ValueError("prior.lambda_acts is {act '1' to '3': lambda >= 0}")
     if j["weight_rule"] not in ("clears_act2", "mean"):
         raise ValueError("judgement.weight_rule is 'clears_act2' (the lowest held-out clears-Act-2 log-loss, clears Act 1 not worse) or 'mean'")
+    if not isinstance(cfg["futility"]["enabled"], bool) or int(cfg["futility"]["min_seeds"]) < 1:
+        raise ValueError("futility.enabled is true or false and futility.min_seeds is 1 or more paired seeds")
     if j["guards"] not in ("report", "gate"):
         raise ValueError("judgement.guards is 'report' (the ranking check and the label bound are reported only) or 'gate'")
 

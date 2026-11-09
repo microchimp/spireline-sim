@@ -411,6 +411,8 @@ def promote_cmd(ctx: Ctx, which: str, cand: Path, seeds_file: str) -> list[str]:
            "--sequential", "--keep-rule", B["keep_rule"], "--smoke-seeds", str(B["seeds"] if which == "smoke" else ctx.cfg["smoke"]["seeds"])]
     if which == "block":
         cmd += ["--batch-seeds", str(B["batch_seeds"])]
+        F = ctx.cfg["futility"]
+        cmd += ["--futility-min-seeds", str(int(F["min_seeds"]))] + ([] if F["enabled"] else ["--no-futility"])
     return cmd + ["--prior-server", "auto", "--gpu-python", ctx.cfg["paths"]["gpu_python"], "--server-procs", "20", "--lab-runs", str(ctx.lab_runs)]
 
 

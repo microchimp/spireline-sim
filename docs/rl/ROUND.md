@@ -141,6 +141,7 @@ where it does not; **addendum 12** the labels-against-blocks decision.
 | `judgement.beta` | 0 | memo 3.4 (pure Monte Carlo) |
 | `judgement.lr`, `epochs`, `batch`, `end_hp_weight` | 3e-4, 6, 1024, 0.25 | train.py's end-HP weight; a fine-tune (builder) |
 | `smoke.seeds`, `block.seeds`, `keep_rule` | 200, 3,000, v2 | memo 2.1; keep test v2 |
+| `futility.enabled`, `futility.min_seeds` | true, 1,000 | D55 addendum 18: the block stops as rejected (`futility@<seeds>`) when no route can reach its promotion gain; passed to `promote` as `--no-futility` / `--futility-min-seeds` (docs/rl/KEEP_TEST_V2.md) |
 | `candidate.tag`, `target_generation`, `marker` | round1, 14, false | `marker` false: the chain judges the candidate itself; true also lets the lab's train job do it |
 
 ## Running one by hand

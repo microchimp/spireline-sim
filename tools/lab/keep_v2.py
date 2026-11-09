@@ -381,3 +381,57 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
         return {**out, "action": "eligible", "routes": eligible,
                 "reason": f"route {''.join(eligible)} clears the early z {z_e:.2f} (floor z {fl['z']:.2f}, deep_f z {dp['z']:.2f})"}
     return {**out, "action": "continue", "reason": "neither route is dead and none is eligible"}
+
+
+# ------------------------------------------------------------------ the futility stop (D55 addendum 18, 2026-11-09)
+
+FUTILITY_MIN_SEEDS = 1000  # the futility stop never looks before this many paired seeds (gen_loop.FUTILITY_MIN_SEEDS is the same figure)
+
+
+def critical_gain(se: float, n: int, n_block: int, alpha: float) -> float:
+    """The gain (mean paired difference) the final test needs: the one-sided `alpha` lower bound clears 0 on all `n_block` seeds when the
+    mean is at least z(1 - alpha) x SE of the whole block, the block's SE being the SE of the `n` seeds played (`se`, SD over root n)
+    scaled to `n_block` seeds. This is the smallest gain any promotion on that measure can have, and the least the futility stop asks
+    of a route: the per-seed spread is the one seen so far, the seeds still to come are all counted."""
+    return NormalDist().inv_cdf(1 - alpha) * se * math.sqrt(n / n_block)
+
+
+def futility_routes(floor: Mapping[str, float], deep: Mapping[str, float] | None, n: int, n_block: int, *, floor_alpha: float = ROUTE_ALPHA,
+                    routes: Sequence[str] = ("A", "F"), measure: str = "deep_f") -> dict[str, Any]:
+    """Whether any route can still promote, from the summaries (`diff_summary`: mean, se, upper95) of the floor and deep_f differences
+    on `n` of `n_block` paired seeds. For each route the 95% upper bound of the candidate's gain is set against the gain the route
+    needs to promote on all the seeds:
+
+      route A (deeper)   deep_f's upper95 against max(MIN_GAIN, the critical gain of deep_f at ROUTE_ALPHA): the rule asks a point gain of
+                         +1.0 per 100 and a lower bound above 0
+      route F (further)  the floor's upper95 against the critical gain of the floor at `floor_alpha` (ROUTE_ALPHA for the keep test v2;
+                         D24's 0.01 for v1, which has this route alone)
+
+    A route is alive when its upper95 reaches the gain it needs (and is above 0: no route promotes on a gain that is not positive).
+    `futile` is true when every route asked for is dead; a bound that cannot be worked out (under two seeds) keeps its route alive.
+    The check reads the gains only. The guards, the wins co-primary and the rest are further conditions of a promotion, so keeping a
+    route alive here never promotes anything: it only declines to stop. The caller asks nothing before FUTILITY_MIN_SEEDS."""
+    out: dict[str, Any] = {"n": int(n), "block": int(n_block), "routes": {}}
+    for name in routes:
+        if name == "A":
+            if deep is None:
+                continue
+            need, got, mean, label = max(MIN_GAIN, critical_gain(deep["se"], n, n_block, ROUTE_ALPHA)), deep["upper95"], deep["mean"], f"{measure} per 100 runs"
+        else:
+            need, got, mean, label = critical_gain(floor["se"], n, n_block, floor_alpha), floor["upper95"], floor["mean"], "floors"
+        known = math.isfinite(need) and math.isfinite(got)
+        out["routes"][name] = {"measure": label, "mean": float(mean), "upper95": float(got), "needs": float(need),
+                               "alive": True if not known else bool(got > 0 and got >= need)}
+    out["futile"] = bool(out["routes"]) and not any(r["alive"] for r in out["routes"].values())
+    out["text"] = "; ".join(f"route {k} ({r['measure']}): 95% upper bound {r['upper95']:+.2f} {'reaches' if r['alive'] else 'falls short of'} "
+                            f"the {r['needs']:+.2f} it needs" for k, r in out["routes"].items())
+    return out
+
+
+def futility_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float] | None, n_block: int, *, floor_alpha: float = ROUTE_ALPHA,
+                  routes: Sequence[str] = ("A", "F"), measure: str = "deep_f", boot: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, Any]:
+    """`futility_routes` on the paired differences of the seeds played: the bounds are the cluster bootstrap's (`diff_summary`, the
+    method of the routes' own lower bounds). `deep_diffs` None: the floor route alone (the v1 rule)."""
+    fl = diff_summary(floor_diffs, boot, seed)
+    dp = diff_summary(deep_diffs, boot, seed) if deep_diffs is not None and "A" in routes else None
+    return futility_routes(fl, dp, len(floor_diffs), n_block, floor_alpha=floor_alpha, routes=routes, measure=measure)

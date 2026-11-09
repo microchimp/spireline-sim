@@ -134,6 +134,10 @@
   "procs": 16,
   "batch_seeds": 300
  },
+ "futility": {
+  "enabled": true,
+  "min_seeds": 1000
+ },
  "candidate": {
   "tag": "round1",
   "target_generation": 14,

@@ -73,9 +73,65 @@ this network's: ...`), and the base agent's network is named in the same line (`
 `human bar: not read (ErrorName)` and never touches the verdict. No rule, guard, check or ledger column reads it (the ledger row is as before:
 the line lives in `promotion.json` and the command output only). v1 judgements are unchanged.
 
+## The futility stop (D55 addendum 18, 2026-11-09)
+
+A judgement used to play every seed of its block unless a refusal or an early promotion ended it: tonight's `gen14/candidate-prior-act2` stood at
+71 against 76 Act 2 boss kills on 800 common seeds with 2,200 to play (about ten hours of 16 processes) to confirm no promotion. The funnel
+now also stops a block that cannot reach one.
+
+**The rule.** At a look at `futility.min_seeds` (default 1,000) paired seeds or more that would play on (the looks of the funnel: 200, then
+every 300; the refusals and the early promotion are asked first and are as they were; the last look is judged as ever), the keep test asks,
+for each route it can promote by, whether the 95% upper bound of the candidate's gain (the paired cluster bootstrap of the routes' own lower
+bounds, `keep_v2.diff_summary`) reaches the gain that route needs on the whole block:
+
+* **route A** (the Act 2 boss and deeper, deep_f per 100 runs): `max(+1.0, z(0.995) x SE x sqrt(n / N))`, the rule's own minimum gain or the
+  gain whose 0.005 lower bound clears 0 on all N seeds, whichever is more;
+* **route F** (the floors): `z(0.995) x SE x sqrt(n / N)` (D24's alpha 0.01 under `--keep-rule v1`, which has this route alone);
+
+where SE is the standard error of the n seeds played and N the block's seeds (the spread seen so far, the seeds still to come all counted). A
+route whose bound does not reach its gain, or is not above 0, is dead. When **no** route is alive the judgement stops: decision `rejected`, the
+decision's `rule` ends `+D51-funnel+futility@<seeds>`, `sequential.stop` is `{action: futility, rule: futility@<seeds>, n, futility: the
+routes' bounds}`, the ledger row's `guard` cell ends `| funnel futility@<seeds> of <N> seeds`, both arms' rows to that look are kept, the keep
+test v2 runs on the seeds played as for a refusal (`keep_v2` and the usual summary), the train job exits 0 so the lab's marker becomes `done-`,
+and the job log carries `futility look at <n> of <N> seeds: route A (...): 95% upper bound +x falls short of the +y it needs; route F (...)
+...; no route can reach it: the judgement stops` at every look it asked (the last of them, if it stopped). A route that is alive keeps the
+judgement going; nothing is asked before `min_seeds`. `promotions.tsv` keeps its 31 columns in their order (the column `rule` stays the keep
+rule, `v2`; `row_rule` reads it); `sequential.futility` in `promotion.json` records the switch.
+
+**Switch.** On by default. `gen0.py train` / `promote`: `--no-futility`, `--futility-min-seeds N` (the train job passes them to its promote child
+only when named, so the lab's live command needs no change); `rl/round1_config.json` `futility.enabled` (true) and `futility.min_seeds`
+(1000), which the round's block step passes to `promote`; in code `gen_loop.promote(futility=, futility_min_seeds=)`, `gen_loop.FUTILITY_ON`,
+`FUTILITY_MIN_SEEDS`.
+
+**What it costs and saves** (the normal model of `tests/python/test_futility.py::ModelTests`: 3,000 seeds in the funnel's looks, per-seed SD
+7.74 floors and 41 per 100 on deep_f; 200,000 paths; "lost" is the chance that the block would have promoted at its last look and the stop
+ended it first):
+
+| true gain (floors, deep_f per 100) | P(promote at the last look) | lost to the stop | stopped | seeds played, mean |
+|---|---|---|---|---|
+| 0, 0 (level) | 0.010 | 0.0001 | 74% | 2,080 |
+| -0.5, -2 | 0 | 0 | 100% | 1,137 |
+| +0.2, 0 | 0.127 | 0.0008 | 35% | 2,607 |
+| +0.3, 0 | 0.330 | 0.0018 | 17% | 2,811 |
+| +0.5, 0 | 0.833 | 0.0021 | 2% | 2,978 |
+| +1.07, 0 (generation 11's gain) | 1.000 | 0.0000 | 0% | 3,000 |
+| 0, +1.0 | 0.114 | 0.0008 | 38% | 2,580 |
+| 0, +2.0 | 0.542 | 0.0022 | 8% | 2,908 |
+| 0, +3.0 | 0.924 | 0.0014 | 1% | 2,991 |
+| 0, +5.0 | 1.000 | 0.0000 | 0% | 3,000 |
+
+The stop loses at most two promotions in a thousand blocks at any gain, and none where the test finds the gain for certain; a level candidate
+ends at 2,080 of 3,000 seeds on average (a third saved). **Replay of the lab's recorded blocks** (rows read, nothing played; the test skips
+where the folders are absent): none of the five promoted blocks that have their arms (E3-r1, E5, E7-r1, E8 and E12-r3 under v2) stops
+for futility at 1,000 or at 500 seeds; the rejected E14-2026-11-07 (2,000 seeds played) stops at 1,100 and E4-2026-10-24 at 1,100.
+Tonight's `gen14/candidate-prior-act2`, read on its 1,100 common seeds (floor +0.06, deep_B2 -1.6 per 100): route A is dead (95% upper
+bound +0.18 against +1.68) and route F alive by a hair (+0.51 against +0.42), so by this rule it stops at about 1,700 seeds if the means
+hold, not at 1,100.
+
 ## Tests
 
 `tests/python/test_keep_v2.py` (the rule, the frontier, the routes, the guards, section 6's verdicts from constructed differences, and
 the lab's saved arms where they exist), `test_funnel.py` (`V2RuleTests`, `PromoteV2Tests`, including the human-bar line), `test_gen_loop.py`
 (`KeepRuleV2Tests`, `test_train_passes_keep_rule_to_promote`, the line through `rejudge` and its command); the line's pieces in
 `test_fight_exam.py` (`HumanBarReadingTests`); synthetic arms in `tests/python/keep_v2_fixtures.py` (counts only; no saved row is committed).
+`tests/python/test_futility.py` (the futility stop: the routes' bounds, a level candidate stopping at 1,000 seeds, a better one and one better on floors only or on deep_f only never stopping, the ledger line's columns, the switches, the model table, the recorded blocks).
