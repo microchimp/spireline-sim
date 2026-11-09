@@ -397,7 +397,7 @@ def corpus_cost(per_turn: dict[str, float | None], weights: dict[str, float], tu
 
 def cost_table(groups: dict[str, dict], pools: dict[str, int] | None = None, turns: int = 10000) -> dict:
     """The 10,000-turn corpus priced at the human positions' own mix of kinds (the pool counts: fights; and the pool counts times the
-    mean eligible decisions per fight, the mix by turns) and for bosses alone (the two acts at their pool counts). Per mix, the price
+    mean eligible decisions per fight, the mix by turns) and for bosses alone (the two acts at their pool counts); the mixes over every kind are left out while a kind and act has no turns. Per mix, the price
     of the doubling run (each turn pays up to its converged rung) and of every turn at a fixed rung (1x, 4x, 16x of the teacher's budget)."""
     pools = pools or HUMAN_META_POOLS
     mixes = {
@@ -407,6 +407,8 @@ def cost_table(groups: dict[str, dict], pools: dict[str, int] | None = None, tur
     }
     out = {}
     for name, w in mixes.items():
+        if name != "bosses alone" and any(g not in groups for g in pools):  # a mix over every kind needs turns of every kind
+            continue
         row = {"to convergence": corpus_cost({g: groups[g]["cpu_to_mean"] for g in groups}, w, turns)}
         for r in REPORT_RELS:
             row[f"fixed {r}x"] = corpus_cost({g: groups[g]["rung_cpu_mean"].get(str(r)) for g in groups}, w, turns)

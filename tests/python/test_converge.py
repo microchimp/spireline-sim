@@ -339,6 +339,16 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(cv.corpus_cost({"a": 10.0, "b": None}, {"a": 1.0, "b": 5.0, "c": 5.0})["per_turn_s"], 10.0)
         self.assertIsNone(cv.corpus_cost({"a": None}, {"a": 1.0})["core_hours"])
 
+    def test_a_mix_over_every_kind_is_priced_only_when_every_kind_has_turns(self):
+        self.assertEqual(list(cv.summarize(self.turns)["cost"]), ["bosses alone"])  # the default pools name six groups, two have turns
+        kinds = [turn("e1", "elite", 1, turn_at_1x()["rungs"][1:]), turn("e2", "elite", 2, turn_at_1x()["rungs"][1:]),
+                 turn("h1", "hallway", 1, turn_at_1x()["rungs"][1:]), turn("h2", "hallway", 2, turn_at_1x()["rungs"][1:])]
+        full = cv.summarize(self.turns + kinds)["cost"]
+        self.assertEqual(list(full), ["own mix (fights)", "own mix (turns)", "bosses alone"])
+        w = full["own mix (fights)"]["weights"]
+        self.assertEqual((w["act1-elite"], w["act2-hallway"]), (cv.HUMAN_META_POOLS["act1-elite"], cv.HUMAN_META_POOLS["act2-hallway"]))
+        self.assertEqual(set(full["bosses alone"]["weights"]), {"act1-boss", "act2-boss"})
+
     def test_the_tables_print(self):
         text = cv.tables(self.s)
         self.assertIn("act1-boss", text)
