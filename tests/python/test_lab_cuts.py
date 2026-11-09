@@ -54,7 +54,7 @@ class Case(unittest.TestCase):
         (self.lab / "jobs.json").write_text(json.dumps({"cores": {"total": 16, "fights": 8, "train": 16, "presort": 4, "report": 2, "loop": 6}}))
 
     def runner(self, *extra: str, clock=None) -> rn.Runner:
-        a = rn.parse_args(["--lab", str(self.lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
+        a = rn.parse_args(["--rotation", "all", "--reports", "all", "--lab", str(self.lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--poll", "0.05", "--wait-poll", "0.05", "--grace", "0",
                            "--no-guard", "user,load,disk", "--loop-status", str(self.tmp / "no-loop"), "--quiet-lock", str(self.tmp / "QUIET.lock"),
                            *extra])

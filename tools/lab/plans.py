@@ -61,6 +61,7 @@ class Ctx:
     nuget: Path
     skip: tuple[str, ...] = ()
     report_beside: bool = False  # groups and kits run beside the next job (runner.Report), not as steps of this one
+    off: tuple[str, ...] = ()  # step names LAB/jobs.json `reports` switches off now (checks, corpus-import, groups, kits): their commands are skipped
 
     def tokens(self) -> dict[str, str]:
         f = lambda p: str(p).replace("\\", "/")  # noqa: E731
@@ -105,6 +106,9 @@ class Cmd:
     mem_share: float = 0.0  # the share of the machine's RAM its processes may commit together (a Job Object limit; an allocation past it fails)
 
     def skip_reason(self, c: Ctx, step: str = "") -> str | None:
+        for name in c.off:
+            if step == name or self.name == name:
+                return f"off in LAB/jobs.json reports.{name}"
         for pre in c.skip:
             if self.name.startswith(pre) or (step and step.startswith(pre)):
                 return f"skipped by --skip {pre}"

@@ -499,7 +499,7 @@ class RunnerMixTest(unittest.TestCase):
         write(self.tmp / "bl" / "backlog-c1.json", {"items": []})
 
     def runner(self, *extra: str) -> rn.Runner:
-        a = rn.parse_args(["--lab", str(self.tmp / "lab"), "--tree", str(self.tree), "--game", str(self.tmp / "game" / "g"),
+        a = rn.parse_args(["--rotation", "all", "--reports", "all", "--lab", str(self.tmp / "lab"), "--tree", str(self.tree), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--codex", str(self.tmp / "codex.gz"), "--poll", "0.05", "--wait-poll", "0.05",
                            "--grace", "0", "--no-guard", "user,load,disk", *extra])
         r = rn.Runner(a)

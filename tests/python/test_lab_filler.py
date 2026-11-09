@@ -277,7 +277,7 @@ class FillerBase(unittest.TestCase):
         (self.lab / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
 
     def runner(self, *extra: str) -> rn.Runner:
-        a = rn.parse_args(["--lab", str(self.lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
+        a = rn.parse_args(["--rotation", "all", "--reports", "all", "--lab", str(self.lab), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--poll", "0.05", "--wait-poll", "0.05", "--grace", "0",
                            "--no-guard", "user,load,disk", "--loop-status", str(self.tmp / "no-loop"), "--filler", "on",
                            "--filler-tree", self.FILLER_TREE, *extra])

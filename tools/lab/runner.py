@@ -177,6 +177,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "off: the filler runs from the lab tree and a presort stops it (before D52)")
     ap.add_argument("--loop-status", default=d["loop_status"],
                     help="the always-on fight loop's status file (its daemon pid and phase): the load guard leaves its processes out")
+    ap.add_argument("--rotation", choices=("config", "all"), default="config",
+                    help="which fidelity-era kinds (fights, probes, mutation, invariants, runs) the runner may pick: config: LAB/jobs.json `rotation` (absent or "
+                         "empty: none); all: every one (a test, a hand run). --once names its kind itself and ignores this")
+    ap.add_argument("--reports", choices=("config", "all"), default="config",
+                    help="which report steps (checks, corpus-import, groups, kits) run: config: LAB/jobs.json `reports` (a step not enabled there is off); "
+                         "all: every one")
     ap.add_argument("--dry-run", action="store_true", help="print the guards, the next job and its plan; change nothing")
     ap.add_argument("--skip", default="", help="comma-separated step or command name prefixes to skip (codex, refset, corpus, ...)")
     ap.add_argument("--no-guard", default="", help=f"comma-separated guards to switch off for a test: {','.join(guards.GUARD_NAMES)}")
@@ -424,6 +430,7 @@ class Runner:
                                          self.lab.root.parent / "filler-tree" if ft.lower() == "auto" else Path(ft))  # frozen copies (D52)
         self.main_cores = 0  # cores of the job the main lane runs now (0 between jobs)
         self.report_note = ""  # the last reason a due report did not start, logged once
+        self._config_note = ""  # the rotation and reports settings last logged (said again only when they change)
         self.train_lock: Any = None  # the QuietLock holding our `lab-train` line while a train job runs (rl/quiet_lock.py)
         self._train_beat = 0.0
         self._load_exempt_logged = False
@@ -510,7 +517,8 @@ class Runner:
                          sha=sha, job_dir=run.dir if run else self.lab.runs / name, job_name=name, params=params,
                          backlog_dir=Path(a.backlog_dir), backlog=self.newest_backlog(), codex=Path(a.codex),
                          decompiled=Path(a.decompiled), records=Path(a.records), game_src=Path(a.game_src),
-                         nuget=Path(os.path.expanduser("~")) / ".nuget" / "packages", skip=self.skip, report_beside=self.report_beside)
+                         nuget=Path(os.path.expanduser("~")) / ".nuget" / "packages", skip=self.skip, report_beside=self.report_beside,
+                         off=self.reports_off())
 
     def poll(self) -> guards.Verdict:
         if self.stop_signal:
@@ -597,6 +605,11 @@ class Runner:
                 continue
             if a.once and run.job != a.once:
                 continue
+            if self.rotation_hold(run.job) is not None:  # the kind was switched off since the job stopped: it is not resumed
+                if not a.dry_run:
+                    self.record(run, 3)
+                    run.finish(3, f"closed: {run.job} is not in LAB/jobs.json rotation")
+                continue
             age_h = (time.time() - (d / "job.json").stat().st_mtime) / 3600
             if sha is None or run.data.get("main_sha") not in here or age_h > RESUME_HOURS:
                 if not a.dry_run:
@@ -645,8 +658,11 @@ class Runner:
             self.next_strategy = None
             return job, f"ladder: {job} (priority {jobs.PRIORITY[job]})"
         fights_none = False  # the mix answers the same for every fights slot of one pass: ask once
+        allowed = self.rotation_set() if not self.a.once else jobs.FIDELITY_KINDS
         for k in range(len(ROTATION)):
             job = ROTATION[(st["rotation"] + k) % len(ROTATION)]
+            if job not in allowed and not (job == "fights" and "runs" in allowed):  # off in LAB/jobs.json rotation: no pick, no log line
+                continue
             strategy = None
             if job == "fights":  # the mix says which strategy this slot's job is (a whole run is its own job type)
                 if fights_none:
@@ -825,6 +841,50 @@ class Runner:
                 if not want:
                     break
 
+    # ---- which fidelity-era kinds and report steps run (LAB/jobs.json `rotation` and `reports`, D57 addendum 1)
+
+    def rotation_set(self) -> tuple[str, ...]:
+        """The fidelity-era kinds the runner may pick now: every one with --rotation all, else LAB/jobs.json `rotation` (absent or empty: none).
+        The settings are logged when they change (and a name that is not a kind is said once)."""
+        if self.a.rotation == "all":
+            return jobs.FIDELITY_KINDS
+        kinds, unknown = jobs.rotation_kinds(cores.load_doc(self.lab.root))
+        self.note_config(kinds, unknown)
+        return kinds
+
+    def reports_config(self) -> dict[str, dict[str, Any]]:
+        if self.a.reports == "all":
+            return {s: {"enabled": True, "every_h": None} for s in jobs.REPORT_STEPS}
+        return jobs.reports_config(cores.load_doc(self.lab.root))
+
+    def note_config(self, kinds: tuple[str, ...], unknown: list[str] | None = None) -> None:
+        """Say once, and again when it changes, which kinds the rotation may pick and which report steps run."""
+        rep = self.reports_config() if self.a.reports != "all" else None
+        on = [s for s, v in (rep or {}).items() if v["enabled"]]
+        note = f"rotation: {', '.join(kinds) or 'none'}; reports: {', '.join(on) or 'none'}" + (f"; not kinds: {', '.join(unknown)}" if unknown else "")
+        if note != self._config_note and not self.a.dry_run:
+            first = not self._config_note
+            self._config_note = note
+            self.log(f"LAB/jobs.json {note}" + (" (a kind or step that is not named is off)" if first else ""))
+
+    def rotation_hold(self, job: str) -> str | None:
+        """Why the fidelity-era kind `job` is not picked: LAB/jobs.json `rotation` does not name it. Kinds of other families, and a one-shot
+        run (--once) that names its own kind, are never held."""
+        if job not in jobs.FIDELITY_KINDS or self.a.once:
+            return None
+        return None if job in self.rotation_set() else "not in LAB/jobs.json rotation (the fidelity-era kinds are off unless it names them)"
+
+    def reports_off(self) -> tuple[str, ...]:
+        """The report steps that do not run now: those LAB/jobs.json `reports` does not enable, and `checks` while its `every_h` has not passed
+        since the last presort that ran it (`state["last_checks"]`)."""
+        cfg = self.reports_config()
+        off = [s for s in jobs.REPORT_STEPS if not cfg[s]["enabled"]]
+        every = cfg["checks"]["every_h"]
+        last = self.state.get("last_checks")
+        if "checks" not in off and every and isinstance(last, (int, float)) and time.time() - last < every * 3600:
+            off.append("checks")
+        return tuple(off)
+
     def alert_hold(self, key: str) -> str | None:
         """Why `key` (a job type, or the strategy of a fights job) is not picked: it failed twice in a row and LAB/alerts/<key>.txt stands. The
         hold ends when the file is removed by hand (the failure count starts again); the runner logs the lifting once."""
@@ -847,6 +907,9 @@ class Runner:
 
     def unavailable(self, job: str, sha: str, strategy: str | None = None, tree: Path | None = None) -> str | None:
         why = self.alert_hold(strategy or job)
+        if why is not None:
+            return why
+        why = self.rotation_hold(job)
         if why is not None:
             return why
         until = self.state["backoff"].get(strategy or job, 0)  # a strategy that keeps failing backs off alone
@@ -1396,7 +1459,11 @@ class Runner:
         self.streak(run, rc)
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
-        beside = self.report_beside and rc == 0 and run.job in REPORT_JOBS  # its groups and kits run beside the next job
+        cfg = self.reports_config()
+        beside = (self.report_beside and rc == 0 and run.job in REPORT_JOBS  # its groups and kits run beside the next job
+                  and (cfg["groups"]["enabled"] or cfg["kits"]["enabled"]))  # (no chain to run when both are off)
+        if run.job == "presort" and run.rec("checks").get("status") == "done":
+            st["last_checks"] = time.time()  # the cadence of `reports.checks.every_h` counts from the presort that ran the checks
         self.record(run, rc, yield_now=not beside)
         run.finish(rc)
         self.lab.save_state(st)

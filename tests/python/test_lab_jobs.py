@@ -48,7 +48,7 @@ class Base(unittest.TestCase):
 
     def runner(self, guards_on: tuple[str, ...] = (), *extra: str) -> rn.Runner:
         off = ",".join(g for g in ALL_GUARDS if g not in guards_on)
-        a = rn.parse_args(["--lab", str(self.lab_dir), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
+        a = rn.parse_args(["--rotation", "all", "--reports", "all", "--lab", str(self.lab_dir), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--poll", "0.05", "--wait-poll", "0.05", "--grace", "0",
                            "--no-guard", off, *extra])
         r = rn.Runner(a)

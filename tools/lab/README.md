@@ -76,7 +76,7 @@ refset score, in parallel; the refset score and the corpus results are copied in
 `lab_groups` reads), `corpus` (`corpus.py check --no-scan`), `groups`, `kits`. A failed `tree` or `build` fails the job
 and blocks everything on that sha (retry after 30 min, doubling); the checks' own exit 1 (a regression) is a result, not a failure.
 
-After a presort, a rotation by value: `fights, fights, probes, fights, mutation, fights, invariants`. A job type that cannot
+After a presort, a rotation by value: `fights, fights, probes, fights, mutation, fights, invariants`. Since D57 addendum 1 only the kinds `LAB/jobs.json` `rotation` names are in it (none when it is absent), and the report steps `checks`, `corpus-import`, `groups` and `kits` run only when `reports` enables them: see "Switches" below. A job type that cannot
 run (tool or input missing, stopped after two failed jobs in a row, see "Alerts" below) is skipped with a log line and the rotation moves on.
 `probes`, `mutation` and `invariants`, and the `retest` strategy, run **once per presorted tree**: `state.json`'s `last_ok_sha` keeps, for
 each, the tree its last rc 0 job ran on, and a pick on that tree skips it ("ran on this tree already (<sha>)", written once an hour at
@@ -305,6 +305,31 @@ by 2026-11-09). The guard still reads the load, and it still stops the practice 
 applies as before to every other job and to the filler and the report; user input, PAUSE, HALT, disk and the parent guard apply to the train
 job as to every job.
 
+## Switches: the fidelity-era kinds and the report steps are off unless named (D57 addendum 1, 2026-11-09)
+
+Two entries of `LAB/jobs.json` (read at every pick, so a change needs no restart; both are **absent = off**):
+
+```json
+"rotation": ["fights", "probes", "mutation", "invariants", "runs"],
+"reports":  {"checks": {"enabled": true, "every_h": 168}, "corpus-import": true, "groups": true, "kits": true}
+```
+
+* **`rotation`** lists which of the fidelity-era job kinds the runner may pick: `fights` (every fights strategy of the mix), `probes`, `mutation`,
+  `invariants` and `runs` (the mix's whole-runs strategy). A list, or `{"kinds": [...]}`; an absent entry, an empty list and a name that is not a kind
+  (said once in the log) enable nothing. `ROTATION` in `runner.py` is filtered by it: a slot whose kind is off is passed over without a log line (a
+  `fights` slot goes on while `runs` alone is named: the mix is left with whole-runs); `unavailable()` says `not in LAB/jobs.json rotation` for a kind
+  that is off; an unfinished job of a kind switched off since it stopped is closed (done.rc 3), not resumed. The presort, the agent-era kinds (selfplay,
+  train, score-real, nightly-real, the benches) and the filler are not in the entry and are not affected. The log carries the settings when they change
+  (`LAB/jobs.json rotation: probes, mutation; reports: groups`). With nothing named the runner builds the tree on a landing and does the agent-era work.
+* **`reports`** switches the four report steps, each `true`, `{"enabled": true}` or off when not named: **`checks`** (the presort's `checks` step: the
+  Codex walk `codex-s0..3` and the reference-set score; not the `corpus` check, which stays), **`corpus-import`** (the last step of a fights job),
+  **`groups`** and **`kits`** (the report beside the next job). `checks` may carry **`every_h`**: the least time between two runs (`168`: weekly, counted from
+  the presort that last ran it, `state.json` `last_checks`). A step that is off has its commands skipped with `off in LAB/jobs.json reports.<step>`; when
+  both `groups` and `kits` are off no report chain is queued and a finished job's `yield.tsv` row is written at once (group columns NA).
+
+`--rotation all` and `--reports all` (default `config`) turn every kind and step on whatever the file says: for tests and for a hand run; `--once <kind>`
+names its own kind and never reads `rotation`. The orchestrator writes the live entries.
+
 ## Lab folder
 
 ```
@@ -379,7 +404,8 @@ files written as PowerShell writes them, the always-on stay mode), load window m
 plans on a fake tree (one per strategy and the reasons one cannot run), the mix file, the scheduler's CPU shares, the yield
 rows, the runner on trivial commands (done.rc last, resume, supersede, PAUSE now / with grace, HALT, backoff, always-on
 waiting out a HALT), a real Job Object test (kill a process from outside: its grandchild dies), and the task script under
-`-WhatIf` for both triggers. `tests/python/test_lab_cuts.py` (D55 addendum 18): the alerts (two failures in a row stop the picks and write the
+`-WhatIf` for both triggers. `tests/python/test_lab_rotation.py` (the two entries on a fake config: absent, empty, a list, a dict, unknown names, the filter of the rotation, a kind switched off
+while a job of it is open, the report steps and the weekly `checks`, no report chain when groups and kits are off). `tests/python/test_lab_cuts.py` (D55 addendum 18): the alerts (two failures in a row stop the picks and write the
 file, a success in between resets the count, a removed file lifts the hold, the time-limit list, the banners), the report's holds (judgement,
 score, nightly, cores, the loop's cores, a queued report never holds a pick, a running report gives way), no filler within an hour of a
 presort, the `lab-train` line (appears with the job, refreshed, gone after a simulated kill, a crash and the runner leaving) and the load guard

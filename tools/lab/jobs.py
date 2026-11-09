@@ -74,6 +74,37 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 }
 BENCH_KEY = {"bench-env": "env", "bench-emu": "emu"}
 
+# The fidelity-era job kinds and report steps are off unless LAB/jobs.json switches them on (D57 addendum 1, 2026-11-09):
+#   "rotation": ["fights", "probes", ...]      which of FIDELITY_KINDS the runner may pick; absent or empty: none of them
+#   "reports": {"checks": {"enabled": true, "every_h": 168}, "groups": true, ...}   which of REPORT_STEPS run; absent: none
+FIDELITY_KINDS = ("fights", "probes", "mutation", "invariants", "runs")
+REPORT_STEPS = ("checks", "corpus-import", "groups", "kits")
+
+
+def rotation_kinds(doc: Any) -> tuple[tuple[str, ...], list[str]]:
+    """(the fidelity-era kinds `doc["rotation"]` lets the runner pick, in FIDELITY_KINDS order; the names in it that are not kinds). The entry
+    is a list of names (a dict with a `kinds` list is read the same); anything else, an empty list and a missing entry are none."""
+    raw = doc.get("rotation") if isinstance(doc, dict) else None
+    if isinstance(raw, dict):
+        raw = raw.get("kinds")
+    names = [str(x) for x in raw] if isinstance(raw, list) else []
+    return tuple(k for k in FIDELITY_KINDS if k in names), [n for n in names if n not in FIDELITY_KINDS]
+
+
+def reports_config(doc: Any) -> dict[str, dict[str, Any]]:
+    """{step: {"enabled": bool, "every_h": hours or None}} for every REPORT_STEPS name from `doc["reports"]` (a step is off when it is not
+    named; its entry is a bool or {"enabled": bool, "every_h": N}; `every_h` is the least time between two runs, used by `checks`)."""
+    raw = doc.get("reports") if isinstance(doc, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    out: dict[str, dict[str, Any]] = {}
+    for step in REPORT_STEPS:
+        v = raw.get(step)
+        on = bool(v.get("enabled")) if isinstance(v, dict) else v is True
+        every = v.get("every_h") if isinstance(v, dict) else None
+        every = float(every) if isinstance(every, (int, float)) and not isinstance(every, bool) and every > 0 else None
+        out[step] = {"enabled": on, "every_h": every}
+    return out
+
 
 def read_lenient(p: Path) -> Any:
     try:

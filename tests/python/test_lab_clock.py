@@ -39,7 +39,7 @@ class RunnerClockCase(unittest.TestCase):
         self.addCleanup(lambda: (pl.PLANS.clear(), pl.PLANS.update(saved)))
 
     def runner(self) -> rn.Runner:
-        a = rn.parse_args(["--lab", str(self.tmp / "lab"), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
+        a = rn.parse_args(["--rotation", "all", "--reports", "all", "--lab", str(self.tmp / "lab"), "--tree", str(self.tmp / "tree"), "--game", str(self.tmp / "game" / "g"),
                            "--backlog-dir", str(self.tmp / "bl"), "--poll", "0.05", "--wait-poll", "0.05", "--grace", "0",
                            "--no-guard", "user,load,disk"])
         r = rn.Runner(a)
