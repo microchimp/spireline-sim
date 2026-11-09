@@ -374,19 +374,49 @@ public sealed class ActionQueueSet
         }
     }
 
-    /// <summary>A copy sharing nothing with this set (KernelState.CopyTo).</summary>
+    /// <summary>
+    /// A copy sharing nothing it could change with this set (KernelState.CopyTo). The history (<see cref="All" />) grows with
+    /// the fight, and a record that has finished or was canceled and stands in no queue is never written again (every write is
+    /// to a record in a queue or just enqueued; an enqueued record is refused a second time), so the copy lists the same record
+    /// objects for those and clones only the ones a queue holds or that wait.
+    /// </summary>
     public ActionQueueSet Copy()
     {
-        var map = _all.ToDictionary(a => a, a => a.Copy());
+        var map = new Dictionary<GameActionRec, GameActionRec>();
         var c = new ActionQueueSet
         {
             NextId = NextId, InCombat = InCombat, LastExecutedActionId = LastExecutedActionId, LastExecutedHookId = LastExecutedHookId,
         };
-        c._all.AddRange(_all.Select(a => map[a]));
+        c._all.Capacity = _all.Count;
+        foreach (var a in _all)
+        {
+            if (a.State is GameActionState.Finished or GameActionState.Canceled && !InAQueue(a))
+            {
+                c._all.Add(a);
+            }
+            else
+            {
+                var copy = a.Copy();
+                map[a] = copy;
+                c._all.Add(copy);
+            }
+        }
+
         foreach (var q in _queues)
             c._queues.Add(q.Copy(map));
         c._waitingForResumption.AddRange(_waitingForResumption);
         return c;
+    }
+
+    private bool InAQueue(GameActionRec a)
+    {
+        foreach (var q in _queues)
+        {
+            if (q.Actions.Count > 0 && q.Actions.Contains(a))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>The front of <paramref name="owner" />'s queue when it is in <paramref name="state" />, else null.</summary>

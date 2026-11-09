@@ -119,10 +119,18 @@ internal static class Enemies
         new EnemyDef(Id: 106, Name: "Zapbot", MinHp: 19, MaxHp: 24, MinHpBelowToughEnemies: 18, MaxHpBelowToughEnemies: 23, Moves: Array.Empty<int>()),
     ];
 
-    public static EnemyDef Get(int id) =>
-        Array.Find(_all, e => e.Id == id) is { Id: > 0 } def
-            ? def
-            : throw new ArgumentException($"Unknown enemy id {id}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, e => e.Id);
+
+    public static EnemyDef Get(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is { Id: > 0 } def)
+        {
+            return def;
+        }
+
+        throw new ArgumentException($"Unknown enemy id {id}");
+    }
 
     public static Intent ChooseIntent(int enemyId, int moveIndex, int turn, Random rng)
     {

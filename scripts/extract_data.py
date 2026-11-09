@@ -456,10 +456,30 @@ internal static class Cards
     /// <summary>Every card, for callers that need to ask a question of the whole set.</summary>
     public static ReadOnlySpan<CardDef> All => _all;
 
-    public static CardDef Get(int id) =>
-        Array.Find(_all, c => c.Id == id) is {{ Id: not 0 }} def
-            ? def
-            : throw new ArgumentException($"Unknown card id {{id}}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, c => c.Id);
+
+    public static CardDef Get(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is {{ Id: not 0 }} def)
+        {{
+            return def;
+        }}
+
+        throw new ArgumentException($"Unknown card id {{id}}");
+    }}
+
+    /// <summary>As <see cref="Get" />, without copying the definition out of the table (a hot path reads a field or two).</summary>
+    public static ref readonly CardDef Ref(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at].Id != 0)
+        {{
+            return ref _all[at];
+        }}
+
+        throw new ArgumentException($"Unknown card id {{id}}");
+    }}
 
     public static int? FindId(string name) =>
         Array.Find(_all, c => c.Name == name) is {{ Id: not 0 }} def
@@ -548,10 +568,18 @@ internal static class Enemies
 {lines}
     ];
 
-    public static EnemyDef Get(int id) =>
-        Array.Find(_all, e => e.Id == id) is {{ Id: > 0 }} def
-            ? def
-            : throw new ArgumentException($"Unknown enemy id {{id}}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, e => e.Id);
+
+    public static EnemyDef Get(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is {{ Id: > 0 }} def)
+        {{
+            return def;
+        }}
+
+        throw new ArgumentException($"Unknown enemy id {{id}}");
+    }}
 
     public static Intent ChooseIntent(int enemyId, int moveIndex, int turn, Random rng)
     {{
@@ -614,10 +642,18 @@ internal static class Powers
 {lines}
     ];
 
-    public static PowerDef Get(int id) =>
-        Array.Find(_all, p => p.Id == id) is {{ Id: > 0 }} def
-            ? def
-            : throw new ArgumentException($"Unknown power id {{id}}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, p => p.Id);
+
+    public static PowerDef Get(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is {{ Id: > 0 }} def)
+        {{
+            return def;
+        }}
+
+        throw new ArgumentException($"Unknown power id {{id}}");
+    }}
 
     public static int? FindId(string name) =>
         Array.Find(_all, p => p.Name == name) is {{ Id: > 0 }} def
@@ -688,10 +724,18 @@ internal static class Relics
     /// <summary>Every relic, for audits and for tests that assert over the whole set.</summary>
     public static ReadOnlySpan<RelicDef> All => _all;
 
-    public static RelicDef Get(int id) =>
-        Array.Find(_all, r => r.Id == id) is {{ Id: > 0 }} def
-            ? def
-            : throw new ArgumentException($"Unknown relic id {{id}}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, r => r.Id);
+
+    public static RelicDef Get(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is {{ Id: > 0 }} def)
+        {{
+            return def;
+        }}
+
+        throw new ArgumentException($"Unknown relic id {{id}}");
+    }}
 
     public static int? FindId(string name) =>
         Array.Find(_all, r => r.Name == name) is {{ Id: > 0 }} def
@@ -701,7 +745,8 @@ internal static class Relics
     /// <summary>Lookup that does not throw, for ids that may not name a relic at all.</summary>
     public static bool TryGet(int id, out RelicDef def)
     {{
-        def = Array.Find(_all, r => r.Id == id);
+        int at = _index.First(id);
+        def = at >= 0 ? _all[at] : default;
         return def.Id > 0;
     }}
 }}
@@ -777,10 +822,18 @@ internal static class Potions
 {lines}
     ];
 
-    public static PotionDef Get(int id) =>
-        Array.Find(_all, p => p.Id == id) is {{ Id: > 0 }} def
-            ? def
-            : throw new ArgumentException($"Unknown potion id {{id}}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, p => p.Id);
+
+    public static PotionDef Get(int id)
+    {{
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is {{ Id: > 0 }} def)
+        {{
+            return def;
+        }}
+
+        throw new ArgumentException($"Unknown potion id {{id}}");
+    }}
 
     public static int? FindId(string name) =>
         Array.Find(_all, p => p.Name == name) is {{ Id: > 0 }} def

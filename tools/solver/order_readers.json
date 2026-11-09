@@ -936,6 +936,10 @@
    "accesses": 11,
    "reason": "copies the piles whole, in order"
   },
+  "src/Sts2Emulator/Core2/CardUidInvariant.cs": {
+   "accesses": 2,
+   "reason": "the card-uid safety net reads every live card's uid, as a set, to see that the invariant holds (and rewrites the cards only when it does not, by the walk CardUids.Rewrite makes): no position decides anything"
+  },
   "src/Sts2Emulator/Core2/Models/Cards/Melancholy.cs": {
    "accesses": 2,
    "reason": "Cheapen finds the card by its uid in each of the four piles and lowers its cost: the card is unique, so the order picks nothing"

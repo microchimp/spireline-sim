@@ -57,6 +57,12 @@ public sealed class HandlerTable : IHandlerSource
     private readonly Dictionary<(ListenerKind Kind, int Model), List<string>> _inheritors = new();
     private readonly bool[] _any = new bool[Words * 64];
 
+    // The same handlers by (hook, kind), then model id, and the kinds of each hook as a bit set: what a pass asks of every
+    // listener it lists, without hashing a three-part key. Appended with _handlers in Add and read-only after.
+    private static readonly int KindCount = Enum.GetValues<ListenerKind>().Max(k => (int)k) + 1;
+    private readonly Dictionary<int, Delegate>?[] _pairs = new Dictionary<int, Delegate>?[Words * 64 * KindCount];
+    private readonly int[] _kindSet = new int[Words * 64];
+
     /// <param name="ids">The game-model to old-id resolution (OldModelIds).</param>
     /// <param name="on">Whether a family's switch is on (Kernel.On).</param>
     public HandlerTable(IModelIds ids, Func<Switch, bool> on)
@@ -105,6 +111,8 @@ public sealed class HandlerTable : IHandlerSource
         bits[(int)hook / 64] |= 1UL << ((int)hook % 64);
         _kinds.Add((hook, kind));
         _any[(int)hook] = true;
+        (_pairs[(int)hook * KindCount + (int)kind] ??= new())[model] = fn;
+        _kindSet[(int)hook] |= 1 << (int)kind;
         return true;
     }
 
@@ -112,9 +120,12 @@ public sealed class HandlerTable : IHandlerSource
     public bool HasAny(HookId hook) => _any[(int)hook];
 
     public Delegate? Find(HookId hook, ListenerKind kind, int modelId) =>
-        _handlers.GetValueOrDefault((hook, kind, modelId));
+        _pairs[(int)hook * KindCount + (int)kind] is { } byModel && byModel.TryGetValue(modelId, out var fn) ? fn : null;
 
-    public bool AnyOf(HookId hook, ListenerKind kind) => _kinds.Contains((hook, kind));
+    public bool AnyOf(HookId hook, ListenerKind kind) => (_kindSet[(int)hook] & (1 << (int)kind)) != 0;
+
+    /// <summary>The kinds with a handler for this hook, as the set <see cref="OldState.Wants" /> reads (bit <c>k</c> for <see cref="ListenerKind" /> <c>k</c>).</summary>
+    public int KindsOf(HookId hook) => _kindSet[(int)hook];
 
     /// <summary>The hooks a model handles (by its old-state id, as a listener names it).</summary>
     public HookMask Mask(ListenerKind kind, int modelId) => new(_masks.GetValueOrDefault((kind, modelId)));

@@ -588,10 +588,30 @@ internal static class Cards
     /// <summary>Every card, for callers that need to ask a question of the whole set.</summary>
     public static ReadOnlySpan<CardDef> All => _all;
 
-    public static CardDef Get(int id) =>
-        Array.Find(_all, c => c.Id == id) is { Id: not 0 } def
-            ? def
-            : throw new ArgumentException($"Unknown card id {id}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, c => c.Id);
+
+    public static CardDef Get(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is { Id: not 0 } def)
+        {
+            return def;
+        }
+
+        throw new ArgumentException($"Unknown card id {id}");
+    }
+
+    /// <summary>As <see cref="Get" />, without copying the definition out of the table (a hot path reads a field or two).</summary>
+    public static ref readonly CardDef Ref(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at].Id != 0)
+        {
+            return ref _all[at];
+        }
+
+        throw new ArgumentException($"Unknown card id {id}");
+    }
 
     public static int? FindId(string name) =>
         Array.Find(_all, c => c.Name == name) is { Id: not 0 } def

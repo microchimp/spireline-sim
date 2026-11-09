@@ -1697,11 +1697,31 @@ public static class RelicEffects
     /// <summary>Regal Pillow's ModifyRestSiteHealAmount: HealVar(15m) on top.</summary>
     public const int RegalPillowRestHeal = 15;
 
-    public static bool Has(IEnumerable<RelicInstance> relics, int relicId) =>
-        relics.Any(relic => relic.DefId == relicId);
+    public static bool Has(IEnumerable<RelicInstance> relics, int relicId)
+    {
+        if (relics is List<RelicInstance> list)
+        {
+            return HasIn(list, relicId);
+        }
 
-    private static bool HasRelic(CombatState state, int relicId) =>
-        state.Relics.Any(relic => relic.DefId == relicId);
+        return relics.Any(relic => relic.DefId == relicId);
+    }
+
+    private static bool HasRelic(CombatState state, int relicId) => HasIn(state.Relics, relicId);
+
+    // A scan of a relic list with no closure and no enumerator: asked on most damage and block computations.
+    private static bool HasIn(List<RelicInstance> relics, int relicId)
+    {
+        for (int i = 0; i < relics.Count; i++)
+        {
+            if (relics[i].DefId == relicId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// game: MiniatureCannon.ModifyDamageAdditive

@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_utility_gains.py; do not edit. Every site that can raise the solver's utility within a combat (heal, HP, max HP, potion, generation), classed in utility_gain_classes.json; the holders turn the tight bound off while present (FIGHT_SOLVER.md section 19).",
- "sources_sha256": "f29c802e6e7a3e4ad98e34ef61c0229335a55097f2584c9f231a170edc81c0f0",
+ "sources_sha256": "f55f2053fa6b2d433b2db1a1f2f71ebfa6e53e43ef31d072078f92ff19d02969",
  "holders": [
   "buff:CalamityPower",
   "buff:CallOfTheVoid",
@@ -7037,7 +7037,7 @@
    "file": "src/Sts2Emulator/Core2/OldState.cs",
    "method": "SetHp",
    "kind": "hp",
-   "line": 975,
+   "line": 1133,
    "holders": [
     "engine"
    ],
@@ -7049,7 +7049,7 @@
    "file": "src/Sts2Emulator/Core2/OldState.cs",
    "method": "SetMaxHp",
    "kind": "max-hp",
-   "line": 1054,
+   "line": 1212,
    "holders": [
     "engine"
    ],
@@ -7171,7 +7171,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyAfterDiedToDoom",
    "kind": "heal",
-   "line": 2494,
+   "line": 2514,
    "holders": [
     "relic:BookRepairKnife"
    ],
@@ -7208,7 +7208,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyAfterPlayerTurnStartLate",
    "kind": "heal",
-   "line": 2887,
+   "line": 2907,
    "holders": [
     "relic:BloodVial"
    ],
@@ -7220,7 +7220,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyAfterPlayerTurnStartLate",
    "kind": "heal",
-   "line": 2891,
+   "line": 2911,
    "holders": [
     "relic:FakeBloodVial"
    ],
@@ -7232,7 +7232,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyAfterRoomEntered",
    "kind": "hp",
-   "line": 3022,
+   "line": 3042,
    "holders": [
     "engine"
    ],
@@ -7244,7 +7244,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyAfterRoomEntered",
    "kind": "hp",
-   "line": 3027,
+   "line": 3047,
    "holders": [
     "engine"
    ],
@@ -7256,7 +7256,7 @@
    "file": "src/Sts2Emulator/Core/Effects/RelicEffects.cs",
    "method": "ApplyBeforeBossCombat",
    "kind": "hp",
-   "line": 3294,
+   "line": 3314,
    "holders": [
     "engine"
    ],

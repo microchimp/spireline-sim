@@ -78,7 +78,7 @@ SPLITS: dict[str, dict] = {
     "RelicEffects.BiteForFurCoat": {
         "kind": "split",
         "file": "Core/Effects/RelicEffects.cs",
-        "sha256": "6a3e88370807d07cf642bcea68f346eabd796f44f1e30de50fc2e8b064abb435",
+        "sha256": "bcb742b3f4aeb3c555b57c246bd338ae205acd383be024f702f886a011319aa8",
         "reason": "Fur Coat's AfterCreatureAddedToCombat body is the method as entered (F01: the bite of whatever "
                   "joins); inside it the hittable test and the one-HP write are F08 (ShouldAllowHitting, "
                   "SetCurrentHp), a separate statement that gates on its own switch",

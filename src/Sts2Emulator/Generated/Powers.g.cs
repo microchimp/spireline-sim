@@ -250,10 +250,18 @@ internal static class Powers
         new PowerDef(Id: 242, Name: "WraithFormPower", IsBuff: false, StackType: "Counter", TicksDown: false),
     ];
 
-    public static PowerDef Get(int id) =>
-        Array.Find(_all, p => p.Id == id) is { Id: > 0 } def
-            ? def
-            : throw new ArgumentException($"Unknown power id {id}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, p => p.Id);
+
+    public static PowerDef Get(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is { Id: > 0 } def)
+        {
+            return def;
+        }
+
+        throw new ArgumentException($"Unknown power id {id}");
+    }
 
     public static int? FindId(string name) =>
         Array.Find(_all, p => p.Name == name) is { Id: > 0 } def

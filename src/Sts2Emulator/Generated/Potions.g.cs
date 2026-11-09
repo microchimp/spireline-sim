@@ -71,10 +71,18 @@ internal static class Potions
         new PotionDef(Id: 63, Name: "WeakPotion", Rarity: PotionRarity.Common, TargetType: CardTarget.AnyEnemy),
     ];
 
-    public static PotionDef Get(int id) =>
-        Array.Find(_all, p => p.Id == id) is { Id: > 0 } def
-            ? def
-            : throw new ArgumentException($"Unknown potion id {id}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, p => p.Id);
+
+    public static PotionDef Get(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is { Id: > 0 } def)
+        {
+            return def;
+        }
+
+        throw new ArgumentException($"Unknown potion id {id}");
+    }
 
     public static int? FindId(string name) =>
         Array.Find(_all, p => p.Name == name) is { Id: > 0 } def

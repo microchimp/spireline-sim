@@ -307,10 +307,18 @@ internal static class Relics
     /// <summary>Every relic, for audits and for tests that assert over the whole set.</summary>
     public static ReadOnlySpan<RelicDef> All => _all;
 
-    public static RelicDef Get(int id) =>
-        Array.Find(_all, r => r.Id == id) is { Id: > 0 } def
-            ? def
-            : throw new ArgumentException($"Unknown relic id {id}");
+    private static readonly DefIndex _index = DefIndex.Of(_all, r => r.Id);
+
+    public static RelicDef Get(int id)
+    {
+        int at = _index.First(id);
+        if (at >= 0 && _all[at] is { Id: > 0 } def)
+        {
+            return def;
+        }
+
+        throw new ArgumentException($"Unknown relic id {id}");
+    }
 
     public static int? FindId(string name) =>
         Array.Find(_all, r => r.Name == name) is { Id: > 0 } def
@@ -320,7 +328,8 @@ internal static class Relics
     /// <summary>Lookup that does not throw, for ids that may not name a relic at all.</summary>
     public static bool TryGet(int id, out RelicDef def)
     {
-        def = Array.Find(_all, r => r.Id == id);
+        int at = _index.First(id);
+        def = at >= 0 ? _all[at] : default;
         return def.Id > 0;
     }
 }

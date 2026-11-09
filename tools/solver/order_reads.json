@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_order_reads.py; do not edit. Every index or position read of a pile in the six engine files; order_readers.json classes those on multiset piles.",
- "sources_sha256": "99ebc166e02976bb2fea67932985307357bbc1f616408299dd0616acbc3d1f33",
+ "sources_sha256": "5c3ce35211189a6e1a31331221f30767995375e1acd08d416901dfa9bf47d95e",
  "scope": {
   "src/Sts2Emulator/Core/CardUid.cs": 4,
   "src/Sts2Emulator/Core/CombatEngine.cs": 164,
@@ -22,6 +22,7 @@
   "src/Sts2Emulator/Core/Run/RunRewardGenerator.cs": 8,
   "src/Sts2Emulator/Core/Run/RunState.cs": 2,
   "src/Sts2Emulator/Core/StateCloning.cs": 11,
+  "src/Sts2Emulator/Core2/CardUidInvariant.cs": 2,
   "src/Sts2Emulator/Core2/Models/Cards/Melancholy.cs": 2,
   "src/Sts2Emulator/Core2/Models/Relics/MiniatureCannon.cs": 4,
   "src/Sts2Emulator/Core2/Models/Relics/MysticLighter.cs": 4,
@@ -41231,7 +41232,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2656,
+   "line": 2676,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41258,7 +41259,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2658,
+   "line": 2678,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -41285,7 +41286,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2658,
+   "line": 2678,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -42263,7 +42264,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2639,
+   "line": 2659,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -42290,7 +42291,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2059,
+   "line": 2079,
    "holders": [
     "engine"
    ],
@@ -42302,7 +42303,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2031,
+   "line": 2051,
    "holders": [
     "engine"
    ],
@@ -42314,7 +42315,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2422,
+   "line": 2442,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42631,7 +42632,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2422,
+   "line": 2442,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -42948,7 +42949,7 @@
    "pile": "Hand",
    "kind": "roll",
    "read": "Hand[chosen]",
-   "line": 2422,
+   "line": 2442,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -43265,7 +43266,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 2411,
+   "line": 2431,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -43582,7 +43583,7 @@
    "pile": "Hand",
    "kind": "index",
    "read": "Hand[i]",
-   "line": 2412,
+   "line": 2432,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -43899,7 +43900,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2786,
+   "line": 2806,
    "holders": [
     "engine"
    ],
@@ -43911,7 +43912,7 @@
    "pile": "Relics",
    "kind": "stop",
    "read": "for Relics",
-   "line": 2882,
+   "line": 2902,
    "holders": [
     "buff:Furnace",
     "buff:Genesis",
@@ -44228,7 +44229,7 @@
    "pile": "Relics",
    "kind": "walk",
    "read": "for Relics",
-   "line": 3125,
+   "line": 3145,
    "holders": [
     "engine"
    ],
@@ -44240,7 +44241,7 @@
    "pile": "Enemies",
    "kind": "walk",
    "read": "foreach Enemies",
-   "line": 1992,
+   "line": 2012,
    "holders": [
     "engine"
    ],
@@ -44324,7 +44325,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2298,
+   "line": 2318,
    "holders": [
     "engine"
    ],
@@ -44336,7 +44337,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2301,
+   "line": 2321,
    "holders": [
     "engine"
    ],
@@ -44348,7 +44349,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2301,
+   "line": 2321,
    "holders": [
     "engine"
    ],
@@ -44360,7 +44361,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1844,
+   "line": 1864,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44383,7 +44384,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1850,
+   "line": 1870,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44406,7 +44407,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1851,
+   "line": 1871,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44429,7 +44430,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1851,
+   "line": 1871,
    "holders": [
     "card:Acrobatics",
     "card:Anticipate",
@@ -44452,7 +44453,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 1796,
+   "line": 1816,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -44922,7 +44923,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 1799,
+   "line": 1819,
    "holders": [
     "buff:Clarity",
     "buff:Doom",
@@ -45392,7 +45393,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2229,
+   "line": 2249,
    "holders": [
     "engine"
    ],
@@ -45404,7 +45405,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[inCombat]",
-   "line": 2235,
+   "line": 2255,
    "holders": [
     "engine"
    ],
@@ -45440,7 +45441,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2178,
+   "line": 2198,
    "holders": [
     "engine"
    ],
@@ -45452,7 +45453,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2181,
+   "line": 2201,
    "holders": [
     "engine"
    ],
@@ -45464,7 +45465,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2181,
+   "line": 2201,
    "holders": [
     "engine"
    ],
@@ -45476,7 +45477,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2183,
+   "line": 2203,
    "holders": [
     "engine"
    ],
@@ -45488,7 +45489,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2258,
+   "line": 2278,
    "holders": [
     "engine"
    ],
@@ -45500,7 +45501,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2259,
+   "line": 2279,
    "holders": [
     "engine"
    ],
@@ -45512,7 +45513,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2261,
+   "line": 2281,
    "holders": [
     "engine"
    ],
@@ -45524,7 +45525,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2261,
+   "line": 2281,
    "holders": [
     "engine"
    ],
@@ -45536,7 +45537,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2263,
+   "line": 2283,
    "holders": [
     "engine"
    ],
@@ -47682,7 +47683,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 3281,
+   "line": 3301,
    "holders": [
     "engine"
    ],
@@ -47694,7 +47695,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 3282,
+   "line": 3302,
    "holders": [
     "engine"
    ],
@@ -47706,7 +47707,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2169,
+   "line": 2189,
    "holders": [
     "engine"
    ],
@@ -47718,7 +47719,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2171,
+   "line": 2191,
    "holders": [
     "engine"
    ],
@@ -47730,7 +47731,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2172,
+   "line": 2192,
    "holders": [
     "engine"
    ],
@@ -47964,7 +47965,7 @@
    "pile": "Relics",
    "kind": "walk",
    "read": "foreach Relics",
-   "line": 2726,
+   "line": 2746,
    "holders": [
     "card:Acrobatics",
     "card:AdaptiveStrike",
@@ -49403,7 +49404,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2271,
+   "line": 2291,
    "holders": [
     "engine"
    ],
@@ -49415,7 +49416,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2274,
+   "line": 2294,
    "holders": [
     "engine"
    ],
@@ -49427,7 +49428,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2274,
+   "line": 2294,
    "holders": [
     "engine"
    ],
@@ -50402,7 +50403,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2283,
+   "line": 2303,
    "holders": [
     "engine"
    ],
@@ -50414,7 +50415,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2284,
+   "line": 2304,
    "holders": [
     "engine"
    ],
@@ -50426,7 +50427,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2289,
+   "line": 2309,
    "holders": [
     "engine"
    ],
@@ -50438,7 +50439,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2289,
+   "line": 2309,
    "holders": [
     "engine"
    ],
@@ -50498,7 +50499,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2312,
+   "line": 2332,
    "holders": [
     "engine"
    ],
@@ -50510,7 +50511,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2313,
+   "line": 2333,
    "holders": [
     "engine"
    ],
@@ -50522,7 +50523,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2318,
+   "line": 2338,
    "holders": [
     "engine"
    ],
@@ -50534,7 +50535,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2318,
+   "line": 2338,
    "holders": [
     "engine"
    ],
@@ -50546,7 +50547,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2320,
+   "line": 2340,
    "holders": [
     "engine"
    ],
@@ -51826,7 +51827,7 @@
    "pile": "Relics",
    "kind": "fixed",
    "read": "Relics.FindIndex",
-   "line": 2251,
+   "line": 2271,
    "holders": [
     "engine"
    ],
@@ -51838,7 +51839,7 @@
    "pile": "Relics",
    "kind": "index",
    "read": "Relics[index]",
-   "line": 2252,
+   "line": 2272,
    "holders": [
     "engine"
    ],

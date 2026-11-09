@@ -111,6 +111,19 @@ public sealed class OldModelIds : IModelIds
 
             _powers[id] = m;
         }
+
+        int top = _powers.Count == 0 ? -1 : _powers.Keys.Max(k => (int)k);
+        var byBuff = new PowerMapping[top + 1];
+        Array.Fill(byBuff, new PowerMapping(PowerMapKind.NotModelled, 0, ""));
+        foreach (var (buff, mapping) in _powers)
+        {
+            if ((int)buff >= 0)
+            {
+                byBuff[(int)buff] = mapping;
+            }
+        }
+
+        _powerByBuff = byBuff;
     }
 
     /// <summary>The tables read from data/id_map.json and tools/fidelity/power_aliases.json.</summary>
@@ -159,7 +172,15 @@ public sealed class OldModelIds : IModelIds
         return e ?? throw new ArgumentException($"{kind} {gameId}: the old state has no id for it");
     }
 
-    public PowerMapping Power(BuffId id) => _powers.TryGetValue(id, out var m) ? m : new(PowerMapKind.NotModelled, 0, "");
+    // _powers by (int)BuffId, filled for every BuffId after the mapping is built (a hole in the enum is NotModelled, as a miss was).
+    private PowerMapping[] _powerByBuff = [];
+
+    public PowerMapping Power(BuffId id)
+    {
+        var table = _powerByBuff;
+        int i = (int)id;
+        return (uint)i < (uint)table.Length ? table[i] : new(PowerMapKind.NotModelled, 0, "");
+    }
 
     /// <summary>The game's power class name of a power model id, or null.</summary>
     public string? PowerName(int modelId) => _powerNames.GetValueOrDefault(modelId);
@@ -418,26 +439,43 @@ public static partial class OldState
     /// relics in obtain order, potions by slot, orbs in queue order and the cards of Hand, Draw, Discard, Exhaust and
     /// Play, each followed by its affliction and enchantment. Then modifiers, badges and the scaling model.
     /// </summary>
-    public static void Combat(OldWorld w, List<OldListener> into, List<OldGap> gaps)
+    public static void Combat(OldWorld w, List<OldListener> into, List<OldGap> gaps, int kinds = AllKinds)
     {
         var s = w.Combat ?? throw new InvalidOperationException("no combat");
         int c = 0;
         PlayerGaps(w, gaps);
-        Powers(w, s.PlayerBuffs, c, null, into, gaps);
+        if (Wants(kinds, ListenerKind.Power))
+        {
+            Powers(w, s.PlayerBuffs, c, null, into, gaps);
+        }
+
         if (PlayerActive(w))
         {
-            for (int i = 0; i < s.Relics.Count; i++)
+            if (Wants(kinds, ListenerKind.Relic))
             {
-                into.Add(new(new((int)ListenerKind.Relic, s.Relics[i].DefId, i), c, i, OldPile.None, default, null));
+                for (int i = 0; i < s.Relics.Count; i++)
+                {
+                    into.Add(new(new((int)ListenerKind.Relic, s.Relics[i].DefId, i), c, i, OldPile.None, default, null));
+                }
             }
 
-            Potions(s.PotionSlots, c, into);
-            for (int i = 0; i < s.Orbs.Count; i++)
+            if (Wants(kinds, ListenerKind.Potion))
             {
-                into.Add(new(new((int)ListenerKind.Orb, (int)s.Orbs[i].Type, i), c, i, OldPile.None, default, null));
+                Potions(s.PotionSlots, c, into);
             }
 
-            Piles(w, s, c, into, gaps);
+            if (Wants(kinds, ListenerKind.Orb))
+            {
+                for (int i = 0; i < s.Orbs.Count; i++)
+                {
+                    into.Add(new(new((int)ListenerKind.Orb, (int)s.Orbs[i].Type, i), c, i, OldPile.None, default, null));
+                }
+            }
+
+            if (Wants(kinds, ListenerKind.Card) || Wants(kinds, ListenerKind.Affliction) || Wants(kinds, ListenerKind.Enchantment))
+            {
+                Piles(w, s, c, into, gaps);
+            }
         }
 
         c++;
@@ -447,34 +485,63 @@ public static partial class OldState
             // game applies once when OstyCmd.Summon first adds the pet and never removes (ShouldPowerBeRemovedAfterOwnerDeath),
             // so the Osty a combat holds has it, dead, alive or revived (the revive re-adds the same creature); any other
             // power on Osty is the gap.
-            gaps.Add(new(NotModelledKind.OstyPowers, ListenerKind.Power, c, 0, "Osty"));
-            into.Add(new(new((int)ListenerKind.Power, w.Ids.DieForYouModelId, PowerInstance(c, 0)), c, 0, OldPile.None,
-                default, null));
-            into.Add(new(new((int)ListenerKind.Monster, w.Ids.OstyModelId, c), c, 0, OldPile.None, default, null));
-            c++;
-        }
-
-        foreach (var enemy in s.Enemies)
-        {
-            if (!EnemyInCombat(w, enemy))
+            if (Wants(kinds, ListenerKind.Power))
             {
-                continue;
+                gaps.Add(new(NotModelledKind.OstyPowers, ListenerKind.Power, c, 0, "Osty"));
+                into.Add(new(new((int)ListenerKind.Power, w.Ids.DieForYouModelId, PowerInstance(c, 0)), c, 0, OldPile.None,
+                    default, null));
             }
 
-            Powers(w, enemy.Buffs, c, enemy, into, gaps);
-            into.Add(new(new((int)ListenerKind.Monster, enemy.DefId, c), c, 0, OldPile.None, default, enemy));
+            if (Wants(kinds, ListenerKind.Monster))
+            {
+                into.Add(new(new((int)ListenerKind.Monster, w.Ids.OstyModelId, c), c, 0, OldPile.None, default, null));
+            }
+
             c++;
         }
 
-        RunModels(w, into);
+        if (Wants(kinds, ListenerKind.Power) || Wants(kinds, ListenerKind.Monster))
+        {
+            foreach (var enemy in s.Enemies)
+            {
+                if (!EnemyInCombat(w, enemy))
+                {
+                    continue;
+                }
+
+                if (Wants(kinds, ListenerKind.Power))
+                {
+                    Powers(w, enemy.Buffs, c, enemy, into, gaps);
+                }
+
+                if (Wants(kinds, ListenerKind.Monster))
+                {
+                    into.Add(new(new((int)ListenerKind.Monster, enemy.DefId, c), c, 0, OldPile.None, default, enemy));
+                }
+
+                c++;
+            }
+        }
+
+        RunModels(w, into, kinds);
     }
+
+    /// <summary>
+    /// Every kind of listener (<see cref="Combat" />, <see cref="Run" />). A pass whose hook has no handler for a kind drops
+    /// every listener of it in the filter (<c>OldListeners.Cursor</c>) and reports no gap of it, so the enumeration is given
+    /// the kinds that can survive the filter and skips the rest: bit <c>k</c> of the set is <see cref="ListenerKind" /> <c>k</c>.
+    /// </summary>
+    public const int AllKinds = -1;
+
+    /// <summary>Whether the kinds set holds <paramref name="kind" />.</summary>
+    public static bool Wants(int kinds, ListenerKind kind) => (kinds & (1 << (int)kind)) != 0;
 
     /// <summary>
     /// game: RunState.IterateHookListeners, its first part: the run deck's cards, each followed by its enchantment,
     /// while the player is active. With no combat (<paramref name="withRunItems" />) the run's relics (melted ones are
     /// gone from the old list) and potions, then modifiers, badges and the scaling model follow.
     /// </summary>
-    public static void Run(OldWorld w, List<OldListener> into, List<OldGap> gaps, bool withRunItems)
+    public static void Run(OldWorld w, List<OldListener> into, List<OldGap> gaps, bool withRunItems, int kinds = AllKinds)
     {
         if (w.Deck is not { } deck)
         {
@@ -489,12 +556,17 @@ public static partial class OldState
             return;
         }
 
-        for (int i = 0; i < deck.Count; i++)
+        bool deckCards = Wants(kinds, ListenerKind.Card), deckEnchantments = Wants(kinds, ListenerKind.Enchantment);
+        for (int i = 0; i < deck.Count && (deckCards || deckEnchantments); i++)
         {
             var card = deck[i];
             int inst = DeckInstance(i);
-            into.Add(new(new((int)ListenerKind.Card, card.DefId, inst), 0, i, OldPile.Deck, default, null));
-            if (card.Enchantment != Enchantment.None)
+            if (deckCards)
+            {
+                into.Add(new(new((int)ListenerKind.Card, card.DefId, inst), 0, i, OldPile.Deck, default, null));
+            }
+
+            if (deckEnchantments && card.Enchantment != Enchantment.None)
             {
                 into.Add(new(new((int)ListenerKind.Enchantment, (int)card.Enchantment, inst), 0, i, OldPile.Deck,
                     default, null));
@@ -507,13 +579,17 @@ public static partial class OldState
             return;
         }
 
-        for (int i = 0; i < r.Relics.Count; i++)
+        for (int i = 0; i < r.Relics.Count && Wants(kinds, ListenerKind.Relic); i++)
         {
             into.Add(new(new((int)ListenerKind.Relic, r.Relics[i].DefId, i), 0, i, OldPile.None, default, null));
         }
 
-        Potions(r.PotionSlots, 0, into);
-        RunModels(w, into);
+        if (Wants(kinds, ListenerKind.Potion))
+        {
+            Potions(r.PotionSlots, 0, into);
+        }
+
+        RunModels(w, into, kinds);
     }
 
     internal static void Powers(OldWorld w, List<BuffState> buffs, int creature, EnemyState? enemy,
@@ -521,6 +597,12 @@ public static partial class OldState
     {
         // One game power instance per (model, k): the k-th entry of any of its buffs; a power the engine keeps in
         // several buffs is visited once, at its first entry.
+        if (buffs.Count <= PowersByScanUpTo)
+        {
+            PowersByScan(w, buffs, creature, enemy, into, gaps);
+            return;
+        }
+
         var seen = new HashSet<(int, int)>();
         var count = new Dictionary<BuffId, int>();
         for (int i = 0; i < buffs.Count; i++)
@@ -547,6 +629,82 @@ public static partial class OldState
             int k = count.GetValueOrDefault(b.Id);
             count[b.Id] = k + 1;
             if (seen.Add((m.ModelId, k)))
+            {
+                into.Add(new(new((int)ListenerKind.Power, m.ModelId, PowerInstance(creature, k)), creature, i,
+                    OldPile.None, b.Id, enemy));
+            }
+        }
+    }
+
+    /// <summary>Buff lists up to this long are read by scanning the earlier entries; longer ones keep the set and the count.</summary>
+    private const int PowersByScanUpTo = 24;
+
+    /// <summary>
+    /// <see cref="Powers" /> for a short list with no set and no count table. Entries of one BuffId all map alike, so an entry's
+    /// <c>k</c> is the number of earlier entries of its BuffId; the entry is a repeat when an earlier counted entry has the same
+    /// model and the same <c>k</c> (what the set held), which only a different BuffId of the same model can have.
+    /// </summary>
+    private static void PowersByScan(OldWorld w, List<BuffState> buffs, int creature, EnemyState? enemy,
+        List<OldListener> into, List<OldGap> gaps)
+    {
+        for (int i = 0; i < buffs.Count; i++)
+        {
+            var b = buffs[i];
+            var m = w.Ids.Power(b.Id);
+            if (m.Kind == PowerMapKind.EngineOnly)
+            {
+                continue;
+            }
+
+            if (m.Kind == PowerMapKind.Folded)
+            {
+                gaps.Add(new(NotModelledKind.FoldedPower, ListenerKind.Power, creature, 0, m.GameKey));
+                continue;
+            }
+
+            if (m.Kind == PowerMapKind.NotModelled)
+            {
+                gaps.Add(new(NotModelledKind.UnclassifiedPower, ListenerKind.Power, creature, 0, m.GameKey));
+                continue;
+            }
+
+            int k = 0;
+            for (int j = 0; j < i; j++)
+            {
+                if (buffs[j].Id == b.Id)
+                {
+                    k++;
+                }
+            }
+
+            bool seen = false;
+            for (int j = 0; j < i && !seen; j++)
+            {
+                var earlier = buffs[j];
+                if (earlier.Id == b.Id)
+                {
+                    continue;
+                }
+
+                var mj = w.Ids.Power(earlier.Id);
+                if (mj.ModelId != m.ModelId || mj.Kind is PowerMapKind.EngineOnly or PowerMapKind.Folded or PowerMapKind.NotModelled)
+                {
+                    continue;
+                }
+
+                int kj = 0;
+                for (int l = 0; l < j; l++)
+                {
+                    if (buffs[l].Id == earlier.Id)
+                    {
+                        kj++;
+                    }
+                }
+
+                seen = kj == k;
+            }
+
+            if (!seen)
             {
                 into.Add(new(new((int)ListenerKind.Power, m.ModelId, PowerInstance(creature, k)), creature, i,
                     OldPile.None, b.Id, enemy));
@@ -656,19 +814,19 @@ public static partial class OldState
         s.Hand.Exists(x => x.Uid == uid) || s.DrawPile.Exists(x => x.Uid == uid)
         || s.DiscardPile.Exists(x => x.Uid == uid) || s.ExhaustPile.Exists(x => x.Uid == uid);
 
-    private static void RunModels(OldWorld w, List<OldListener> into)
+    private static void RunModels(OldWorld w, List<OldListener> into, int kinds = AllKinds)
     {
-        for (int i = 0; i < w.Modifiers.Count; i++)
+        for (int i = 0; i < w.Modifiers.Count && Wants(kinds, ListenerKind.Modifier); i++)
         {
             into.Add(new(new((int)ListenerKind.Modifier, w.Modifiers[i], i), -1, i, OldPile.None, default, null));
         }
 
-        for (int i = 0; i < w.Badges.Count; i++)
+        for (int i = 0; i < w.Badges.Count && Wants(kinds, ListenerKind.Badge); i++)
         {
             into.Add(new(new((int)ListenerKind.Badge, w.Badges[i], i), -1, i, OldPile.None, default, null));
         }
 
-        if (w.Scaling is { } scaling)
+        if (Wants(kinds, ListenerKind.Scaling) && w.Scaling is { } scaling)
         {
             into.Add(new(new((int)ListenerKind.Scaling, scaling, 0), -1, 0, OldPile.None, default, null));
         }
@@ -860,7 +1018,7 @@ public static partial class OldState
 /// </summary>
 public sealed class PassView
 {
-    private readonly HashSet<NotModelledKind> _noted = [];
+    private HashSet<NotModelledKind>? _noted;
 
     internal ChangeProbe<OrbState>? Orbs { get; set; }
     internal ChangeProbe<CardInstance>? Deck { get; set; }
@@ -883,7 +1041,7 @@ public sealed class PassView
 
     internal void Note(OldGap gap)
     {
-        if (_noted.Add(gap.Why))
+        if ((_noted ??= []).Add(gap.Why))
         {
             Gap?.Invoke(gap);
         }

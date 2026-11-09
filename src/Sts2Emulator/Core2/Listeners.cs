@@ -95,8 +95,10 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
     {
         int pass = ++Passes;
         _last.Clear();
-        var entries = new Dictionary<ListenerRef, OldListener>();
-        var view = new PassView { Gap = g => Flush([g]) };
+        // A kind with no handler for this hook has no listener in the pass and no gap reported (Find and AnyOf are false for
+        // it), so the enumeration leaves it out. A source this does not know is asked for everything.
+        int kinds = Handlers is HandlerTable table ? table.KindsOf(hook) : OldState.AllKinds;
+        var scope = new PassScope(this, hook, pass, kinds);
         var combat = World.Combat;
         Func<IReadOnlyList<HookListener<T>>>? late = null;
         IReadOnlyList<HookListener<T>> first;
@@ -107,7 +109,7 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
                 {
                     // The guard is set before the first turn: the combat may be starting with its setup not declared
                     // (OldWorld.Setup), which the game exempts. The empty pass is not trusted.
-                    Flush(Enum.GetValues<ListenerKind>()
+                    scope.Flush(Enum.GetValues<ListenerKind>()
                         .Select(k => new OldGap(NotModelledKind.SetupUndeclared, k, -1, 0, "guard set before turn 1"))
                         .ToList());
                 }
@@ -115,82 +117,246 @@ public sealed class OldListeners(OldWorld world, IHandlerSource handlers)
                 return HookCursor<T>.Empty();
             case HookIterator.Combat:
             case HookIterator.CombatDirect:
-                first = combat is null ? [] : Build((into, gaps) => OldState.Combat(World, into, gaps));
+                first = combat is null ? [] : scope.Build<T>(Part.Combat);
                 break;
             case HookIterator.RunCombat when combat is not null:
-                first = Build((into, gaps) => OldState.Run(World, into, gaps, withRunItems: false));
-                late = () => World.Combat is null ? [] : Build((into, gaps) => OldState.Combat(World, into, gaps));
+                first = scope.Build<T>(Part.RunDeck);
+                late = () => World.Combat is null ? [] : scope.Build<T>(Part.Combat);
                 break;
             default:
-                first = Build((into, gaps) => OldState.Run(World, into, gaps, withRunItems: true));
+                first = scope.Build<T>(Part.RunWithItems);
                 break;
         }
 
-        return new HookCursor<T>(first, late,
-            who => entries.TryGetValue(who, out var e) && OldState.IsMember(World, e, view));
+        return new HookCursor<T>(first, late, scope.MemberCheck);
+    }
 
-        List<HookListener<T>> Build(Action<List<OldListener>, List<OldGap>> part)
+    /// <summary>The parts a pass lists: the combat's, the run's deck alone, the run's deck with its relics and potions.</summary>
+    private enum Part : byte
+    {
+        Combat,
+        RunDeck,
+        RunWithItems,
+    }
+
+    // The two scratch lists of a part's enumeration. A part takes them out of the field while it uses them (a pass built from
+    // inside a Report callback finds the field empty and allocates its own) and puts them back cleared.
+    private List<OldListener>? _rawScratch;
+    private List<OldGap>? _gapScratch;
+
+    private List<OldListener> TakeRaw()
+    {
+        var l = _rawScratch ?? new List<OldListener>(64);
+        _rawScratch = null;
+        return l;
+    }
+
+    private List<OldGap> TakeGaps()
+    {
+        var l = _gapScratch ?? new List<OldGap>(16);
+        _gapScratch = null;
+        return l;
+    }
+
+    private void Give(List<OldListener> raw, List<OldGap> gaps)
+    {
+        raw.Clear();
+        gaps.Clear();
+        _rawScratch ??= raw;
+        _gapScratch ??= gaps;
+    }
+
+    /// <summary>
+    /// One pass's state: its hook, serial and kinds, the listeners its parts kept (<see cref="PassEntries" />, for the
+    /// membership check at a visit) and the view that notes what a visit finds changed. Not generic: only the listing of a part
+    /// (<see cref="Build{T}" />) knows the handler type.
+    /// </summary>
+    private sealed class PassScope
+    {
+        private readonly OldListeners _o;
+        private readonly HookId _hook;
+        private readonly int _pass;
+        private readonly int _kinds;
+        private PassEntries? _entries;
+        private PassView? _view;
+
+        public PassScope(OldListeners owner, HookId hook, int pass, int kinds)
         {
-            if (World.Combat is { } c)
+            (_o, _hook, _pass, _kinds) = (owner, hook, pass, kinds);
+            MemberCheck = IsMember;
+        }
+
+        /// <summary>The visit-time membership check the cursor calls (one delegate for the pass).</summary>
+        public Func<ListenerRef, bool> MemberCheck { get; }
+
+        private bool IsMember(ListenerRef who) =>
+            _entries is not null && _entries.TryGet(who, out var e) && OldState.IsMember(_o.World, e, _view);
+
+        /// <summary>The kept listeners of a part, in the game's order, each with the handler of the pass's hook.</summary>
+        public IReadOnlyList<HookListener<T>> Build<T>(Part part) where T : Delegate
+        {
+            var o = _o;
+            var world = o.World;
+            if (world.Combat is { } c)
             {
                 // The uid invariant's safety net (CardUidInvariant): a card some creation site left without a uid
                 // gets one before it is named by a listener.
                 CardUidInvariant.Normalise(c);
             }
 
-            var raw = new List<OldListener>();
-            var gaps = new List<OldGap>();
-            part(raw, gaps);
-            var list = new List<HookListener<T>>(raw.Count);
-            bool orbs = false, deck = false;
-            foreach (var e in raw)
+            var raw = o.TakeRaw();
+            var gaps = o.TakeGaps();
+            List<HookListener<T>>? list = null;
+            try
             {
-                switch (Handlers.Find(hook, e.Kind, e.Who.ModelId))
+                switch (part)
                 {
-                    case null:
-                        continue;
-                    case T fn:
-                        if (!entries.TryAdd(e.Who, e))
-                        {
-                            throw new InvalidOperationException($"{hook}: listener {e.Who} listed twice in one pass");
-                        }
-
-                        list.Add(new HookListener<T>(e.Who, fn));
-                        orbs |= e.Kind == ListenerKind.Orb;
-                        deck |= e.Pile == OldPile.Deck;
+                    case Part.Combat:
+                        OldState.Combat(world, raw, gaps, _kinds);
                         break;
-                    case var other:
-                        throw new InvalidOperationException(
-                            $"{hook}: the handler of {e.Kind} {e.Who.ModelId} is {other.GetType().Name}, not {typeof(T).Name}");
+                    case Part.RunDeck:
+                        OldState.Run(world, raw, gaps, withRunItems: false, _kinds);
+                        break;
+                    default:
+                        OldState.Run(world, raw, gaps, withRunItems: true, _kinds);
+                        break;
                 }
+
+                bool orbs = false, deck = false;
+                for (int i = 0; i < raw.Count; i++)
+                {
+                    var e = raw[i];
+                    switch (o.Handlers.Find(_hook, e.Kind, e.Who.ModelId))
+                    {
+                        case null:
+                            continue;
+                        case T fn:
+                            if (!(_entries ??= new()).TryAdd(e))
+                            {
+                                throw new InvalidOperationException($"{_hook}: listener {e.Who} listed twice in one pass");
+                            }
+
+                            (list ??= new List<HookListener<T>>(4)).Add(new HookListener<T>(e.Who, fn));
+                            orbs |= e.Kind == ListenerKind.Orb;
+                            deck |= e.Pile == OldPile.Deck;
+                            break;
+                        case var other:
+                            throw new InvalidOperationException(
+                                $"{_hook}: the handler of {e.Kind} {e.Who.ModelId} is {other.GetType().Name}, not {typeof(T).Name}");
+                    }
+                }
+
+                // The snapshot's change probes: orbs and deck cards have no identity, so any later change is reported. (The
+                // view is made with the first kept listener: a visit is the only reader, and a pass that kept none has none.)
+                if (list is not null)
+                {
+                    _view ??= new PassView { Gap = FlushOne };
+                    _view.Snapshot(world, orbs, deck);
+                }
+
+                Flush(gaps);
+            }
+            finally
+            {
+                o.Give(raw, gaps);
             }
 
-            // The snapshot's change probes: orbs and deck cards have no identity, so any later change is reported.
-            view.Snapshot(World, orbs, deck);
-            Flush(gaps);
-            return list;
+            return list ?? (IReadOnlyList<HookListener<T>>)Array.Empty<HookListener<T>>();
         }
 
-        // Reports the gaps a handler could stand for. A gap seen at a visit can belong to a pass that is no longer the
-        // latest (a handler ran another pass): Report always gets it, LastPass only while the pass is the latest.
-        void Flush(List<OldGap> gaps)
+        private void FlushOne(OldGap gap) => Flush([gap]);
+
+        /// <summary>
+        /// Reports the gaps a handler could stand for. A gap seen at a visit can belong to a pass that is no longer the
+        /// latest (a handler ran another pass): Report always gets it, LastPass only while the pass is the latest.
+        /// </summary>
+        public void Flush(List<OldGap> gaps)
         {
+            var o = _o;
             foreach (var gap in gaps)
             {
                 bool needed = gap.ModelId != 0
-                    ? Handlers.Find(hook, gap.Kind, gap.ModelId) is not null
-                    : Handlers.AnyOf(hook, gap.Kind);
+                    ? o.Handlers.Find(_hook, gap.Kind, gap.ModelId) is not null
+                    : o.Handlers.AnyOf(_hook, gap.Kind);
                 if (needed)
                 {
-                    var nm = new NotModelled(pass, hook, gap);
-                    if (pass == Passes)
+                    var nm = new NotModelled(_pass, _hook, gap);
+                    if (_pass == o.Passes)
                     {
-                        _last.Add(nm);
+                        o._last.Add(nm);
                     }
 
-                    Report?.Invoke(nm);
+                    o.Report?.Invoke(nm);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// The listeners a pass kept, found by who. A pass keeps a handful, so up to <see cref="LinearUpTo" /> are scanned in an
+    /// array; past that a dictionary takes over. Adding one already there is refused, as the dictionary's TryAdd refused it.
+    /// </summary>
+    private sealed class PassEntries
+    {
+        private const int LinearUpTo = 16;
+        private OldListener[]? _items = new OldListener[8];
+        private int _count;
+        private Dictionary<ListenerRef, OldListener>? _map;
+
+        public bool TryAdd(in OldListener e)
+        {
+            if (_map is not null)
+            {
+                return _map.TryAdd(e.Who, e);
+            }
+
+            for (int i = 0; i < _count; i++)
+            {
+                if (_items![i].Who == e.Who)
+                {
+                    return false;
+                }
+            }
+
+            if (_count == LinearUpTo)
+            {
+                _map = new Dictionary<ListenerRef, OldListener>(LinearUpTo * 2);
+                for (int i = 0; i < _count; i++)
+                {
+                    _map.Add(_items![i].Who, _items[i]);
+                }
+
+                _items = null;
+                return _map.TryAdd(e.Who, e);
+            }
+
+            if (_count == _items!.Length)
+            {
+                Array.Resize(ref _items, _count * 2);
+            }
+
+            _items[_count++] = e;
+            return true;
+        }
+
+        public bool TryGet(ListenerRef who, out OldListener e)
+        {
+            if (_map is not null)
+            {
+                return _map.TryGetValue(who, out e);
+            }
+
+            for (int i = 0; i < _count; i++)
+            {
+                if (_items![i].Who == who)
+                {
+                    e = _items[i];
+                    return true;
+                }
+            }
+
+            e = default;
+            return false;
         }
     }
 
