@@ -241,6 +241,13 @@ class Loader(unittest.TestCase):
         self.assertGreater(len(ds.run_ids), len(ss.runs_of(ds)))  # run_ids lists every run of the shards read, whatever its fifth
         self.assertEqual({r for r, f, _w in self.a10 if f == hp.VAL_FIFTH}, ss.runs_of(ds))
 
+    def test_cells_under_the_minimum_are_not_shown(self):
+        ds = ss.load_parts(self.work, "baseline", hp.TRAIN_FIFTHS, None, kinds=["card"])
+        c = ss.set_cells(ds)
+        self.assertEqual({"card|all", "card|act1", "card|act2", "card|act3"}, set(c))
+        self.assertTrue(all(not v["shown"] for v in c.values()))  # a handful of runs: every cell is under the minimum
+        self.assertEqual(sum(v["runs"] for k, v in c.items() if k == "card|all"), len(ss.runs_of(ds)))
+
     def test_no_overlap_guard(self):
         self.assertEqual(2, ss.no_overlap(["a", "b"], ["c", "d"]))
         with self.assertRaises(AssertionError):
@@ -446,6 +453,34 @@ class CandidateCopy(unittest.TestCase):
         self.assertEqual(self.OLD, train["strong_set"]["replaces_sha256"])
         self.assertEqual(14, json.loads((self.out / "model.json").read_text(encoding="utf-8"))["iteration"])
         self.assertNotIn("2ebfe6d7", agent["macro"] + agent["recipe"] + json.dumps(agent["human_prior"]))
+
+    def _work(self, selected):
+        work = Path(self.td.name) / "work"
+        (work / "fits" / "s-win").mkdir(parents=True, exist_ok=True)
+        (work / "fits" / "s-win" / "weights.npz").write_bytes(b"a different prior")
+        (work / "fits" / "s-win" / "fit.json").write_text(json.dumps({"runs": {"train": 7, "validation": 2}, "trained_on_decisions": {"card": 5},
+                                                                    "best_epoch": 3, "init": "the generation 11 judgement's trunk"}), encoding="utf-8")
+        (work / "heldout.json").write_text(json.dumps({"selection": {"selected": selected}}), encoding="utf-8")
+        return work
+
+    def test_candidate_command_builds_only_what_the_rule_picked(self):
+        import types as _types  # noqa: PLC0415
+
+        args = _types.SimpleNamespace(work=str(self._work(None)), base=str(self.base), out=str(self.out), set="")
+        self.assertEqual(3, ss.cmd_candidate(args))  # the rule picked none: no folder
+        self.assertFalse(self.out.exists())
+        args = _types.SimpleNamespace(work=str(self._work("s-win")), base=str(self.base), out=str(self.out), set="")
+        self.assertEqual(0, ss.cmd_candidate(args))
+        agent = json.loads((self.out / "agent.json").read_text(encoding="utf-8"))
+        self.assertIn("selected by the held-out rule", agent["built"]["why"])
+
+    def test_forcing_an_arm_is_recorded(self):
+        import types as _types  # noqa: PLC0415
+
+        args = _types.SimpleNamespace(work=str(self._work(None)), base=str(self.base), out=str(self.out), set="s-win")
+        self.assertEqual(0, ss.cmd_candidate(args))
+        agent = json.loads((self.out / "agent.json").read_text(encoding="utf-8"))
+        self.assertIn("NOT the rule's pick", agent["built"]["why"])
 
     def test_refuses_the_same_prior_and_an_existing_folder(self):
         same = self.base.parent / "same.npz"

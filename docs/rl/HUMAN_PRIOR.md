@@ -431,3 +431,136 @@ python rl/human_prior.py agreement --decisions decisions-v1 --model <out>/pi_h-v
 The tests (`tests/python/test_human_prior.py`, 16 now, seconds) add: the route-is-a-path check (unique, ambiguous, no path, Winged Boots' jumps, another seed's map), the runs a true map cannot stand for, a route decision's option set
 and afterstates, the dropped cases, the price grades and flags and the fit's use of them, a v1 shard through a fit step and the numpy scorer, the baselines, the win input (its fold, the v0 loader's identical scores at play, the loss
 reaching the weight) and the truth chunk join.
+
+## Strong sets by achievement (2026-11-09, D55 addendum 15; branch `feat/best-players`)
+
+Source of the record: Spire Codex public run export for v0.107.1 (the 2026-11-06 download, 840,381 lines). Aggregates only: no run is named, no
+cell under 20 runs is shown (a set or cell under 20 runs is written "under 20"), the exam fifth is never read, the working files and shards
+stay in the data store, never in a repository.
+
+**Why.** The prior of generation 13 (`pi_h=2ebfe6d7`) is fitted on every solo Ironclad Ascension 10 run, the average player included. The
+export's per-player key is blank on solo runs, so a player's strength cannot be read; a run's achievement can. Owner decision 2026-11-08:
+fit the coaching on strong runs; never on co-op runs; other characters' runs are not used for any decision (they depend on the character).
+
+### The sets (`python rl/strong_sets.py filter`, `rl/strong_sets.py`)
+
+One pass over the export, Ironclad lines of Ascension 10 to 20 only, with the 11-06 filter's rules (standard mode, not abandoned, one player,
+no modifiers, build v0.107.1, one line per run hash) and the fork's own (the three vanilla acts, as `human_starts.vanilla_acts`); the exam
+fifth (the ids file united with hash bucket 0, `human_starts.is_exam`) out of every set, runs new to the pipeline joining the fifths by the
+same hash rule. A written run drops the player token, the badges and the player id.
+
+* **All-player pool** (the reproduction baseline): Ascension 10, any outcome.
+* **S-win**: Ascension 10 runs that won (a subset of the pool).
+* **S-high**: Ascension 11 to 20 runs, any outcome.
+
+| | pool (Ascension 10) | S-win | S-high |
+|---|---|---|---|
+| runs | 14,725 | 1,608 | under 20 |
+| wins | 1,608 (10.9 in 100) | 1,608 | under 20 |
+| fifths 1 / 2 / 3 / 4 (4 is held out of every fit) | 3,671 / 3,648 / 3,791 / 3,615 | 409 / 410 / 404 / 385 | under 20 |
+| runs by the last act entered, Act 1 / 2 / 3 | 6,638 / 3,854 / 4,233 | 0 / 0 / 1,608 | under 20 |
+
+Of 67,354 Ironclad lines of Ascension 10 to 20: 33,095 have more than one player, 13,128 are abandoned, 2,213 are not standard mode, 475 carry
+modifiers, 3,653 are in the exam fifth, 48 do not have the three vanilla acts. **S-high is empty for a plain reason**: the game defines ten
+Ascension levels, and the export's Ironclad lines at levels 11 to 20 are about two hundred in any mode (a modded ladder), under 20 runs after the filter.
+The set is not a stronger crowd, it is not a crowd. Its fit (under 20 training runs) is reported because the brief asks for it and means nothing.
+
+Decisions the fit reads (card rewards, ancient screens, rest sites; replay mismatches out, as in v0), training fifths 1 to 3 / held-out fifth 4,
+by act 1 / 2 / 3:
+
+| | pool | S-win |
+|---|---|---|
+| card rewards, training | 79,451 / 37,202 / 15,901 | 9,249 / 8,616 / 6,396 |
+| ancient screens, training | 10,493 / 5,256 / 2,725 | 1,025 / 979 / 1,018 |
+| rest sites (kind), training | 27,518 / 12,914 / 6,662 | 3,349 / 3,116 / 2,773 |
+| smith targets, training | 15,846 / 6,444 / 3,537 | 2,486 / 2,086 / 1,760 |
+| card rewards, held out | 26,011 / 12,208 / 5,383 | 3,023 / 2,808 / 2,121 |
+
+The wins' decisions fall evenly over the three acts (a winner plays all three); the pool's fall off with the runs that die early. **Published
+cells under 20 runs**: the prior's table is read as 16 cells (card, ancient, rest kind, smith target; each for all acts and for Acts 1 to 3);
+for the pool, S-win and S-win plus S-high none of the 16 is under 20 runs, in the training fifths or in the held-out fifth; for S-high all 16
+are (and are never shown). The finer splits of the v0 table (take and skip screens, whole screens) were not recounted.
+
+### The fits (`rl/strong_sets.py fit`)
+
+The code path of `pi_h-v0` (`human_prior.build` with its donors, then `fit_one`): generation 11's run judgement as the start, winners 1x,
+AdamW 3e-4, batches of 256, dropout 0.1, early stopping at patience 3 on the sum of the mean validation negative log-likelihoods of card,
+ancient and rest (kind and smith target), fifths 1 to 3 train, fifth 4 validates, the same seed. CPU only (the GPU belongs to the lab's
+judgement; the fit refuses to run when a GPU is visible), one process. `human_prior.py` gained `build --ascensions`, the loader's parts
+(several shard folders, a won-only part) and a warm start from a fitted prior (`init_from_prior`); the defaults are as they were.
+
+| fit | training runs | training decisions (card / ancient / rest) | best epoch (run) | validation score | wall |
+|---|---|---|---|---|---|
+| baseline (pool) | 11,065 | 132,554 / 18,474 / 47,094 | 13 (16) | 3.9465 | 1,173 s |
+| S-win | 1,205 | 24,261 / 3,022 / 9,238 | 15 (18) | 4.0135 | 293 s |
+| S-high | under 20 | under 20 each | 1 (4) | 4.9967 | 14 s |
+| S-win plus S-high | 1,217 | 24,380 / 3,040 / 9,276 | 18 (21) | 4.0206 | 341 s |
+| informational: S-win, warm start from the baseline | 1,205 | as S-win | 2 (5) | 3.8512 | 58 s |
+
+The baseline reproduces the shipped prior: the validation score 3.9465 against v0's 3.962 (a different, larger export: 14,725 usable runs
+outside the exam fifth against 11,961; CPU against GPU). Scores of different rows are on different validation sets and do not compare.
+
+### The held-out leg (`rl/strong_sets.py evaluate`)
+
+Fifth 4 of the pool is trained on by no fit. **(a)** its won runs: 11,962 decisions of 336 runs (card 7,952, ancient 983, rest kind 3,027, plus
+2,086 smith targets); **(b)** all of its runs: 65,111 decisions of 3,437 runs. Log-loss is the mean negative log-likelihood (nats) of the human's
+choice over the card, ancient and rest-kind decisions (one softmax each, as `metrics_from_scores`); top-1 the share where the prior's first
+choice is the human's. The difference to the baseline is paired by decision, with a 95% interval from resampling whole runs (2,000 draws).
+**(c) the ranking check.** This file defines no ranking check beyond the smith-target "in the prior's top three" row (the ranking check of
+`ROUND.md` ranks value heads, not priors), so (c) is that row and its companion on cards: the share of smith targets inside the prior's top
+three and the mean rank of the human's card among the offers and the skip (1 = first; a screen has 4 options).
+
+| fit | training runs | (a) log-loss | (a) top-1 | (a) vs baseline | (b) log-loss | (b) top-1 | (b) vs baseline | (c) card mean rank, a / b | (c) smith top-3, a / b |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | 11,065 | 0.8731 | 60.8 | | 0.9459 | 57.4 | | 1.679 / 1.782 | 82.6 / 83.7 |
+| S-win | 1,205 | 0.9192 | 59.2 | +0.0461 [+0.0372, +0.0547] | 1.0363 | 53.7 | +0.0904 [+0.0858, +0.0949] | 1.743 / 1.895 | 82.5 / 82.6 |
+| S-high | under 20 | 1.2225 | 40.8 | +0.3494 [+0.3311, +0.3672] | 1.2978 | 36.4 | +0.3519 [+0.3443, +0.3593] | 2.318 / 2.396 | 39.7 / 42.4 |
+| S-win plus S-high | 1,217 | 0.9147 | 59.6 | +0.0416 [+0.0326, +0.0504] | 1.0341 | 54.1 | +0.0882 [+0.0834, +0.0928] | 1.727 / 1.882 | 81.9 / 82.3 |
+| *informational:* S-win warm start | 1,205 on the baseline | 0.8625 | 62.0 | -0.0106 [-0.0149, -0.0066] | 0.9616 | 57.3 | +0.0157 [+0.0136, +0.0180] | 1.665 / 1.793 | 83.4 / 83.5 |
+| *shipped prior* `2ebfe6d7` (older data) | | 0.8704 | 60.9 | -0.0027 [-0.0058, +0.0006] | 0.9464 | 57.4 | +0.0005 [-0.0011, +0.0021] | 1.674 / 1.779 | 83.2 / 83.6 |
+
+By kind on (a), log-loss / top-1: baseline card 1.033 / 56.2, ancient 0.958 / 52.9, rest kind 0.427 / 75.7, smith target 1.474 / 46.8; S-win 1.090 /
+53.3, 0.954 / 54.0, 0.460 / 76.4, 1.508 / 46.5; warm start 1.022 / 56.8, 0.950 / 55.1, 0.414 / 78.0, 1.466 / 47.1.
+
+**Selection rule** (`select_fit`): the fit with the best held-out log-loss on the won runs (a), provided its all-run log-loss (b) is not worse
+than the baseline's by more than 0.02 nats; fits within 0.002 nats of the best tie and the larger set wins; no strong fit beating the baseline
+on (a) means no candidate. **Outcome: no strong fit beats the baseline, so no candidate was built.** S-win and S-win plus S-high are worse on
+the won runs by 0.046 and 0.042 nats and on all runs by 0.090 and 0.088 (over the 0.02 limit); S-high is noise.
+
+What the table says: the winners' choices are easier to predict than the average player's (the baseline's log-loss 0.873 on the won runs against
+0.946 on all; top-1 60.8 against 57.4), and a prior fitted on the 1,205 winning runs alone is worse than the one fitted on all 11,065 runs even
+on the winners: a ninth of the data costs more than the sharper target gives back. Fitting on winners from scratch is data-starved, not
+refuted. The warm start (the baseline's weights fine-tuned on the winners, an arm the brief did not list and the rule does not cover)
+gains 0.011 nats on the winners' choices (interval above) and loses 0.016 on all runs, inside the 0.02 limit; had it been one of the fits
+the rule would have picked it. Two cautions: the epoch was chosen on fifth 4's winners, the same runs (a) scores, so the 0.011 is optimistic by
+an amount not measured here (a clean check halves fifth 4 by run hash, early-stopping on one half and scoring the other); and 0.011 nats is
+small beside what the lab's blocks resolve. `python rl/strong_sets.py candidate --set s-win-ft` builds the generation 14 copy from it on an
+explicit word, marking it as not the rule's pick; nothing is built now.
+
+### Caveats
+
+* One held-out fifth is both the early-stopping set and the scoring set of every fit (the v0 recipe: fifth 4 validates). The optimism of
+  that is not measured here; the validation curves are flat to within about 0.01 of the summed score around each best epoch.
+* The pool is the 2026-11-06 export (14,725 usable Ascension 10 runs outside the exam fifth); `2ebfe6d7` was fitted on 11,961 runs of an earlier
+  export. The baseline is a refit on the new data, not the shipped file; the shipped file is scored beside it (the intervals cover zero).
+* The rows keep v0's donor maps and the fight block of generation 11's FightNet, as the shipped prior does; S-high's rows would be Ascension 10
+  states regardless of their level.
+* Runs with unknown content (a card or relic the copy lacks) lose those decisions, counted by the build as in v0. The 11-06 filter's id-map
+  screen (which dropped 296 of the 18,421 Ironclad Ascension 10 runs for modded content) was not repeated: the pool keeps those runs and
+  the build drops their unknown decisions.
+
+### Rerun
+
+```
+python rl/strong_sets.py filter                                        # three working files and filter_stats.json in the data store
+python rl/human_prior.py build --corpus <a10_pool> --exam-ids <ids> --out-dir <work>/prior-a10 --procs 3 --clean --reference none --ascensions 10
+python rl/human_prior.py build --corpus <s_high>   --exam-ids <ids> --out-dir <work>/prior-high --procs 1 --clean --reference none --ascensions 11-20
+python rl/strong_sets.py fit --name baseline|s-win|s-high|s-win+s-high [--threads N]      # CPU, one process each
+python rl/strong_sets.py fit --name s-win-ft --init-from <work>/fits/baseline/weights.npz  # the informational arm
+python rl/strong_sets.py counts ; python rl/strong_sets.py evaluate --incumbent <pi_h-v0/weights.npz>
+python rl/strong_sets.py candidate [--set NAME]                        # only when the rule picked a fit (or --set)
+```
+
+`donors.npz` is copied beside each build's `decisions` folder. `tests/python/test_strong_sets.py` (31 tests, under a second) pins the filter's
+rules and counts, the scrubbing, the build's level option, the loader's parts and the disjoint held-out fifth, the per-decision measures
+against `metrics_from_scores`, the cell suppression, the bootstrap, the selection rule's cases and the candidate copy.

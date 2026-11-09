@@ -4,6 +4,7 @@
     python rl/strong_sets.py filter   [--export F] [--exam-ids F] [--work DIR]
     python rl/strong_sets.py fit      --name baseline|s-win|s-high|s-win+s-high [--work DIR] [--threads N]
     python rl/strong_sets.py evaluate [--work DIR] [--incumbent weights.npz]
+    python rl/strong_sets.py counts   [--work DIR]
     python rl/strong_sets.py candidate [--base gen13/candidate-stakes] [--out gen14/candidate-best-players]
 
 The export's per-player key is blank on solo runs, so strength is read from what a run achieved. Two sets, from the Ironclad solo
@@ -423,6 +424,46 @@ def select_fit(rows: dict[str, dict], baseline: str = "baseline", tie: float = T
     return out
 
 
+PUBLISHED_KINDS = ("card", "ancient", "rest_kind", "rest_smith_target")  # the kinds the prior's agreement table shows, each for all and for Acts 1 to 3
+
+
+def set_cells(ds: "hp.Dataset") -> dict:
+    """A loaded set's decisions and distinct runs in each published cell (kind x act, with 'all'), for the decisions a fit uses (replay
+    mismatches out), and whether the cell is shown (at least MIN_CELL runs and decisions)."""
+    valid = ~hp._bool_unavailable(ds, False, True, True)
+    pd = per_decision(ds, np.zeros(len(ds.dense), dtype=np.float32), valid)
+    out = {}
+    for key, c in cells(pd, None).items():
+        if key.split("|")[0] in PUBLISHED_KINDS:
+            out[key] = dict(c, shown=bool(c["runs"] >= MIN_CELL and c["decisions"] >= MIN_CELL))
+    return out
+
+
+def cmd_counts(a: argparse.Namespace) -> int:
+    """The sets' counts for the doc: runs and decisions in the training fifths and in the held-out fifth, per published cell, and how many of
+    the cells fall under MIN_CELL runs (those are merged or suppressed, never published)."""
+    hs.below_normal()
+    work = Path(a.work)
+    donors = hp.load_donors(work / "prior-a10" / "donors.npz")
+    doc: dict = {"written_by": "rl/strong_sets.py counts (aggregates only)", "source": SPIRE_CODEX, "min_cell": MIN_CELL, "sets": {}}
+    for name in FITS:
+        entry: dict = {}
+        for label, fifths in (("train", hp.TRAIN_FIFTHS), ("heldout", [hp.VAL_FIFTH])):
+            try:
+                ds = load_parts(work, name, fifths, donors)
+            except SystemExit:
+                entry[label] = {"runs": 0, "cells": {}, "cells_total": 4 * len(PUBLISHED_KINDS), "cells_under_min": 4 * len(PUBLISHED_KINDS)}
+                continue
+            c = set_cells(ds)
+            entry[label] = {"runs": len(runs_of(ds)), "decisions": int(len(ds.dec)), "cells": c, "cells_total": len(c),
+                            "cells_under_min": sum(1 for x in c.values() if not x["shown"])}
+        doc["sets"][name] = entry
+    (work / "set_counts.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    print(json.dumps({n: {l: {"runs": e[l]["runs"], "cells_under_min": e[l]["cells_under_min"], "cells_total": e[l]["cells_total"]} for l in e}
+                      for n, e in doc["sets"].items()}, indent=1))
+    return 0
+
+
 def cmd_evaluate(a: argparse.Namespace) -> int:
     hs.below_normal()
     t0 = time.time()
@@ -554,7 +595,7 @@ def build_candidate(base: Path, out: Path, weights: Path, info: dict, generation
     train["lineage"]["difference"] = agent["lineage"]["difference"]
     train["strong_set"] = {"set": info["set"], "source": SPIRE_CODEX, "counts": info["counts"], "prior_sha256": new_full,
                            "replaces_sha256": old_full,
-                           "fit": "rl/strong_sets.py fit (the generation 11 start, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)",
+                           "fit": info.get("fit", "rl/strong_sets.py fit (the generation 11 start, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)"),
                            "note": GATE_NOTE}
     model = json.loads((base / "model.json").read_text(encoding="utf-8"))
     model["iteration"] = generation
@@ -573,16 +614,23 @@ def build_candidate(base: Path, out: Path, weights: Path, info: dict, generation
 def cmd_candidate(a: argparse.Namespace) -> int:
     doc = json.loads((Path(a.work) / "heldout.json").read_text(encoding="utf-8"))
     sel = doc["selection"]["selected"]
+    forced = bool(a.set) and a.set != sel
+    if forced:  # an arm the rule did not pick (the informational warm start): only on an explicit word, and the candidate says so
+        sel = a.set
     if sel is None:
-        print("strong_sets candidate: the selection rule picked no fit; no candidate is built", file=sys.stderr)
+        print("strong_sets candidate: the selection rule picked no fit; no candidate is built (--set NAME builds an arm the rule did not pick)",
+              file=sys.stderr)
         return 3
     fit = json.loads((Path(a.work) / "fits" / sel / "fit.json").read_text(encoding="utf-8"))
     counts = {"runs_train": fit["runs"]["train"], "runs_validation": fit["runs"]["validation"], "decisions_trained_on": fit["trained_on_decisions"],
               "best_epoch": fit["best_epoch"], "heldout_fifth": hp.VAL_FIFTH}
+    picked = ("NOT the rule's pick (the rule picked " + str(doc["selection"]["selected"]) + "): built on an explicit word"
+              if forced else "selected by the held-out rule")
     why = ("D55 addendum 15 (owner 2026-11-08): the human prior fitted on the strong runs by achievement (" + sel + ") in place of the all-player "
-           "fit, every other part of generation 13's recipe unchanged; selected by the held-out rule of docs/rl/HUMAN_PRIOR.md, section Strong sets by achievement")
+           "fit, every other part of generation 13's recipe unchanged; " + picked + " of docs/rl/HUMAN_PRIOR.md, section Strong sets by achievement")
     agent = build_candidate(Path(a.base), Path(a.out), Path(a.work) / "fits" / sel / "weights.npz",
-                            {"set": sel, "source": f"strong-sets/{sel}/weights.npz", "why": why, "counts": counts})
+                            {"set": sel, "source": f"strong-sets/{sel}/weights.npz", "why": why, "counts": counts,
+                             "fit": f"rl/strong_sets.py fit ({fit['init']}, winners 1x, fifths 1 to 3 train, fifth 4 validates; CPU)"})
     print(json.dumps({"candidate": Path(a.out).name, "macro": agent["macro"], "recipe": agent["recipe"], "set": sel}))
     return 0
 
@@ -612,12 +660,15 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--work", default=str(WORK))
     e.add_argument("--exam-ids", default=str(EXAM_IDS))
     e.add_argument("--incumbent", default="")
+    k = sub.add_parser("counts")
+    k.add_argument("--work", default=str(WORK))
     c = sub.add_parser("candidate")
     c.add_argument("--work", default=str(WORK))
+    c.add_argument("--set", default="", choices=[""] + sorted(ARMS), help="build this arm although the rule did not pick it (recorded as such)")
     c.add_argument("--base", default="D:/spireline/referee/agent/gen13/candidate-stakes")
     c.add_argument("--out", default="D:/spireline/referee/agent/gen14/candidate-best-players")
     a = ap.parse_args(argv)
-    return {"filter": cmd_filter, "fit": cmd_fit, "evaluate": cmd_evaluate, "candidate": cmd_candidate}[a.cmd](a)
+    return {"filter": cmd_filter, "fit": cmd_fit, "evaluate": cmd_evaluate, "counts": cmd_counts, "candidate": cmd_candidate}[a.cmd](a)
 
 
 if __name__ == "__main__":
