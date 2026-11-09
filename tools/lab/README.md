@@ -295,6 +295,10 @@ start beside a train job, above). **Who does not.** The train job itself, and th
 the pick logic never reads QUIET.lock, so the line holds none of them. The gate scripts (`gate-py.sh`) wait on foreign lines unless they
 ignore this tag; that change is the orchestrator's.
 
+**The screens inside the judgement.** A candidate that differs from the incumbent in the fight network only plays the fight exam's human stratum
+before its arms (`rl/screens.py`, docs/rl/KEEP_TEST_V2.md "The screens"); that run takes its own `fight-exam` line and is told not to wait for the
+`lab-train` line of the job that started it (`fight_exam.py play --allow-quiet lab-train`). Nothing in `LAB/jobs.json` changes.
+
 **The load guard.** While the runner holds the line the load guard (other processes over `--load-pct`, 50%, for `--load-window`, 120 s) does
 not pause the train job: the others yield to the judgement, so a pause for their load was backwards (148 load interrupts of a 9-hour judgement
 by 2026-11-09). The guard still reads the load, and it still stops the practice filler and the report (they give way to it, as before). It

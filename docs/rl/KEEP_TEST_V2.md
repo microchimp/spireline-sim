@@ -75,14 +75,14 @@ the line lives in `promotion.json` and the command output only). v1 judgements a
 
 ## The futility stop (D55 addendum 18, 2026-11-09)
 
-A judgement used to play every seed of its block unless a refusal or an early promotion ended it: tonight's `gen14/candidate-prior-act2` stood at
+A judgement used to play every seed of its block unless a refusal or an early promotion ended it: `gen14/candidate-prior-act2` stood at
 71 against 76 Act 2 boss kills on 800 common seeds with 2,200 to play (about ten hours of 16 processes) to confirm no promotion. The funnel
 now also stops a block that cannot reach one.
 
-**The rule.** At a look at `futility.min_seeds` (default 1,000) paired seeds or more that would play on (the looks of the funnel: 200, then
-every 300; the refusals and the early promotion are asked first and are as they were; the last look is judged as ever), the keep test asks,
-for each route it can promote by, whether the 95% upper bound of the candidate's gain (the paired cluster bootstrap of the routes' own lower
-bounds, `keep_v2.diff_summary`) reaches the gain that route needs on the whole block:
+**The rule.** At a look at `futility.min_seeds` (default **500** paired seeds; the first landing, 2026-11-09, had 1,000) or more that would
+play on (the looks of the funnel: 200, then every 300; the refusals and the early promotion are asked first and are as they were; the last look
+is judged as ever), the keep test asks, for each route it can promote by, whether the 95% upper bound of the candidate's gain (the paired
+cluster bootstrap of the routes' own lower bounds, `keep_v2.diff_summary`) reaches the gain that route needs on the whole block:
 
 * **route A** (the Act 2 boss and deeper, deep_f per 100 runs): `max(+1.0, z(0.995) x SE x sqrt(n / N))`, the rule's own minimum gain or the
   gain whose 0.005 lower bound clears 0 on all N seeds, whichever is more;
@@ -94,39 +94,70 @@ decision's `rule` ends `+D51-funnel+futility@<seeds>`, `sequential.stop` is `{ac
 routes' bounds}`, the ledger row's `guard` cell ends `| funnel futility@<seeds> of <N> seeds`, both arms' rows to that look are kept, the keep
 test v2 runs on the seeds played as for a refusal (`keep_v2` and the usual summary), the train job exits 0 so the lab's marker becomes `done-`,
 and the job log carries `futility look at <n> of <N> seeds: route A (...): 95% upper bound +x falls short of the +y it needs; route F (...)
-...; no route can reach it: the judgement stops` at every look it asked (the last of them, if it stopped). A route that is alive keeps the
-judgement going; nothing is asked before `min_seeds`. `promotions.tsv` keeps its 31 columns in their order (the column `rule` stays the keep
-rule, `v2`; `row_rule` reads it); `sequential.futility` in `promotion.json` records the switch.
+...; no route can reach it: the judgement stops` at every look it asked. A route that is alive keeps the judgement going; nothing is asked
+before `min_seeds`. `promotions.tsv` keeps its 31 columns in their order (the column `rule` stays the keep rule, `v2`; `row_rule` reads it);
+`sequential.futility` in `promotion.json` records the switch.
 
 **Switch.** On by default. `gen0.py train` / `promote`: `--no-futility`, `--futility-min-seeds N` (the train job passes them to its promote child
 only when named, so the lab's live command needs no change); `rl/round1_config.json` `futility.enabled` (true) and `futility.min_seeds`
-(1000), which the round's block step passes to `promote`; in code `gen_loop.promote(futility=, futility_min_seeds=)`, `gen_loop.FUTILITY_ON`,
+(500), which the round's block step passes to `promote`; in code `gen_loop.promote(futility=, futility_min_seeds=)`, `gen_loop.FUTILITY_ON`,
 `FUTILITY_MIN_SEEDS`.
 
 **What it costs and saves** (the normal model of `tests/python/test_futility.py::ModelTests`: 3,000 seeds in the funnel's looks, per-seed SD
 7.74 floors and 41 per 100 on deep_f; 200,000 paths; "lost" is the chance that the block would have promoted at its last look and the stop
-ended it first):
+ended it first; the first look at 1,000 / at 500):
 
 | true gain (floors, deep_f per 100) | P(promote at the last look) | lost to the stop | stopped | seeds played, mean |
 |---|---|---|---|---|
-| 0, 0 (level) | 0.010 | 0.0001 | 74% | 2,080 |
-| -0.5, -2 | 0 | 0 | 100% | 1,137 |
-| +0.2, 0 | 0.127 | 0.0008 | 35% | 2,607 |
-| +0.3, 0 | 0.330 | 0.0018 | 17% | 2,811 |
-| +0.5, 0 | 0.833 | 0.0021 | 2% | 2,978 |
-| +1.07, 0 (generation 11's gain) | 1.000 | 0.0000 | 0% | 3,000 |
-| 0, +1.0 | 0.114 | 0.0008 | 38% | 2,580 |
-| 0, +2.0 | 0.542 | 0.0022 | 8% | 2,908 |
-| 0, +3.0 | 0.924 | 0.0014 | 1% | 2,991 |
-| 0, +5.0 | 1.000 | 0.0000 | 0% | 3,000 |
+| 0, 0 (level) | 0.010 | 0.0001 / 0.0002 | 74% / 75% | 2,080 / 1,963 |
+| -0.5, -2 | 0 | 0 / 0 | 100% / 100% | 1,137 / 717 |
+| +0.2, 0 | 0.127 | 0.0008 / 0.0019 | 35% / 36% | 2,607 / 2,535 |
+| +0.3, 0 | 0.330 | 0.0018 / 0.0043 | 17% / 18% | 2,811 / 2,761 |
+| +0.5, 0 | 0.833 | 0.0021 / 0.0058 | 2% / 2% | 2,978 / 2,960 |
+| +1.07, 0 (generation 11's gain) | 1.000 | 0.0000 / 0.0000 | 0% / 0% | 3,000 / 3,000 |
+| 0, +1.0 | 0.114 | 0.0008 / 0.0017 | 38% / 39% | 2,580 / 2,507 |
+| 0, +2.0 | 0.542 | 0.0022 / 0.0059 | 8% / 9% | 2,908 / 2,872 |
+| 0, +3.0 | 0.924 | 0.0014 / 0.0045 | 1% / 1% | 2,991 / 2,979 |
+| 0, +5.0 | 1.000 | 0.0000 / 0.0002 | 0% / 0% | 3,000 / 3,000 |
 
-The stop loses at most two promotions in a thousand blocks at any gain, and none where the test finds the gain for certain; a level candidate
-ends at 2,080 of 3,000 seeds on average (a third saved). **Replay of the lab's recorded blocks** (rows read, nothing played; the test skips
-where the folders are absent): none of the five promoted blocks that have their arms (E3-r1, E5, E7-r1, E8 and E12-r3 under v2) stops
-for futility at 1,000 or at 500 seeds; the rejected E14-2026-11-07 (2,000 seeds played) stops at 1,100 and E4-2026-10-24 at 1,100.
-Tonight's `gen14/candidate-prior-act2`, read on its 1,100 common seeds (floor +0.06, deep_B2 -1.6 per 100): route A is dead (95% upper
-bound +0.18 against +1.68) and route F alive by a hair (+0.51 against +0.42), so by this rule it stops at about 1,700 seeds if the means
-hold, not at 1,100.
+The stop loses at most six promotions in a thousand blocks at any gain from 500 seeds (two in a thousand from 1,000), and none where the test
+finds the gain for certain; a level candidate ends at 1,963 of 3,000 seeds on average (a third saved), a harmful one at the look after 500. **Replay
+of the lab's recorded blocks** (rows read, nothing played; the test skips where the folders are absent): none of the five promoted blocks that
+have their arms (E3-r1, E5, E7-r1, E8 and E12-r3 under v2) stops for futility from 1,000 or from 500 seeds; the rejected E14-2026-11-07 (2,000
+seeds played) stops at 1,100 and E4-2026-10-24 at 1,100 (500 when the first look is 500). `gen14/candidate-prior-act2`, read on its 1,100 common
+seeds (floor +0.06, deep_B2 -1.6 per 100): route A is dead from 800 seeds (95% upper bound +1.25 against +1.61; +0.18 against +1.68 at 1,100)
+and route F alive by a hair (+0.51 against +0.42 at 1,100), so by this rule it stops at about 1,700 seeds if the means hold, not at 800 or 1,100.
+
+## The screens before the arms (D55 addendum 18)
+
+`rl/screens.py`, asked by `gen_loop.promote` before an arm is played (so by `train --promote`, and by `gen0.py promote`). It compares the
+candidate's folder with the incumbent's by part: **fight** (`combat_policy.pt`, `combat_net.pt`, `combat_net.onnx`), **prior**
+(`human_prior.npz`), **value** (the run judgement: `run_value.*`, `fight_net.*`) and **settings** (agent.json: the macro and recipe with the prior's
+tag taken out, mask version, the prior's lambda, lambda by act and guard, the stakes schedule, the potion hold). Generation, dates, lineage and
+notes are bookkeeping. A screen runs only when one part differs and it is the fight network or the prior; anything else plays the arms as before.
+
+* **`screen:fight`** (only the fight network differs). The candidate plays the fight exam's human stratum (`fight_exam.py play --player-dir
+  <candidate> --stratum human --allow-quiet lab-train`: 400 starts, four draws, the machinery of the human-bar line; its games go to
+  `exam/games-lab-g<gen>-<folder>-<sha8>.jsonl` and are resumable). The incumbent's side is the games of the gym player that holds its
+  network's bytes (`fight_exam.gym_player_of`, the lab's human-bar line). The candidate is rejected when its survival is below the incumbent's, on
+  the same starts and draws, by **more than two standard errors** (the bootstrap's over starts, resampled within cells, 400 draws). The screen is
+  not applied (and says why, the arms are played) when the exam has no human stratum, the incumbent's network has no human-stratum games, the
+  candidate's games did not all get played (the run was blocked or stopped: exit 3) or the two sides' engine tags differ (a difference across
+  engines is not a difference of networks). It takes the exam's mutex and a `fight-exam` QUIET.lock line like any exam run; the judgement's own
+  `lab-train` line does not hold it (`--allow-quiet`).
+* **`screen:prior`** (only the human prior differs). Both priors are scored on the held-out human choices of the prior's own fit: the validation
+  fifth (fifth 4) of `human-prior/decisions-v1` (else `decisions`), never the exam fifth (`assert_no_exam`), the kinds both priors were fitted on,
+  `human_prior.score_total` (the summed mean negative log-likelihood), CPU numpy, about a minute a prior. The candidate is rejected when its
+  log-loss is **worse** (higher) than the incumbent's.
+
+A rejection is a rejected judgement and plays no arm: `promotion.json` has `decision_text` rejected, `n_seeds` 0, the decision's `rule`
+`screen:fight` / `screen:prior` and `screen` with the figures (survival of both, the difference, its SE and z; or both log-losses per kind); the
+ledger row has `seeds` 0, an empty `seed_block` (the block stays fresh), the screen's rule in its `rule` column and its line in `guard`; the attempt
+is spent as for any rejection (`attempts_before` counts the candidate). A screen that passes goes on to the arms with its line added to the row's
+`guard` cell and `screen` in `promotion.json`; one that is skipped says why in the job log (`screen:fight: not applied (...)`) and in `screen`; one
+that fails with an error is logged and recorded (`screen.error`) and never fails the judgement. `--no-screen` on `train` and `promote` switches
+the screens off. Checked on the lab's folders: `gen14/candidate-prior-act2` against `gen13/candidate-stakes` differs in settings only (lambda by
+act: no screen); the held-out scorer reads `decisions-v1`'s fifth 4 (51,188 decisions) in a minute a prior.
 
 ## Tests
 
@@ -135,3 +166,4 @@ the lab's saved arms where they exist), `test_funnel.py` (`V2RuleTests`, `Promot
 (`KeepRuleV2Tests`, `test_train_passes_keep_rule_to_promote`, the line through `rejudge` and its command); the line's pieces in
 `test_fight_exam.py` (`HumanBarReadingTests`); synthetic arms in `tests/python/keep_v2_fixtures.py` (counts only; no saved row is committed).
 `tests/python/test_futility.py` (the futility stop: the routes' bounds, a level candidate stopping at 1,000 seeds, a better one and one better on floors only or on deep_f only never stopping, the ledger line's columns, the switches, the model table, the recorded blocks).
+`tests/python/test_screens.py` (which screen a pair of folders gets, the fight screen's two-SE rule on constructed games, the prior screen's scorer, `promote` rejecting before any arm, the ledger row, the flags).

@@ -2002,7 +2002,8 @@ SEQ_SMOKE_ALPHA = 0.05  # ... when the one-sided 95% lower bound of the mean is 
 SEQ_REFUSE_ALPHA = ALPHA  # an interim look refuses when the one-sided 99% upper bound of the mean is below 0
 SEQ_EARLY_ALPHA = 0.001  # all the alpha early promotions may spend, split equally over the interim looks (Bonferroni)
 SEQ_RULE = "D51-funnel"
-FUTILITY_MIN_SEEDS = 1000  # the futility stop (D55 addendum 18) looks from this many paired seeds on; `--futility-min-seeds`, round1_config `futility`
+FUTILITY_MIN_SEEDS = 500  # the futility stop (D55 addendum 18) looks from this many paired seeds on (1,000 in its first landing); `--futility-min-seeds`, round1_config `futility`
+SCREEN_ON = True  # the cheap screens before the arms (rl/screens.py); `--no-screen` switches them off
 FUTILITY_ON = True  # ... and is on unless `--no-futility` / `futility.enabled` false
 STOP_FAILS = ("refuse", "futility")  # the stops of a block that did not promote: the decision's `sequential` check is false for both
 
@@ -2358,11 +2359,73 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
     return [r for r in rows if r["seed"] in want]
 
 
+def screens_module():
+    import screens  # noqa: PLC0415 -- rl/ is on sys.path whenever gen_loop is imported
+
+    return screens
+
+
+def fight_exam_play(cand: Path, label: str, procs: int) -> int:
+    """`fight_exam.py play` of the candidate's folder on the human stratum alone (`--stratum human`, games to exam/games-<label>.jsonl, resumable),
+    under the judgement's own `lab-train` QUIET.lock line (`--allow-quiet`: it does not wait for the line that announces it). The exit code."""
+    cmd = [sys.executable, str(ROOT / "rl" / "fight_exam.py"), "play", "--player-dir", str(cand), "--label", label, "--stratum", "human",
+           "--allow-quiet", "lab-train", "--no-baseline", "--procs", str(int(procs))]
+    return subprocess.run(cmd, check=False).returncode
+
+
+def run_screen(cand: Path, base_dir: Path, cand_agent: Agent, base_agent: Agent, *, procs: int = 16, say: Callable[[str], None] | None = None) -> dict | None:
+    """The screen that applies to this candidate against this incumbent (`screens.kind_of`), run, and its figures: None when none applies; the
+    reading (`rejected`, `line`, the figures) or `{"skipped": why}`; `{"error": <name>}` when the screen itself failed (it never fails the judgement)."""
+    say = say or (lambda m: print(m, flush=True))
+    sc = screens_module()
+    kind = sc.kind_of(cand, base_dir)
+    if kind is None:
+        return None
+    try:
+        if kind == "fight":
+            sha, base_sha = candidate_identity(cand_agent)[0], base_agent.describe().get("prior_sha256")
+            label = f"lab-g{cand_agent.generation}-{cand.name}-{sha[:8]}"
+            if not base_sha:
+                got = {"rule": sc.SCREEN_FIGHT, "kind": "fight", "skipped": "the incumbent has no fight network"}
+            else:
+                got = sc.run_fight(cand, base_sha, label, lambda lab: fight_exam_play(cand, lab, procs))
+        else:
+            got = sc.run_prior(cand, base_dir)
+    except Exception as error:  # noqa: BLE001 -- a screen is a convenience: its failure plays the arms
+        got = {"rule": sc.SCREEN_FIGHT if kind == "fight" else sc.SCREEN_PRIOR, "kind": kind, "error": type(error).__name__}
+        say(f"{got['rule']}: failed ({type(error).__name__}: {str(error)[:200]}); the arms are played")
+        return got
+    if got.get("skipped"):
+        say(f"{got['rule']}: not applied ({got['skipped']}); the arms are played")
+    elif got.get("line"):
+        say(got["line"])
+    return got
+
+
+def screen_rejection(cand: Path, cand_agent: Agent, base_agent: Agent, screen_doc: dict, *, name: str, config: str, procs: int, agent_root: Path,
+                     attempt: int, cand_sha: str, head_sha: str, recipe: str, rule: str | None, lab: Path | None) -> dict:
+    """A candidate a screen rejected: promotion.json (the decision, `screen` with the figures; no arm was played) and a ledger row with seeds 0 and the
+    screen's rule in the `rule` column. The attempt is spent as for any rejection; nothing is promoted and no score marker is written."""
+    del lab
+    srule = screen_doc["rule"]
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": 0, "config": config, "procs": procs, "alpha": ALPHA,
+           "cand": {"agent": cand_agent.describe()}, "base": {"agent": base_agent.describe()},
+           "decision": {"promote": False, "rule": srule, "checks": {"screen": False}}, "decision_text": "rejected", "cand_sha": cand_sha,
+           "run_head_sha": head_sha, **({"macro": recipe} if recipe else {}), **({"keep_rule": rule} if rule else {}), "screen": screen_doc,
+           "f7": "not run", "matched_wall_clock": False}
+    write_json(cand / "promotion.json", doc)
+    append_promotion(Path(agent_root) / "promotions.tsv",
+                     {"written": doc["written"], "cand_gen": cand_agent.generation, "base_gen": base_agent.generation, "seed_block": "", "seeds": 0,
+                      "decision": "rejected", "cand_sha": cand_sha, "cand_dir": cand.name, "run_head_sha": head_sha, "macro": recipe, "attempt": attempt,
+                      "drift": "", "guard": str(screen_doc.get("line", srule)).replace("\t", " "), "rule": srule})
+    return doc
+
+
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
             review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
-            futility_min_seeds: int | None = None) -> dict[str, Any]:
+            futility_min_seeds: int | None = None, screen: bool | None = None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s, a third attempt
     of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict.
@@ -2385,7 +2448,14 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     from that many paired seeds on, a look that would play on also asks whether any route's 95% upper bound of the candidate's gain
     reaches the gain the route needs to promote on the whole block (`futility_check`); when none does the block ends there, rejected,
     with the decision's rule `futility@<seeds>`, the arms' rows kept, the keep test v2 run on the seeds played as for a refusal, and a
-    line in the job log naming the bounds that fell short."""
+    line in the job log naming the bounds that fell short.
+
+    The screens (`screen`, default on; rl/screens.py): before an arm is played the candidate's folder is compared with the incumbent's. Only the
+    fight network different: the candidate plays the fight exam's human stratum and is rejected (rule `screen:fight`) when its survival is below the
+    incumbent's by more than two standard errors. Only the human prior different: both are scored on the held-out human choices and the candidate is
+    rejected (`screen:prior`) when its log-loss is worse. A rejection writes promotion.json (`screen` holds the figures) and a ledger row with seeds 0
+    and that rule, spends the attempt, plays nothing; a screen that passes, is skipped (and says why) or fails goes on to the arms with its figures
+    in promotion.json and the row's `guard` cell."""
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
@@ -2414,6 +2484,10 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     arm = f"{name}-{config}"
     arm_kw = {"server_opts": server_opts} if server_opts is not None else {}  # the CPU path passes nothing new
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
+    screen_doc = run_screen(Path(cand), base_dir, cand_agent, base_agent, procs=procs) if (SCREEN_ON if screen is None else screen) else None
+    if screen_doc is not None and screen_doc.get("rejected") and not screen_doc.get("skipped"):
+        return screen_rejection(Path(cand), cand_agent, base_agent, screen_doc, name=name, config=config, procs=procs, agent_root=Path(agent_root),
+                                attempt=attempt, cand_sha=cand_sha, head_sha=head_sha, recipe=recipe, rule=rule if v2 else None, lab=lab)
     seq: dict[str, Any] | None = None
 
     def keep_of(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
@@ -2469,9 +2543,13 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                                          "the mean of a block that stopped on a bound is biased away from 0 (the decision's error rates hold)")
     if v2:
         doc["human_bar"] = human_bar_note(cand_agent, base_agent)  # report-only: no rule reads it
+    if screen_doc is not None:
+        doc["screen"] = screen_doc
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
+    if screen_doc is not None and screen_doc.get("line"):  # a screen that passed leaves its figures in the row
+        cells["guard"] = f"{cells['guard']} | {screen_doc['line']}".replace("\t", " ")
     if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
         said = (f"funnel {seq['stop']['rule']} of {len(seeds)} seeds" if seq["stop"]["action"] == "futility"
                 else f"funnel {seq['stop']['action']} at {played} of {len(seeds)} seeds")
@@ -2650,7 +2728,7 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
                            lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
                            prior_server_flags: tuple[str, ...] = (), sequential: bool = False, keep_rule: str | None = None,
-                           futility: bool | None = None, futility_min_seeds: int | None = None) -> int:
+                           futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
     `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
@@ -2676,6 +2754,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--no-futility"]
     if futility_min_seeds:
         cmd += ["--futility-min-seeds", str(int(futility_min_seeds))]
+    if screen is False:
+        cmd += ["--no-screen"]
     cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise
     return subprocess.run(cmd, check=False).returncode
 

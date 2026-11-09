@@ -68,7 +68,7 @@ DEFAULTS: dict[str, Any] = {
               "batch_seeds": 300},
     # futility: the block's stop for a candidate that cannot reach a promotion (gen0.py promote --no-futility / --futility-min-seeds;
     # gen_loop.futility_check, docs/rl/KEEP_TEST_V2.md); on, from min_seeds paired seeds
-    "futility": {"enabled": True, "min_seeds": 1000},
+    "futility": {"enabled": True, "min_seeds": 500},
     "candidate": {"tag": "round1", "target_generation": 14, "marker": False, "base": "gen11/candidate", "incumbent": "current.json",
                   "why": "D55 addendum 11 / memo row 5: the round's deck refit (prior on labels and blended choices, judgement on the new fighter's runs with human rows)"},
 }

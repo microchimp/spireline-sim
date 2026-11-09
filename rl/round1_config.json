@@ -136,7 +136,7 @@
  },
  "futility": {
   "enabled": true,
-  "min_seeds": 1000
+  "min_seeds": 500
  },
  "candidate": {
   "tag": "round1",

@@ -848,7 +848,8 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
                                                keep_rule=getattr(a, "keep_rule", None),  # None: the child reads SPIRELINE_KEEP_RULE, else v1
                                                futility=False if getattr(a, "no_futility", False) else None,
-                                               futility_min_seeds=getattr(a, "futility_min_seeds", None))
+                                               futility_min_seeds=getattr(a, "futility_min_seeds", None),
+                                               screen=False if getattr(a, "no_screen", False) else None)
     return 0
 
 
@@ -992,10 +993,13 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
                            smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
+                           screen=False if getattr(a, "no_screen", False) else None,
                            **({"server_opts": opts} if opts.mode != "off" else {}))
-    out = {k: doc[k] for k in ("decision_text", "floor", "boss_kill", "wins")}
+    out = {k: doc.get(k) for k in ("decision_text", "floor", "boss_kill", "wins")}  # (a screen's rejection played no arm: no figures)
     if "human_bar" in doc:  # the keep test v2's report-only line on the fight exam's human stratum
         out["human_bar"] = doc["human_bar"]["line"]
+    if doc.get("screen", {}).get("line"):
+        out["screen"] = doc["screen"]["line"]
     print(json.dumps(out, indent=1))
     return 0
 
@@ -1325,6 +1329,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
     t.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     t.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
+    t.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
     bd = sub.add_parser("build", help="assemble generation N's candidate from a combat prior export and a generation's V_run fit and "
                         "macro, nothing trained (D44 step A); with --marker-dir the lab's train job then judges it as it is")
     bd.add_argument("--prior", required=True, help="a combat prior export: model.json, combat_policy.pt, combat_net.pt (the fight "
@@ -1403,6 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
     pr.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     pr.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
+    pr.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
     pr.add_argument("--smoke-seeds", type=int, default=200, help="with --sequential: the seeds of the smoke block, the first look")
     pr.add_argument("--batch-seeds", type=int, default=300, help="with --sequential: the seeds added between the later looks")
     add_prior_server_flags(pr)

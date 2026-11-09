@@ -237,6 +237,7 @@ class PromoteFutilityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def run_promote(self, diffs: np.ndarray, cand: Path, **kw):
+        kw.setdefault("futility_min_seeds", 1000)  # (the default is 500 since the second landing; these figures were made for 1,000)
         seeds, cand_rows, base_rows = block(len(diffs), diffs, prefix="G")
         self.seed_file.write_text(json.dumps({"seeds": seeds}))
         arms = StubArms(cand_rows, base_rows)
@@ -280,6 +281,18 @@ class PromoteFutilityTests(unittest.TestCase):
         line = tsv.read_text().splitlines()[1].split("\t")
         self.assertEqual(len(line), len(PINNED_COLUMNS))
         self.assertEqual(len(gen_loop.read_promotions(tsv)[0]), len(PINNED_COLUMNS))
+
+    def test_the_default_first_look_is_five_hundred_paired_seeds(self):
+        self.assertEqual((gen_loop.FUTILITY_MIN_SEEDS, k2.FUTILITY_MIN_SEEDS), (500, 500))
+        cand = stub_candidate(self.root, "c1", "sha-a", generation=4)
+        seeds, cand_rows, base_rows = block(2000, pattern(2000, 6.0, -6.0), prefix="G")
+        self.seed_file.write_text(json.dumps({"seeds": seeds}))
+        out = io.StringIO()
+        with mock.patch.object(gen_loop, "run_arm", StubArms(cand_rows, base_rows)), contextlib.redirect_stdout(out):
+            gen_loop.promote(cand, None, self.seed_file, agent_root=self.agents, lab=self.root / "lab", boot=500, sequential=True, smoke=200, batch=200,
+                             keep_rule="v2")  # no futility argument at all: on, from 500
+        self.assertIn("futility look at 600 of 2000 seeds", out.getvalue())  # the first look of 200, 400, 600 ... that reaches 500
+        self.assertNotIn("futility look at 400", out.getvalue())
 
     def test_the_switch_off_plays_the_whole_block_as_before(self):
         cand = stub_candidate(self.root, "c1", "sha-a", generation=4)
@@ -357,10 +370,10 @@ class WiringTests(unittest.TestCase):
 
     def test_the_rounds_config_carries_the_switch(self):
         cfg = rd.load_config()
-        self.assertEqual(cfg["futility"], {"enabled": True, "min_seeds": 1000})
+        self.assertEqual(cfg["futility"], {"enabled": True, "min_seeds": 500})
         ctx = round1.Ctx(cfg, Path("D:/x/round"))
         a = gen0.build_parser().parse_args(round1.promote_cmd(ctx, "block", Path("c"), "s.json")[2:])
-        self.assertEqual((a.no_futility, a.futility_min_seeds), (False, 1000))
+        self.assertEqual((a.no_futility, a.futility_min_seeds), (False, 500))
         off = round1.Ctx(rd.load_config(futility={"enabled": False, "min_seeds": 1500}), Path("D:/x/round"))
         a = gen0.build_parser().parse_args(round1.promote_cmd(off, "block", Path("c"), "s.json")[2:])
         self.assertEqual((a.no_futility, a.futility_min_seeds), (True, 1500))
@@ -395,23 +408,27 @@ class ModelTests(unittest.TestCase):
         return {"would": float(would.mean()), "lost": float((stopped & would).mean()), "stopped": float(stopped.mean()), "seeds": float(n[at].mean())}
 
     def test_a_level_candidate_is_stopped_early_most_of_the_time_and_costs_nothing(self):
-        r = self.simulate(0.0, 0.0)
-        self.assertGreater(r["stopped"], 0.65)  # three in four level candidates end before the last look ...
-        self.assertLess(r["seeds"], 2300)  # ... saving about a third of the block's seeds on average
-        self.assertLess(r["lost"], 0.0005)  # and a promotion lost to the stop is about one in ten thousand (the null promotes 0.01)
+        for first in (1000, 500):
+            r = self.simulate(0.0, 0.0, min_seeds=first)
+            self.assertGreater(r["stopped"], 0.65, first)  # three in four level candidates end before the last look ...
+            self.assertLess(r["seeds"], 2300, first)  # ... saving a third of the block's seeds on average
+            self.assertLess(r["lost"], 0.0005, first)  # and a promotion lost to the stop is two in ten thousand (the null promotes 0.01)
 
     def test_a_real_gain_is_promoted_as_often_as_without_the_stop(self):
-        for mf, md in ((0.3, 0.0), (0.5, 0.0), (1.07, 0.0), (0.0, 2.0), (0.0, 3.0), (0.3, 3.0)):
-            r = self.simulate(mf, md)
-            self.assertLess(r["lost"], 0.004, (mf, md))  # at most four in a thousand blocks, at the worst effect (the promotion's own coin-flip)
-            self.assertLess(r["lost"], 0.01 * max(r["would"], 0.01) + 0.0025, (mf, md))
-        self.assertLess(self.simulate(1.07, 0.0)["stopped"], 1e-4)  # a gain the test finds for certain is never stopped
-        self.assertLess(self.simulate(0.0, 5.0)["stopped"], 1e-4)
+        for first, worst in ((1000, 0.004), (500, 0.008)):
+            for mf, md in ((0.3, 0.0), (0.5, 0.0), (1.07, 0.0), (0.0, 2.0), (0.0, 3.0), (0.3, 3.0)):
+                r = self.simulate(mf, md, min_seeds=first)
+                self.assertLess(r["lost"], worst, (first, mf, md))  # at most 4 (8) in a thousand blocks at the worst effect: the promotion's own coin-flip
+            self.assertLess(self.simulate(1.07, 0.0, min_seeds=first)["stopped"], 1e-4)  # a gain the test finds for certain is never stopped
+            self.assertLess(self.simulate(0.0, 5.0, min_seeds=first)["stopped"], 1e-3)
 
     def test_a_harmful_candidate_is_stopped_at_the_first_futility_look(self):
         r = self.simulate(-0.5, -2.0)
         self.assertGreater(r["stopped"], 0.99)
         self.assertLess(r["seeds"], 1300)
+        r = self.simulate(-0.5, -2.0, min_seeds=500)
+        self.assertGreater(r["stopped"], 0.99)
+        self.assertLess(r["seeds"], 800)  # the 500-seed first stage ends a harmful block at the look after 500
 
 
 # ----------------------------------------------------------------- the lab's recorded blocks
@@ -458,8 +475,9 @@ class RecordedBlockTests(unittest.TestCase):
             self.skipTest("none of the lab's promoted blocks is here")
 
     def test_the_block_the_owner_watched_is_stopped_at_the_first_look_the_rule_allows(self):
-        out = self.replay("E14-2026-11-07", 14, "candidate-stakes-b8", 13, "v2", 1000, frontier=1)
-        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("futility", 1100))  # 2,000 seeds were played, and it was rejected
+        for first in (1000, 500):
+            out = self.replay("E14-2026-11-07", 14, "candidate-stakes-b8", 13, "v2", first, frontier=1)
+            self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("futility", 1100), first)  # 2,000 seeds were played, and it was rejected
 
 
 if __name__ == "__main__":

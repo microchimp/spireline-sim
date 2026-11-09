@@ -385,7 +385,7 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
 
 # ------------------------------------------------------------------ the futility stop (D55 addendum 18, 2026-11-09)
 
-FUTILITY_MIN_SEEDS = 1000  # the futility stop never looks before this many paired seeds (gen_loop.FUTILITY_MIN_SEEDS is the same figure)
+FUTILITY_MIN_SEEDS = 500  # the futility stop never looks before this many paired seeds (gen_loop.FUTILITY_MIN_SEEDS is the same figure)
 
 
 def critical_gain(se: float, n: int, n_block: int, alpha: float) -> float:
