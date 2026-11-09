@@ -22,6 +22,7 @@ are the closest estimate the search exposes and not a guarantee.
 
     python rl/converge.py select --out DIR
     python rl/converge.py run --out DIR [--shard LABEL] [--kinds boss,elite,hallway] [--limit N]
+    python rl/converge.py calibrate --out DIR [--n N]    # the stored boss turns timed again on this build: the CPU factor and an identity check
     python rl/converge.py report --out DIR [--md FILE]
 
 Several `run` processes share one folder: a fight is claimed by a file made exclusively, so each process takes the next fight nobody has.
@@ -395,28 +396,42 @@ def corpus_cost(per_turn: dict[str, float | None], weights: dict[str, float], tu
     return {"core_hours": per * turns / 3600.0, "per_turn_s": per}
 
 
-def cost_table(groups: dict[str, dict], pools: dict[str, int] | None = None, turns: int = 10000) -> dict:
+def cost_table(groups: dict[str, dict], pools: dict[str, int] | None = None, turns: int = 10000, cpu_scale: dict[str, float] | None = None) -> dict:
     """The 10,000-turn corpus priced at the human positions' own mix of kinds (the pool counts: fights; and the pool counts times the
-    mean eligible decisions per fight, the mix by turns) and for bosses alone (the two acts at their pool counts); the mixes over every kind are left out while a kind and act has no turns. Per mix, the price
-    of the doubling run (each turn pays up to its converged rung) and of every turn at a fixed rung (1x, 4x, 16x of the teacher's budget)."""
+    mean eligible decisions per fight, the mix by turns) and for each kind alone (its acts at their pool counts). Per mix, the price of the
+    doubling run (each turn pays up to its converged rung) and of every turn at a fixed rung (1x, 4x, 16x of the kind's teacher budget).
+    A mix over every kind is left out while a kind and act has no turns; a kind alone needs only its own turns. `cpu_scale` multiplies a
+    kind's CPU-s ({"boss": 0.4}): the bosses were measured on an older engine build than the other kinds, and a mixed corpus is priced on one."""
     pools = pools or HUMAN_META_POOLS
-    mixes = {
+    scale = cpu_scale or {}
+
+    def sc(g: str) -> float:
+        return scale.get(g.split("-")[1], 1.0)
+
+    cpu_to = {g: (None if v["cpu_to_mean"] is None else v["cpu_to_mean"] * sc(g)) for g, v in groups.items()}
+    fixed = {r: {g: (None if v["rung_cpu_mean"].get(str(r)) is None else v["rung_cpu_mean"][str(r)] * sc(g)) for g, v in groups.items()}
+             for r in REPORT_RELS}
+    mixes: dict[str, dict[str, float]] = {
         "own mix (fights)": {g: float(pools[g]) for g in groups if g in pools},
         "own mix (turns)": {g: float(pools[g]) * (groups[g].get("eligible_mean") or 0.0) for g in groups if g in pools},
-        "bosses alone": {g: float(pools[g]) for g in groups if g in pools and g.endswith("boss")},
     }
+    for kind, name in (("boss", "bosses alone"), ("elite", "elites alone"), ("hallway", "hallways alone")):
+        mixes[name] = {g: float(pools[g]) for g in groups if g in pools and g.endswith("-" + kind)}
     out = {}
     for name, w in mixes.items():
-        if name != "bosses alone" and any(g not in groups for g in pools):  # a mix over every kind needs turns of every kind
+        if name.startswith("own mix") and any(g not in groups for g in pools):  # a mix over every kind needs turns of every kind
             continue
-        row = {"to convergence": corpus_cost({g: groups[g]["cpu_to_mean"] for g in groups}, w, turns)}
+        if not w:
+            continue
+        row = {"to convergence": corpus_cost(cpu_to, w, turns)}
         for r in REPORT_RELS:
-            row[f"fixed {r}x"] = corpus_cost({g: groups[g]["rung_cpu_mean"].get(str(r)) for g in groups}, w, turns)
+            row[f"fixed {r}x"] = corpus_cost(fixed[r], w, turns)
         out[name] = {"weights": w, **row}
     return out
 
 
-def summarize(turns: Sequence[dict], pools: dict[str, int] | None = None, gap_se: float = GAP_SE, se_mode: str = SE_MODE) -> dict:
+def summarize(turns: Sequence[dict], pools: dict[str, int] | None = None, gap_se: float = GAP_SE, se_mode: str = SE_MODE,
+              cpu_scale: dict[str, float] | None = None) -> dict:
     by_group: dict[str, list[dict]] = defaultdict(list)
     by_kind: dict[str, list[dict]] = defaultdict(list)
     for t in turns:
@@ -424,7 +439,9 @@ def summarize(turns: Sequence[dict], pools: dict[str, int] | None = None, gap_se
         by_kind[t["kind"]].append(t)
     groups = {g: group_summary(ts, gap_se, se_mode) for g, ts in sorted(by_group.items())}
     kinds = {k: group_summary(ts, gap_se, se_mode) for k, ts in sorted(by_kind.items())}
-    return {"gap_se": gap_se, "se_mode": se_mode, "turns": len(turns), "groups": groups, "kinds": kinds, "cost": cost_table(groups, pools)}
+    return {"gap_se": gap_se, "se_mode": se_mode, "turns": len(turns), "groups": groups, "kinds": kinds,
+            "cost": cost_table(groups, pools, cpu_scale=cpu_scale), "cost_as_measured": cost_table(groups, pools) if cpu_scale else None,
+            "cpu_scale": cpu_scale or {}}
 
 
 # ---------------------------------------------------------------------------------------------------------- the machine's load
@@ -691,6 +708,58 @@ def read_turns(out: Path) -> list[dict]:
     return turns
 
 
+# ---------------------------------------------------------------------------------------------------------- the engine calibration
+
+CALIBRATION_RELS = (1, 2, 4)  # the rungs timed again (x16, x32, x64 at a boss): the dearer ones cost the same per simulation
+
+
+def search_alike(old: dict, new: dict) -> bool:
+    """Whether two records of one search played alike: the same simulations and the same root moves with the same visits and values."""
+    keys = [(c["a"], c["t"], c["kind"], c["n"], c["v"]) for c in old["children"]]
+    return old["sims"] == new["sims"] and keys == [(c["a"], c["t"], c["kind"], c["n"], c["v"]) for c in new["children"]]
+
+
+def calibration_summary(rows: Sequence[dict]) -> dict:
+    """What the calibration found: the ratio of the current build's CPU-s to the stored rows' over the same games and searches, and how many
+    of them played alike (the engine change was meant to change no game). `game_cpu_ratio` is whole fights, `rung_cpu_ratio` the rungs
+    (the cost the corpus is priced on); the busy shares are the machine's during the old and the new timings."""
+    rungs = [x for r in rows for x in r["rungs"]]
+
+    def ratio(new: Sequence[float], old: Sequence[float]) -> float | None:
+        return sum(new) / sum(old) if old and sum(old) > 0 else None
+
+    return {"turns": len(rows), "games_alike": sum(1 for r in rows if r["game_alike"]), "rungs": len(rungs),
+            "rungs_alike": sum(1 for x in rungs if x["alike"]),
+            "game_cpu_ratio": ratio([r["game_new_cpu"] for r in rows], [r["game_old_cpu"] for r in rows]),
+            "rung_cpu_ratio": ratio([x["new_cpu"] for x in rungs], [x["old_cpu"] for x in rungs]),
+            "rung_cpu_ratio_by_rel": {str(rel): ratio([x["new_cpu"] for x in rungs if x["rel"] == rel], [x["old_cpu"] for x in rungs if x["rel"] == rel])
+                                      for rel in CALIBRATION_RELS},
+            "load_old_median": quantile([x["old_load"] for x in rungs if x["old_load"] is not None], 0.5),
+            "load_new_median": quantile([x["new_load"] for x in rungs if x["new_load"] is not None], 0.5)}
+
+
+def calibrate_turn(t: dict, extra: dict, starts_path: str) -> dict:
+    """Play the turn's fight again on this build and search its turn at `CALIBRATION_RELS`: the stored rows' CPU-s beside the new ones, and
+    whether the game and each search came out alike."""
+    import gym_loop as gl  # noqa: PLC0415
+
+    start = gl.load_start(starts_path, t["start"])
+    game, dec = play_teacher(start, extra)
+    old = t["game"]
+    alike = all(game[key] == old[key] for key in ("moves_sha", "decisions", "sims", "won", "end_hp"))
+    world = replay_to(start, [d["move"] for d in dec], t["k"])
+    rungs = []
+    try:
+        for rel in CALIBRATION_RELS:
+            was, now = rung_of(t, rel), search_rung(world, start, t["kind"], rel, t["k"], extra)
+            rungs.append({"rel": rel, "old_cpu": was["cpu_s"], "new_cpu": now["cpu_s"], "old_load": was["load"], "new_load": now["load"],
+                          "alike": search_alike(was, now)})
+    finally:
+        world.close()
+    return {"turn": t["turn"], "act": t["act"], "kind": t["kind"], "k": t["k"], "game_alike": alike, "game_old_cpu": old["cpu_s"],
+            "game_new_cpu": game["cpu_s"], "rungs": rungs}
+
+
 # ---------------------------------------------------------------------------------------------------------- commands
 
 
@@ -762,6 +831,36 @@ def cmd_run(a: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------------------------------------- the report
 
 
+def cmd_calibrate(a: argparse.Namespace) -> int:
+    """Time `--n` stored boss turns again on this build (half of them from each act, by hash order) and write `calibration.json`."""
+    setup_native()
+    out = Path(a.out)
+    boss = sorted((t for t in read_turns(out) if t["kind"] == "boss" and t["n"] == 0 and t["replay_ok"]), key=lambda t: order_key(t["start"], "calibrate"))
+    pick = [t for act in (1, 2) for t in [x for x in boss if x["act"] == act][: a.n // 2]]
+    import gen_loop  # noqa: PLC0415
+
+    extra = gen_loop.load_agent(PLAYER).search_extra()
+    starts_path = str(EXAM / "starts-human.jsonl")
+    rows = []
+    for t in pick:
+        pause_point("calibrate", out=out)
+        rows.append(calibrate_turn(t, extra, starts_path))
+        print(f"calibrate {len(rows)}/{len(pick)}: game alike {rows[-1]['game_alike']}, rungs alike {[x['alike'] for x in rows[-1]['rungs']]}", flush=True)
+    summary = calibration_summary(rows)
+    write_atomic(out / "calibration.json", {"summary": summary, "rows": rows})
+    print(json.dumps(summary, indent=1))
+    return 0
+
+
+def cpu_scale_of(out: Path) -> dict[str, float] | None:
+    """The boss CPU factor from `calibration.json` (current build over the stored rows), or None without one."""
+    path = out / "calibration.json"
+    if not path.is_file():
+        return None
+    ratio = json.loads(path.read_text(encoding="utf-8"))["summary"].get("rung_cpu_ratio")
+    return {"boss": ratio} if ratio else None
+
+
 def fmt_share(s: dict) -> str:
     if not s["n"]:
         return "-"
@@ -827,6 +926,13 @@ def tables(summary: dict, strict: dict | None = None) -> str:
     lines.append("| --- | --- | --- | --- | --- |")
     for name, c in summary["cost"].items():
         lines.append(f"| {name} | " + " | ".join(_f(c[k]["core_hours"], 1) for k in ("to convergence", "fixed 1x", "fixed 4x", "fixed 16x")) + " |")
+    scale = summary.get("cpu_scale") or {}
+    if scale and summary.get("cost_as_measured"):
+        lines.append("\nCPU-s of " + ", ".join(f"{k} x {v:.3f}" for k, v in scale.items()) + " (the bosses were timed on an older engine build than the other"
+                     " kinds; the factor is `calibration.json`'s ratio of the same rungs timed on the current build). As measured, unscaled: "
+                     + "; ".join(f"{name} {_f(c['to convergence']['core_hours'], 1)}" for name, c in summary["cost_as_measured"].items()
+                                 if not name.startswith("own mix")) + " (at convergence).")
+    lines.append("\nBudgets in the recipe's units: 1x / 4x / 16x of the kind's teacher budget are hallway x1 / x4 / x16, elite x4 / x16 / x64, boss x16 / x64 / x256.")
     return "\n".join(lines)
 
 
@@ -844,7 +950,8 @@ def cmd_report(a: argparse.Namespace) -> int:
     out = Path(a.out)
     turns = read_turns(out)
     pools = pools_of_meta(EXAM / "human-meta.json")
-    summary, strict = summarize(turns, pools), summarize(turns, pools, se_mode="own")
+    scale = cpu_scale_of(out)
+    summary, strict = summarize(turns, pools, cpu_scale=scale), summarize(turns, pools, se_mode="own", cpu_scale=scale)
     write_atomic(out / "summary.json", summary)
     write_atomic(out / "summary-own-error.json", strict)
     (out / "turns.jsonl").write_text("".join(json.dumps(t) + "\n" for t in turns), encoding="utf-8")
@@ -865,11 +972,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--shard", default="0", help="a label for this process's log lines")
     p.add_argument("--kinds", default=",".join(KINDS))
     p.add_argument("--limit", type=int, default=0, help="only the first N fights of the sample (a pilot)")
+    p = sub.add_parser("calibrate")
+    p.add_argument("--out", default=str(LANE))
+    p.add_argument("--n", type=int, default=24, help="boss turns timed again on this build (half from each act)")
     p = sub.add_parser("report")
     p.add_argument("--out", default=str(LANE))
     p.add_argument("--md")
     a = ap.parse_args(argv)
-    return {"select": cmd_select, "run": cmd_run, "report": cmd_report}[a.cmd](a)
+    return {"select": cmd_select, "run": cmd_run, "report": cmd_report, "calibrate": cmd_calibrate}[a.cmd](a)
 
 
 if __name__ == "__main__":

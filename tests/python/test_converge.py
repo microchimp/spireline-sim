@@ -344,7 +344,8 @@ class SummaryTests(unittest.TestCase):
         kinds = [turn("e1", "elite", 1, turn_at_1x()["rungs"][1:]), turn("e2", "elite", 2, turn_at_1x()["rungs"][1:]),
                  turn("h1", "hallway", 1, turn_at_1x()["rungs"][1:]), turn("h2", "hallway", 2, turn_at_1x()["rungs"][1:])]
         full = cv.summarize(self.turns + kinds)["cost"]
-        self.assertEqual(list(full), ["own mix (fights)", "own mix (turns)", "bosses alone"])
+        self.assertEqual(list(full), ["own mix (fights)", "own mix (turns)", "bosses alone", "elites alone", "hallways alone"])
+        self.assertEqual(set(full["elites alone"]["weights"]), {"act1-elite", "act2-elite"})
         w = full["own mix (fights)"]["weights"]
         self.assertEqual((w["act1-elite"], w["act2-hallway"]), (cv.HUMAN_META_POOLS["act1-elite"], cv.HUMAN_META_POOLS["act2-hallway"]))
         self.assertEqual(set(full["bosses alone"]["weights"]), {"act1-boss", "act2-boss"})
@@ -384,6 +385,55 @@ class FileTests(unittest.TestCase):
             cv.write_atomic(cv.fight_file(out, "human:b|f17"), [{"x": 3}])
             self.assertEqual(sorted(t["x"] for t in cv.read_turns(out)), [1, 2, 3])
             self.assertEqual(list((out / "turns").glob("*.tmp*")), [])
+
+
+# ------------------------------------------------------------------------------------------------------ the engine calibration
+
+
+def cal_row(act: int, game_alike: bool, old: float, new: float, rungs: list[tuple]) -> dict:
+    """rungs: (rel, old cpu, new cpu, alike)."""
+    return {"turn": f"t{act}", "act": act, "kind": "boss", "k": 3, "game_alike": game_alike, "game_old_cpu": old, "game_new_cpu": new,
+            "rungs": [{"rel": r, "old_cpu": o, "new_cpu": n, "old_load": 0.95, "new_load": 0.5, "alike": a} for r, o, n, a in rungs]}
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_search_alike_needs_the_same_simulations_moves_visits_and_values(self):
+        a = rung(1, two(1, 2, 5.0))
+        self.assertTrue(cv.search_alike(a, rung(1, two(1, 2, 5.0), cpu=9.0)))
+        self.assertFalse(cv.search_alike(a, rung(1, two(1, 2, 5.1))))
+        self.assertFalse(cv.search_alike(a, rung(1, two(1, 2, 5.0, n=(71, 29)))))
+        self.assertFalse(cv.search_alike(a, {**rung(1, two(1, 2, 5.0)), "sims": 99}))
+
+    def test_the_summary_is_the_ratio_of_the_summed_cpu_and_the_count_alike(self):
+        rows = [cal_row(1, True, 100.0, 40.0, [(1, 4.0, 1.5, True), (2, 8.0, 3.0, True), (4, 16.0, 6.0, True)]),
+                cal_row(2, False, 200.0, 70.0, [(1, 6.0, 2.5, True), (2, 12.0, 5.0, False), (4, 24.0, 10.0, True)])]
+        s = cv.calibration_summary(rows)
+        self.assertEqual((s["turns"], s["games_alike"], s["rungs"], s["rungs_alike"]), (2, 1, 6, 5))
+        self.assertAlmostEqual(s["game_cpu_ratio"], 110.0 / 300.0)
+        self.assertAlmostEqual(s["rung_cpu_ratio"], 28.0 / 70.0)
+        self.assertAlmostEqual(s["rung_cpu_ratio_by_rel"]["1"], 4.0 / 10.0)
+        self.assertEqual((s["load_old_median"], s["load_new_median"]), (0.95, 0.5))
+        self.assertIsNone(cv.calibration_summary([])["rung_cpu_ratio"])
+
+    def test_the_scale_comes_from_the_calibration_file_and_prices_only_that_kind(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            self.assertIsNone(cv.cpu_scale_of(out))
+            cv.write_atomic(out / "calibration.json", {"summary": cv.calibration_summary([cal_row(1, True, 10.0, 4.0, [(1, 4.0, 1.0, True)])]), "rows": []})
+            self.assertEqual(cv.cpu_scale_of(out), {"boss": 0.25})
+        boss = [turn_at_1x("a", act=1), turn_at_1x("b", act=2)]
+        elite = [turn("e1", "elite", 1, turn_at_1x()["rungs"][1:]), turn("e2", "elite", 2, turn_at_1x()["rungs"][1:])]
+        pools = {"act1-boss": 1, "act2-boss": 1, "act1-elite": 1, "act2-elite": 1}
+        raw = cv.summarize(boss + elite, pools)
+        scaled = cv.summarize(boss + elite, pools, cpu_scale={"boss": 0.5})
+        self.assertAlmostEqual(scaled["cost"]["bosses alone"]["fixed 1x"]["per_turn_s"], 0.5 * raw["cost"]["bosses alone"]["fixed 1x"]["per_turn_s"])
+        self.assertAlmostEqual(scaled["cost"]["elites alone"]["to convergence"]["per_turn_s"], raw["cost"]["elites alone"]["to convergence"]["per_turn_s"])
+        self.assertAlmostEqual(scaled["cost_as_measured"]["bosses alone"]["fixed 1x"]["per_turn_s"], raw["cost"]["bosses alone"]["fixed 1x"]["per_turn_s"])
+        mix = scaled["cost"]["own mix (fights)"]["to convergence"]["per_turn_s"]  # boss 4.0 * 0.5 and elite 4.0, equal weights
+        self.assertAlmostEqual(mix, (2 * 2.0 + 2 * 4.0) / 4)
+        text = cv.tables(scaled)
+        self.assertIn("CPU-s of boss x 0.500", text)
+        self.assertIn("hallway x1 / x4 / x16, elite x4 / x16 / x64, boss x16 / x64 / x256", text)
 
 
 # ------------------------------------------------------------------------------------------------------ the quiet lock
