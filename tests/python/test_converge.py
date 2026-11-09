@@ -11,13 +11,16 @@ turn found again by replaying the moves is the same position and that a search o
 from __future__ import annotations
 
 import json
+import datetime as dt
 import math
 import os
 import random
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 for _path in (ROOT / "rl", ROOT / "src", ROOT):
@@ -371,6 +374,83 @@ class FileTests(unittest.TestCase):
             cv.write_atomic(cv.fight_file(out, "human:b|f17"), [{"x": 3}])
             self.assertEqual(sorted(t["x"] for t in cv.read_turns(out)), [1, 2, 3])
             self.assertEqual(list((out / "turns").glob("*.tmp*")), [])
+
+
+# ------------------------------------------------------------------------------------------------------ the quiet lock
+
+
+class QuietTests(unittest.TestCase):
+    """The measurement pauses at fight and rung boundaries while another job holds the machine (QUIET.lock, a night block)."""
+
+    NOW = dt.datetime(2026, 11, 9, 3, 0, 0, tzinfo=dt.UTC)
+
+    def referee(self, lines: list[str], night: bool = False) -> tempfile.TemporaryDirectory:
+        d = tempfile.TemporaryDirectory()
+        root = Path(d.name)
+        if lines:
+            (root / "QUIET.lock").write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+        if night:
+            (root / "LAB" / "nightly").mkdir(parents=True)
+            (root / "LAB" / "nightly" / "active").write_text("x")
+        return d
+
+    def test_a_live_foreign_line_holds_the_job(self):
+        with self.referee(["lab-train 2026-11-09T02:30:00Z pid=1"]) as d:
+            self.assertEqual(cv.quiet_reason(self.NOW, Path(d)), "quiet:lab-train")
+
+    def test_the_lines_the_lab_runs_beside_do_not_hold_it(self):
+        with self.referee(["gym-loop 2026-11-09T02:59:00Z pid=1", "lab-score 2026-11-09T02:59:00Z pid=2", "w3-blocks 2026-11-09T02:59:00Z pid=3"]) as d:
+            self.assertIsNone(cv.quiet_reason(self.NOW, Path(d)))
+
+    def test_a_line_over_two_hours_old_is_stale_and_a_line_with_no_time_is_live(self):
+        with self.referee(["lab-train 2026-11-09T00:59:00Z pid=1"]) as d:
+            self.assertIsNone(cv.quiet_reason(self.NOW, Path(d)))
+        with self.referee(["lab-train 2026-11-09T01:01:00Z pid=1"]) as d:
+            self.assertEqual(cv.quiet_reason(self.NOW, Path(d)), "quiet:lab-train")
+        with self.referee(["odd-job"]) as d:
+            self.assertEqual(cv.quiet_reason(self.NOW, Path(d)), "quiet:odd-job")
+
+    def test_a_night_block_holds_it_and_no_file_does_not(self):
+        with self.referee([], night=True) as d:
+            self.assertEqual(cv.quiet_reason(self.NOW, Path(d)), "nightly-active")
+        with self.referee([]) as d:
+            self.assertIsNone(cv.quiet_reason(self.NOW, Path(d)))
+
+    def test_pause_point_waits_for_the_line_to_go_and_logs_the_wait(self):
+        with self.referee([]) as d, tempfile.TemporaryDirectory() as out:
+            lock = Path(d) / "QUIET.lock"
+            stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lock.write_text(f"lab-train {stamp} pid=1" + chr(10), encoding="utf-8")
+            said: list[str] = []
+            timer = threading.Timer(0.5, lambda: lock.unlink())
+            with mock.patch.object(cv, "REFEREE", Path(d)):
+                timer.start()
+                waited = cv.pause_point("act2-boss rung 4x", said.append, poll_s=0.1, out=Path(out))
+                self.assertGreaterEqual(waited, 0.4)
+                self.assertEqual(cv.pause_point("again", said.append, poll_s=0.1, out=Path(out)), 0.0)
+            self.assertTrue(said[0].startswith("pause (quiet:lab-train)") and said[1].startswith("resume after"))
+            log = (Path(out) / "pauses.log").read_text(encoding="utf-8").split()
+            self.assertEqual(log[3:], ["quiet:lab-train", "act2-boss", "rung", "4x"])
+
+    def test_run_fight_pauses_before_the_game_and_before_every_rung(self):
+        labels: list[str] = []
+        fight = {"start": "human:a|f17", "kind": "hallway", "kind_cell": "act1-hallway", "act": 1, "cell": "act1-hallway", "turns": 1}
+        dec = [{"k": 0, "n_moves": 3, "pos_kind": "play", "move": [1, -1], "obs": "h0",
+                "search": rung("game", two(1, 2, 5.0), cpu=None, load=None)}]
+        world = mock.Mock()
+        with (mock.patch("gym_loop.load_start", return_value={"id": "human:a|f17", "node_type": 1, "floor": 3}),
+              mock.patch.object(cv, "play_teacher", return_value=({"cpu_s": 1.0}, dec)),
+              mock.patch.object(cv, "replay_to", return_value=world), mock.patch.object(cv, "obs_hash", return_value="h0"),
+              mock.patch.object(cv, "search_rung", side_effect=lambda w, s, kind, rel, k, extra: rung(rel, two(1, 2, 5.0)))):
+            turns = cv.run_fight(fight, {}, "unused", log=lambda m: None, pause=labels.append)
+        self.assertEqual(labels, ["act1-hallway game"] + [f"act1-hallway rung {r:g}x" for r in cv.RELS])
+        self.assertEqual([r["rel"] for r in turns[0]["rungs"]], ["game", *cv.RELS])
+
+    def test_the_tables_carry_the_own_error_table_when_given_one(self):
+        turns = [turn_at_1x("a", act=1), turn_at_4x("b", act=2)]
+        s, strict = cv.summarize(turns, {"act1-boss": 3, "act2-boss": 1}), cv.summarize(turns, {"act1-boss": 3, "act2-boss": 1}, se_mode="own")
+        self.assertIn("own error only", cv.tables(s, strict))
+        self.assertNotIn("own error only", cv.tables(s))
 
 
 # ------------------------------------------------------------------------------------------------------ a real fight

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import datetime as dt
 import hashlib
 import json
 import math
@@ -71,6 +72,10 @@ SE_MODE = "pooled"  # how the gap's error is estimated (`gap_stats`); "own" is t
 SE_MODES = ("pooled", "own")
 CPU_CAP_S = 300.0  # a search past this many CPU seconds stops there and is marked capped
 MIN_ROOT_MOVES = 2  # a decision with fewer distinct root moves is not a turn
+REFEREE = Path(os.environ.get("CONVERGE_REFEREE", "D:/spireline/referee"))
+QUIET_STALE_H = 2.0  # another holder's QUIET.lock line under this old is live
+QUIET_IGNORE = ("gym-loop", "lab-score", "w3-blocks")  # the lines this job runs beside (the lab's own quiet_ignore, tools/lab/cores.py)
+PAUSE_POLL_S = 60.0
 LOSS_MIN_VISITS = 20  # the teacher's move needs this many visits at the converged rung for its value to be read
 MATERIAL_HP = 5.0  # an overturn that costs this much value (HP) or more at the converged rung is called material
 QUOTAS = {"act1-boss": 100, "act2-boss": 100, "act1-elite": 50, "act2-elite": 50, "act1-hallway": 50, "act2-hallway": 50}  # turns
@@ -554,12 +559,15 @@ def search_rung(world: Any, start: dict, kind: str, rel: float, k: int, extra: d
                          rel=rel, budget=multiplier(kind, rel))
 
 
-def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], None] = print) -> list[dict]:
-    """Play one fight with the teacher and search its chosen turns on the ladder: one dict per turn."""
+def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], None] = print,
+              pause: Callable[[str], Any] = lambda label: 0.0) -> list[dict]:
+    """Play one fight with the teacher and search its chosen turns on the ladder: one dict per turn. `pause(label)` is called before the
+    game and before every rung (a wait for the quiet lock, if any)."""
     import fight_gym as fg  # noqa: PLC0415
     import gym_loop as gl  # noqa: PLC0415
 
     start = gl.load_start(starts_path, fight["start"])
+    pause(f"{fight['kind_cell']} game")
     game, dec = play_teacher(start, extra)
     eligible = [d["k"] for d in dec if d["n_moves"] >= MIN_ROOT_MOVES]
     ks = pick_turns(start["id"], eligible, int(fight["turns"]))
@@ -573,6 +581,7 @@ def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], N
                       "seed": fg.game_seed(start["id"], GAME_J, f"{GAME_NS}{k}")}]
             if ok:
                 for rel, _budget in ladder(fight["kind"]):
+                    pause(f"{fight['kind_cell']} rung {rel:g}x")
                     rungs.append(search_rung(world, start, fight["kind"], rel, k, extra))
         finally:
             world.close()
@@ -582,6 +591,55 @@ def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], N
         log(f"{fight['kind_cell']} turn {n} at decision {k} of {len(dec)} (eligible {len(eligible)}) replay_ok={ok} ladder cpu "
             f"{sum(r['cpu_s'] or 0 for r in rungs if r['rel'] != 'game'):.1f}s")
     return turns
+
+
+# ---------------------------------------------------------------------------------------------------------- the quiet lock
+
+
+def quiet_reason(now: dt.datetime | None = None, referee: Path | None = None) -> str | None:
+    """Why this job must not compute now, or None: a night block is running, or another holder's QUIET.lock line is live (under two
+    hours old; the lines the lab runs beside are not holders). The measurement pauses at fight and rung boundaries while this says so."""
+    referee = referee or REFEREE
+    now = now or dt.datetime.now(dt.UTC)
+    if (referee / "LAB" / "nightly" / "active").exists():
+        return "nightly-active"
+    try:
+        lines = [x.strip() for x in (referee / "QUIET.lock").read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+    except OSError:
+        return None
+    for line in lines:
+        parts = line.split()
+        if parts[0] in QUIET_IGNORE:
+            continue
+        try:
+            stamp = parts[1].rstrip("Z")
+            t = dt.datetime.fromisoformat(stamp if len(stamp) > 16 else stamp + ":00").replace(tzinfo=dt.UTC)
+        except (IndexError, ValueError):
+            return "quiet:" + parts[0]  # a line with no readable time is live
+        if (now - t).total_seconds() < QUIET_STALE_H * 3600:
+            return "quiet:" + parts[0]
+    return None
+
+
+def pause_point(label: str, log: Callable[[str], None] = print, poll_s: float | None = None, out: Path | None = None) -> float:
+    """Wait while `quiet_reason` says so; returns the seconds waited. Called between fights and between rungs, never inside a search or
+    the teacher's game (a game's clock is the wall clock). Each wait is logged to `out/pauses.log` with its start and end (UTC)."""
+    reason = quiet_reason()
+    if reason is None:
+        return 0.0
+    t0 = time.time()
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    start = dt.datetime.now(dt.UTC).strftime(stamp)
+    log(f"pause ({reason}) at {label}")
+    while quiet_reason() is not None:
+        time.sleep(PAUSE_POLL_S if poll_s is None else poll_s)
+    waited = time.time() - t0
+    log(f"resume after {waited:.0f}s")
+    if out is not None:
+        end = dt.datetime.now(dt.UTC).strftime(stamp)
+        with open(out / "pauses.log", "a", encoding="utf-8") as fh:
+            fh.write(f"{start} {end} {waited:.0f}s {reason} {label}" + chr(10))
+    return waited
 
 
 # ---------------------------------------------------------------------------------------------------------- the lane's files
@@ -671,12 +729,21 @@ def cmd_run(a: argparse.Namespace) -> int:
     extra = gen_loop.load_agent(PLAYER).search_extra()
     starts_path = str(EXAM / "starts-human.jsonl")
     done = 0
+    def say(m: str) -> None:
+        print(f"[{a.shard}] {m}", flush=True)
+
+    def pause(label: str) -> float:
+        return pause_point(label, say, out=out)
+
     for i, fight in enumerate(fights):
-        if fight_file(out, fight["start"]).is_file() or not claim(out, fight["start"]):
+        if fight_file(out, fight["start"]).is_file():
+            continue
+        pause("between fights")
+        if not claim(out, fight["start"]):
             continue
         t0, c0 = time.perf_counter(), time.process_time()
         try:
-            turns = run_fight(fight, extra, starts_path, log=lambda m: print(f"[{a.shard}] {m}", flush=True))
+            turns = run_fight(fight, extra, starts_path, log=say, pause=pause)
         except Exception:  # noqa: BLE001 -- a fight that fails is recorded and the process goes on
             (out / "errors").mkdir(parents=True, exist_ok=True)
             (out / "errors" / (fight_file(out, fight["start"]).stem + ".txt")).write_text(traceback.format_exc()[-3000:], encoding="utf-8")
@@ -742,6 +809,17 @@ def tables(summary: dict, strict: dict | None = None) -> str:
           [f"{r:g}x" for r in RELS] + ["game CPU-s (whole fight)", "load median (min-max)", "capped rungs"],
           lambda g: [_f(g["rung_cpu_mean"][str(r)], 2) for r in RELS] + [_f(g["game_cpu_mean"]),
                      f"{_pct(g['load_median'])} ({_pct(g['load_min'])}-{_pct(g['load_max'])})", str(g["capped_rungs"])])
+    if strict is not None:
+        s_rows = [(g, strict["groups"][g]) for g in order if g in strict["groups"]] + [(f"all {k}", strict["kinds"][k]) for k in KINDS if k in strict["kinds"]]
+        lines.append("\n**The same turns with each move's own error only (a move with one visit has none, so the rule cannot hold on it)**\n")
+        lines.append("| group | turns | rule holds at 1x | at 4x | at 16x | never converged | CPU-s to convergence: median | p90 | overturn of the game's move |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for name, g in s_rows:
+            cells = [fmt_share(g["rule_at"][r]) for r in REPORT_RELS] + [fmt_share(g["never"]), _f(g["cpu_to_median"]), _f(g["cpu_to_p90"]),
+                                                                       fmt_share(g["overturn_game"])]
+            lines.append(f"| {name} | {g['turns']} | " + " | ".join(cells) + " |")
+        lines.append("\nCorpus of 10,000 turns at convergence under that reading, core-hours: " + "; ".join(
+            f"{name} {_f(c['to convergence']['core_hours'], 1)}" for name, c in strict["cost"].items()))
     lines.append("\n**Cost of a 10,000-turn corpus, core-hours (CPU time)**\n")
     lines.append("| mix | at convergence (doubling) | every turn at 1x | at 4x | at 16x |")
     lines.append("| --- | --- | --- | --- | --- |")
