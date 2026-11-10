@@ -340,5 +340,42 @@ class TrainingTests(unittest.TestCase):
                 self.assertTrue(torch.equal(v, after[k].cpu()), k)
 
 
+class SourceInputTests(unittest.TestCase):
+    """The judge head's source input: the teacher (what the search asks) is the baseline, the human reading is an offset trained to the human's outcome."""
+
+    def test_the_default_reading_is_the_teachers_and_an_old_checkpoint_loads_unchanged(self):
+        torch.manual_seed(0)
+        shape = {"n_buckets": 19, "d_model": 24, "layers": 1, "heads": 2}
+        model = jd.JudgeNet(VOCAB, **shape).eval()
+        self.assertTrue(bool((model.src_emb.weight == 0).all()))
+        rng = np.random.default_rng(0)
+        x = jd.batch_tensors([type("T", (), toks(3, rng))() for _ in range(4)])
+        base = model.judge_out(**x)
+        zeros = model.judge_out(**x, src=torch.zeros(4, dtype=torch.long))
+        self.assertTrue(torch.equal(base, zeros))
+        # a checkpoint without the source input (v0 and v1) loads and reads the same
+        state = {k: v for k, v in model.state_dict().items() if not k.startswith("src_emb")}
+        old = jd.JudgeNet.from_blob({"model": state, **shape}).eval()
+        self.assertTrue(torch.allclose(old.judge_out(**x), base, atol=1e-6))
+        with self.assertRaises(ValueError):
+            jd.JudgeNet.from_blob({"model": {k: v for k, v in state.items() if not k.startswith("judge.")}, **shape})
+
+    def test_the_human_term_moves_only_the_human_reading(self):
+        with tempfile.TemporaryDirectory() as d:
+            Store(d)
+            a, _ = jt.read_corpus(d)
+            data = jt.CorpusData(a, torch.device("cpu"), jt.weights_of(a, "pool"))
+            model, info = jt.train(TrainingTests.args(epochs=3), data, torch.device("cpu"), log=lambda m: None)
+            w = model.src_emb.weight.detach()
+            self.assertTrue(bool((w[0] == 0).all()))  # the teacher row never moves
+            self.assertGreater(float(w[1].abs().sum()), 0.0)  # the human row learned something
+            idx = np.flatnonzero(data.split == 2)[:16]
+            t, h = jt.predict(model, data, idx), jt.predict(model, data, idx, human=True)
+            self.assertFalse(np.allclose(t, h))
+            # without the human term the human row stays where it started
+            model2, _ = jt.train(TrainingTests.args(epochs=3, w_human=0.0), data, torch.device("cpu"), log=lambda m: None)
+            self.assertTrue(bool((model2.src_emb.weight == 0).all()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,25 +65,40 @@ class JudgeNet(CombatNet):
         # The win logit's calibration, scale and shift (Platt scaling), fitted on the validation starts after training; (1, 0)
         # while training. A buffer, so the checkpoint, the CPU judge and the server all apply it.
         self.register_buffer("win_cal", torch.tensor([1.0, 0.0]))
+        # The source of an outcome label (judge_train: the human's own result of a fight against the teacher's game): row 0, the teacher and
+        # every use in the search, is zero and never moves (padding_idx); row 1 is what the human-outcome loss adds to the judge head's input.
+        # Zero-initialised, so a checkpoint without it (v0, v1) is the same function.
+        self.src_emb = nn.Embedding(2, d_model, padding_idx=0)
+        nn.init.zeros_(self.src_emb.weight)
 
     @classmethod
     def from_blob(cls, blob: dict) -> JudgeNet:
         model = cls(VOCAB, int(blob["n_buckets"]), d_model=int(blob["d_model"]), layers=int(blob["layers"]), heads=int(blob["heads"]))
         missing, unexpected = model.load_state_dict(blob["model"], strict=False)
-        if unexpected or set(missing) - {"win_cal"}:  # a checkpoint from before the calibration reads as uncalibrated
+        if unexpected or set(missing) - {"win_cal", "src_emb.weight"}:  # a checkpoint from before the calibration reads as uncalibrated
             raise ValueError(f"judge checkpoint keys: missing {missing}, unexpected {unexpected}")
         return model
 
-    def judge_out(self, types, ids, owners, feats, mask) -> torch.Tensor:
-        """[B, 3]: win logit, end-HP-fraction logit (given a win), potions held at the end (given a win, softplus applied)."""
-        return self._rows(self._trunk(types, ids, owners, feats, mask)[:, 0])
+    def judge_out(self, types, ids, owners, feats, mask, src=None) -> torch.Tensor:
+        """[B, 3]: win logit, end-HP-fraction logit (given a win), potions held at the end (given a win, softplus applied). `src` (a long
+        tensor [B], 1 = the human's outcome) is judge_train's source input; None is the teacher, and what the search always asks."""
+        return self._rows(self._trunk(types, ids, owners, feats, mask)[:, 0], src)
 
     def judge_out_policy(self, types, ids, owners, feats, mask) -> tuple[torch.Tensor, torch.Tensor]:
         """`judge_out` and the policy head's [B, MAX_ACTIONS] logits from one pass of the trunk (judge_train's auxiliary move target)."""
         hidden = self._trunk(types, ids, owners, feats, mask)
         return self._rows(hidden[:, 0]), self._policy_logits(hidden, types)
 
-    def _rows(self, summary: torch.Tensor) -> torch.Tensor:
+    def judge_out_all(self, types, ids, owners, feats, mask) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One pass of the trunk, three readings (judge_train's losses): the judge's rows as the teacher's, the same as the human's outcome
+        (source 1), and the policy head's logits."""
+        hidden = self._trunk(types, ids, owners, feats, mask)
+        human = torch.ones(hidden.shape[0], dtype=torch.long, device=hidden.device)
+        return self._rows(hidden[:, 0]), self._rows(hidden[:, 0], human), self._policy_logits(hidden, types)
+
+    def _rows(self, summary: torch.Tensor, src: torch.Tensor | None = None) -> torch.Tensor:
+        if src is not None:
+            summary = summary + self.src_emb(src)
         out = self.judge(summary)
         win = out[:, :1] * self.win_cal[0] + self.win_cal[1]
         return torch.cat([win, out[:, 1:2], nn.functional.softplus(out[:, 2:3])], dim=1)
@@ -381,7 +396,7 @@ def cmd_train(a) -> int:
     model = JudgeNet(VOCAB, dims["n_buckets"], d_model=dims["d_model"], layers=dims["layers"], heads=dims["heads"], dropout=a.dropout)
     if init_blob:
         missing, unexpected = model.load_state_dict(init_blob["model"], strict=False)
-        assert all(k.startswith("judge.") or k == "win_cal" for k in missing) and not unexpected, (missing, unexpected)
+        assert all(k.startswith("judge.") or k in ("win_cal", "src_emb.weight") for k in missing) and not unexpected, (missing, unexpected)
     model.to(device)
     # The judge head learns at lr; the trunk (the agent's, when warm-started) at lr x trunk_lr, or not at all (0): a few hundred
     # starts' positions overfit a whole trunk within an epoch, while the agent's trunk already reads positions well.
