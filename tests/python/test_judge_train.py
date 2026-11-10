@@ -340,6 +340,31 @@ class TrainingTests(unittest.TestCase):
                 self.assertTrue(torch.equal(v, after[k].cpu()), k)
 
 
+class InitTests(unittest.TestCase):
+    def test_a_trunk_starts_from_the_agents_network_and_a_judge_from_a_judge(self):
+        import tempfile as tf
+
+        from combat_net import CombatNet
+
+        torch.manual_seed(0)
+        agent = CombatNet(VOCAB, 19, d_model=24, layers=1, heads=2)
+        with tf.TemporaryDirectory() as d:
+            ap = Path(d) / "combat_net.pt"
+            torch.save({"model": agent.state_dict(), "n_buckets": 19, "d_model": 24, "layers": 1, "heads": 2}, ap)
+            model, dims = jt.make_model(TrainingTests.args(init=str(ap)), torch.device("cpu"))
+            self.assertEqual(dims, {"n_buckets": 19, "d_model": 24, "layers": 1, "heads": 2})
+            for k, v in agent.state_dict().items():
+                self.assertTrue(torch.equal(model.state_dict()[k], v), k)  # the agent's trunk, head and policy are the judge's start
+            self.assertTrue(bool((model.src_emb.weight == 0).all()))
+            # a judge checkpoint to continue from
+            jp = Path(d) / "judge.pt"
+            torch.save({"kind": jd.KIND, "model": model.state_dict(), **dims}, jp)
+            again, dims2 = jt.make_model(TrainingTests.args(init_judge=str(jp)), torch.device("cpu"))
+            self.assertEqual(dims2, dims)
+            for k, v in model.state_dict().items():
+                self.assertTrue(torch.equal(again.state_dict()[k], v), k)
+
+
 class SourceInputTests(unittest.TestCase):
     """The judge head's source input: the teacher (what the search asks) is the baseline, the human reading is an offset trained to the human's outcome."""
 
