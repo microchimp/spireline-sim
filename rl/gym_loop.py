@@ -36,14 +36,19 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
    player config (`--player-config`: a3-v1, or the judge-equipped config once it lands), paired with the incumbent on the same games
    (the incumbent's games are played once per incumbent, engine and config, and kept). Stage 1 uses a pair of seed indices the
    incumbent was not picked on, one pair per promotion, with the incumbent's games on it taken from its own promotion gate (D43).
-   The rule (`PROMOTION_RULE`) was fixed here before the first checkpoint and amended once (v2, 2026-11-01); `decide` applies it.
-   A promoted checkpoint becomes "Fight player, version N": its games get a fight-board row, committed to Spireline main
-   (`board_commit`).
-   **The human bar** (D55 addendum 11, `--human-bar on|off`, on): a stage-2 verdict (promote or reject) is followed by the candidate's
-   400 human-stratum fight starts of the fight exam (`rl/fight_exam.py`, four draws, the exam's own configuration), played by the gate's
-   processes; the candidate's, the incumbent's and the human's survival and HP lost on those starts go into the verdict (`human`), the
-   loop log and `gate/verdicts.jsonl`. It is report-only: `PROMOTION_RULE` and `decide` never read it, and a play a stop cuts short is
-   recorded as `human: "stopped"`.
+   The rule (`PROMOTION_RULE`) was fixed here before the first checkpoint and amended twice (v2, 2026-11-01; v3, 2026-11-11, D57 item 2:
+   stage 1 stops only a candidate clearly worse, stage 2 promotes alone by v2's test or when the candidate is not worse and the pooled
+   paired difference of the last five stage-2 candidates of its incumbent is positive, at most one promotion in six hours;
+   `rl/gym_gate.py`); `decide` applies it. A promoted checkpoint becomes "Fight player, version N": its games get a fight-board row,
+   committed to Spireline main (`board_commit`).
+   **The human bar** (D55 addendum 11, `--human-bar promotion|on|off`, promotion): a promotion (in mode `on`, any stage-2 verdict) is
+   followed by the candidate's 400 human-stratum fight starts of the fight exam (`rl/fight_exam.py`, four draws, the exam's own
+   configuration, the CPU prior), played by the gate's processes; the candidate's, the incumbent's and the human's survival and HP lost on
+   those starts go into the verdict (`human`), the loop log and `gate/verdicts.jsonl`. It is report-only: `PROMOTION_RULE` and `decide`
+   never read it, and a play a stop cuts short is recorded as `human: "stopped"`.
+   **The plateau alarm and the clock** (D57 addendum 2): after five days or twenty-five gated candidates without a promotion the daemon
+   writes LAB/alerts/gym-plateau.txt (`gym_gate.plateau_update`); every wait it makes is logged with its reason and duration and timed
+   by reason in `games/clock.jsonl`, with a daily line at 00:00Z (`rl/gym_clock.py`).
 
 Between steps the daemon drops its QUIET.lock line and waits `--yield-s` so a waiting gate can take the lock; it never holds the
 line through the night (03:10-03:45Z and while LAB/nightly/active exists), and starts nothing while main.lock, LAB/PAUSE or LAB/HALT
@@ -82,6 +87,8 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 import fight_gym as fg  # noqa: E402
+import gym_clock as gclock  # noqa: E402
+import gym_gate as gg  # noqa: E402
 import practice_mix as pmix  # noqa: E402
 
 # Nothing here loads the emulator library at import (gym_lockstep's rule): a spawned process selects its engine first.
@@ -118,20 +125,29 @@ NIGHT_WINDOW = fg.NIGHT_WINDOW
 MEAN_X16_S = {"act1-hallway": 12.0, "act1-elite": 25.0, "act1-boss": 74.0, "act2-hallway": 14.0, "act2-elite": 16.0,
               "act2-boss": 95.0}
 
-# The promotion rule (v1 fixed 2026-10-30 before the first checkpoint; v2 2026-11-01, D43). Both arms play the same games: the
-# board's 200 Act-1 boss starts, game j of each with the gym's seeds (namespace "g"), the same search config; only the network
-# differs. A capped game is lost. Stage 1 plays one pair of seed indices (`stage1_seeds` of them, 400 games) and stops (no
-# promotion) unless the candidate's win rate is at least `futility_points` above the incumbent's. v1 always played j = 0..1, the
-# pair the incumbent itself had been picked on, so its wins there were a lucky overcount (v2: 196 of 400 there, 746 of its other
-# 1,600) and an equal candidate needed a true +3.4 points to pass. v2 plays the pair after the one the incumbent was picked on:
-# one pair per promotion, wrapping (0-1, 2-3, 4-5, 6-7, 8-9, 0-1, ...; `stage1_js`, `next_gate_pair`), the incumbent's games on
-# it coming from its own promotion gate's games when they are there (`reuse_incumbent_games`). Stage 2 plays j = 0..seeds-1 (the
-# board's 2,000 games) and promotes only when the exact one-sided McNemar test on the discordant pairs (candidate-only wins
-# against incumbent-only wins) gives p < alpha and the paired mean L0 difference is not negative; it is unchanged from v1.
-# Nothing tunes on these games: the trainer never sees the board's starts or their runs.
-PROMOTION_RULE = {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
-                  "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
-                  "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"}
+# The promotion rule. v1 was fixed 2026-10-30 before the first checkpoint, v2 on 2026-11-01 (D43), v3 on 2026-11-11 (D57 item 2).
+# Both arms play the same games: the board's 200 Act-1 boss starts, game j of each with the gym's seeds (namespace "g"), the same
+# search config; only the network differs. A capped game is lost. Stage 1 plays one pair of seed indices (`stage1_seeds` of them, 400
+# games), the pair after the one the incumbent was picked on (one pair per promotion, wrapping: 0-1, 2-3, ..., `stage1_js`,
+# `next_gate_pair`; its incumbent games come from the incumbent's own promotion gate when they are there, `reuse_incumbent_games`).
+# Stage 2 plays j = 0..seeds-1 (the board's 2,000 games). v2 stopped at stage 1 below +1.0 points and promoted only when the exact
+# one-sided McNemar test on the discordant pairs gave p < 0.05 with the paired mean L0 difference not negative; between 2026-10-31
+# and 11-09 it refused 175 candidates at +0.0 to +1.1 points (SE 0.65), a gain it cannot show on 2,000 pairs. v3 (D57: "not worse, and
+# the trend across candidates positive") keeps v2's test as path (a) and adds path (b); stage 1 becomes a screen of the clearly worse.
+# `rl/gym_gate.py` has the statistics and their reasons: start-clustered standard errors; the screen rejects when the one-sided 95%
+# UPPER bound of the stage-1 difference is under `screen.points`; (b) needs the candidate's 95% lower bound above `pool.not_worse_points`
+# and the pooled paired difference of the last `pool.k` stage-2 candidates of this incumbent and rule version (at least `pool.min` of
+# them) positive at one-sided p < `pool.alpha`; at most one promotion in `guard_h` hours. Nothing tunes on these games: the trainer
+# never sees the board's starts or their runs.
+PROMOTION_RULE_V2 = {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
+                     "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
+                     "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"}
+PROMOTION_RULE = {"name": "gym-loop-promote-v3", "fixed": "2026-11-11 (D57 item 2): a screen at stage 1, a pooled trend at stage 2",
+                  "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "seeds": 10, "capped": "lost", "ns": "g",
+                  "screen": {"bound": "upper", "z": gg.Z95, "points": -2.0},
+                  "single": {"alpha": 0.05, "l0_not_worse": True, "min_points": 0.0},
+                  "pool": {"k": 5, "min": 3, "alpha": 0.10, "not_worse_points": -1.0, "z_lower": gg.Z95},
+                  "guard_h": 6.0}
 
 # The gate's pre-filter (D49 item 3, 2026-11-03; it decides who enters the gate, never who is promoted). Every checkpoint's train.json
 # carries its held-out policy cross-entropy beside the incumbent's on the same rows (the trainer scores both in one call). The
@@ -173,7 +189,7 @@ def write_json(p: Path, obj, patience_s: float = 10.0) -> None:
     it is tried again for `patience_s` seconds before the error is raised."""
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + f".tmp{os.getpid()}")
+    tmp = p.with_name(p.name + f".tmp{os.getpid()}-{threading.get_ident()}")
     tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8", newline="\n")
     end = time.monotonic() + patience_s
     while True:
@@ -323,6 +339,7 @@ class Loop:
         self.state.setdefault("next_j", {})
         self.state.setdefault("last_seg", {})  # start id -> the segment it was last drawn in (the sampler's staleness term)
         self.mix: dict = {}  # what the last `sample_tasks` drew (kind and source counts, the regret quartiles)
+        self.clock = None  # the daemon's `gym_clock.TimeLedger` once it runs (waits and plays by reason); None: nothing is timed
         self.state.setdefault("kind_s", {})
         self.state.setdefault("gated", {})
         self.state.setdefault("versions", {"v0": {"dir": str(INCUMBENT0), "source": "agent gen7/candidate-r1 (M2's)", "n": 0}})
@@ -341,6 +358,10 @@ class Loop:
         line = f"{stamp()} {clean(msg)}\n"
         with self._lock, open(self.root / "loop.log", "a", encoding="utf-8") as fh:
             fh.write(line)
+
+    def span(self, kind: str, what: str, log: bool = False):
+        """A timed interval of the daemon's day (`gym_clock`): a context manager that times nothing when no clock runs."""
+        return self.clock.span(kind, what, log=log) if self.clock is not None else contextlib.nullcontext()
 
     def player_dir(self, version: str) -> Path:
         return Path(self.state["versions"][version]["dir"])
@@ -952,7 +973,13 @@ class Server:
 
     def __init__(self, loop: Loop, player_dir: Path, name: str) -> None:
         self.loop, self.handle, self.opts = loop, None, None
-        if os.environ.get("GYM_LOOP_NO_GPU") or not take_gpu(TAG):
+        if os.environ.get("GYM_LOOP_NO_GPU"):
+            return
+        if not take_gpu(TAG):
+            holder = (_lines(GPU_OK) or ["?"])[0].split()[0]  # the first GPU_OK line holds the card (a gate, the night)
+            loop.log(f"gpu: {name}: the card is held by {holder}; the CPU prior plays")
+            if loop.clock is not None:
+                loop.clock.note(f"gpu-denied:{holder}")
             return
         from prior_launch import start_prior_server  # noqa: PLC0415
 
@@ -1148,16 +1175,26 @@ def paired(cand: list[dict], inc: list[dict], seeds: int, js: tuple[int, ...] | 
             "capped": sum(1 for x in keys if a[x].get("capped")) + sum(1 for x in keys if b[x].get("capped"))}
 
 
-def decide(cand: list[dict], inc: list[dict], stage: int, rule: dict | None = None, pair: int = 0) -> dict:
-    """The fixed rule on the games so far. Stage 1 (on stage-1 pair number `pair`): 'continue' or 'reject' (futility). Stage 2:
-    'promote' or 'reject'."""
+def decide(cand: list[dict], inc: list[dict], stage: int, rule: dict | None = None, pair: int = 0,
+           pool: list[tuple[str, dict]] | None = None) -> dict:
+    """The fixed rule on the games so far. Stage 1 (on stage-1 pair number `pair`): 'continue' or 'reject'. Stage 2: 'promote' or
+    'reject'. A rule with a `screen` is v3 (`rl/gym_gate.py`); `pool` is then the earlier stage-2 candidates of this incumbent as
+    [(name, {(start, j): candidate win - incumbent win})], oldest first, this candidate not among them. A v2 rule (`futility_points`) is
+    decided as it always was."""
     rule = rule or PROMOTION_RULE
+    v3 = "screen" in rule
     if stage == 1:
         js = stage1_js(rule, pair)
         p = paired(cand, inc, rule["stage1_seeds"], js)
         need = rule["starts"] * len(js)
         if p["pairs"] < need:
             return {"verdict": "incomplete", "stage": 1, **p}
+        if v3:
+            sc = gg.screen_stage1(gg.pair_diffs(cand, inc, lambda j: j in js), rule["screen"])
+            bad = bool(sc["reject"])
+            why = (f"stage 1: the 95% {rule['screen'].get('bound', 'upper')} bound {100 * sc['bound']:+.1f} points is under the "
+                   f"{rule['screen']['points']:+.1f} that marks a candidate clearly worse") if bad else None
+            return {"verdict": "reject" if bad else "continue", "stage": 1, "why": why, "diff_se": sc["se"], "diff_bound": sc["bound"], **p}
         go = p["win_diff"] is not None and 100 * p["win_diff"] >= rule["futility_points"]
         return {"verdict": "continue" if go else "reject", "stage": 1, "why": None if go else
                 f"stage 1: {100 * (p['win_diff'] or 0):+.1f} points, under the {rule['futility_points']:+.1f} needed to go on", **p}
@@ -1165,10 +1202,63 @@ def decide(cand: list[dict], inc: list[dict], stage: int, rule: dict | None = No
     if p["pairs"] < rule["starts"] * rule["seeds"]:
         return {"verdict": "incomplete", "stage": 2, **p}
     pval = mcnemar_one_sided(p["cand_only"], p["inc_only"])
+    if v3:
+        r = gg.stage2(gg.pair_diffs(cand, inc, lambda j: j < rule["seeds"]), [d for _name, d in pool or []], pval, p["l0_diff"], rule)
+        pl = r["pool"]
+        keep = int(rule["pool"]["k"]) - 1
+        return {"verdict": "promote" if r["ok"] else "reject", "stage": 2, "p": pval, "why": r["why"], "path": r["path"],
+                "diff_se": r["diff_se"], "diff_lb": r["diff_lb"], "pool_k": pl["k"], "pool_diff": pl["diff"], "pool_se": pl["se"],
+                "pool_p": pl["p"], "pool_prior": [name for name, _d in (pool or [])][-keep:] if keep > 0 else [], **p}
     ok_l0 = (p["l0_diff"] or 0.0) >= 0.0 or not rule["l0_not_worse"]
     ok = pval < rule["alpha"] and ok_l0
     why = None if ok else ("McNemar p %.3f >= %.2f" % (pval, rule["alpha"]) if pval >= rule["alpha"] else "mean L0 lower")
     return {"verdict": "promote" if ok else "reject", "stage": 2, "p": pval, "why": why, **p}
+
+
+def pool_members(loop: "Loop", inc: str, ctag: str, rule: dict, cand: str) -> list[tuple[str, dict]]:
+    """The rule's pool before `cand`: the newest `pool.k - 1` stage-2 candidates of the ledger (`gate/verdicts.jsonl`) with this
+    incumbent and this rule's version, each as its pair differences against the incumbent on its own engine's games ([(name, diffs)],
+    oldest first). A member whose games are gone is left out. A promotion changes the incumbent, so the pool restarts there."""
+    keep = int(rule["pool"]["k"]) - 1
+    if keep <= 0:
+        return []
+    rows = [r for r in gg.read_ledger(loop.gates / "verdicts.jsonl")
+            if r.get("stage") == 2 and r.get("verdict") in ("reject", "promote") and r.get("incumbent") == inc
+            and r.get("rule") == rule["name"] and r.get("candidate") != cand]
+    out: list[tuple[str, dict]] = []
+    seen: set[str] = set()
+    for r in reversed(rows):
+        if r["candidate"] in seen:
+            continue
+        seen.add(r["candidate"])
+        cf = loop.gates / f"{r['candidate']}-{ctag}-{r['engine']}.jsonl"
+        nf = loop.gates / f"inc-{inc}-{ctag}-{r['engine']}.jsonl"
+        if not (cf.is_file() and nf.is_file()):
+            continue
+        d = gg.pair_diffs(fg.read_jsonl(cf), fg.read_jsonl(nf), lambda j: j < rule["seeds"])
+        if len(d) < rule["starts"] * rule["seeds"]:
+            continue
+        out.append((r["candidate"], d))
+        if len(out) >= keep:
+            break
+    return out[::-1]
+
+
+def promotion_guard(loop: "Loop", v: dict, rule: dict | None = None, now: dt.datetime | None = None) -> dict:
+    """At most one promotion in `guard_h` hours: a promote inside the window becomes a reject that says why (`guard`, and the path it
+    passed by), the games and the pool untouched. A rule with no `guard_h`, no promotion yet or an unreadable time: no guard."""
+    rule = rule or PROMOTION_RULE
+    hrs = float(rule.get("guard_h") or 0.0)
+    if v.get("verdict") != "promote" or hrs <= 0 or not loop.state.get("promotions"):
+        return v
+    last_p = loop.state["promotions"][-1]
+    last = gg.parse_stamp(last_p.get("t"))
+    age = None if last is None else ((now or utc()) - last).total_seconds() / 3600.0
+    if age is None or age >= hrs:
+        return v
+    return {**v, "verdict": "reject", "guard": f"{last_p.get('version')} was promoted {age:.1f} h ago (one promotion in {hrs:g} h)",
+            "why": f"guard: {last_p.get('version')} was promoted {age:.1f} h ago, one promotion in {hrs:g} h; the rule had passed by path {v.get('path')}",
+            "guarded_path": v.get("path"), "path": None}
 
 
 def board_starts() -> list[dict]:
@@ -1205,6 +1295,21 @@ def reuse_incumbent_games(loop: Loop, inc: str, inc_file: Path, js: tuple[int, .
     return len(take)
 
 
+def _rule_note(v: dict) -> str:
+    """What v3 adds to a gate line: stage 1's upper bound, stage 2's lower bound, the pool and the path ("" for a v2 verdict)."""
+    if v.get("verdict") == "incomplete":
+        return ""
+    if v.get("stage") == 1 and v.get("diff_bound") is not None:
+        return f"; 95% upper bound {100 * v['diff_bound']:+.1f} points"
+    if v.get("stage") == 2 and "pool_k" in v:
+        pd, pp = v.get("pool_diff"), v.get("pool_p")
+        pool = ("pool of %d: %s (SE %.2f), p %s" % (v["pool_k"], "n/a" if pd is None else "%+.2f points" % (100 * pd),
+                                                   100 * (v.get("pool_se") or 0.0), "n/a" if pp is None else "%.3f" % pp))
+        tail = "promote by path %s" % v["path"] if v.get("path") else "reject: %s" % v.get("why")
+        return "; lower bound %+.2f points; %s; %s" % (100 * (v.get("diff_lb") or 0.0), pool, tail)
+    return ""
+
+
 def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: int, prior: str, daemon=None,
              judge: str | None = None) -> dict:
     """Score a checkpoint against the incumbent with the fixed rule (resumable: the games on disk are kept)."""
@@ -1234,12 +1339,13 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
                 stopped = play_tasks(loop, tasks, f, d, procs, k, prior, f"gate-{who}", daemon=daemon, extra_opts=xo)
                 if stopped:
                     return {**out, "verdict": "stopped", "why": stopped}
-        v = decide(fg.read_jsonl(cand_file), fg.read_jsonl(inc_file), stage, pair=pair)
+        pool = pool_members(loop, inc, ctag, rule, cand) if stage == 2 and "pool" in rule else None
+        v = decide(fg.read_jsonl(cand_file), fg.read_jsonl(inc_file), stage, pair=pair, pool=pool)
         out.update(v)
         loop.log(f"gate {cand}: stage {stage}{f' (j {list(js)})' if stage == 1 else ''} {v['verdict']}: cand {v.get('cand_wins')} "
                  f"inc {v.get('inc_wins')} of {v.get('pairs')}"
                  f" ({100 * (v.get('win_diff') or 0):+.1f} points, SE {100 * (v.get('win_se') or 0):.1f})"
-                 + (f" p {v['p']:.3f}" if "p" in v else ""))
+                 + (f" p {v['p']:.3f}" if "p" in v else "") + _rule_note(v))
         if v["verdict"] != "continue":
             break
     out["cand_file"], out["inc_file"] = cand_file.name, inc_file.name
@@ -1249,9 +1355,11 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
 # ---------------------------------------------------------------------------------------------------------- the human bar at the gate
 
 
-HUMAN_BAR = {"name": "gym-loop-human-bar-v1", "config": "a3-v1", "draws": 4}
-# What the gate plays after a stage-2 verdict: the fight exam's human stratum under the exam's own configuration (`fight_exam
-# .DEFAULT_CONFIG`, `DRAWS`), whatever the gate's own `--player-config` is. Report-only: no part of it enters PROMOTION_RULE or `decide`.
+HUMAN_BAR = {"name": "gym-loop-human-bar-v1", "config": "a3-v1", "draws": 4, "prior": "cpu"}
+# What the gate plays after a stage-2 promotion (`--human-bar promotion`, the default since 2026-11-11; `on`: after every stage-2 verdict, `off`:
+# never): the fight exam's human stratum under the exam's own configuration (`fight_exam.DEFAULT_CONFIG`, `DRAWS`), whatever the gate's own
+# `--player-config` is, on the CPU prior (the reading the weekly comparison and v2's and v3's were taken with, so the numbers compare).
+# Report-only: no part of it enters PROMOTION_RULE or `decide`.
 
 
 def _fight_exam():
@@ -1490,7 +1598,8 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
         shutil.copytree(cand_dir, dest)
     loop.state["versions"][ver] = {"dir": str(dest), "source": f"checkpoint {cand}", "n": n, "promoted": stamp(),
                                    "verdict": {k: verdict.get(k) for k in ("cand_wins", "inc_wins", "pairs", "win_diff", "win_se",
-                                                                           "l0_diff", "p", "cand_rate", "inc_rate")}}
+                                                                           "l0_diff", "p", "cand_rate", "inc_rate", "path", "diff_lb",
+                                                                           "pool_k", "pool_diff", "pool_p")}}
     prev = loop.state["incumbent"]
     loop.state["incumbent"] = ver
     loop.state["promotions"].append({"version": ver, "checkpoint": cand, "over": prev, "t": stamp()})
@@ -1504,7 +1613,8 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
              f"{verdict.get('pairs')}; stage 1 now plays j {list(stage1_js(PROMOTION_RULE, loop.gate_pair()))}")
     if board != "off":
         try:
-            board_commit(loop, ver, verdict, commit=board == "commit")
+            with loop.span("wait", "publish", log=True):  # the board page's build and push: the loop plays nothing meanwhile
+                board_commit(loop, ver, verdict, commit=board == "commit")
         except Exception as error:  # noqa: BLE001 -- the board is retried at the next start (`board_pending`)
             loop.log(f"board: {type(error).__name__}: {error}")
     return ver
@@ -1748,7 +1858,32 @@ def gpu_split(loop: Loop, since: str | None = None) -> dict:
 # ---------------------------------------------------------------------------------------------------------- the daemon
 
 
+class ClockWatch:
+    """Every 30 s: past midnight the daily line is written, and the status file's `waiting_s_today` and `playing_s_today` are fresh even in
+    the middle of a twenty-minute step (the main thread writes the status only when the phase changes)."""
+
+    def __init__(self, daemon) -> None:
+        self.daemon = daemon
+        self._stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.wait(30):
+            with contextlib.suppress(Exception):
+                self.daemon.clock.roll()
+                self.daemon.refresh_status()
+
+
 class Daemon:
+    clock = None  # a `gym_clock.TimeLedger` once `run` starts; a daemon built without one times nothing
+    _status_lock = threading.Lock()
+
     def __init__(self, a: argparse.Namespace) -> None:
         self.a = a
         self.loop = Loop(a.root)
@@ -1764,14 +1899,52 @@ class Daemon:
     # -- status
     def status(self, phase: str, **kw) -> None:
         self.phase = phase
-        doc = {"pid": os.getpid(), "phase": phase, "t": stamp(), "root": str(self.loop.root), "commit": self.commit,
+        self._status_kw = kw
+        self.refresh_status()
+
+    def refresh_status(self) -> None:
+        """Write the status file: the phase and what it was given, and when a clock runs the day's seconds waited and played (`waiting_s_today`,
+        `playing_s_today`, `waits_today` by reason)."""
+        doc = {"pid": os.getpid(), "phase": self.phase, "t": stamp(), "root": str(self.loop.root), "commit": self.commit,
                "segment": self.loop.state["segment"], "incumbent": self.loop.state["incumbent"],
-               "server_pid": self.server_pid, "trainer_pid": self.trainer_pid, **kw}
-        STATUS_DIR.mkdir(parents=True, exist_ok=True)
+               "server_pid": self.server_pid, "trainer_pid": self.trainer_pid, **getattr(self, "_status_kw", {})}
+        if self.clock is not None:
+            doc.update(self.clock.status_fields())
+        with self._status_lock:
+            STATUS_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                write_json(STATUS_DIR / "status", doc)
+            except OSError as error:  # the file is for readers (the lab's runner, the checks): a missed write must not end the daemon
+                self.loop.log(f"status: not written ({type(error).__name__}: {error})")
+
+    # -- time: what the daemon waits for and what it plays
+    def _span(self, kind: str, what: str, log: bool = False):
+        return self.clock.span(kind, what, log=log) if self.clock is not None else contextlib.nullcontext()
+
+    def _block(self, why: str) -> None:
+        """Something stops a start: the wait is timed under its reason and logged when it starts (and, in `_unblock`, when it ends)."""
+        if self.clock is not None and why != "stop":
+            self.clock.wait(why)
+
+    def _unblock(self) -> None:
+        if self.clock is not None:
+            self.clock.clear()
+
+    def plateau(self, force: bool = False) -> None:
+        """D57 addendum 2: no promotion for five days or twenty-five gated candidates writes LAB/alerts/gym-plateau.txt (and a log line);
+        the next promotion removes it. Checked at most every ten minutes and after every verdict; off unless `--plateau-alert on`."""
+        if getattr(self.a, "plateau_alert", False) not in (True, "on"):
+            return
+        if not force and time.time() - getattr(self, "_plateau_t", 0.0) < 600:
+            return
+        self._plateau_t = time.time()
         try:
-            write_json(STATUS_DIR / "status", doc)
-        except OSError as error:  # the file is for readers (the lab's runner, the checks): a missed write must not end the daemon
-            self.loop.log(f"status: not written ({type(error).__name__}: {error})")
+            gg.plateau_update(gg.read_ledger(self.loop.gates / "verdicts.jsonl"), self.loop.state["promotions"], self.loop.state["incumbent"],
+                              Path(getattr(self.a, "alerts_dir", None) or LAB / "alerts"), self.loop.log, utc())
+        except Exception as error:  # noqa: BLE001 -- an alarm that cannot be written must not end the loop
+            if not getattr(self, "_plateau_err", False):
+                self._plateau_err = True
+                self.loop.log(f"plateau: not written ({type(error).__name__}: {error})")
 
     # -- the trainer process
     def start_trainer(self) -> None:
@@ -1821,15 +1994,23 @@ class Daemon:
 
     def gate(self, cand: str, cand_dir: Path) -> None:
         self.status("gate", candidate=cand)
-        v = run_gate(self.loop, cand, cand_dir, self.a.player_config, self.a.procs, self.a.gate_k, self.a.prior, daemon=self,
-                     judge=self.a.judge or None)
+        with self._span("play", "gate"):
+            v = run_gate(self.loop, cand, cand_dir, self.a.player_config, self.a.procs, self.a.gate_k, self.a.prior, daemon=self,
+                         judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
-        if v.get("stage") == 2 and v.get("verdict") in ("promote", "reject") and getattr(self.a, "human_bar", "on") == "on":
-            # the human line (D55 addendum 11): report-only, after the rule has spoken; a stage-1 reject never plays it
+        if v.get("stage") == 2:
+            v = promotion_guard(self.loop, v)
+            if v.get("guard"):
+                self.loop.log(f"gate {cand}: {v['why']}")
+        mode = getattr(self.a, "human_bar", "promotion")
+        if v.get("stage") == 2 and ((mode == "on" and v.get("verdict") in ("promote", "reject")) or (mode == "promotion" and v.get("verdict") == "promote")):
+            # the human line (D55 addendum 11): report-only, after the rule has spoken; a stage-1 reject never plays it, and in mode
+            # `promotion` (D57 item 2) only a promotion does, once, on the CPU prior
             self.status("gate", candidate=cand, part="human bar")
             try:
-                v["human"] = human_bar(self.loop, cand, cand_dir, v["incumbent"], self.a.procs, self.a.gate_k, self.a.prior, daemon=self)
+                with self._span("play", "human-bar"):
+                    v["human"] = human_bar(self.loop, cand, cand_dir, v["incumbent"], self.a.procs, self.a.gate_k, HUMAN_BAR["prior"], daemon=self)
             except Exception as error:  # noqa: BLE001 -- a reading that fails must never change or lose the verdict
                 v["human"] = f"error: {type(error).__name__}"
                 self.loop.log(f"gate {cand}: human bar: {type(error).__name__}: {error}")
@@ -1840,7 +2021,9 @@ class Daemon:
             self.loop.state["gated"].setdefault(old, {"verdict": "superseded", "by": cand})
         self.loop.state["gated"][cand] = {k: v.get(k) for k in ("verdict", "stage", "why", "pairs", "cand_wins", "inc_wins",
                                                                 "win_diff", "win_se", "l0_diff", "p", "incumbent", "config",
-                                                                "stage1_js", "human") if k != "human" or "human" in v}
+                                                                "stage1_js", "human", "path", "diff_lb", "pool_k", "pool_diff", "pool_p",
+                                                                "guard") if k not in ("human", "path", "diff_lb", "pool_k", "pool_diff",
+                                                                                      "pool_p", "guard") or k in v}
         self.loop.save()
         with open(self.loop.gates / "verdicts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), **{k: v.get(k) for k in v if k not in ("cand_file", "inc_file")}}) + "\n")
@@ -1851,8 +2034,13 @@ class Daemon:
                     human_bar_adopt(self.loop, cand, ver)
                 except OSError as error:
                     self.loop.log(f"gate {cand}: human bar: games not kept as {ver}'s ({type(error).__name__}: {error})")
+        self.plateau(force=True)  # the alarm follows the verdict: a promotion takes it down
 
     def segment(self) -> None:
+        with self._span("play", "generate"):
+            self._segment()
+
+    def _segment(self) -> None:
         loop = self.loop
         loop.state["segment"] += 1
         seg = loop.state["segment"]
@@ -1890,14 +2078,18 @@ class Daemon:
         """Drop the line and let a waiting step in: wait `yield_s`, then while anything blocks a start."""
         hold_quiet(False)
         self.status("yield")
+        if self.clock is not None:
+            self.clock.wait("yield", log=False)  # a fixed pause by design: timed, not logged line by line
         end = time.time() + self.a.yield_s
         while time.time() < end and not (self.loop.root / "STOP").exists():
             time.sleep(5)
         why = why_blocked(self.loop.root, starting=True)
         while why and why != "stop":
+            self._block(why)
             self.status("waiting", why=why)
             time.sleep(30)
             why = why_blocked(self.loop.root, starting=True)
+        self._unblock()
 
     def run(self) -> int:
         from tools.lab import winsys  # noqa: PLC0415
@@ -1918,14 +2110,24 @@ class Daemon:
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
-        self.loop.log(f"daemon: human bar {getattr(self.a, 'human_bar', 'on')}: a stage-2 verdict is followed by the human stratum "
-                      f"({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}), report-only")
+        mode = getattr(self.a, "human_bar", "promotion")
+        self.loop.log(f"daemon: human bar {mode}: " + {"promotion": "a promotion", "on": "every stage-2 verdict", "off": "nothing"}.get(mode, mode)
+                      + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
+        self.loop.log(f"daemon: plateau alarm {'on' if getattr(self.a, 'plateau_alert', False) in (True, 'on') else 'off'}: {gg.PLATEAU['days']:g} days or "
+                      f"{gg.PLATEAU['candidates']} gated candidates without a promotion writes {gg.PLATEAU['file']}")
         mcfg = pmix.config(self.loop.starts)
         self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
                       f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
+        self.clock = gclock.TimeLedger(self.loop.games / "clock.jsonl", self.loop.log, segments=self.loop.games / "segments.jsonl",
+                                       ledger=self.loop.gates / "verdicts.jsonl")
+        self.loop.clock = self.clock
+        self.clock.roll()  # a day finished while the daemon was down gets its daily line now
+        cwatch = ClockWatch(self)
+        cwatch.start()
         watch = GpuWatch(self.loop, self)
         watch.start()
         self.status("start")
+        self.plateau(force=True)
         entry = compact(self.loop, self.loop.state["segment"], value_labels=False)  # a killed segment's finished fights
         if entry:
             self.loop.log(f"buffer: {entry['fights']} fights of an interrupted segment kept")
@@ -1935,29 +2137,35 @@ class Daemon:
                 if self.a.until and stamp() >= self.a.until:
                     self.loop.log("daemon: --until reached")
                     break
+                self.plateau()
                 why = why_blocked(self.loop.root, starting=True)
                 if why:
+                    self._block(why)
                     self.status("waiting", why=why)
                     self.start_trainer()  # the night is training time: the trainer keeps its own rules (low CPU, GPU_OK)
                     time.sleep(30)
                     continue
+                self._unblock()
                 nights = nights_available(max_nights=self.a.max_nights)
                 stale = starts_stale(self.loop, nights, self.a.runs_per_night)
                 if stale:  # the set follows the nights: a finished night's runs join it (only theirs are replayed)
                     self.status("starts", why=stale)
                     self.loop.log(f"starts: rebuilding ({stale})")
-                    build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
+                    with self._span("play", "starts"):
+                        build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
                     self.wait_free()
                     continue
                 stale = weights_stale(self.loop)
                 if stale:
                     self.status("weights", why=stale)
                     self.loop.log(f"weights: computing ({stale})")
-                    kind_weights(self.loop, procs=self.a.procs, prior=self.a.prior)
+                    with self._span("play", "weights"):
+                        kind_weights(self.loop, procs=self.a.procs, prior=self.a.prior)
                     self.wait_free()
                     continue
                 self.start_trainer()
-                cand = self.next_gate()
+                with self._span("play", "prefilter"):  # who enters the gate (it can score a checkpoint on the CPU for minutes)
+                    cand = self.next_gate()
                 if cand is not None and not self.a.no_gate:
                     self.gate(*cand)
                 else:
@@ -1973,6 +2181,8 @@ class Daemon:
             drop_gpu(TAG)
             self.stop_trainer()
             watch.stop()
+            cwatch.stop()
+            self.clock.end()
             self.loop.save()
             self.status("stopped", rc=rc)
             self.loop.log(f"daemon: stopped rc={rc}")
@@ -2052,9 +2262,14 @@ def main(argv=None) -> int:
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
             p.add_argument("--no-gate", action="store_true")
-            p.add_argument("--human-bar", choices=("on", "off"), default="on",
-                           help="after a stage-2 verdict, play the candidate on the fight exam's human stratum and record the human line "
-                                "(report-only; the rule never reads it)")
+            p.add_argument("--human-bar", choices=("promotion", "on", "off"), default="promotion",
+                           help="play the candidate on the fight exam's human stratum (CPU prior) and record the human line "
+                                "(report-only; the rule never reads it): promotion, after a stage-2 promotion only (the default); "
+                                "on, after every stage-2 verdict; off, never")
+            p.add_argument("--plateau-alert", choices=("on", "off"), default="on",
+                           help="write LAB/alerts/gym-plateau.txt after five days or twenty-five gated candidates without a promotion "
+                                "(D57 addendum 2) and remove it at the next promotion")
+            p.add_argument("--alerts-dir", default=str(LAB / "alerts"), help="where the plateau alarm's file goes")
             p.add_argument("--no-preloss", action="store_true",
                            help="do not keep the position three decisions before a lost practice fight as a start")
             p.add_argument("--prefilter", choices=("best", "incumbent", "off"), default=PREFILTER["mode"],

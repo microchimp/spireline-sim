@@ -17,7 +17,7 @@ starts (P1's lockstep processes, the prior server, the trainer) ends with it how
 | `checkpoints/cNNNN/` | the trainer's checkpoints: `model.json`, `combat_policy.pt`, `combat_net.pt`, `train.json` (a player loads it as an agent) |
 | `players/vN/` | promoted versions (copied out of `checkpoints/`, so pruning never removes one) |
 | `gate/` | the gate's games per candidate and the incumbent's (per incumbent, config and engine), `verdicts.jsonl` |
-| `games/` | generation rows per segment, `segments.jsonl`, `steps.jsonl` (wall, prior path, server and process stats) |
+| `games/` | generation rows per segment, `segments.jsonl`, `steps.jsonl` (wall, prior path, server and process stats), `clock.jsonl` (every interval the daemon played or waited, by reason: section 2) |
 | `board/` | each promoted version's 2,000 board games as `fp-vN` rows |
 | `trainer/` | the trainer's `state.pt` (weights, optimiser, counters), `status.json`, `checkpoints.jsonl`, its log |
 | `state.json`, `loop.log`, `gpu.jsonl` | the promotion state and seeds, the log, the card's split once a minute |
@@ -52,6 +52,20 @@ about 1e-7). On the D51 pair (tags aaa0d2e4a460 and 1b3d1f01c90b, all 2,000 game
 - **The night is training time.** Generation stops for the night. The trainer goes on: on the card when GPU_OK allows it, else on
   the CPU on one thread while the night runs or is due; it waits while LAB/PAUSE or HALT exists or another QUIET.lock line (not the
   night's) stands.
+
+**Every wait is logged and timed** (2026-11-11, the gate lane; `rl/gym_clock.py`). The loop once lost three quarters of a week to waits nobody
+had logged. Now every interval of the daemon's day is a **play** (a step that works: `generate`, `gate`, `human-bar`, `starts`, `weights`,
+`prefilter`) or a **wait** with a reason: the reasons of `why_blocked` (`quiet:<tag>`, `main.lock`, `nightly-active`, `night-window`, `pause`,
+`halt`), `publish` (the board page's build and push after a promotion) and `yield` (the fixed pause between steps). A wait writes
+`wait start: <reason>` to loop.log when it begins and `wait end: <reason> after 14m20s` when it ends (one pair for a wait that goes on, a new
+pair when the reason changes; `yield` is timed but not logged line by line). Every interval is a row in `games/clock.jsonl` (`t0`, `t1`,
+`kind`, `what`, `s`; split at 00:00Z). The status file (`D:/spireline/logs/gym-loop/status`) carries `waiting_s_today`, `playing_s_today` and
+`waits_today` (seconds by reason), refreshed every 30 s by a watch thread, also in the middle of a twenty-minute step. At 00:00Z loop.log gets
+one line, `daily 2026-11-12: 71 segments, 14203 fights played; played 17.9 h (generate 15.2 h, gate 2.4 h, ...), waited 4.1 h (quiet:lab-score
+2.0 h, yield 1.8 h, ...), between steps or down 2.0 h; 11 gated (stage 1 reject 9, stage 2 reject 2); gpu-denied:lab-nightly x1`; a day finished
+while the daemon was down gets its line at the next start. A card refused (`GPU_OK` held by another, so the CPU prior plays) is logged
+(`gpu: <step>: the card is held by <tag>; the CPU prior plays`) and counted in the daily line. What the daily line shows as "between steps or
+down" is whatever is in neither list: retention and pruning between steps, and the time the daemon was not running.
 
 ## 3. Generation
 
@@ -135,6 +149,9 @@ incumbent figure scored in the same call compare.
 
 ## 5. The gate and the board (decided before the first checkpoint)
 
+**Since 2026-11-11 the rule is v3 (`gym-loop-promote-v3`, D57 item 2; the block "Gate rule v3" below). The next paragraph describes v1 and v2,
+whose stage 2 survives unchanged as path (a).**
+
 `PROMOTION_RULE` (`gym-loop-promote-v2`: v1 was fixed before the first checkpoint, v2 on 2026-11-01, D43): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
 player (`--player-config judge-v0 --judge D:/spireline/referee/agent/judge/v0/judge.pt`, the defaults since the judge landed (D41): JUDGE_V0's search with the judge v0 at its leaves, the judge on its own server on the card beside the prior's; the incumbent's games are kept per config and judge; measured: the gate's judge-v0 games of version 0 are the board's judge-v0 games move for move),
 the candidate and the incumbent on the same games. A capped game is lost. Stage 1, one pair of seed indices (400 pairs): go on only if the candidate
@@ -148,6 +165,67 @@ on the discordant pairs gives p < 0.05 and the paired mean L0 difference is not 
 scored; older ones are marked superseded. A promoted checkpoint becomes `players/vN`, the incumbent, and its board row "Fight player,
 version N": `board_commit` rebuilds `docs/paper/fight-board.html` in its own Spireline worktree (`D:/spireline/wt-board`) with the
 standing arms and every version, keeps the page's log lines and adds one, commits only the page and pushes to main. The page's own arms are kept in its order (`page_arms`), each with its games file (`BOARD_GAMES`, or `board/games.json` in the loop's folder for an arm added later); an arm with no known games stops the step, so a rebuild never drops a row.
+
+**Gate rule v3** (D57 item 2, 2026-11-11; `PROMOTION_RULE`, `decide`, `pool_members`, `promotion_guard`; the statistics in `rl/gym_gate.py`,
+the replay in `referee/backlog/gym-gate/replay.py`). Between 2026-10-31 and 11-09 v2 refused 175 candidates at +0.0 to +1.1 points on 2,000
+games (SE 0.65): a gain of a point cannot show p < 0.05 on 2,000 pairs, so the loop stood still while its students improved. The owner's
+decision: "not worse, and the trend across candidates positive", the lab's judgement still deciding what ships.
+
+- **Pairs and errors.** A pair is (board start, seed j); its difference is the candidate's win minus the incumbent's (a capped game is lost):
+  -1, 0 or +1. Standard errors are **start-clustered** (the ten seeds of a start share its difficulty; about 5% above the pair-level error on
+  the ledger's games): with C starts, per-start sums S_c of n_c pairs, n pairs, mean m: SE = sqrt(C/(C-1) * sum_c (S_c - m n_c)^2) / n.
+  z = 1.645 is the one-sided 95% point.
+- **Stage 1 is a screen** (400 pairs of the rotating seed pair, as before): it stops a candidate **clearly worse**, when the one-sided 95%
+  *upper* bound of its difference, m + 1.645 SE, is under -2.0 points (about -4.5 points at the 1.5-point SE of 400 pairs). Everything else
+  goes to stage 2. *The brief said "lower bound below -2.0"; read literally that stops every candidate under about +0.5 points; on the
+  ledger's 166 gated candidates v2's +1.0 floor stopped 132, the screen as built stops 2 and the literal reading would stop 106, most level
+  candidates, which is v2's starvation again. `screen.bound` = "lower" is that reading, one constant.*
+- **Stage 2 promotes** (2,000 pairs) when (a) **alone**: v2's test unchanged, the exact one-sided McNemar p < 0.05 and the paired L0 not
+  lower (`single.min_points` can ask for a floor on top; 0, because the brief's "+1.5 points" would have refused c0019 and c0185, which v2
+  promoted at +1.30 and +1.35, p 0.025), or (b) **not worse and the trend positive**: the candidate's lower bound m - 1.645 SE is above -1.0
+  point *and* the pooled paired difference of the last five stage-2 candidates of this incumbent, this one included (at least three,
+  `pool.min`), is positive at one-sided p < 0.10. Pooled: pair by pair p = mean over the pool of d_i(s, j); P = mean of p; SE on p as above;
+  z = P / SE; p = 1 - Phi(z). It is the pairs' own spread, so the candidates' shared incumbent and near-identical play are accounted for:
+  five candidates cut the SE by about a fifth (0.67 to 0.55 points), not by sqrt 5. **The pool** is the ledger's stage-2 rows with the same
+  incumbent (a promotion restarts it) and the **same rule version** (a v1 or v2 row was picked on a +1.0 stage-1 floor and its 2,000 pairs carry
+  that selection), whatever the engine (each member's difference is taken on its own engine's games); a member whose games are gone is left
+  out. Verdict lines and ledger rows carry the figures (`diff_lb`, `pool_k`, `pool_diff`, `pool_se`, `pool_p`, `pool_prior`, `path`):
+
+      gate c0004: stage 2 promote: cand 908 inc 896 of 2000 (+0.6 points, SE 0.6) p 0.169; lower bound -0.33 points; pool of 3: +0.40 points (SE 0.27), p 0.072; promote by path pool
+
+- **Guards.** At most one promotion in six hours (`guard_h`): a candidate that passes inside the window is recorded as a reject with `guard`
+  and `guarded_path` (its games and the pool are untouched, so the next candidate may promote). A promotion's human comparison (the exam's
+  human stratum, four draws, `a3-v1`, the CPU prior) plays once, only after the guard (`--human-bar promotion`, the new default; `on`: after every
+  stage-2 verdict as before, `off`: never) and goes to the ledger and loop.log.
+- **The replay** (the 34 stage-2 verdicts since 2026-10-31, `replay.py`, one process, nothing played). Which would have promoted: c0001 (2026-10-31
+  00:11Z), c0019 (10-31 14:30Z) and c0185 (11-09 12:00Z), all by (a): the three v2 promoted, and nothing else. The pooled path never fires on
+  that history: the 18 candidates of v2's long stretch (11-01 to 11-09) pooled +0.1 to +0.7 points at SE 0.55 (p 0.11 to 0.42), and the 11
+  candidates since v3 pool -0.5 to 0.0. On the 1,600 pairs of each candidate that its stage-1 screen did not see (v1 and v2 sent a candidate on only
+  above +1.0 points on those 400, which flatters its 2,000) only c0001 would pass; c0019's +1.30 becomes +1.19 and c0185's +1.35 becomes
+  +0.50. **So the v2 stretch's candidates were not measurably improving**; a rule can only promote what the games show. **False promotion**
+  (sign flips by start on the ledger's own games, the same sign for every candidate so their correlation is kept): a look promotes with
+  probability 0.11 under no difference (path (b) alone 0.09); some promotion in the first five candidates 0.18, over a four-candidate stretch
+  0.14, eleven 0.29, eighteen 0.32 (the looks repeat each other: the candidates are nearly one player). Promoting a level candidate costs a restart of the pool
+  and nothing else; (b)'s lower bound keeps a worse one out. **Power** (a true gain per candidate on the real variances, promoted within 3 / 5 /
+  10 candidates): +0.5 points 0.39 / 0.47 / 0.61; +1.0 points 0.70 / 0.78 / 0.87; +1.5 points 0.91 / 0.95 / 0.98. The pool minimum of three
+  (the brief had none): 0.18 against 0.20 false promotion in the first five candidates, 0.78 against 0.80 power at +1.0; a wash, kept because a
+  trend is more than one candidate.
+- **Cost.** Almost every gated candidate now goes to stage 2 (164 of the 166 would have): its 1,600 games are about 9.5 minutes of six processes on
+  the fast engine, so a gate is about 12 minutes where a stage-1 reject was 2.6; at the 45-minute spacing of 2026-11-10's gated candidates the
+  loop spends about a quarter of its time on the gate (6% before). The incumbent's 2,000 games are still played once per incumbent and engine. The
+  pool's earlier members are read from their games files (a second per member).
+- **Statistical power is the lever left.** Pooling five candidates buys a fifth of the SE; 2,000 pairs cannot show a point. Doubling the seeds
+  of stage 2 (j up to 19, the incumbent's extra 2,000 played once) halves the variance for about 10 more minutes a candidate, but the board page
+  and `promote`'s `fp-vN` rows assume the board's 2,000 games, so it is a change of its own (not made here).
+
+**The plateau alarm** (D57 addendum 2; `gym_gate.plateau_update`, `Daemon.plateau`, `--plateau-alert on|off` default on, `--alerts-dir`
+default `LAB/alerts`). A loop with no promotion for 5 days or 25 gated candidates (ledger rows with a verdict of reject or promote since the last
+promotion; the first verdict's time when there has been none) is a failure to report the same day, not a wait. The daemon writes
+`LAB/alerts/gym-plateau.txt` (first line `ALERT gym-plateau: no promotion for 5.3 days and 31 gated candidates (incumbent v3, last promotion ...)`,
+then the last ten verdicts: candidate, stage, verdict, points on that stage's pairs) and a loop.log line `plateau: ...`; it checks at its start,
+after every verdict and every ten minutes, rewrites the file as the figures move (no new log line) and removes it, with a log line, at the next
+promotion. The lab's status files already print `LAB/alerts/` (`tools/lab/alerts.py`: `ALERT gym-plateau (LAB/alerts)`). **At the first start of
+this code the alarm trips at once**: 32 gated candidates since v3's promotion (2026-11-09 12:00Z), the ten latest between +0.05 and +0.75 points.
 
 **The pre-filter** (D49 item 3, 2026-11-03; `PREFILTER`, `prefilter_pick`; `--prefilter best|incumbent|off`, `--prefilter-margin`,
 `--prefilter-floor-h`). It decides who enters the gate; `PROMOTION_RULE` above is untouched. Each checkpoint without a verdict is
@@ -170,9 +248,10 @@ The power, estimated: with about a quarter of pairs discordant, a +3-point candi
 promoted 5% of the time. A gate costs about 0.4 machine-hours (stage 1) plus 1.6 (stage 2) at a3-v1; the incumbent's 2,000 games are
 played once per incumbent.
 
-**The human line** (D55 addendum 11, 2026-11-08; `human_bar`, `human_bar_adopt`, `HUMAN_BAR`; daemon flag `--human-bar on|off`, default
-on). After a **stage-2** verdict (promote or reject; never after a stage-1 reject, a stopped or an incomplete gate) the daemon plays the
-candidate on the fight exam's human stratum (400 clean human fight starts, four draws, 1,600 games, the exam's own configuration `a3-v1`
+**The human line** (D55 addendum 11, 2026-11-08; `human_bar`, `human_bar_adopt`, `HUMAN_BAR`; daemon flag `--human-bar promotion|on|off`; since 2026-11-11
+the default is `promotion`: only a promotion that passed the guard plays it, on the CPU prior (`HUMAN_BAR[prior]`, the prior the weekly readings were taken with);
+`on` is the original: after every stage-2 verdict). After a **stage-2** verdict (in mode `on`: promote or reject; never after a stage-1 reject, a stopped or an
+incomplete gate) the daemon plays the candidate on the fight exam's human stratum (400 clean human fight starts, four draws, 1,600 games, the exam's own configuration `a3-v1`
 whatever the gate's `--player-config` is, `exam/starts-human.jsonl`) with the gate's own processes (`play_tasks` with
 `fight_exam:exam_game_steps`: `--procs`, BelowNormal, its QUIET line, the same stop reasons as the gate's play: STOP, the night, PAUSE,
 HALT, another line), writes the games to `exam/games-<checkpoint>.jsonl` (resumable: a game with a row is not played again) and reads them

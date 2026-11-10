@@ -56,7 +56,7 @@ class PureTests(unittest.TestCase):
         self.assertGreater(gl.mcnemar_one_sided(55, 40), 0.05)
 
     def test_the_rule_stops_at_stage_one_and_promotes_only_on_a_paired_win(self):
-        rule = {**gl.PROMOTION_RULE, "starts": 10, "stage1_seeds": 1, "seeds": 4}
+        rule = {**gl.PROMOTION_RULE_V2, "starts": 10, "stage1_seeds": 1, "seeds": 4}
         starts = [f"S{i}" for i in range(10)]
         inc = [_row(s, j, i % 2 == 0) for i, s in enumerate(starts) for j in range(4)]
         same = [dict(r) for r in inc]
@@ -114,14 +114,16 @@ class PureTests(unittest.TestCase):
 class GatePairTests(unittest.TestCase):
     """Stage 1's rotating pair (PROMOTION_RULE v2, D43): no games, the pure parts and the gate with its games faked."""
 
-    RULE = {**gl.PROMOTION_RULE, "starts": 4, "stage1_seeds": 2, "seeds": 6, "futility_points": 1.0}  # three pairs of j
+    RULE = {**gl.PROMOTION_RULE_V2, "starts": 4, "stage1_seeds": 2, "seeds": 6, "futility_points": 1.0}  # three pairs of j (the v2 rule: v3 is in test_gym_gate)
 
     def _rows(self, who, js, win, starts=("S0", "S1", "S2", "S3")):
         return [{**_row(s, j, win(i, j)), "arm": who, "player": who} for i, s in enumerate(starts) for j in js]
 
     def test_the_rule_is_v2_and_the_pairs_rotate_one_per_promotion_and_wrap(self):
-        rule = gl.PROMOTION_RULE
+        rule = gl.PROMOTION_RULE_V2
         self.assertEqual(rule["name"], "gym-loop-promote-v2")
+        self.assertEqual(gl.PROMOTION_RULE["name"], "gym-loop-promote-v3")  # v3 rotates the same pairs
+        self.assertEqual([gl.stage1_js(gl.PROMOTION_RULE, p) for p in range(5)], [gl.stage1_js(rule, p) for p in range(5)])
         self.assertEqual([gl.stage1_js(rule, p) for p in range(6)],
                          [(0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (0, 1)])
         self.assertEqual(gl.stage1_pairs(rule), 5)
@@ -738,7 +740,7 @@ class LoopGameTests(unittest.TestCase):
             self.assertEqual(self.loop.newest_checkpoint()[0], name)
 
     def test_the_gate_plays_the_incumbent_once_and_decides_by_the_rule(self):
-        rule = {**gl.PROMOTION_RULE, "starts": 2, "stage1_seeds": 1, "seeds": 2, "futility_points": -100.0}
+        rule = {**gl.PROMOTION_RULE_V2, "starts": 2, "stage1_seeds": 1, "seeds": 2, "futility_points": -100.0}
         board = Path(self.tmp.name) / "board"
         board.mkdir(exist_ok=True)
         lite = json.loads((self.loop.starts / "starts.lite.json").read_text())
@@ -948,35 +950,71 @@ class HumanBarGateTests(unittest.TestCase):
         self.gate(self.verdict(2, "reject"), human_bar="off")
         self.assertEqual(self.calls, [])
         self.assertNotIn("human", self.recorded()[0])
-        self.gate(self.verdict(2, "reject"), human_bar=None)  # a daemon from before the flag: on
+        self.gate(self.verdict(2, "reject"), human_bar=None)  # a daemon from before the flag: the default, a promotion only
+        self.assertEqual(self.calls, [])
+        self.gate(self.verdict(2, "reject"), human_bar="promotion")
+        self.assertEqual(self.calls, [])
+        self.gate(self.verdict(2, "reject"), human_bar="on")  # `on` keeps its meaning: every stage-2 verdict
         self.assertEqual(len(self.calls), 1)
         self.calls.clear()
         (self.exam / "starts-human.lite.json").unlink()
-        self.gate(self.verdict(2, "reject"))
+        self.gate(self.verdict(2, "reject"), human_bar="on")
         self.assertEqual(self.calls, [])
         self.assertEqual(self.recorded()[0]["human"], "no human stratum")
         self.assertIn("human bar: no human stratum in exam/", self.log())
 
+    def test_mode_promotion_plays_only_a_promotion_once_on_the_cpu_prior(self):
+        # the daemon's own prior is the server (the card); the human comparison keeps the CPU prior the weekly readings were taken with
+        d = self.daemon(human_bar="promotion")
+        d.a.prior = "server"
+        with mock.patch.object(gl, "run_gate", lambda *a, **k: self.verdict(2, "reject")), mock.patch.object(gl, "play_tasks", self.fake_play()), \
+                mock.patch.dict(gl.HUMAN_BAR, {"draws": 1}):
+            d.gate("c0190", self.cand_dir)
+        self.assertEqual(self.calls, [])  # a stage-2 reject: nothing played, no human field
+        self.assertNotIn("human", self.recorded()[0])
+        with mock.patch.object(gl, "run_gate", lambda *a, **k: self.verdict(1, "continue")), mock.patch.object(gl, "play_tasks", self.fake_play()):
+            d.gate("c0190", self.cand_dir)
+        self.assertEqual(self.calls, [])
+        with mock.patch.object(gl, "run_gate", lambda *a, **k: self.verdict(2, "promote")), mock.patch.object(gl, "play_tasks", self.fake_play()), \
+                mock.patch.dict(gl.HUMAN_BAR, {"draws": 1}):
+            d.gate("c0190", self.cand_dir)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual((self.calls[0]["prior"], self.calls[0]["what"]), ("cpu", "human-bar-c0190"))
+        state, last = self.recorded()
+        self.assertEqual((state["verdict"], state["human"], last["human"]["candidate"]), ("promote", last["human"], "c0190"))  # the same reading in the state and the ledger
+        self.assertIn("human bar: cand ", state["human"]["line"])
+        self.assertIn("gate c0190: " + state["human"]["line"], self.log())  # in the log, and in the ledger line above
+
+    def test_a_promotion_the_guard_refuses_plays_no_human_bar(self):
+        d = self.daemon(human_bar="promotion")
+        self.loop.state["promotions"].append({"version": "v0", "checkpoint": "c0001", "over": "v0", "t": gl.stamp()})
+        with mock.patch.object(gl, "run_gate", lambda *a, **k: self.verdict(2, "promote", path="single")), mock.patch.object(gl, "play_tasks", self.fake_play()):
+            d.gate("c0190", self.cand_dir)
+        self.assertEqual(self.calls, [])
+        state, last = self.recorded()
+        self.assertEqual((state["verdict"], state["guard"] is not None, last["guarded_path"]), ("reject", True, "single"))
+        self.assertEqual(json.loads((self.loop.root / "state.json").read_text())["incumbent"], "v0")
+
     def test_the_gates_play_is_the_exams_own_configuration(self):
         self.assertEqual((gl.HUMAN_BAR["config"], gl.HUMAN_BAR["draws"]), (fe.DEFAULT_CONFIG, fe.DRAWS))  # not the gate's --player-config
 
-    def test_the_daemons_flag_is_on_by_default(self):
+    def test_the_daemons_flag_is_promotion_by_default(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "Daemon") as daemon:
             daemon.return_value.run.return_value = 0
             gl.main(["run", "--root", tmp])
             gl.main(["run", "--root", tmp, "--human-bar", "off"])
-            self.assertEqual([c.args[0].human_bar for c in daemon.call_args_list], ["on", "off"])
+            self.assertEqual([c.args[0].human_bar for c in daemon.call_args_list], ["promotion", "off"])
 
     def test_the_rule_and_decide_do_not_know_the_human_bar(self):
         import inspect  # noqa: PLC0415
 
-        self.assertEqual(gl.PROMOTION_RULE, {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
-                                             "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
-                                             "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"})
+        self.assertEqual(gl.PROMOTION_RULE_V2, {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
+                                                "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,
+                                                "seeds": 10, "alpha": 0.05, "l0_not_worse": True, "capped": "lost", "ns": "g"})
         for fn in (gl.decide, gl.paired, gl.mcnemar_one_sided, gl.stage1_js, gl.run_gate):
             self.assertNotIn("human", inspect.getsource(fn).lower(), fn.__name__)
-        self.assertEqual(list(inspect.signature(gl.decide).parameters), ["cand", "inc", "stage", "rule", "pair"])
-        rule = {**gl.PROMOTION_RULE, "starts": 4, "stage1_seeds": 2, "seeds": 6}
+        self.assertEqual(list(inspect.signature(gl.decide).parameters), ["cand", "inc", "stage", "rule", "pair", "pool"])
+        rule = {**gl.PROMOTION_RULE_V2, "starts": 4, "stage1_seeds": 2, "seeds": 6}
         starts = ("S0", "S1", "S2", "S3")
         inc = [{**_row(s, j, i % 2 == 0), "arm": "v0"} for i, s in enumerate(starts) for j in range(6)]
         cand = [{**_row(s, j, i % 2 == 0 or j >= 2), "arm": "c"} for i, s in enumerate(starts) for j in range(6)]
@@ -1305,7 +1343,7 @@ class PrefilterTests(unittest.TestCase):
         cfg = gl.prefilter_cfg(argparse.Namespace(prefilter="incumbent", prefilter_margin=0.002, prefilter_floor_h=3.0, train_window=5))
         self.assertEqual((cfg["mode"], cfg["margin"], cfg["floor_h"], cfg["window"]), ("incumbent", 0.002, 3.0, 5))
         self.assertEqual(gl.prefilter_cfg()["floor_h"], 6.0)
-        self.assertEqual(gl.PROMOTION_RULE["name"], "gym-loop-promote-v2")  # the promotion rule is untouched
+        self.assertEqual(gl.PROMOTION_RULE["name"], "gym-loop-promote-v3")  # the pre-filter does not touch the promotion rule
 
 
 if __name__ == "__main__":
