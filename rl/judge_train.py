@@ -537,7 +537,7 @@ def make_model(a: argparse.Namespace, device):
         model.win_cal.copy_(torch.tensor([1.0, 0.0]))  # the calibration is refitted at the end
     elif init_blob is not None:
         missing, unexpected = model.load_state_dict(init_blob["model"], strict=False)
-        assert all(k.startswith("judge.") or k == "win_cal" for k in missing) and not unexpected, (missing, unexpected)
+        assert all(k.startswith("judge.") or k in ("win_cal", "src_emb.weight") for k in missing) and not unexpected, (missing, unexpected)
     return model.to(device), dims
 
 
