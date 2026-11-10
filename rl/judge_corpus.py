@@ -285,6 +285,7 @@ def label_of(rec: dict, tier: str, rel: float | str, rungs: Sequence[dict] = ())
     if rungs:
         out["rungs"] = [{"rel": r["rel"], "best": [r["best"]["a"], r["best"]["t"], r["best"]["kind"]], "n": r["best"]["n"], "sims": r.get("sims"),
                          "cpu_s": r.get("cpu_s"), "capped": r.get("capped"), "from_game": r.get("from_game", False),
+                         "top2": [[c["a"], c["t"], c["kind"], c["n"], c["v"], c["se"]] for c in r["children"][:2]],  # the unpaired reading, for comparison
                          **({"duel": r["duel"], "duel_cpu_s": r.get("duel_cpu_s")} if r.get("duel") else {})} for r in rungs]
     return out
 

@@ -245,6 +245,14 @@ class BuildFightTests(unittest.TestCase):
         self.assertIn("act2-boss rung 2x", labels)
         json.dumps(res)
 
+    def test_the_door_is_searched_on_the_ladder_when_it_has_a_choice(self):
+        searches: list = []
+        res, _ = self.run_build("boss", [0, *range(2, 11)], searches)
+        door = next(p for p in res["positions"] if p["k"] == 0)
+        self.assertTrue(door["door"])
+        self.assertEqual((door["label"]["tier"], door["label"]["rel"]), ("settled", 2))
+        self.assertIn(0, [s[0] for s in searches])
+
     def test_a_turn_the_rule_never_holds_for_goes_to_the_cap_and_is_soft(self):
         searches: list = []
         res, _ = self.run_build("elite", list(range(2, 11)), searches, settled=False)
@@ -274,6 +282,124 @@ class BuildFightTests(unittest.TestCase):
         res, _ = self.run_build("hallway", [3, 4, 5, 6], [], capped_game=True)
         self.assertIsNone(res["positions"][0]["teacher"])
         self.assertIsNone(jb.teacher_result({"capped": True}))
+
+
+class SupervisorTests(unittest.TestCase):
+    """`run` starts the work processes, starts a dead one again, and ends when the plan has no fight left or a STOP file stands."""
+
+    class Fake:
+        codes: list[list[int | None]] = []
+        made: list[list[str]] = []
+
+        def __init__(self, cmd, **kw):
+            type(self).made.append(cmd)
+            self.rc_seq = list(type(self).codes.pop(0)) if type(self).codes else [0]
+
+        def poll(self):
+            return self.rc_seq.pop(0) if len(self.rc_seq) > 1 else self.rc_seq[0]
+
+    def args(self, store: Path, procs: int = 2):
+        return mock.Mock(store=str(store), loop="L", player="v3", procs=procs, cells="")
+
+    def test_a_dead_work_process_is_started_again_and_the_supervisor_ends_with_the_plan(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Path(d)
+            jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ["a", "b"]})
+            self.Fake.codes, self.Fake.made = [[1], [0]], []  # w0 dies at once with 1, w1 ends well; w0's second life ends well
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=[])):
+                self.assertEqual(jb.cmd_run(self.args(store)), 0)
+            self.assertEqual(len(self.Fake.made), 3)
+            self.assertTrue(all("--shard" in c and "work" in c for c in self.Fake.made))
+            self.assertEqual([c[c.index("--shard") + 1] for c in self.Fake.made], ["w0", "w1", "w0"])
+
+    def test_fights_left_behind_by_a_finished_pass_get_one_more_pass_up_to_three(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Path(d)
+            jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ["a"]})
+            self.Fake.codes, self.Fake.made = [], []
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=["a"])):
+                jb.cmd_run(self.args(store, procs=1))
+            self.assertEqual(len(self.Fake.made), 4)  # the first pass and three more
+
+    def test_a_stop_file_ends_it_without_new_work(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Path(d)
+            jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ["a"]})
+            self.Fake.codes, self.Fake.made = [], []
+
+            def sleep(_s):
+                (jb.work_dir(store) / jb.STOP_NAME).write_text("x")
+
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep", side_effect=sleep), mock.patch.object(jb, "pending", return_value=["a"])):
+                jb.cmd_run(self.args(store, procs=1))
+            self.assertEqual(len(self.Fake.made), 1)
+
+
+class WorkTests(unittest.TestCase):
+    def store(self, d: str, n: int = 6) -> Path:
+        store = Path(d)
+        ids = [f"human:r{i}|f33" for i in range(n)]
+        jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ids})
+        (jb.work_dir(store) / "pool.jsonl").write_text("".join(json.dumps({"id": s, "run": f"r{i}", "cell": "act2-boss", "kind": "boss", "act": 2, "enemy": "x"}) + "\n"
+                                                                for i, s in enumerate(ids)), encoding="utf-8")
+        return store
+
+    def args(self, store: Path, **kw):
+        return mock.Mock(store=str(store), loop="L", player="v3", shard="t", cells="", limit=kw.get("limit", 0))
+
+    def test_each_fight_is_claimed_built_and_written_once(self):
+        import converge as cv
+
+        with tempfile.TemporaryDirectory() as d:
+            store = self.store(d)
+            built: list[str] = []
+
+            def build(item, ctx, say, pause):
+                built.append(item["id"])
+                return {"start": item["id"], "cell": item["cell"], "positions": [], "cpu_s": 1.0}
+
+            with mock.patch.object(jb, "make_ctx", return_value={}), mock.patch.object(jb, "build_fight", side_effect=build), \
+                    mock.patch.object(cv, "pause_point", return_value=0.0):
+                self.assertEqual(jb.cmd_work(self.args(store, limit=4)), 0)
+                self.assertEqual(len(built), 4)
+                self.assertEqual(jb.cmd_work(self.args(store)), 0)  # the rest; the four with a result are not built again
+            self.assertEqual(len(built), 6)
+            self.assertEqual(len(set(built)), 6)
+            self.assertEqual(len(jb.read_fights(store)), 6)
+
+    def test_three_failed_fights_in_a_row_stop_the_process_before_the_plan_is_spent(self):
+        import converge as cv
+
+        with tempfile.TemporaryDirectory() as d:
+            store = self.store(d, n=8)
+            with mock.patch.object(jb, "make_ctx", return_value={}), mock.patch.object(jb, "build_fight", side_effect=RuntimeError("boom")), \
+                    mock.patch.object(cv, "pause_point", return_value=0.0):
+                self.assertEqual(jb.cmd_work(self.args(store)), 3)
+            fights = jb.read_fights(store)
+            self.assertEqual(len(fights), 3)
+            self.assertTrue(all("boom" in f["error"] for f in fights))
+
+    def test_a_stop_file_ends_the_process_between_fights(self):
+        import converge as cv
+
+        with tempfile.TemporaryDirectory() as d:
+            store = self.store(d)
+            (jb.work_dir(store) / jb.STOP_NAME).write_text("x")
+            with mock.patch.object(jb, "make_ctx", return_value={}), mock.patch.object(jb, "build_fight") as bf, mock.patch.object(cv, "pause_point", return_value=0.0):
+                self.assertEqual(jb.cmd_work(self.args(store)), 0)
+            bf.assert_not_called()
+
+    def test_a_fight_whose_workers_died_three_times_is_recorded_as_failed_not_built(self):
+        import converge as cv
+
+        with tempfile.TemporaryDirectory() as d:
+            store = self.store(d, n=1)
+            for _ in range(3):
+                jb.note_attempt(store, "human:r0|f33")
+            with mock.patch.object(jb, "make_ctx", return_value={}), mock.patch.object(jb, "build_fight") as bf, mock.patch.object(cv, "pause_point", return_value=0.0):
+                jb.cmd_work(self.args(store))
+            bf.assert_not_called()
+            self.assertIn("died", jb.read_fights(store)[0]["error"])
 
 
 class CompactTests(unittest.TestCase):
