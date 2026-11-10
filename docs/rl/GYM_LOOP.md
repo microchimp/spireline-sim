@@ -211,8 +211,8 @@ decision: "not worse, and the trend across candidates positive", the lab's judge
   (the brief had none): 0.18 against 0.20 false promotion in the first five candidates, 0.78 against 0.80 power at +1.0; a wash, kept because a
   trend is more than one candidate.
 - **Cost.** Almost every gated candidate now goes to stage 2 (164 of the 166 would have): its 1,600 games are about 9.5 minutes of six processes on
-  the fast engine, so a gate is about 12 minutes where a stage-1 reject was 2.6; at the 45-minute spacing of 2026-11-10's gated candidates the
-  loop spends about a quarter of its time on the gate (6% before). The incumbent's 2,000 games are still played once per incumbent and engine. The
+  the fast engine, so a gate is about 12 minutes where a stage-1 reject was 2.6; at one gated candidate an hour (32 since 11-09 12:00Z, 23 a day) the
+  loop spends about a fifth of its time on the gate (4% before). The incumbent's 2,000 games are still played once per incumbent and engine. The
   pool's earlier members are read from their games files (a second per member).
 - **Statistical power is the lever left.** Pooling five candidates buys a fifth of the SE; 2,000 pairs cannot show a point. Doubling the seeds
   of stage 2 (j up to 19, the incumbent's extra 2,000 played once) halves the variance for about 10 more minutes a candidate, but the board page
