@@ -55,6 +55,7 @@ MINIMUMS = {"cell": 3000, "enemy": 400, "arch": 300, "relic": 150, "card": 150} 
 STOP_NAME = "STOP"
 MAX_ATTEMPTS = 3  # a fight whose worker died this many times is recorded as failed
 RESTARTS = 40  # a work process that dies is started again this many times in all
+FAIL_STREAK = 3  # a work process that meets this many failed fights in a row stops (its exit code 3 is not restarted)
 
 
 # ---------------------------------------------------------------------------------------------------------- paths and small readers
@@ -275,7 +276,7 @@ def build_fight(item: dict, ctx: dict, log: Callable[[str], None] = print, pause
             turn = 1 + sum(1 for d in dec[:k] if d["search"]["best"]["kind"] == "end_turn")
             row = position_row(start, item, k, turn, p["stage"], p["stage_n"], len(dec), world, toks, ctx)
             game_rec = dec[k]["search"]
-            if kind in jc.LADDER_KINDS and p["stage"] != "door":
+            if kind in jc.LADDER_KINDS and dec[k]["n_moves"] >= converge.MIN_ROOT_MOVES:  # the door too, when it has a choice
                 def search(rel: float, world=world, k=k) -> dict:
                     pause(f"{item['cell']} rung {rel:g}x")
                     return converge.search_rung(world, start, kind, rel, k, ctx["extra"], pairs=ctx["pairs"][rel])
@@ -283,7 +284,7 @@ def build_fight(item: dict, ctx: dict, log: Callable[[str], None] = print, pause
                 res = jc.settle({**game_rec, "budget": converge.TEACHER_MULT[kind]}, search)
                 row["label"] = jc.label_of(res["rec"], res["tier"], res["rel"], res["rungs"])
                 row["cpu_s"] = res["cpu_s"]
-            else:  # the teacher's own search at its budget: a hallway turn, or a door position
+            else:  # the teacher's own search at its budget: a hallway turn, or a position with one move only
                 row["label"] = jc.label_of({**game_rec, "budget": converge.TEACHER_MULT[kind]}, "played", 1)
                 row["cpu_s"] = 0.0
             row["game"] = {"sims": game_rec.get("sims"), "move": [dec[k]["move"][0], dec[k]["move"][1]]}
@@ -342,6 +343,7 @@ def cmd_work(a: argparse.Namespace) -> int:
     cells = set(a.cells.split(",")) if a.cells else None
     wd = work_dir(store)
     done = 0
+    failed_in_a_row = 0
 
     def say(m: str) -> None:
         print(f"[{a.shard} {utc()}] {m}", flush=True)
@@ -375,7 +377,11 @@ def cmd_work(a: argparse.Namespace) -> int:
             say(f"{item['cell']} {sid} FAILED")
         jc.write_atomic(fight_path(store, sid), res)
         done += 1
+        failed_in_a_row = failed_in_a_row + 1 if res.get("error") else 0
         say(f"done {sid} wall {time.perf_counter() - t0:.0f}s")
+        if failed_in_a_row >= FAIL_STREAK:  # a bug, not a bad fight: stop before the plan is spent
+            say(f"{failed_in_a_row} fights failed in a row: stopping")
+            return 3
     say(f"finished, {done} fights")
     return 0
 
@@ -398,13 +404,14 @@ def cmd_run(a: argparse.Namespace) -> int:
         cmd = [sys.executable, "-I", script, "work", "--store", str(store), "--loop", a.loop, "--shard", f"w{i}", "--player", a.player]
         if cells:
             cmd += ["--cells", ",".join(cells)]
-        fh = open(logs / f"work-w{i}.log", "a", encoding="utf-8")  # noqa: SIM115 -- the child holds it
         env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}  # one thread a process: no thread spins at Normal priority
-        return subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env, **procutil.popen_priority_kwargs())
+        with open(logs / f"work-w{i}.log", "a", encoding="utf-8") as fh:  # the child has its own copy of the handle
+            return subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env, **procutil.popen_priority_kwargs())
 
     procs = {i: launch(i) for i in range(a.procs)}
     restarts = 0
     rounds = 0
+    bug = False
     print(f"{utc()} supervisor: {a.procs} work processes, {len(pending(store, plan, cells))} fights to build", flush=True)
     while procs:
         time.sleep(20)
@@ -413,11 +420,14 @@ def cmd_run(a: argparse.Namespace) -> int:
             if rc is None:
                 continue
             del procs[i]
-            if rc != 0 and not (wd / STOP_NAME).exists() and restarts < RESTARTS:
+            if rc == 3:
+                bug = True
+                print(f"{utc()} work process w{i} stopped after failed fights in a row: not restarted", flush=True)
+            elif rc != 0 and not (wd / STOP_NAME).exists() and restarts < RESTARTS:
                 restarts += 1
                 print(f"{utc()} work process w{i} ended with {rc}: restarted ({restarts})", flush=True)
                 procs[i] = launch(i)
-        if not procs and not (wd / STOP_NAME).exists() and rounds < 3 and pending(store, plan, cells):
+        if not procs and not bug and not (wd / STOP_NAME).exists() and rounds < 3 and pending(store, plan, cells):
             rounds += 1  # a pass that left fights behind (a dead claim met late): one more pass
             procs = {i: launch(i) for i in range(a.procs)}
     left = pending(store, plan, cells)
