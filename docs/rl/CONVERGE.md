@@ -69,3 +69,19 @@ for every kind of decision; each rung doubles the simulations), the rule on fixe
 capped rung), the convergence budget and its CPU, the tables' arithmetic and the 10,000-turn cost on a small fixed set of turns, the
 claim files, and on a real emulator fight that a replay of the moves reaches the same observation and that a rung's search is a function
 of its seed.
+
+## 6. The comparison in shared worlds (2026-11-11, for the judge corpus)
+
+The rule's gap used the spread of the simulations' returns, which carries the draw's and the enemies' luck that both moves share. `search_rung(...,
+pairs=N)` now follows its search with a **duel** of the two most visited moves (`duel_pair`): N rounds, each one sampled world (a resampling clone
+with the round's seed, `duel_seed`) in which both moves are played, then the search's own rollout policy to the fight's end with the same random
+stream; the value is the search's (end HP plus 10 a potion held, a death -100). The rounds' differences give the gap and its standard error
+(`duel_stats`), stored on the rung's row as `duel` (and its CPU as `duel_cpu_s`). `se_mode="paired"` (`gap_stats`, `rule_holds`, `convergence`)
+reads that instead of the visits: a rung with no duel has no gap in this mode, so the rule cannot hold on it. The other two modes are unchanged and
+read the rows that carry no duel as before. It is the search's own confirmation round (`_Search._confirm`, which a3-v1 leaves off) for the two
+moves the rule is about. Measured on one Act 2 boss fight (v3, three turns, x32 and x64): a duel of 128 pairs costs 0.1 to 0.4 CPU-s against
+1.0 to 3.9 for the search it follows; at one turn the unpaired gap read 42 HP (z 2.4) where the duel read 0.9 +- 6.9, at another the duel put
+the runner-up 2.1 +- 0.5 HP above the most visited move at x64: the tree's value of a move includes the best play after it, the duel's does not, so
+a duel is the arbiter of "is the gap clear", not of which move is right (a turn where it disagrees stays unsettled). The corpus
+(`JUDGE_CORPUS.md`) uses it with 128 pairs at the first rung searched and 256 at the cap. `quiet_reason` and `pause_point` take `ignore=` (a
+caller's own tag). `play_teacher` keeps the game's `potions_held`, `potions_used` and `L0` as well.

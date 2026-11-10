@@ -70,7 +70,8 @@ RELS = (0.5, 1, 2, 4, 8, 16)  # a rung's multiple of the kind's teacher budget; 
 REPORT_RELS = (1, 4, 16)  # the tables' columns: the teacher's budget, four times it, sixteen times it
 GAP_SE = 2.0  # the rule's gap, in standard errors
 SE_MODE = "pooled"  # how the gap's error is estimated (`gap_stats`); "own" is the strict reading
-SE_MODES = ("pooled", "own")
+SE_MODES = ("pooled", "own", "paired")
+DUEL_SALT = "duel"  # the seeds of the paired comparison's worlds (`duel_seed`)
 CPU_CAP_S = 300.0  # a search past this many CPU seconds stops there and is marked capped
 MIN_ROOT_MOVES = 2  # a decision with fewer distinct root moves is not a turn
 REFEREE = Path(os.environ.get("CONVERGE_REFEREE", "D:/spireline/referee"))
@@ -216,6 +217,10 @@ def gap_stats(rec: dict, se_mode: str = SE_MODE) -> dict | None:
     """The top two moves' value gap (first minus second), its standard error, and the visits; the gap or its error is None where it
     cannot be estimated (a move with no value, or too few visits for a spread).
 
+    `se_mode` "paired" (2026-11-11, the judge corpus): the gap and its error come from the rung's `duel`, the top two moves each played in the
+    same sampled worlds (`duel_pair`), so the spread the unpaired readings below carry (the draw's and the enemies' luck, which both moves
+    share) cancels in the difference; a rung with no duel has no gap in this mode. The visits and values beside it stay the search's.
+
     `se_mode` "pooled": the two moves' returns are taken to spread alike (the spread of a return is mostly the draw's and the enemies'
     luck, which both moves share), the spread is pooled over the two moves' degrees of freedom, and the error is
     `s * sqrt(1/n1 + 1/n2)`; it exists whenever one of the two moves has two visits. "own": each move's own error
@@ -226,6 +231,13 @@ def gap_stats(rec: dict, se_mode: str = SE_MODE) -> dict | None:
         return None
     a, b = pair
     out = {"n1": a["n"], "n2": b["n"], "v1": a["v"], "v2": b["v"], "gap": None, "se": None, "z": None}
+    if se_mode == "paired":
+        d = rec.get("duel")
+        if d and d.get("n", 0) >= 2 and d.get("mean") is not None and d.get("se") is not None:
+            out["gap"], out["se"] = d["mean"], d["se"]
+            if d["se"] > 0:
+                out["z"] = d["mean"] / d["se"]
+        return out
     if a["v"] is None or b["v"] is None:
         return out
     out["gap"] = a["v"] - b["v"]
@@ -533,7 +545,7 @@ def play_teacher(start: dict, extra: dict) -> tuple[dict, list[dict]]:
         row = live_search._drive(fg.play_steps(world, start, GAME_J, cfg, extra, GAME_NS, grader=rec), extra.get("prior_fn"))  # noqa: SLF001
     finally:
         world.close()
-    row = {k: row[k] for k in ("won", "end_hp", "max_hp", "turns", "decisions", "sims", "capped", "moves_sha")}
+    row = {k: row[k] for k in ("won", "end_hp", "max_hp", "turns", "decisions", "sims", "capped", "moves_sha", "potions_held", "potions_used", "L0") if k in row}
     row["cpu_s"] = round(time.process_time() - c0, 2)
     row["wall_s"] = round(time.perf_counter() - w0, 2)
     return row, rec.rows
@@ -559,10 +571,66 @@ def step_moves(world: Any, moves: Sequence[Sequence[int]]) -> None:
         live_search._step(world, int(action), int(target))  # noqa: SLF001
 
 
+def duel_seed(start_id: str, k: int, rel: float, i: int) -> int:
+    """The seed of round i of the paired comparison at decision k, rung `rel`: one world's seed, shared by both moves (1 to 2^30 - 1)."""
+    return _digest(DUEL_SALT, start_id, int(k), f"{rel:g}", int(i)) % ((1 << 30) - 1) + 1
+
+
+def duel_stats(diffs: Sequence[float], deaths: Sequence[float] = ()) -> dict:
+    """The paired comparison's figures from the rounds' value differences (first move minus second): the rounds, the mean, its standard
+    error (None with fewer than two rounds) and, when given, the mean difference in the chance of dying (first minus second)."""
+    n = len(diffs)
+    mean = math.fsum(diffs) / n if n else None
+    se = None
+    if n >= 2:
+        se = math.sqrt(math.fsum((d - mean) ** 2 for d in diffs) / (n - 1) / n)
+    return {"n": n, "mean": _num(mean), "se": _num(se), "p_death_diff": _num(math.fsum(deaths) / len(deaths)) if deaths else None}
+
+
+def duel_pair(world: Any, a: dict, b: dict, pairs: int, start_id: str, k: int, rel: float, potion_value: float = 10.0) -> dict:
+    """The two moves `a` and `b` (child records) played in the same sampled worlds: each round draws one world (a resampling clone with
+    the round's seed, so the hidden order and the enemies' rolls are the same for both) and plays each move there, then the search's own
+    rollout policy to the fight's end, with the same random stream for both; the value is the end HP plus `potion_value` a potion held, a
+    death -100 (`live_search._outcome`). The rounds' differences a minus b give a mean and a standard error with none of the spread the
+    draw adds: the rule's gap when `se_mode` is "paired". A move the world does not offer (a draw-pile choice that no longer shows its
+    card) is left out of its round. This is the search's own confirmation round (`live_search._Search._confirm`) for the two moves the
+    rule is about, whatever confirmation the config asks for (a3-v1's is off)."""
+    import combat_mcts  # noqa: PLC0415
+    import live_search  # noqa: PLC0415
+
+    root = combat_mcts.Combat(world.handle)  # a view of the handle: never closed here (the world owns it)
+    root.encounter_id = getattr(world, "encounter_id", -1)
+    children, _max_hp = live_search._root_moves(root)  # noqa: SLF001
+
+    def find(rec: dict):
+        for c in children:
+            n = c.node
+            if (n.kind, n.target) == (rec["kind"], rec["t"]) and (n.action == rec["a"] or n.action in rec["merged"] or rec["a"] in c.merged):
+                return c
+        return None
+
+    ca, cb = find(a), find(b)
+    if ca is None or cb is None:
+        return {**duel_stats([]), "missing": True}
+    diffs: list[float] = []
+    deaths: list[float] = []
+    for i in range(pairs):
+        seed = duel_seed(start_id, k, rel, i)
+        oa = live_search._playout(root, ca, seed, potion_value)  # noqa: SLF001
+        ob = live_search._playout(root, cb, seed, potion_value)  # noqa: SLF001
+        if oa is None or ob is None:
+            continue
+        diffs.append(oa.value - ob.value)
+        deaths.append(float(oa.died) - float(ob.died))
+    return duel_stats(diffs, deaths)
+
+
 def search_rung(world: Any, start: dict, kind: str, rel: float, k: int, extra: dict, cap_s: float = CPU_CAP_S,
-                config: search_configs.SearchConfig | None = None) -> dict:
+                config: search_configs.SearchConfig | None = None, pairs: int = 0) -> dict:
     """One rung's search of the position on `world`: the kind's budget times `rel`, the rung's own seed, the CPU prior, the clock the
-    process's CPU time (so the cap is CPU seconds). Returns the rung's row. `config` replaces the rung's config (tests)."""
+    process's CPU time (so the cap is CPU seconds). Returns the rung's row. `config` replaces the rung's config (tests). With `pairs` > 0
+    the rung's two most visited moves are then compared in that many shared worlds (`duel_pair`) and the row carries the result as
+    `duel` (its CPU in `duel_cpu_s`, apart from the search's `cpu_s`); a capped search is not compared."""
     import live_search  # noqa: PLC0415
 
     cfg = config or config_at(kind, rel)
@@ -574,8 +642,15 @@ def search_rung(world: Any, start: dict, kind: str, rel: float, k: int, extra: d
     t0, c0 = system_times(), time.process_time()
     res = live_search._drive(live_search.search_steps(world.handle, seed=seed, clock=time.process_time, **kw), extra.get("prior_fn"))  # noqa: SLF001
     cpu = time.process_time() - c0
-    return search_record(res, max_sims=kw.get("max_sims"), seed=seed, cpu_s=cpu, load=busy_fraction(t0, system_times()), pos_kind=pos.kind,
-                         rel=rel, budget=multiplier(kind, rel))
+    rec = search_record(res, max_sims=kw.get("max_sims"), seed=seed, cpu_s=cpu, load=busy_fraction(t0, system_times()), pos_kind=pos.kind,
+                        rel=rel, budget=multiplier(kind, rel))
+    if pairs > 0 and not rec["capped"]:
+        pair = top_two(rec)
+        if pair is not None:
+            d0 = time.process_time()
+            rec["duel"] = duel_pair(world, pair[0], pair[1], pairs, start["id"], k, rel)
+            rec["duel_cpu_s"] = round(time.process_time() - d0, 3)
+    return rec
 
 
 def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], None] = print,
@@ -615,9 +690,10 @@ def run_fight(fight: dict, extra: dict, starts_path: str, log: Callable[[str], N
 # ---------------------------------------------------------------------------------------------------------- the quiet lock
 
 
-def quiet_reason(now: dt.datetime | None = None, referee: Path | None = None) -> str | None:
+def quiet_reason(now: dt.datetime | None = None, referee: Path | None = None, ignore: Sequence[str] | None = None) -> str | None:
     """Why this job must not compute now, or None: a night block is running, or another holder's QUIET.lock line is live (under two
-    hours old; the lines the lab runs beside are not holders). The measurement pauses at fight and rung boundaries while this says so."""
+    hours old; the lines the lab runs beside are not holders, nor the tags in `ignore`: a caller's own tag). The measurement pauses at fight
+    and rung boundaries while this says so."""
     referee = referee or REFEREE
     now = now or dt.datetime.now(dt.UTC)
     if (referee / "LAB" / "nightly" / "active").exists():
@@ -628,7 +704,7 @@ def quiet_reason(now: dt.datetime | None = None, referee: Path | None = None) ->
         return None
     for line in lines:
         parts = line.split()
-        if parts[0] in QUIET_IGNORE:
+        if parts[0] in QUIET_IGNORE or parts[0] in (ignore or ()):
             continue
         try:
             stamp = parts[1].rstrip("Z")
@@ -640,17 +716,18 @@ def quiet_reason(now: dt.datetime | None = None, referee: Path | None = None) ->
     return None
 
 
-def pause_point(label: str, log: Callable[[str], None] = print, poll_s: float | None = None, out: Path | None = None) -> float:
+def pause_point(label: str, log: Callable[[str], None] = print, poll_s: float | None = None, out: Path | None = None,
+                ignore: Sequence[str] | None = None) -> float:
     """Wait while `quiet_reason` says so; returns the seconds waited. Called between fights and between rungs, never inside a search or
     the teacher's game (a game's clock is the wall clock). Each wait is logged to `out/pauses.log` with its start and end (UTC)."""
-    reason = quiet_reason()
+    reason = quiet_reason(ignore=ignore)
     if reason is None:
         return 0.0
     t0 = time.time()
     stamp = "%Y-%m-%dT%H:%M:%SZ"
     start = dt.datetime.now(dt.UTC).strftime(stamp)
     log(f"pause ({reason}) at {label}")
-    while quiet_reason() is not None:
+    while quiet_reason(ignore=ignore) is not None:
         time.sleep(PAUSE_POLL_S if poll_s is None else poll_s)
     waited = time.time() - t0
     log(f"resume after {waited:.0f}s")

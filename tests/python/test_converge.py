@@ -286,6 +286,66 @@ class RuleTests(unittest.TestCase):
 # ------------------------------------------------------------------------------------------------------ the tables
 
 
+def with_duel(r: dict, mean: float | None, se: float | None, n: int = 128) -> dict:
+    return {**r, "duel": {"n": n, "mean": mean, "se": se, "p_death_diff": 0.0}}
+
+
+class PairedTests(unittest.TestCase):
+    """The comparison in shared worlds (2026-11-11, the judge corpus): the top two moves each played in the same sampled draws."""
+
+    def test_the_duel_figures_from_the_rounds_differences(self):
+        d = cv.duel_stats([1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 0.0, 0.0])
+        self.assertEqual(d["n"], 4)
+        self.assertAlmostEqual(d["mean"], 2.5)
+        self.assertAlmostEqual(d["se"], math.sqrt((5.0 / 3) / 4), places=5)
+        self.assertAlmostEqual(d["p_death_diff"], 0.25)
+        one = cv.duel_stats([3.0])
+        self.assertEqual((one["n"], one["mean"], one["se"]), (1, 3.0, None))
+        self.assertEqual(cv.duel_stats([])["mean"], None)
+
+    def test_the_paired_gap_is_the_duels_not_the_values_gap(self):
+        r = with_duel(rung(2, two(1, 2, 40.0)), 3.0, 1.0)
+        g = cv.gap_stats(r, "paired")
+        self.assertEqual((g["gap"], g["se"], g["z"]), (3.0, 1.0, 3.0))
+        self.assertEqual((g["n1"], g["n2"]), (70, 30))  # the visits stay the search's
+        self.assertAlmostEqual(cv.gap_stats(r, "pooled")["gap"], 40.0)  # the other modes do not read the duel
+        self.assertAlmostEqual(cv.gap_stats(r, "own")["gap"], 40.0)
+
+    def test_a_rung_with_no_usable_duel_has_no_paired_gap(self):
+        self.assertIsNone(cv.gap_stats(rung(2, two(1, 2, 40.0)), "paired")["gap"])
+        self.assertIsNone(cv.gap_stats(with_duel(rung(2, two(1, 2, 40.0)), None, None, n=0), "paired")["gap"])
+        self.assertIsNone(cv.gap_stats(with_duel(rung(2, two(1, 2, 40.0)), 1.0, None, n=1), "paired")["se"])
+
+    def test_the_rule_in_paired_mode_needs_the_same_move_and_a_duel_gap_of_two_standard_errors(self):
+        for mean, want in ((4.01, True), (3.99, False), (-9.0, False)):
+            t = turn("x", "boss", 1, [rung(1, two(1, 2, 5.0)), with_duel(rung(2, two(1, 2, 0.1)), mean, 2.0)])
+            self.assertEqual(cv.rule_holds(t, 2, se_mode="paired"), want, mean)
+        moved = turn("x", "boss", 1, [rung(1, two(1, 2, 5.0)), with_duel(rung(2, two(2, 1, 20.0)), 9.0, 1.0)])
+        self.assertFalse(cv.rule_holds(moved, 2, se_mode="paired"))
+        no_duel = turn("x", "boss", 1, [rung(1, two(1, 2, 5.0)), rung(2, two(1, 2, 50.0))])
+        self.assertFalse(cv.rule_holds(no_duel, 2, se_mode="paired"))
+        self.assertTrue(cv.rule_holds(no_duel, 2, se_mode="pooled"))
+
+    def test_a_duel_with_no_spread_and_a_gap_holds(self):
+        t = turn("x", "boss", 1, [rung(1, two(1, 2, 5.0)), with_duel(rung(2, two(1, 2, 0.1)), 2.0, 0.0)])
+        self.assertTrue(cv.rule_holds(t, 2, se_mode="paired"))
+
+    def test_the_duel_seeds_are_fixed_distinct_and_in_range(self):
+        seeds = {cv.duel_seed("human:a|f17", 3, 2, i) for i in range(200)}
+        self.assertEqual(len(seeds), 200)
+        self.assertTrue(all(0 < s < 1 << 30 for s in seeds))
+        self.assertEqual(cv.duel_seed("human:a|f17", 3, 2, 5), cv.duel_seed("human:a|f17", 3, 2, 5))
+        self.assertNotEqual(cv.duel_seed("human:a|f17", 3, 2, 5), cv.duel_seed("human:a|f17", 3, 4, 5))
+        self.assertNotEqual(cv.duel_seed("human:a|f17", 3, 2, 5), cv.duel_seed("human:a|f17", 4, 2, 5))
+
+    def test_a_listed_tag_is_not_a_holder_but_another_is(self):
+        with QuietTests().referee(["judge-corpus 2026-11-09T02:59:00Z pid=1"]) as d:
+            self.assertEqual(cv.quiet_reason(QuietTests.NOW, Path(d)), "quiet:judge-corpus")
+            self.assertIsNone(cv.quiet_reason(QuietTests.NOW, Path(d), ignore=("judge-corpus",)))
+        with QuietTests().referee(["judge-corpus 2026-11-09T02:59:00Z pid=1", "lab-train 2026-11-09T02:59:00Z pid=2"]) as d:
+            self.assertEqual(cv.quiet_reason(QuietTests.NOW, Path(d), ignore=("judge-corpus",)), "quiet:lab-train")
+
+
 class SummaryTests(unittest.TestCase):
     def setUp(self):
         # act 1 boss: one turn converged at 1x; act 2 boss: one converged at 4x, one never (teacher's game move 2 on the last)
@@ -581,6 +641,24 @@ class RealFightTests(unittest.TestCase):
         strip = lambda r: {k: v for k, v in r.items() if k not in ("cpu_s", "load")}  # noqa: E731
         self.assertEqual(strip(r1), strip(r2))
         self.assertNotEqual(r1["seed"], r3["seed"])
+
+    def test_a_paired_duel_is_a_function_of_its_seeds_and_reads_the_same_two_moves(self):
+        cfg = search_configs.flat(24, min_child_sims=1)
+        w = self.opening()
+        r1 = cv.search_rung(w, self.start, "hallway", 1, 0, {}, config=cfg, pairs=6)
+        r2 = cv.search_rung(w, self.start, "hallway", 1, 0, {}, config=cfg, pairs=6)
+        r0 = cv.search_rung(w, self.start, "hallway", 1, 0, {}, config=cfg)
+        w.close()
+        self.assertNotIn("duel", r0)
+        d = r1["duel"]
+        self.assertEqual(d["n"], 6)
+        self.assertIsNotNone(d["mean"])
+        self.assertEqual(r1["duel"], r2["duel"])
+        self.assertGreaterEqual(r1["duel_cpu_s"], 0.0)
+        json.dumps(r1)
+        # the gap in paired mode is the duel's; the top two are the search's most visited moves
+        g = cv.gap_stats(r1, "paired")
+        self.assertEqual(g["gap"], d["mean"])
 
     def test_a_search_past_the_cpu_cap_is_marked_capped(self):
         w = self.opening()
