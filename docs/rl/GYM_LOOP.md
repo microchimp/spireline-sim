@@ -40,7 +40,7 @@ about 1e-7). On the D51 pair (tags aaa0d2e4a460 and 1b3d1f01c90b, all 2,000 game
 
 - **Start a step** (a generation segment, a gate, the start set, the weights pass) only when none of these holds: the loop's STOP
   file, LAB/HALT, LAB/nightly/active, 03:10-03:45Z, LAB/PAUSE, `backlog/main.lock`, another QUIET.lock line under 2 h old (not
-  `w3-blocks`, not the loop's own). While a step runs it holds the line `gym-loop <UTC> pid=<Windows PID>`.
+  `w3-blocks`, not the loop's own, not a tag in `--quiet-allow`: by default `run-teacher`, `judge-corpus`, `judge-train`, the builders' measurements the loop plays beside; a judgement's `lab-train` line holds it). While a step runs it holds the line `gym-loop <UTC> pid=<Windows PID>`.
 - **Stop a running step at once** on all of these but main.lock: a landing lets a running step finish, as the lab's guards let a
   running job (the loop runs from its own worktree and touches no git state). A stopped step loses the fights in flight only.
 - **Between steps** the daemon drops its line and waits `--yield-s` (150 s): the waiting gates poll QUIET.lock every 60 s, so a

@@ -263,6 +263,20 @@ class LockTests(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
+    def test_a_lanes_measurement_line_does_not_hold_the_daemon(self):
+        """D58 addendum 3: a builder's measurement (run-teacher and the judge lanes) runs beside the loop; every other tag holds it."""
+        b = lambda: gl.why_blocked(self.root, starting=True)  # noqa: E731
+        now = gl.stamp()
+        fg.QUIET.write_text(f"run-teacher {now} pid=1\njudge-corpus {now} pid=2\njudge-train {now} pid=3\n")
+        self.assertIsNone(b())
+        fg.QUIET.write_text(fg.QUIET.read_text() + f"lab-train {now} pid=4\n")
+        self.assertEqual(b(), "quiet:lab-train")  # a judgement still holds it
+        with mock.patch.object(gl, "QUIET_ALLOW", ()):
+            fg.QUIET.write_text(f"run-teacher {now} pid=1\n")
+            self.assertEqual(b(), "quiet:run-teacher")
+        fg.QUIET.unlink()
+        self.assertEqual(gl.QUIET_ALLOW, ("run-teacher", "judge-corpus", "judge-train"))
+
     def test_the_guards_read_the_labs_locks(self):
         b = lambda starting=True: gl.why_blocked(self.root, starting=starting)  # noqa: E731
         self.assertIsNone(b())

@@ -120,6 +120,9 @@ LAST_ACT2_INDEX = 31  # the run row's nodes: index i is floor i + 2; Acts 1 and 
 VAL_SHARE = 0.1  # run seeds whose fights are the trainer's held-out set (split by run seed, never by start: no deck in both)
 MAX_ACTIONS = 32
 QUIET_STALE_H = 2.0
+# Other lanes' measurement lines the daemon plays beside (D58 addendum 3: the loop is not held by a builder's measurement);
+# `--quiet-allow` on `run`. A judgement's lab-train line and every other tag still hold it.
+QUIET_ALLOW: tuple[str, ...] = ("run-teacher", "judge-corpus", "judge-train")
 NIGHT_WINDOW = fg.NIGHT_WINDOW
 # Own seconds per x16 game by kind before any is measured (M2 and P1's numbers; a hallway fight is a short elite's).
 MEAN_X16_S = {"act1-hallway": 12.0, "act1-elite": 25.0, "act1-boss": 74.0, "act2-hallway": 14.0, "act2-elite": 16.0,
@@ -268,7 +271,7 @@ def why_blocked(root: Path, *, starting: bool) -> str | None:
         return "pause"
     if starting and fg.MAIN_LOCK.exists():
         return "main.lock"
-    tag = other_quiet()
+    tag = other_quiet(allow=QUIET_ALLOW)
     return f"quiet:{tag}" if tag else None
 
 
@@ -2224,6 +2227,7 @@ def cmd_status(a) -> int:
 
 
 def main(argv=None) -> int:
+    global QUIET_ALLOW
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("starts", "weights", "run", "gate", "stop", "status"):
@@ -2249,6 +2253,8 @@ def main(argv=None) -> int:
             p.add_argument("--k", type=int, default=2, help="fights a lockstep process holds during generation (few: a stop loses them)")
             p.add_argument("--segment-min", type=float, default=20.0)
             p.add_argument("--yield-s", type=float, default=150.0)
+            p.add_argument("--quiet-allow", default=",".join(QUIET_ALLOW),
+                           help="QUIET.lock tags the daemon plays beside, comma-separated (a lane's measurement); lab-train still holds it")
             p.add_argument("--exact-wall-s", type=float, default=0.25)
             p.add_argument("--checkpoint-min", type=float, default=30.0)
             p.add_argument("--max-epochs", type=float, default=4.0, help="the trainer's pass cap over each new row")
@@ -2297,6 +2303,7 @@ def main(argv=None) -> int:
         return cmd_stop(a)
     if a.cmd == "status":
         return cmd_status(a)
+    QUIET_ALLOW = tuple(t.strip() for t in a.quiet_allow.split(",") if t.strip())
     return Daemon(a).run()
 
 
