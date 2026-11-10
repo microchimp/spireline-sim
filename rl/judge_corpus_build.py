@@ -190,7 +190,9 @@ def cmd_plan(a: argparse.Namespace) -> int:
     for kind in jc.KINDS:
         sub = [s for s in pool if s["kind"] == kind]
         fk = [jc.feature_keys(feats[s["id"]]["relics"], feats[s["id"]]["deck"], feats[s["id"]]["enemy"], feats[s["id"]]["arch"]) for s in sub]
-        for s, b in zip(sub, jc.boost_weights(fk, a.support), strict=True):
+        want = sum(jc.QUOTA.get(f"act{act}-{kind}", 0) for act in (1, 2))  # the fights this kind's cells will build, of its pool
+        rate = min(1.0, want / max(1, len(sub)))
+        for s, b in zip(sub, jc.boost_weights(fk, a.support, rate=rate), strict=True):
             boost[s["id"]] = b
     cells: dict[str, list[str]] = defaultdict(list)
     rows = []

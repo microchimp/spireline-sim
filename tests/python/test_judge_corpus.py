@@ -156,6 +156,9 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(b[50], 10.0)  # card 8 in 10
         self.assertEqual(b[60], 1.0)  # relic 2 in 1000: no boost
         self.assertEqual(jc.boost_weights([{"x"}] * 5, support=100, cap=7.0), [7.0] * 5)
+        # with a sampling rate the boost is what takes the feature to `support` starts in the sample: 50 starts, rate 0.25 -> 100 / (0.25 * 50) = 8
+        self.assertEqual(jc.boost_weights(feats, support=100, rate=0.25)[0], 8.0)
+        self.assertEqual(jc.boost_weights([{"x"}] * 400, support=100, rate=0.25)[0], 1.0)  # 400 starts at rate 0.25 give 100
 
     def test_a_boosted_start_comes_earlier_in_the_order(self):
         ids = [f"human:r{i}|f17" for i in range(4000)]

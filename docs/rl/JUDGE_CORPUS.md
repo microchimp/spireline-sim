@@ -49,14 +49,14 @@ Every row carries three kinds of label; the judge lane picks:
   rung's `duel`, and `rungs` (a line a rung searched: the move and the visits it chose, its CPU, its duel). Self-play rows carry the search as played
   (tier `played`, the loop's x16) with the moves of the buffer's action slots.
 
-**The ladder** (boss and elite turns; `settle`). The teacher's own search at that decision is the first rung (x16 at a boss, x4 at an elite: the very
+**The ladder** (boss and elite turns, and the door when it has a choice; `settle`). The teacher's own search at that decision is the first rung (x16 at a boss, x4 at an elite: the very
 budget of `converge.py`'s 1x rung, on another seed). Then the **screen**: one search at twice that (x32 / x8), followed by a **duel** of its two most visited
 moves in 128 shared worlds (`converge.duel_pair`: both moves in the same sampled draws, then the search's rollout policy; its mean and error are the gap
 and its error). The turn is **settled** at that rung if its move equals the first rung's and the gap is at least two standard errors
 (`converge.rule_holds`, `se_mode="paired"`); otherwise the **cap**: a search at four times the teacher's budget (x64 / x16) with a duel of 256 pairs, settled
 if its move equals the screen's and the gap holds. A turn the rule never held for is **soft**: it keeps the last rung that was not cut by the 300 CPU-s cap
-(normally the cap's), marked so. A **hallway** turn and a **door** position keep the teacher's own search at its budget (`played`; the brief: hallways rarely
-matter by 5 HP and cost little either way). CPU in the rows is the rungs' and duels' (the game's is in the fight's total).
+(normally the cap's), marked so. A **hallway** turn, and any position with a single distinct move, keep the teacher's own search at its budget (`played`; the brief: hallways
+rarely matter by 5 HP and cost little either way). CPU in the rows is the rungs' and duels' (the game's is in the fight's total).
 
 The comparison in shared worlds replaces the spread of the unpaired values in the rule (`CONVERGE.md` section 6; the brief allowed one day for it, it took
 a few hours). It is the tree's value that is stored as the label; the duel decides whether the gap is clear. A turn where the duel puts the runner-up
@@ -74,7 +74,7 @@ card 150. A relic or card in under 20 runs is not listed in `coverage.md`; the s
 order, but a feature the pool lacks cannot be made up.
 
 **Sampling of the human starts** (`plan`, `boost_weights`, `order_key`, `inclusion`). A cell (act and kind) is drawn by sequential Poisson sampling: each
-start has a **boost**, the largest over its relics, cards, enemy and deck type of 100 / (the starts of its kind that have the feature), at least 1; its place
+start has a **boost**, the largest over its relics, cards, enemy and deck type of 200 / (the sampling rate of its kind times the starts of its kind that have the feature), at least 1; its place
 in the cell's order is `u / boost` (u a fixed uniform of the start id); the plan's work order takes 500 fights of each cell in turn, up to the cell's quota
 (`QUOTA`: Act 2 boss 3,900 (the pool has fewer: all), Act 1 boss 3,000, elites 3,350 each act, hallways 1,800 each act), Act 2 first. Any prefix is a
 balanced sample, so the corpus is usable while it is still being built. **The weight** of a start is 1 / its inclusion probability given the fights built
@@ -85,6 +85,16 @@ back the oversampling only; `"none"` keeps the sample as drawn. Self-play rows w
 ## 5. Coverage and counts
 
 (Filled in from `coverage.md` and the manifest when the build ends; see section 8.)
+
+## 5b. The manifest's flags (for the judge-training lane)
+
+`manifest.json` is rewritten by every compaction (the supervisor compacts every 15 minutes until the corpus is usable, every 45 after, and once at the
+end with `finalize`; each file is written whole, so a reader never sees half of it). Keys the lane polls: `usable_for_training` (sticky: true once the
+human boss and elite turns carry their labels, settled or soft: at least 1,000 of each kind and 300 of each kind and act; `usable_counts` has the counts at
+that moment and the time) and `complete` (true when every fight of the plan has a result and the shards, `coverage.md` and the manifest were made from
+them; `complete_at`). `human_build` says where the human build stands: fights planned, built and failed, the labelled boss and elite turns by act, and
+`paused_by`, the QUIET.lock line or night block the work processes are waiting on, if any. The self-play shards are in from the start; the human shards
+appear with the first compaction after fights finish.
 
 ## 6. Using it
 

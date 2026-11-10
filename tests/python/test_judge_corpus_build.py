@@ -154,7 +154,8 @@ class FeatureAndPlanTests(unittest.TestCase):
             # a start with the rarer relic (4) is boosted over the others in its pool
             boosts = {r["id"]: r["boost"] for r in pool}
             self.assertTrue(all(b >= 1.0 for b in boosts.values()))
-            self.assertAlmostEqual(max(boosts.values()), 100 / 3, places=3)  # relic 4 is in three of the nineteen boss starts (support 100)
+            # relic 4 is in three of the nineteen boss starts; five of them are to be built (rate 5/19), support 100
+            self.assertAlmostEqual(max(boosts.values()), 100 / (3 * 5 / 19), places=2)
 
     def test_inclusion_per_cell_follows_the_built_count(self):
         pool = [{"id": f"a{i}", "cell": "act1-boss", "boost": 1.0} for i in range(10)] + [{"id": f"b{i}", "cell": "act2-boss", "boost": 1.0} for i in range(4)]

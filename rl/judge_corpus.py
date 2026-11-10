@@ -85,7 +85,7 @@ ORDER_BLOCK = 500  # the plan's order is cells in turn, this many fights of each
 CELLS = ("act2-boss", "act2-elite", "act1-boss", "act1-elite", "act2-hallway", "act1-hallway")  # the order the plan draws from
 # fights to build in each cell (human starts): bosses and elites carry 20,000 turns each at three turns a fight, a hallway cell 5,000+ turns
 QUOTA = {"act2-boss": 3900, "act1-boss": 3000, "act2-elite": 3350, "act1-elite": 3350, "act2-hallway": 1800, "act1-hallway": 1800}
-MIN_SUPPORT_STARTS = 100  # a relic, card or enemy gets every start it is in until this many are in the sample (`boost_weights`)
+MIN_SUPPORT_STARTS = 200  # a relic, card or enemy asks for this many starts in the sample (`boost_weights`, with the sampling rate); measured: 50 to 100 are reached
 BOOST_CAP = 1000.0
 LADDER_RELS = (2, 4)  # rungs searched after the game's own: x32 then x64 at a boss, x8 then x16 at an elite (the cap is the last)
 DUEL_PAIRS = {2: 128, 4: 256}  # shared worlds of the paired comparison at each rung
@@ -202,12 +202,13 @@ def feature_keys(relics: Iterable[int], deck: Iterable[int], enemy: str, arch: s
     return {f"relic:{r}" for r in relics} | {f"card:{c}" for c in deck} | {f"enemy:{enemy}", f"arch:{arch}"}
 
 
-def boost_weights(features: Sequence[set[str]], support: int = MIN_SUPPORT_STARTS, cap: float = BOOST_CAP) -> list[float]:
-    """Per start, 1 or the rarest of its features' `support / (starts in the pool that have it)`, whichever is larger: a start with a
-    feature found in 20 starts of a pool and a support of 100 weighs 5, one with only common features 1. Starts of a feature at or under
-    the support all have a boost that makes them first in the sampling order (`order_key`)."""
+def boost_weights(features: Sequence[set[str]], support: int = MIN_SUPPORT_STARTS, cap: float = BOOST_CAP, rate: float = 1.0) -> list[float]:
+    """Per start, 1 or the rarest of its features' `support / (rate * the starts in the pool that have it)`, whichever is larger: with `rate` the
+    share of the pool that will be sampled, a feature of n starts then gives about `rate * boost * n` starts to the sample, so a boost of
+    `support / (rate * n)` is what takes a feature to `support` starts in the sample (a feature found in 20 starts of a pool and a support of
+    100 gives 5 / rate; one in more than `support / rate` starts gets 1). The sampling order (`order_key`) puts the boosted starts first."""
     count: Counter = Counter(f for fs in features for f in fs)
-    return [min(cap, max([1.0] + [support / count[f] for f in fs])) for fs in features]
+    return [min(cap, max([1.0] + [support / (max(rate, 1e-9) * count[f]) for f in fs])) for fs in features]
 
 
 def order_key(start_id: str, boost: float) -> float:
