@@ -340,6 +340,66 @@ class TrainingTests(unittest.TestCase):
                 self.assertTrue(torch.equal(v, after[k].cpu()), k)
 
 
+class SearchCalibrationTests(unittest.TestCase):
+    def test_pav_pools_adjacent_violators_and_keeps_the_weighted_mean(self):
+        np.testing.assert_allclose(jt.pav(np.array([1.0, 3.0, 2.0, 4.0]), np.ones(4)), [1.0, 2.5, 2.5, 4.0])
+        np.testing.assert_allclose(jt.pav(np.array([3.0, 1.0]), np.array([1.0, 3.0])), [1.5, 1.5])
+        up = np.array([0.0, 1.0, 2.0])
+        np.testing.assert_allclose(jt.pav(up, np.ones(3)), up)
+
+    def test_the_monotone_map_is_the_conditional_mean_and_never_falls(self):
+        rng = np.random.default_rng(0)
+        x = rng.uniform(-100, 50, 20000)
+        y = 0.8 * x + 25 + rng.normal(0, 10, len(x))  # the outcomes sit 25 above a search that reads low
+        kx, ky = jt.monotone_map(x, y, bins=50)
+        self.assertTrue(bool(np.all(np.diff(ky) >= 0)))
+        np.testing.assert_allclose(np.interp([-50.0, 0.0, 30.0], kx, ky), [0.8 * v + 25 for v in (-50.0, 0.0, 30.0)], atol=2.0)
+
+    def test_calibrate_search_moves_the_level_to_the_outcomes_fits_on_training_rows_only_and_leaves_missing_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            Store(d, n_runs=40)
+            a, _ = jt.read_corpus(d)
+        rng = np.random.default_rng(1)
+        a = dict(a)
+        n = len(a["lens"])
+        value = jt.outcome_value(a)
+        a["root_value"] = (value - 30.0 + rng.normal(0, 3, n)).astype(np.float32)  # a search that reads 30 HP low
+        a["root_value"][::7] = np.nan
+        cal = jt.calibrate_search(a, bins=20, min_rows=20)
+        ok = ~np.isnan(a["root_value"])
+        self.assertTrue(np.array_equal(np.isnan(cal["root_cal"]), ~ok))  # a row without a value stays without
+        before = float(np.mean(a["root_value"][ok] - value[ok]))
+        after = float(np.mean(cal["root_cal"][ok] - value[ok]))
+        self.assertLess(abs(after), abs(before) / 5)
+        self.assertGreater(len(cal["report"]), 0)
+        # held-out outcomes do not move the map
+        b = dict(a)
+        b["y_teacher"] = a["y_teacher"].copy()
+        held = a["split"] == 2
+        b["y_teacher"][held, 0] = 1.0 - b["y_teacher"][held, 0]
+        cal_b = jt.calibrate_search(b, bins=20, min_rows=20)
+        np.testing.assert_allclose(cal["root_cal"], cal_b["root_cal"])
+        # too few rows for any map: the values are left as they are
+        keep = jt.calibrate_search(a, bins=20, min_rows=10**9)
+        np.testing.assert_allclose(keep["root_cal"], a["root_value"].astype(np.float32), equal_nan=True)
+
+    def test_the_death_share_is_put_on_the_wins_scale_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            Store(d, n_runs=40)
+            a, _ = jt.read_corpus(d)
+        a = dict(a)
+        won = a["y_teacher"][:, 0] > 0.5
+        a["p_death"] = np.where(won, 0.5, 0.9).astype(np.float32)  # a search that reads far too many deaths
+        cal = jt.calibrate_search(a, bins=10, min_rows=20)
+        self.assertLess(float(np.mean(cal["pd_cal"][won])), 0.2)
+        self.assertGreater(float(np.mean(cal["pd_cal"][~won])), 0.8)
+        d_ = jt.CorpusData(a, torch.device("cpu"), jt.weights_of(a, "none"), cal)
+        raw = jt.CorpusData(a, torch.device("cpu"), jt.weights_of(a, "none"))
+        idx = np.arange(5)
+        self.assertFalse(torch.allclose(d_.targets(idx)["p_death"], raw.targets(idx)["p_death"]))
+        self.assertTrue(np.allclose(d_.a["p_death"], a["p_death"]))  # the evaluation still reads the raw number
+
+
 class InitTests(unittest.TestCase):
     def test_a_trunk_starts_from_the_agents_network_and_a_judge_from_a_judge(self):
         import tempfile as tf
