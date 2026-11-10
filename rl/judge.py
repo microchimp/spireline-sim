@@ -76,7 +76,15 @@ class JudgeNet(CombatNet):
 
     def judge_out(self, types, ids, owners, feats, mask) -> torch.Tensor:
         """[B, 3]: win logit, end-HP-fraction logit (given a win), potions held at the end (given a win, softplus applied)."""
-        out = self.judge(self._trunk(types, ids, owners, feats, mask)[:, 0])
+        return self._rows(self._trunk(types, ids, owners, feats, mask)[:, 0])
+
+    def judge_out_policy(self, types, ids, owners, feats, mask) -> tuple[torch.Tensor, torch.Tensor]:
+        """`judge_out` and the policy head's [B, MAX_ACTIONS] logits from one pass of the trunk (judge_train's auxiliary move target)."""
+        hidden = self._trunk(types, ids, owners, feats, mask)
+        return self._rows(hidden[:, 0]), self._policy_logits(hidden, types)
+
+    def _rows(self, summary: torch.Tensor) -> torch.Tensor:
+        out = self.judge(summary)
         win = out[:, :1] * self.win_cal[0] + self.win_cal[1]
         return torch.cat([win, out[:, 1:2], nn.functional.softplus(out[:, 2:3])], dim=1)
 
