@@ -6,6 +6,7 @@ are `judge_corpus.py` (read its docstring first); this file is the part that pla
     python rl/judge_corpus_build.py work      [--store DIR] [--shard LABEL] [--player v3] [--limit N] [--cells act2-boss,...]
     python rl/judge_corpus_build.py run       [--store DIR] [--procs 8] [--player v3]     # a bounded supervisor over `work` processes
     python rl/judge_corpus_build.py compact   [--store DIR]
+    python rl/judge_corpus_build.py finalize  [--store DIR]       # compact, coverage.md, and `complete` in the manifest when the plan is done
     python rl/judge_corpus_build.py selfplay  [--store DIR]
     python rl/judge_corpus_build.py coverage  [--store DIR]
     python rl/judge_corpus_build.py status    [--store DIR]
@@ -55,6 +56,9 @@ MINIMUMS = {"cell": 3000, "enemy": 400, "arch": 300, "relic": 150, "card": 150} 
 STOP_NAME = "STOP"
 MAX_ATTEMPTS = 3  # a fight whose worker died this many times is recorded as failed
 RESTARTS = 40  # a work process that dies is started again this many times in all
+USABLE_MIN_KIND = 1000  # labelled human turns (settled or soft) of bosses, and of elites, for the manifest's `usable_for_training`
+USABLE_MIN_KIND_ACT = 300  # and of each kind in each act
+COMPACT_EVERY_S = (900, 2700)  # the supervisor compacts every 15 minutes until the corpus is usable for training, every 45 minutes after
 FAIL_STREAK = 3  # a work process that meets this many failed fights in a row stops (its exit code 3 is not restarted)
 
 
@@ -412,9 +416,19 @@ def cmd_run(a: argparse.Namespace) -> int:
     restarts = 0
     rounds = 0
     bug = False
+    last_compact = time.time()
+
+    def compact_now(final: bool = False) -> None:
+        cmd = [sys.executable, "-I", script, "finalize" if final else "compact", "--store", str(store), "--loop", a.loop]
+        with open(logs / "compact.log", "a", encoding="utf-8") as fh:
+            subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, timeout=7200, check=False, **procutil.popen_priority_kwargs())
     print(f"{utc()} supervisor: {a.procs} work processes, {len(pending(store, plan, cells))} fights to build", flush=True)
     while procs:
         time.sleep(20)
+        usable = (store / "manifest.json").is_file() and read_json(store / "manifest.json").get("usable_for_training") is True
+        if time.time() - last_compact >= COMPACT_EVERY_S[1 if usable else 0]:
+            compact_now()
+            last_compact = time.time()
         for i, p in list(procs.items()):
             rc = p.poll()
             if rc is None:
@@ -432,6 +446,7 @@ def cmd_run(a: argparse.Namespace) -> int:
             procs = {i: launch(i) for i in range(a.procs)}
     left = pending(store, plan, cells)
     print(f"{utc()} supervisor: ended, {len(left)} fights without a result", flush=True)
+    compact_now(final=True)
     return 0
 
 
@@ -757,8 +772,51 @@ def write_manifest(store: Path, loop: Path, plan: dict) -> dict:
         "cpu_hours": {"human_fights": round(sum(f.get("cpu_s", 0.0) for f in ok) / 3600, 2),
                       "fights_built": len(ok), "fights_failed": len(fights) - len(ok)},
     }
+    old = read_json(store / "manifest.json") if (store / "manifest.json").is_file() else {}
+    man.update(readiness(rows, old, plan, len(ok), len(fights) - len(ok)))
     jc.write_atomic(store / "manifest.json", man)
     return man
+
+
+def readiness(rows: Sequence[dict], old: dict, plan: dict, built: int, failed: int) -> dict:
+    """The manifest's flags for the judge-training lane: `usable_for_training` (sticky: once the human boss and elite turns carry their labels,
+    at least USABLE_MIN_KIND of each kind and USABLE_MIN_KIND_ACT of each kind and act, settled or soft, with the counts at that moment) and
+    `complete` (set by `finalize` once every planned fight has a result and the shards, coverage and manifest were made from them; kept only while
+    the number of built fights is the one it was set at), and where the human build stands (`human_build`: planned, built, failed, and what
+    holds the work processes, if anything)."""
+    import converge  # noqa: PLC0415
+
+    lab: Counter = Counter((r["kind"], r["act"]) for r in rows if r["src"] == "human" and r["label"]["tier"] in ("settled", "soft"))
+    boss = {f"act{a}": lab[("boss", a)] for a in (1, 2)}
+    elite = {f"act{a}": lab[("elite", a)] for a in (1, 2)}
+    ready_now = (sum(boss.values()) >= USABLE_MIN_KIND and sum(elite.values()) >= USABLE_MIN_KIND
+                 and all(v >= USABLE_MIN_KIND_ACT for v in (*boss.values(), *elite.values())))
+    prev = old.get("usable_for_training") is True
+    out: dict[str, Any] = {"usable_for_training": prev or ready_now}
+    if out["usable_for_training"]:
+        out["usable_counts"] = old["usable_counts"] if prev and "usable_counts" in old else {
+            "at": utc(), "human_boss_labelled_by_act": boss, "human_elite_labelled_by_act": elite, "human_positions": sum(1 for r in rows if r["src"] == "human"),
+            "selfplay_positions": sum(1 for r in rows if r["src"] == "selfplay"), "human_fights_built": built}
+    out["complete"] = bool(old.get("complete") is True and old.get("human_build", {}).get("built") == built)
+    out["human_build"] = {"planned": len(plan.get("order", [])), "built": built, "failed": failed, "paused_by": converge.quiet_reason(ignore=(TAG,)),
+                          "labelled_boss_by_act": boss, "labelled_elite_by_act": elite}
+    return out
+
+
+def cmd_finalize(a: argparse.Namespace) -> int:
+    """Compact, make coverage.md, and set `complete` in the manifest if every fight of the plan has a result."""
+    store = Path(a.store)
+    cmd_compact(a)
+    cmd_coverage(a)
+    plan = read_json(work_dir(store) / "plan.json")
+    left = pending(store, plan)
+    man = read_json(store / "manifest.json")
+    man["complete"] = not left
+    man["complete_at"] = utc() if not left else None
+    man["human_build"]["pending"] = len(left)
+    jc.write_atomic(store / "manifest.json", man)
+    print(f"finalize: complete={not left} ({len(left)} fights of the plan without a result)")
+    return 0 if not left else 1
 
 
 def jc_exam_ids_path() -> Path:
@@ -788,7 +846,7 @@ def cmd_coverage(a: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("plan", "work", "run", "compact", "selfplay", "coverage", "status", "stop"))
+    ap.add_argument("cmd", choices=("plan", "work", "run", "compact", "finalize", "selfplay", "coverage", "status", "stop"))
     ap.add_argument("--store", default=str(STORE))
     ap.add_argument("--loop", default=str(jc.LOOP))
     ap.add_argument("--player", default=PLAYER_DEFAULT)
@@ -800,7 +858,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.procs > 8:
         raise SystemExit("at most 8 processes")
-    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "compact": cmd_compact, "selfplay": cmd_selfplay, "coverage": cmd_coverage,
+    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "compact": cmd_compact, "finalize": cmd_finalize, "selfplay": cmd_selfplay, "coverage": cmd_coverage,
             "status": cmd_status, "stop": cmd_stop}[a.cmd](a)
 
 

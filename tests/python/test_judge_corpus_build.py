@@ -306,9 +306,11 @@ class SupervisorTests(unittest.TestCase):
             store = Path(d)
             jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ["a", "b"]})
             self.Fake.codes, self.Fake.made = [[1], [0]], []  # w0 dies at once with 1, w1 ends well; w0's second life ends well
-            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=[])):
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=[]),
+                  mock.patch.object(jb.subprocess, "run") as run):
                 self.assertEqual(jb.cmd_run(self.args(store)), 0)
             self.assertEqual(len(self.Fake.made), 3)
+            self.assertEqual(run.call_args_list[-1].args[0][3], "finalize")  # the last step: compaction, coverage and the manifest's complete flag
             self.assertTrue(all("--shard" in c and "work" in c for c in self.Fake.made))
             self.assertEqual([c[c.index("--shard") + 1] for c in self.Fake.made], ["w0", "w1", "w0"])
 
@@ -317,7 +319,8 @@ class SupervisorTests(unittest.TestCase):
             store = Path(d)
             jc.write_atomic(jb.work_dir(store) / "plan.json", {"order": ["a"]})
             self.Fake.codes, self.Fake.made = [], []
-            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=["a"])):
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep"), mock.patch.object(jb, "pending", return_value=["a"]),
+                  mock.patch.object(jb.subprocess, "run")):
                 jb.cmd_run(self.args(store, procs=1))
             self.assertEqual(len(self.Fake.made), 4)  # the first pass and three more
 
@@ -330,7 +333,8 @@ class SupervisorTests(unittest.TestCase):
             def sleep(_s):
                 (jb.work_dir(store) / jb.STOP_NAME).write_text("x")
 
-            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep", side_effect=sleep), mock.patch.object(jb, "pending", return_value=["a"])):
+            with (mock.patch.object(jb.subprocess, "Popen", self.Fake), mock.patch.object(jb.time, "sleep", side_effect=sleep), mock.patch.object(jb, "pending", return_value=["a"]),
+                  mock.patch.object(jb.subprocess, "run")):
                 jb.cmd_run(self.args(store, procs=1))
             self.assertEqual(len(self.Fake.made), 1)
 
@@ -499,6 +503,69 @@ class CompactTests(unittest.TestCase):
             self.fight(store, bad)
             with self.assertRaises(AssertionError), mock.patch.object(hs, "read_exam_ids", return_value=frozenset({"nobody"})):
                 jb.cmd_compact(mock.Mock(store=str(store), loop=str(loop)))
+
+
+class ReadinessTests(unittest.TestCase):
+    """The manifest's flags for the judge-training lane."""
+
+    def rows(self, boss1: int, boss2: int, elite1: int, elite2: int, tier: str = "settled") -> list[dict]:
+        out = []
+        for kind, act, n in (("boss", 1, boss1), ("boss", 2, boss2), ("elite", 1, elite1), ("elite", 2, elite2)):
+            out += [{"src": "human", "kind": kind, "act": act, "label": {"tier": tier}} for _ in range(n)]
+        out += [{"src": "selfplay", "kind": "boss", "act": 1, "label": {"tier": "played"}}] * 5
+        return out
+
+    def test_usable_once_each_kind_and_act_has_enough_labelled_turns_and_it_stays(self):
+        few = jb.readiness(self.rows(400, 100, 600, 600), {}, {"order": list(range(10))}, 40, 0)
+        self.assertFalse(few["usable_for_training"])  # act 2 bosses under 300
+        self.assertNotIn("usable_counts", few)
+        ok = jb.readiness(self.rows(700, 400, 600, 600, "soft"), {}, {"order": list(range(10))}, 90, 1)
+        self.assertTrue(ok["usable_for_training"])
+        self.assertEqual(ok["usable_counts"]["human_boss_labelled_by_act"], {"act1": 700, "act2": 400})
+        self.assertEqual(ok["usable_counts"]["selfplay_positions"], 5)
+        self.assertEqual(ok["usable_counts"]["human_fights_built"], 90)
+        self.assertEqual((ok["human_build"]["planned"], ok["human_build"]["built"], ok["human_build"]["failed"]), (10, 90, 1))
+        later = jb.readiness(self.rows(5000, 5000, 5000, 5000), {"usable_for_training": True, "usable_counts": ok["usable_counts"]}, {}, 500, 0)
+        self.assertEqual(later["usable_counts"], ok["usable_counts"])  # the counts at the moment it became usable
+        dip = jb.readiness(self.rows(1, 1, 1, 1), {"usable_for_training": True, "usable_counts": ok["usable_counts"]}, {}, 5, 0)
+        self.assertTrue(dip["usable_for_training"])  # sticky
+
+    def test_played_turns_do_not_count_as_labelled_and_complete_is_kept_only_for_the_same_fights(self):
+        r = jb.readiness(self.rows(700, 700, 700, 700, "played"), {}, {}, 10, 0)
+        self.assertFalse(r["usable_for_training"])
+        done = {"complete": True, "human_build": {"built": 10}}
+        self.assertTrue(jb.readiness(self.rows(1, 1, 1, 1), done, {}, 10, 0)["complete"])
+        self.assertFalse(jb.readiness(self.rows(1, 1, 1, 1), done, {}, 11, 0)["complete"])  # more fights since
+        self.assertFalse(jb.readiness(self.rows(1, 1, 1, 1), {}, {}, 10, 0)["complete"])
+
+    def test_the_manifest_carries_the_flags_and_what_holds_the_work(self):
+        with tempfile.TemporaryDirectory() as d:
+            store, loop, _runs = CompactTests().setup(d)
+            with mock.patch.object(jb, "git_commit", return_value="abc"):
+                CompactTests().compact(store, loop)
+            man = json.loads((store / "manifest.json").read_text(encoding="utf-8"))
+            self.assertFalse(man["usable_for_training"])
+            self.assertFalse(man["complete"])
+            self.assertEqual(set(man["human_build"]), {"planned", "built", "failed", "paused_by", "labelled_boss_by_act", "labelled_elite_by_act"})
+
+    def test_finalize_marks_complete_only_when_every_fight_of_the_plan_has_a_result(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = CompactTests()
+            store, loop, runs = c.setup(d)
+            for r in runs:
+                c.fight(store, r)
+            args = mock.Mock(store=str(store), loop=str(loop))
+            import human_starts as hs
+
+            with (mock.patch.object(hs, "read_exam_ids", return_value=frozenset({"nobody"})), mock.patch.object(jc, "REFEREE", Path(d) / "none"),
+                  mock.patch.object(jb, "jc_exam_ids_path", return_value=Path(d) / "none.txt"), mock.patch.object(jb, "cmd_coverage", return_value=0)):
+                self.assertEqual(jb.cmd_finalize(args), 0)
+                man = json.loads((store / "manifest.json").read_text(encoding="utf-8"))
+                self.assertTrue(man["complete"])
+                self.assertEqual(man["human_build"]["pending"], 0)
+                jb.fight_path(store, f"human:{runs[0]}|f33").unlink()
+                self.assertEqual(jb.cmd_finalize(args), 1)
+                self.assertFalse(json.loads((store / "manifest.json").read_text(encoding="utf-8"))["complete"])
 
 
 class SelfPlayTests(unittest.TestCase):
