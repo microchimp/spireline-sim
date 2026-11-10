@@ -18,7 +18,8 @@ the rows that carry its label, and `LossCfg` holds its weight:
                     human reading), and only the human reading is trained to this label.
   search value      the judge's own value V = P(win) x (end HP + 10 x potions) + P(death) x -100 (what the search reads at a leaf,
                     `judge_client.estimate`) against the search's root value, in HP units (Huber on V / 50); a settled turn weighs most,
-                    a soft turn less, a turn kept as played least (`tier_w`).
+                    a soft turn less, a turn kept as played least (`tier_w`). The root values are first put on the outcomes' scale
+                    (`calibrate_search`: rollouts read about 20 HP low, and a judge trained on both would split the difference).
   search win        the win logit against 1 - the search's death share at the root (rows that have one).
   moves (aux.)      the policy head (already in `JudgeNet`: one logit a action token) against the search's visit distribution over the
                     action slots; it only shapes the trunk, the judge never reads it, and `--w-policy 0` leaves it out.
@@ -208,6 +209,97 @@ def weights_of(a: dict[str, np.ndarray], mode: str = "pool", clip: float | None 
     return w.astype(np.float32)
 
 
+# ---------------------------------------------------------------------------------------------------------- the search's numbers on the outcome's scale
+
+
+def pav(y: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Pool adjacent violators: the non-decreasing sequence closest to `y` in the weighted least squares."""
+    vals: list[float] = []
+    wts: list[float] = []
+    cnt: list[int] = []
+    for yi, wi in zip(y, w, strict=True):
+        vals.append(float(yi))
+        wts.append(float(wi))
+        cnt.append(1)
+        while len(vals) > 1 and vals[-2] > vals[-1]:
+            wt = wts[-2] + wts[-1]
+            vals[-2] = (vals[-2] * wts[-2] + vals[-1] * wts[-1]) / wt
+            wts[-2] = wt
+            cnt[-2] += cnt[-1]
+            vals.pop()
+            wts.pop()
+            cnt.pop()
+    return np.repeat(vals, cnt)
+
+
+def monotone_map(x: np.ndarray, y: np.ndarray, bins: int = 100) -> tuple[np.ndarray, np.ndarray]:
+    """E[y | x] as a non-decreasing piecewise-linear map: x cut into `bins` equal-count bins, each bin's mean x and mean y, the means of y
+    pooled where they fall. Returns (knots x, values y), for `np.interp` (flat beyond the ends)."""
+    order = np.argsort(x, kind="mergesort")
+    xs, ys = np.asarray(x, np.float64)[order], np.asarray(y, np.float64)[order]
+    cuts = np.linspace(0, len(xs), min(bins, len(xs)) + 1).astype(int)
+    kx, ky, kw = [], [], []
+    for lo, hi in zip(cuts[:-1], cuts[1:], strict=True):
+        if hi > lo:
+            kx.append(xs[lo:hi].mean())
+            ky.append(ys[lo:hi].mean())
+            kw.append(hi - lo)
+    return np.array(kx), pav(np.array(ky), np.array(kw))
+
+
+def outcome_value(a: dict[str, np.ndarray]) -> np.ndarray:
+    """The teacher's realised value of the game in the search's units: end HP plus 10 a potion held if won, -100 if lost."""
+    y = a["y_teacher"].astype(np.float64)
+    max_hp = np.maximum(1.0, a["meta"][:, 3])
+    return np.where(y[:, 0] > 0.5, y[:, 1] * max_hp + POTION_VALUE * y[:, 2], DEATH_VALUE)
+
+
+def calibrate_search(a: dict[str, np.ndarray], bins: int = 100, min_rows: int = 500) -> dict:
+    """The search's root value and death share put on the scale of the outcomes: rollouts under a weaker policy than the teacher's read
+    pessimistically (the loop's x16 root values sit about 20 HP under the games' results), and a judge trained on both the outcomes and the
+    raw values would split the difference. For each (label tier, kind) with `min_rows` training rows that have the number (else the tier's, else
+    left as it is) a monotone map from the root value to the mean realised value of the games it came from is fitted on the TRAINING rows and
+    applied to every row (`root_cal`; `pd_cal` the same for 1 - the death share against the win indicator): the search's ranking of positions
+    is kept, its level is the games'. Returns {root_cal, pd_cal, report}."""
+    kinds = np.array([str(c).split("-")[1] for c in a["cells"]])[a["cell"]]
+    train = a["split"] == SPLIT_CODE["train"]
+    value = outcome_value(a)
+    won = (a["y_teacher"][:, 0] > 0.5).astype(np.float64)
+    root = a["root_value"].astype(np.float64)
+    win_p = 1.0 - a["p_death"].astype(np.float64)
+    out_root = a["root_value"].astype(np.float32).copy()
+    out_pd = a["p_death"].astype(np.float32).copy()
+    report: dict = {}
+
+    def fit(sel_fit, sel_apply, x, y, dest, key, invert):
+        ok = sel_fit & ~np.isnan(x) & a["has_teacher"]
+        if ok.sum() < min_rows:
+            return False
+        kx, ky = monotone_map(x[ok], y[ok], bins)
+        ap = sel_apply & ~np.isnan(x)
+        mapped = np.interp(x[ap], kx, ky)
+        dest[ap] = (1.0 - mapped if invert else mapped).astype(np.float32)
+        report[key] = {"rows": int(ok.sum()), "knots": [[round(float(u), 4), round(float(v), 4)] for u, v in zip(kx[:: max(1, len(kx) // 20)], ky[:: max(1, len(ky) // 20)], strict=False)],
+                       "mean_before": round(float(np.mean(x[ok])), 4), "mean_outcome": round(float(np.mean(y[ok])), 4),
+                       "mean_after": round(float(np.mean(np.interp(x[ok], kx, ky))), 4)}
+        return True
+
+    for tier_code, tier in enumerate(TIERS):
+        tier_rows = a["tier"] == tier_code
+        if not tier_rows.any():
+            continue
+        done = np.zeros(len(root), bool)
+        for kind in jc.KINDS:
+            sel = tier_rows & (kinds == kind)
+            if sel.any() and fit(sel & train, sel, root, value, out_root, f"root|{tier}|{kind}", False):
+                done |= sel
+                fit(sel & train, sel, win_p, won, out_pd, f"win|{tier}|{kind}", True)
+        rest = tier_rows & ~done
+        if rest.any() and fit(tier_rows & train, rest, root, value, out_root, f"root|{tier}|all", False):
+            fit(tier_rows & train, rest, win_p, won, out_pd, f"win|{tier}|all", True)
+    return {"root_cal": out_root, "pd_cal": out_pd, "report": report}
+
+
 # ---------------------------------------------------------------------------------------------------------- the data on a device
 
 
@@ -215,7 +307,9 @@ class CorpusData:
     """The corpus arrays on a device in compact dtypes (tokens: uint8 types and owners, int32 ids, float32 features), with the batch the
     judge reads, the targets of the loss, and the split (0 train, 1 validation, 2 held out) of each position."""
 
-    def __init__(self, a: dict[str, np.ndarray], device, weights: np.ndarray | None = None):
+    def __init__(self, a: dict[str, np.ndarray], device, weights: np.ndarray | None = None, search: dict | None = None):
+        """`search` ({root_cal, pd_cal} from `calibrate_search`) replaces the search's raw root value and death share as the loss's targets;
+        the evaluation always reads the raw ones (`self.a`)."""
         self.a = a
         self.device = device
         self.n = len(a["lens"])
@@ -235,7 +329,9 @@ class CorpusData:
         self.t_feats = torch.from_numpy(a["feats"]).to(d)
         self.t_lens = torch.from_numpy(self.lens).to(d)
         self.t_off = torch.from_numpy(self.offsets).to(d)
-        f = {k: torch.from_numpy(np.asarray(a[k], np.float32)).to(d) for k in ("y_teacher", "y_human", "root_value", "p_death", "pol")}
+        f = {k: torch.from_numpy(np.asarray(a[k], np.float32)).to(d) for k in ("y_teacher", "y_human", "pol")}
+        f["root_value"] = torch.from_numpy(np.asarray(search["root_cal"] if search else a["root_value"], np.float32)).to(d)
+        f["p_death"] = torch.from_numpy(np.asarray(search["pd_cal"] if search else a["p_death"], np.float32)).to(d)
         m = {k: torch.from_numpy(np.asarray(a[k], bool)).to(d) for k in ("has_teacher", "has_human", "has_pol")}
         self.f, self.m = f, m
         self.t_tier = torch.from_numpy(a["tier"].astype(np.int64)).to(d)
@@ -630,7 +726,11 @@ def cmd_train(a: argparse.Namespace) -> int:
     arrays, report = read_corpus(a.store, require_usable=not a.allow_unusable, max_per_cell=a.max_per_cell)
     print(json.dumps({k: report[k] for k in ("rows", "starts", "runs", "by_tag", "by_split", "human_rows", "seconds")}), flush=True)
     w = weights_of(arrays, a.weights, a.wclip, a.human_mult)
-    data = CorpusData(arrays, device, w)
+    search = calibrate_search(arrays) if a.calibrate_search else None
+    if search:
+        print(json.dumps({"search_calibration": {k: {m: v[m] for m in ("rows", "mean_before", "mean_outcome", "mean_after")} for k, v in search["report"].items()}}),
+              flush=True)
+    data = CorpusData(arrays, device, w, search)
     model, info = train(a, data, device)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -639,7 +739,8 @@ def cmd_train(a: argparse.Namespace) -> int:
                         "val": info["val"], "heldout": int((data.split == 2).sum()), "init": Path(a.init).parent.name if a.init else None,
                         "init_judge": Path(a.init_judge).parent.name if a.init_judge else None, "epochs": a.epochs, "lr": a.lr, "trunk_lr": a.trunk_lr,
                         "wd": a.wd, "dropout": a.dropout, "batch": a.batch, "weights": a.weights, "wclip": a.wclip, "human_mult": a.human_mult,
-                        "loss": info["cfg"], "best_val_loss": info["best_val_loss"], "seed": a.seed, "win_calibration": info["win_calibration"]}}
+                        "loss": info["cfg"], "best_val_loss": info["best_val_loss"], "seed": a.seed, "win_calibration": info["win_calibration"],
+                        "search_calibration": search["report"] if search else None}}
     torch.save(blob, out)
     paths = [str(out), *a.compare]
     rep = evaluate_paths(paths, data, 2, models={str(out): model}, log=lambda m: print(m, flush=True))
@@ -691,7 +792,7 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=512)
     ap.add_argument("--lr", type=float, default=5e-4)
-    ap.add_argument("--trunk-lr", type=float, default=0.1, help="the trunk's learning rate as a share of --lr (0 freezes it)")
+    ap.add_argument("--trunk-lr", type=float, default=0.3, help="the trunk's learning rate as a share of --lr (0 freezes it)")
     ap.add_argument("--wd", type=float, default=0.1)
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--d-model", type=int, default=128)
@@ -706,6 +807,8 @@ def main(argv=None) -> int:
     ap.add_argument("--w-value", type=float, default=LossCfg.w_value)
     ap.add_argument("--w-search-win", type=float, default=LossCfg.w_search_win)
     ap.add_argument("--w-policy", type=float, default=LossCfg.w_policy)
+    ap.add_argument("--calibrate-search", action=argparse.BooleanOptionalAction, default=True,
+                    help="put the search's root values and death shares on the outcomes' scale (a monotone map per tier and kind, fitted on the training rows) before they are targets")
     ap.add_argument("--tier-w", type=float, nargs=3, default=list(LossCfg.tier_w), metavar=("PLAYED", "SOFT", "SETTLED"))
     ap.add_argument("--max-per-cell", type=int, default=None, help="smoke test: read only this many rows of each source, kind and act")
     ap.add_argument("--allow-unusable", action="store_true", help="read a corpus whose manifest is not usable_for_training yet (a dry run)")
