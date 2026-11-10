@@ -12,7 +12,10 @@ x16 teacher's search as played and the fight's outcome). Four soft labels train 
 the rows that carry its label, and `LossCfg` holds its weight:
 
   teacher outcome   the very game the position was in (won, end HP, potions held): the judge's old target, one draw from the distribution.
-  human outcome     the human's own result of that fight (human rows only); a label of the fight from the door, not of the turn.
+  human outcome     the human's own result of that fight (human rows only); a label of the fight from the door, not of the turn. A human
+                    plays the fights better than the teacher, so the same position has two outcome distributions: the judge head reads a
+                    SOURCE input (`JudgeNet.src_emb`: row 0, the teacher, is zero and is what the search always asks; row 1 is added for the
+                    human reading), and only the human reading is trained to this label.
   search value      the judge's own value V = P(win) x (end HP + 10 x potions) + P(death) x -100 (what the search reads at a leaf,
                     `judge_client.estimate`) against the search's root value, in HP units (Huber on V / 50); a settled turn weighs most,
                     a soft turn less, a turn kept as played least (`tier_w`).
@@ -106,7 +109,7 @@ def extract(row: dict) -> dict:
 
 
 def read_corpus(store: Path | str = STORE, require_usable: bool = True, max_per_cell: int | None = None, srcs: tuple[str, ...] = ("human", "selfplay"),
-                log=print) -> tuple[dict[str, np.ndarray], dict]:
+                log=lambda m: print(m, flush=True)) -> tuple[dict[str, np.ndarray], dict]:
     """Every position of the store as arrays (and a report of what was read). Needs the manifest's `usable_for_training: true` unless
     `require_usable` is False (a dry run). `max_per_cell` stops each (source, kind, act) after that many rows (a smoke test)."""
     corpus = jc.Corpus(store)
@@ -309,14 +312,17 @@ def policy_loss(pol_logits: torch.Tensor, target: torch.Tensor, w: torch.Tensor)
     return wmean(ce, w)
 
 
-def corpus_loss(out: torch.Tensor, pol: torch.Tensor | None, t: dict[str, torch.Tensor], cfg: LossCfg) -> tuple[torch.Tensor, dict]:
-    """The batch's loss and its parts (floats): each term averages over the rows that have its label, by the rows' weights."""
+def corpus_loss(out: torch.Tensor, pol: torch.Tensor | None, t: dict[str, torch.Tensor], cfg: LossCfg,
+                out_h: torch.Tensor | None = None) -> tuple[torch.Tensor, dict]:
+    """The batch's loss and its parts (floats): each term averages over the rows that have its label, by the rows' weights. `out` is the
+    judge's rows as the teacher's (the outcome of the game, the search's value and death share: what the search reads at a leaf); `out_h`
+    the same rows read with the human source, trained to the human's outcome (None: `out`)."""
     w = t["w"]
     parts: dict[str, torch.Tensor] = {}
     if cfg.w_teacher:
         parts["teacher"] = cfg.w_teacher * outcome_loss(out, t["y_teacher"], w * t["m_teacher"], cfg.hp_w, cfg.pot_w)
     if cfg.w_human:
-        parts["human"] = cfg.w_human * outcome_loss(out, t["y_human"], w * t["m_human"], cfg.hp_w, cfg.pot_w)
+        parts["human"] = cfg.w_human * outcome_loss(out if out_h is None else out_h, t["y_human"], w * t["m_human"], cfg.hp_w, cfg.pot_w)
     tier_w = torch.tensor(cfg.tier_w, device=out.device, dtype=out.dtype)[t["tier"]]
     if cfg.w_value:
         v = value_of(out, t["max_hp"])
@@ -335,21 +341,27 @@ def corpus_loss(out: torch.Tensor, pol: torch.Tensor | None, t: dict[str, torch.
 # ---------------------------------------------------------------------------------------------------------- calibration and prediction
 
 
-def predict(model: jd.JudgeNet, data: CorpusData, idx: np.ndarray, batch: int = 2048) -> np.ndarray:
-    """The judge's raw rows [n, 3] on the positions `idx`."""
-    return jd.predict_rows(model, data, idx, batch)  # type: ignore[arg-type]  # CorpusData has the batch() it needs
+def predict(model: jd.JudgeNet, data: CorpusData, idx: np.ndarray, batch: int = 2048, human: bool = False) -> np.ndarray:
+    """The judge's raw rows [n, 3] on the positions `idx`: as the teacher's (what the search asks) or, with `human`, as the human's outcome
+    (the source input; a checkpoint without it reads the same either way)."""
+    model.eval()
+    outs = []
+    with torch.inference_mode():
+        for at in range(0, len(idx), batch):
+            x, _ = data.batch(idx[at : at + batch])
+            src = torch.ones(len(x["types"]), dtype=torch.long, device=data.device) if human else None
+            outs.append(model.judge_out(**x, src=src).float().cpu().numpy())
+    return np.concatenate(outs).astype(np.float64) if outs else np.zeros((0, jd.JUDGE_OUT))
 
 
 def win_target(data: CorpusData, idx: np.ndarray) -> np.ndarray:
-    """The win label calibration is fitted to: the human's outcome where the row has one, else the teacher's."""
-    a = data.a
-    y = np.where(a["has_human"][idx], a["y_human"][idx, 0], a["y_teacher"][idx, 0])
-    return y.astype(np.float64)
+    """The win label calibration is fitted to: the teacher's outcome of the game (the reading the search asks for)."""
+    return data.a["y_teacher"][idx, 0].astype(np.float64)
 
 
 def fit_platt(model: jd.JudgeNet, data: CorpusData, idx: np.ndarray) -> dict:
     """Platt scaling of the win logit on the validation positions (weighted by the rows' weights): the scale and shift that minimise the
-    log loss against `win_target`."""
+    log loss against `win_target` (they apply to both readings, the teacher's and the human's)."""
     model.win_cal.copy_(torch.tensor([1.0, 0.0]))
     raw = torch.from_numpy(predict(model, data, idx)[:, 0]).double()
     y = torch.from_numpy(win_target(data, idx)).double()
@@ -416,12 +428,14 @@ def subsets(data: CorpusData, idx: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
-def evaluate_judge(rows: np.ndarray, data: CorpusData, idx: np.ndarray, min_n: int = 50) -> dict:
+def evaluate_judge(rows: np.ndarray, data: CorpusData, idx: np.ndarray, min_n: int = 50, rows_h: np.ndarray | None = None) -> dict:
     """One judge's rows on the positions `idx` (raw output rows), scored per subset: against the teacher's outcome (L0, win), the human's
-    outcome (human rows), and the search's root value (settled and soft turns; and the turns kept as played, apart)."""
+    outcome (human rows; read with the human source, `rows_h`), and the search's root value (settled and soft turns; and the turns kept as
+    played, apart)."""
     a = data.a
     max_hp = np.maximum(1.0, data.meta[idx, 3])
     p, l0 = jd.rows_to_win_l0(rows, max_hp)
+    p_h, l0_h = jd.rows_to_win_l0(rows if rows_h is None else rows_h, max_hp)
     v = value_np(rows, max_hp)
     root = a["root_value"][idx].astype(np.float64)
     tier = a["tier"][idx]
@@ -437,7 +451,7 @@ def evaluate_judge(rows: np.ndarray, data: CorpusData, idx: np.ndarray, min_n: i
             rep["teacher"] = _scores(l0[mt], yt[mt], p[mt])
         mh = m & hh
         if mh.sum() >= min_n:
-            rep["human"] = _scores(l0[mh], yh[mh], p[mh])
+            rep["human"] = _scores(l0_h[mh], yh[mh], p_h[mh])
         ms = m & (tier >= TIER_CODE["soft"])
         if ms.sum() >= min_n:
             rep["search_settled"] = _value_scores(v[ms], np.where(ms, root, np.nan)[ms])
@@ -448,7 +462,7 @@ def evaluate_judge(rows: np.ndarray, data: CorpusData, idx: np.ndarray, min_n: i
     return out
 
 
-def evaluate_paths(paths: list[str], data: CorpusData, split: int = 2, models: dict | None = None, log=print, min_n: int = 50) -> dict:
+def evaluate_paths(paths: list[str], data: CorpusData, split: int = 2, models: dict | None = None, log=lambda m: print(m, flush=True), min_n: int = 50) -> dict:
     """Each checkpoint on the same positions of one split: {path: {sha256, version, scores: evaluate_judge}}, and the search's own root value
     beside them (self-play and settled rows: its Pearson and Spearman against the teacher's outcome, the reference the judge is read against)."""
     idx = np.flatnonzero(data.split == split)
@@ -456,8 +470,9 @@ def evaluate_paths(paths: list[str], data: CorpusData, split: int = 2, models: d
     for path in paths:
         model, blob = jd.load(path, data.device) if models is None or path not in models else (models[path], {})
         rows = predict(model, data, idx)
+        rows_h = predict(model, data, idx, human=True) if data.a["has_human"][idx].any() else rows
         out["judges"][str(path)] = {"sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest() if Path(path).exists() else None,
-                                    "version": blob.get("version"), "scores": evaluate_judge(rows, data, idx, min_n)}
+                                    "version": blob.get("version"), "scores": evaluate_judge(rows, data, idx, min_n, rows_h)}
         log(f"scored {path}")
     ok = ~np.isnan(data.a["root_value"][idx])
     ref = {}
@@ -498,6 +513,11 @@ def md_tables(report: dict, labels: dict[str, str] | None = None, cells: tuple[s
                 for n in names:
                     cells_.append(f(report["judges"][n]["scores"].get(s, {}).get(key, {}).get(c)))
             lines.append(f"| {s} | {rep0[key].get('n', rep0['positions'])} | " + " | ".join(cells_) + " |")
+    ref = {s: r for s, r in report.get("search_root_value", {}).items() if s in sets}
+    if ref:
+        lines += ["\n**the search's own root value (rows that have one) against the teacher's outcome (L0), for reference**\n",
+                  "| subset | positions | pearson | spearman |", "| --- | --- | --- | --- |"]
+        lines += [f"| {s} | {r['n']} | {f(r['pearson'])} | {f(r['spearman'])} |" for s, r in ref.items()]
     return "\n".join(lines)
 
 
@@ -528,23 +548,23 @@ def loss_over(model: jd.JudgeNet, data: CorpusData, idx: np.ndarray, cfg: LossCf
         for at in range(0, len(idx), batch):
             part = idx[at : at + batch]
             x, _ = data.batch(part)
-            out, pol = model.judge_out_policy(**x)
+            out, out_h, pol = model.judge_out_all(**x)
             t = data.targets(part)
-            loss, _ = corpus_loss(out, pol, t, cfg)
+            loss, _ = corpus_loss(out, pol, t, cfg, out_h)
             w = float(t["w"].sum())
             tot += float(loss.detach()) * w
             wt += w
     return tot / max(wt, 1e-8)
 
 
-def train(a: argparse.Namespace, data: CorpusData, device, log=print) -> tuple[jd.JudgeNet, dict]:
+def train(a: argparse.Namespace, data: CorpusData, device, log=lambda m: print(m, flush=True)) -> tuple[jd.JudgeNet, dict]:
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
     model, dims = make_model(a, device)
     cfg = LossCfg(w_teacher=a.w_teacher, w_human=a.w_human, w_value=a.w_value, w_search_win=a.w_search_win, w_policy=a.w_policy,
                   tier_w=tuple(a.tier_w))
-    head = [p for n, p in model.named_parameters() if n.startswith("judge.")]
-    trunk = [p for n, p in model.named_parameters() if not n.startswith("judge.")]
+    head = [p for n, p in model.named_parameters() if n.startswith(("judge.", "src_emb."))]
+    trunk = [p for n, p in model.named_parameters() if not n.startswith(("judge.", "src_emb."))]
     for p in trunk:
         p.requires_grad_(a.trunk_lr > 0)
     groups = [{"params": head, "lr": a.lr}] + ([{"params": [p for p in trunk if p.requires_grad], "lr": a.lr * a.trunk_lr}] if a.trunk_lr > 0 else [])
@@ -565,9 +585,9 @@ def train(a: argparse.Namespace, data: CorpusData, device, log=print) -> tuple[j
         for at in range(0, len(order), a.batch):
             part = order[at : at + a.batch]
             x, _ = data.batch(part)
-            out, pol = model.judge_out_policy(**x)
+            out, out_h, pol = model.judge_out_all(**x)
             t = data.targets(part)
-            loss, parts = corpus_loss(out, pol, t, cfg)
+            loss, parts = corpus_loss(out, pol, t, cfg, out_h)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
