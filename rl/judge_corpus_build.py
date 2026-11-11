@@ -347,6 +347,7 @@ def cmd_work(a: argparse.Namespace) -> int:
     pool = {r["id"]: r for r in read_jsonl(work_dir(store) / "pool.jsonl")}
     ctx = make_ctx(loop / "players" / a.player, str(loop / "starts" / "human-starts.jsonl"))
     cells = set(a.cells.split(",")) if a.cells else None
+    allowed = tuple(x for x in a.allow_quiet.split(",") if x)  # QUIET.lock tags this run goes on beside (the coordinator's word, in the command line)
     wd = work_dir(store)
     done = 0
     failed_in_a_row = 0
@@ -355,7 +356,7 @@ def cmd_work(a: argparse.Namespace) -> int:
         print(f"[{a.shard} {utc()}] {m}", flush=True)
 
     def pause(label: str) -> float:
-        return converge.pause_point(label, say, out=wd, ignore=(TAG,))
+        return converge.pause_point(label, say, out=wd, ignore=(TAG, *allowed))
 
     for sid in plan["order"]:
         item = pool.get(sid)
@@ -410,6 +411,8 @@ def cmd_run(a: argparse.Namespace) -> int:
         cmd = [sys.executable, "-I", script, "work", "--store", str(store), "--loop", a.loop, "--shard", f"w{i}", "--player", a.player]
         if cells:
             cmd += ["--cells", ",".join(cells)]
+        if a.allow_quiet:
+            cmd += ["--allow-quiet", a.allow_quiet]
         env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}  # one thread a process: no thread spins at Normal priority
         with open(logs / f"work-w{i}.log", "a", encoding="utf-8") as fh:  # the child has its own copy of the handle
             return subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env, **procutil.popen_priority_kwargs())
@@ -856,6 +859,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--shard", default="0")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--cells", default="")
+    ap.add_argument("--allow-quiet", default="", help="work, run: QUIET.lock tags to go on beside (comma list); gym-loop, lab-score, w3-blocks and our own never hold it")
     ap.add_argument("--support", type=int, default=jc.MIN_SUPPORT_STARTS)
     a = ap.parse_args(argv)
     if a.procs > 8:

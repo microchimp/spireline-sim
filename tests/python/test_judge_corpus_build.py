@@ -300,7 +300,7 @@ class SupervisorTests(unittest.TestCase):
             return self.rc_seq.pop(0) if len(self.rc_seq) > 1 else self.rc_seq[0]
 
     def args(self, store: Path, procs: int = 2):
-        return mock.Mock(store=str(store), loop="L", player="v3", procs=procs, cells="")
+        return mock.Mock(store=str(store), loop="L", player="v3", procs=procs, cells="", allow_quiet="")
 
     def test_a_dead_work_process_is_started_again_and_the_supervisor_ends_with_the_plan(self):
         with tempfile.TemporaryDirectory() as d:
@@ -340,6 +340,17 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(len(self.Fake.made), 1)
 
 
+class QuietCase:
+    import datetime as _dt
+
+    NOW = _dt.datetime(2026, 11, 9, 3, 0, 0, tzinfo=_dt.UTC)
+
+    def referee(self, lines: list[str]) -> tempfile.TemporaryDirectory:
+        d = tempfile.TemporaryDirectory()
+        (Path(d.name) / "QUIET.lock").write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+        return d
+
+
 class WorkTests(unittest.TestCase):
     def store(self, d: str, n: int = 6) -> Path:
         store = Path(d)
@@ -350,7 +361,7 @@ class WorkTests(unittest.TestCase):
         return store
 
     def args(self, store: Path, **kw):
-        return mock.Mock(store=str(store), loop="L", player="v3", shard="t", cells="", limit=kw.get("limit", 0))
+        return mock.Mock(store=str(store), loop="L", player="v3", shard="t", cells="", limit=kw.get("limit", 0), allow_quiet=kw.get("allow_quiet", ""))
 
     def test_each_fight_is_claimed_built_and_written_once(self):
         import converge as cv
@@ -383,6 +394,24 @@ class WorkTests(unittest.TestCase):
             fights = jb.read_fights(store)
             self.assertEqual(len(fights), 3)
             self.assertTrue(all("boom" in f["error"] for f in fights))
+
+    def test_an_allowed_quiet_tag_does_not_pause_the_work_but_another_does(self):
+        import converge as cv
+
+        seen: list = []
+        with tempfile.TemporaryDirectory() as d:
+            store = self.store(d, n=1)
+
+            def build(item, ctx, say, pause):
+                pause("x")
+                return {"start": item["id"], "cell": item["cell"], "positions": [], "cpu_s": 1.0}
+
+            with mock.patch.object(jb, "make_ctx", return_value={}), mock.patch.object(jb, "build_fight", side_effect=build),                     mock.patch.object(cv, "pause_point", side_effect=lambda label, log=print, poll_s=None, out=None, ignore=(): seen.append(ignore) or 0.0):
+                jb.cmd_work(self.args(store, allow_quiet="run-teacher,other"))
+        self.assertTrue(seen)
+        self.assertTrue(all(i == (jb.TAG, "run-teacher", "other") for i in seen))
+        with QuietCase().referee(["run-teacher 2026-11-09T02:59:00Z pid=1", "lab-train 2026-11-09T02:59:00Z pid=2"]) as d:
+            self.assertEqual(cv.quiet_reason(QuietCase.NOW, Path(d), ignore=(jb.TAG, "run-teacher")), "quiet:lab-train")
 
     def test_a_stop_file_ends_the_process_between_fights(self):
         import converge as cv
