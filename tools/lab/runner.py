@@ -479,6 +479,11 @@ class Runner:
             top = ""
         line = f"{top} | {line}" if top else line
         try:
+            loop = jobs.run_loop_status(self.lab.root)  # "" while the run loop is off
+        except Exception:  # noqa: BLE001
+            loop = ""
+        line = f"{line} | {loop}" if loop else line
+        try:
             atomic_write(self.lab.status_path, line + "\n")
         except OSError:
             pass
@@ -720,7 +725,7 @@ class Runner:
         train came first). Presort (1) is decided before, aimed fights (4), runs and rank (5) and the rest (7) by the rotation and the
         mix. A kind that is off or not ready is passed over quietly (its reason is only logged when it was due)."""
         cfg = jobs.load_config(self.lab.root)
-        for kind in ("nightly-real", "score-real", "train"):  # jobs.PRIORITY order
+        for kind in ("nightly-real", "score-real", "train", "student"):  # jobs.PRIORITY order (the student: a candidate for train, right after it)
             why = jobs.unready(kind, self.lab.root, cfg[kind])
             if kind == "nightly-real" and why and cfg[kind].get("enabled") and jobs.nightly_wanted(self.lab.root, float(cfg[kind].get("every_h", 20.0))):
                 if why != self.last_nightly_note:  # due but held: say why once, not at every pick
@@ -745,6 +750,8 @@ class Runner:
         for kind in jobs.BENCHES:
             if jobs.unready(kind, self.lab.root, cfg[kind]) is None and self.kind_ready(kind, sha):
                 return kind
+        if jobs.unready("teacher", self.lab.root, cfg["teacher"]) is None and self.kind_ready("teacher", sha):  # the filler's slot: the last thing the lab does (D56)
+            return "teacher"
         return ""
 
     def pick_fights(self, sha: str) -> tuple[str, str | None]:
@@ -1457,6 +1464,8 @@ class Runner:
                 st["tree_sha"] = None  # the tree's sources moved but its build did not: nothing may run on it
         self.account(run)  # before the streak: an alert names the job's duration
         self.streak(run, rc)
+        if run.job in ("teacher", "student", "train"):
+            self.run_loop_tick()
         c["jobs_done"][run.job] = c["jobs_done"].get(run.job, 0) + (1 if rc == 0 else 0)
         c["active_seconds"] += int(self.clock() - getattr(self, "job_t0", self.clock()))
         cfg = self.reports_config()
@@ -2217,6 +2226,19 @@ class Runner:
                  + (f"process {pid} is gone" if pid is not None else "no process named, none of this lab's jobs is running") + ")")
         return True
 
+    def run_loop_tick(self) -> None:
+        """The run loop's own upkeep (jobs.run_loop_tick): its clock, the plateau alert, the daily line, the status text. Not for a one-shot,
+        trial or dry run; a fault is a log line, never a stop."""
+        a = self.a
+        if a.once or a.trial or a.dry_run:
+            return
+        try:
+            for msg in jobs.run_loop_tick(self.lab.root):
+                self.log(msg)
+            self.refresh_banners()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"run-loop: tick failed ({type(e).__name__})")
+
     def daily_clock(self) -> None:
         """Write LAB/clock.md, the flagged steps of the last week of this log (tools/lab/clock_report.py), at most once a day and only for a
         runner that stays (not --once, --trial or --dry-run), and say so in the log when a step is flagged. A fault here is a log line."""
@@ -2229,7 +2251,7 @@ class Runner:
             rep = clock_report.report_for(self.lab.root)
             if rep is None:
                 return
-            atomic_write(p, alerts.with_banner(clock_report.render(rep) + "\n", self.lab.root))
+            atomic_write(p, alerts.with_banner(clock_report.render(rep) + "\n" + jobs.run_loop_section(self.lab.root), self.lab.root))
             if rep["alarms"]:
                 alarmed = [k for k in rep["flagged"] if rep["by_step"][k]["alarm"]]
                 self.log(f"clock: {rep['alarms']} step(s) flagged over the last {rep['window_days']} days (clock.md): " + ", ".join(
@@ -2245,6 +2267,7 @@ class Runner:
             return self.leave(v)
         self.clear_stale_quiet_lock()
         self.daily_clock()
+        self.run_loop_tick()
         self.refresh_banners()
         self.service_report()
         self.service_filler(start=False)  # between jobs: a block that ended is closed, none starts before the pick

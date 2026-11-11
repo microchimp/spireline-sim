@@ -703,6 +703,7 @@ def plan_kind(kind: str, c: Ctx) -> list[Step]:
     job that is resumed after a stop is never refused. The command may write {job}/result.json (see jobs.py)."""
     p = c.params
     cmd = Cmd(kind, list(p["cmd"]), cwd=p.get("cwd", "{tree}"), needs=list(p.get("needs") or []), core=True,
+              ok_rcs=tuple(int(x) for x in p.get("ok_rcs") or (0,)),  # the student job's rc 3 (no kind passed) is a finished round, not a failure
               timeout=float(p.get("timeout_min", 60)) * 60, outputs={"result": "result.json"},
               post=lambda cx, k=kind: jobkinds.finish(k, cx.lab, cx.job_dir, cx.params))
     if kind == "score-real":  # the ranking of the lockstep divergences (tools/lab/rank.py) runs before the markers are consumed

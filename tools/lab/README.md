@@ -8,10 +8,11 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 |---|---|
 | `runner.py` | CLI, lab folder, job records, the main loop, supervising child processes |
 | `plans.py` | the jobs as data: steps and symbolic commands (`{tree}`, `{lab}`, `{job}` ...), one plan per strategy |
-| `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu): defaults, `LAB/jobs.json`, markers |
+| `jobs.py` | the agent-era job kinds (selfplay, train, score-real, nightly-real, bench-env, bench-emu, and the run loop's teacher and student): defaults, `LAB/jobs.json`, markers, the student's trigger, stops and daily line (`docs/lab/RUN_LOOP.md`) |
+| `student_job.py` | the `student` job's command: lane 3's fit, legs and candidate with the frozen kinds left out, `result.json`, `run-bar.md` |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict`; `TreeCpu`, the always-on loop's CPU the load guard leaves out |
-| `alerts.py` | `LAB/alerts/`: the alert a job kind raises after two failures in a row, the list of jobs killed at their time limit, and the banner the daily readers print at the top |
+| `alerts.py` | `LAB/alerts/`: the alert a job kind raises after two failures in a row, the list of jobs killed at their time limit, the run loop's `run-student` and `run-plateau` notes, and the banner the daily readers print at the top |
 | `frozen.py` | D52: the frozen copy of the lab tree the practice filler runs from (one per presorted build, outside the lab folder) |
 | `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |

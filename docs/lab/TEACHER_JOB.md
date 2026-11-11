@@ -73,9 +73,9 @@ not both take the last room. A killed run costs the CPU its partial work used, w
 and ends (the replayed run's `end` line carries the CPU of its stored screens).
 
 When the runner schedules it (kind `teacher`, priority 8, the lowest: after everything else the lab has) the rules above are its
-`unready`. The ladder hook in `tools/lab/runner.py` (`ladder_top`: after the benches, `jobs.unready("teacher", ...)`) is **not in this
-landing** (lane 4's file); until it is, the kind is defined, `--once teacher` plans it, and the job is started by hand with the command
-above, which keeps to the same rules by itself.
+`unready`. The ladder hook in `tools/lab/runner.py` (`ladder_top`: after the benches, `jobs.unready("teacher", ...)`) is in since lane 4
+(`docs/lab/RUN_LOOP.md`, which also has this fragment with the `student` kind's): the runner picks the teacher when `LAB/jobs.json` enables it and
+nothing above it is ready. The job can still be started by hand with the command above, which keeps to the same rules by itself.
 
 ## The jobs.json fragment (disabled; the orchestrator merges it)
 
