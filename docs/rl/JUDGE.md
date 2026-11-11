@@ -158,3 +158,89 @@ checkpoint), `judge.py eval` scores any number of checkpoints on the same positi
   rate of 0.679); human starts 0.702 against 0.662. On the 77,169 positions of runs v0 never saw: 0.811 against 0.789. What changed
   most is the level: v0, trained on a3-v1's fights, read x16's boss positions 11 points low at Act 1 and 12 at Act 2; v1 reads
   them within 1 point. Rank agreement moved little, and the search's own root value still ranks better (0.832 / 0.902).
+
+## 8. Judge v2: trained on the corpus (D58 C2, D57 item 1; 2026-11-11)
+
+`rl/judge_train.py` trains the judge on the judge corpus (`JUDGE_CORPUS.md`: the human starts' fight positions with the human's own result and the
+search settled on a ladder of budgets, and the loop's self-play positions) and scores any number of checkpoints on the same held-out positions.
+`judge.py` gains the policy-and-source readings it needs (`judge_out_policy`, `judge_out_all`, the `src_emb` row); `judge.py train` and the v0 and v1
+checkpoints are unchanged in what they compute. Tests: `tests/python/test_judge_train.py` (24: the reader on a synthetic store, the weights, every
+loss term, the search calibration, the source input, a short training run on a tiny network, the held-out scoring). Folder for the checkpoints:
+`referee/agent/judge/v2/` (the corpus-trained judge, **not trained yet: see Status**), `v2-sp/` (the interim, self-play half of the corpus only).
+v0 and v1 are untouched.
+
+**The loss.** Four labels train the judge's three outputs (win logit, end-HP logit, potions) and each term is a weighted mean over the rows that
+carry its label (`LossCfg`): the **teacher's outcome** of the game the position was in (the old target); the **human's outcome** of the fight
+(human rows); the **search value**: the judge's own leaf value V = P(win) x (end HP + 10 x potions) + P(death) x -100 (`judge_client.estimate`,
+what the search reads) against the search's root value, Huber on V / 50, a settled turn counting 1, a soft turn 0.5, a turn kept as played 0.25
+(`tier_w`); the **search win**: the win logit against 1 - the search's death share (settled and soft turns); and, as an auxiliary, the **moves**:
+the policy head `JudgeNet` already carries against the search's visit distribution over the action slots (token 1 + a is action a, checked on the
+corpus), which only shapes the trunk. Rows weigh by the corpus's sampling weight (`pool`: 1 / inclusion probability for the human rows, 1 for
+self-play; clipped at 20 times the mean and renormalised); the split is the corpus's, **by run** (one in five held out; the exam fifth is not in
+the corpus and the loader refuses it), the validation tenth for the epoch and the win calibration by run too.
+
+**Two things the self-play measurement forced.** (1) *The search's values are on another scale than the games' results.* The loop's root values
+(rollouts under a weaker policy than the teacher's) sit 29 HP under the realised result of the games at bosses (mean -65.9 against -36.7), 23 at
+elites (-13.5 against +9.9) and 10 at hallways; a third of all root values are exactly -100. Trained on both, the judge splits the difference: the
+win head learned to say 0.75 logits too low (the Platt step had to add it back) and the outcome correlations fell. `calibrate_search` puts the root
+value and the death share on the outcomes' scale first, by a monotone map (equal-count bins, adjacent violators pooled, equal values one knot) per
+label tier and kind fitted on the TRAINING rows only; the search's ranking of positions is kept, its level is the games'. (2) *A human plays
+the same position better than the teacher.* One win head cannot be calibrated to both outcome distributions, so the judge head reads a **source**
+input (`JudgeNet.src_emb`: row 0, the teacher and every use in the search, is zero and never moves; row 1 is added for the human reading), and only
+the human reading is trained to the human's outcome. A checkpoint without the row (v0, v1) loads and reads unchanged.
+
+**Self-play half, measured** (the corpus's 917,068 self-play positions of 20,795 starts and 7,392 runs, from 359 buffer shards of the loop to 2026-11-10, less 3,227 fights of the exam's, the boards' and the M2 board's runs and 27 capped ones;
+655,811 to train, 68,794 for the epoch and the calibration, **192,463 held out** by run; 538 s on the card, BelowNormal, 10 epochs of batch 512,
+the agent's network of v0 and v1 as the trunk's start, head 5e-4, trunk 0.3 of it, weight decay 0.1, dropout 0.3). Held-out settings (Pearson of the
+judge's L0 against the teacher's outcome of the game; all, Act 1 boss, Act 2 boss; Spearman all):
+
+| | all | Act 1 boss | Act 2 boss | Spearman all | note |
+|---|---|---|---|---|---|
+| v0 | 0.781 | 0.650 | 0.431 | 0.834 | a3-v1's fights |
+| v1 | 0.809 | 0.684 | 0.610 | 0.860 | the buffer to 11-08, 416k positions |
+| trunk 0.1, raw root values | 0.824 | 0.713 | 0.674 | 0.864 | |
+| trunk 0.1, no search terms | 0.830 | 0.719 | 0.688 | 0.877 | the raw root values cost about 0.006 |
+| trunk 0.1, no move term | 0.821 | 0.707 | 0.666 | 0.862 | the move term is worth about 0.003 |
+| trunk 0.3, raw root values | 0.830 | 0.726 | 0.694 | 0.867 | lowest validation loss of the raw settings |
+| trunk 1.0, raw root values | 0.835 | 0.737 | 0.701 | 0.873 | validation loss rises from epoch 5 |
+| balanced weights (equal cells), trunk 0.1 | 0.812 | 0.688 | 0.641 | 0.855 | the small Act 2 cells overfit |
+| **v2-sp: trunk 0.3, calibrated root values** | **0.835** | **0.738** | 0.686 | **0.875** | the setting kept; win calibration error 0.009 |
+
+v2-sp against v1 and v0 per cell (Pearson / Spearman / win calibration error; held-out positions):
+
+| cell | positions | v2-sp | v1 | v0 |
+|---|---|---|---|---|
+| all | 192,463 | 0.835 / 0.875 / 0.009 | 0.809 / 0.860 / 0.040 | 0.781 / 0.834 / 0.113 |
+| Act 1 boss | 89,534 | 0.738 / 0.741 / 0.012 | 0.684 / 0.694 / 0.048 | 0.650 / 0.671 / 0.134 |
+| Act 1 elite | 18,821 | 0.717 / 0.820 / 0.019 | 0.680 / 0.820 / 0.045 | 0.691 / 0.799 / 0.059 |
+| Act 1 hallway | 32,700 | 0.891 / 0.931 / 0.005 | 0.889 / 0.927 / 0.006 | 0.897 / 0.922 / 0.006 |
+| Act 2 boss | 18,126 | 0.686 / 0.676 / 0.028 | 0.610 / 0.615 / 0.087 | 0.431 / 0.417 / 0.284 |
+| Act 2 elite | 10,145 | 0.646 / 0.721 / 0.037 | 0.648 / 0.729 / 0.042 | 0.594 / 0.658 / 0.134 |
+| Act 2 hallway | 23,137 | 0.837 / 0.895 / 0.021 | 0.835 / 0.902 / 0.022 | 0.818 / 0.882 / 0.082 |
+
+Boss rows are where the gain is (Act 1 +0.054, Act 2 +0.076 over v1 in Pearson), elites and hallways are level. The v2-sp judge's V against the loop's
+search as played reads Pearson 0.868 (v1 0.822) and 22 HP above it at the mean, as v1 does (21.9): the raw root values read low, which is what the calibration measured. These
+positions are the loop's own, not the humans': **the human positions and the settled labels are what the corpus build adds, and v2-sp has seen neither.**
+The held-out half is the loop's self-play of runs none of the three judges trained on (v1's held-out runs are the same runs; v0 was trained on three nights, some
+of whose runs fall in it).
+
+**Status (2026-11-11 00:30Z).** The corpus's human build (17,001 fights, `judge_corpus.py run`) is stalled: its workers pause while another lane's
+`run-teacher` QUIET line stands (the run-self-play lane's measurement, from 21:34Z; the line is also what holds any heavy job of this lane by the
+brief's rule), so the manifest still says `usable_for_training: false` and v2 on the full corpus has not been trained, and the board not played.
+v2-sp (`referee/agent/judge/v2-sp/judge.pt`, sha256 41429179...) is trained and measured, and board-ready.
+
+**To train v2 the moment the manifest says `usable_for_training: true`** (GPU venv; about 10 to 15 minutes; leaves the gym trainer running):
+
+    D:/spireline/venv-gpu/Scripts/python.exe -I rl/judge_train.py train --version judge-v2 \
+        --init D:/spireline/referee/agent/gen7/candidate-r1/combat_net.pt --out D:/spireline/referee/agent/judge/v2/judge.pt \
+        --compare D:/spireline/referee/agent/judge/v0/judge.pt D:/spireline/referee/agent/judge/v1/judge.pt
+
+It writes `judge.pt` (the corpus's manifest sha256 and counts, the weights, the loss settings and the search calibration inside), `judge.report.json`
+and `judge.eval.md` (the held-out tables of the three judges). `eval` scores any checkpoints again (`judge_train.py eval --judge A.pt --judge B.pt`);
+`summary` counts what the trainer would read. A retrain as v2b when the manifest says `complete: true` is the same command with another `--out`.
+
+**The board** (rule 1.3 of the training design, board A's starts and draws): `D:/spireline/referee/backlog/scratch-board-a/v2/board_v2.py` (the v1
+board's driver on the same engine tree, so v2's games pair with board A's x16 and v0 rows and with v1's; no timing sample; `JUDGE_BOARD_PATH`
+names the checkpoint, `JUDGE_BOARD_OUT` the results folder, `JUDGE_BOARD_HOLD=1` takes a `judge-train` QUIET line, none by default so as not to pause
+the corpus build) then `analyze.py`, `analyze2.py`, `compare_prev.py` (v2 against v1 and v0) and `make_summary.py`. A pilot of eight games with a
+self-play checkpoint ran end to end (394 s at six processes beside training and the corpus builder).
