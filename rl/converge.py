@@ -195,8 +195,7 @@ def search_record(res: Any, *, max_sims: int | None, seed: int, cpu_s: float | N
     children = sorted((child_record(c) for c in res.children), key=lambda c: (-c["n"], c["a"], c["t"]))
     capped = max_sims is not None and res.sims + res.select_mapping_failures < max_sims
     return {"rel": rel, "budget": budget, "seed": seed, "max_sims": max_sims, "sims": int(res.sims), "failures": int(res.select_mapping_failures),
-            "capped": bool(capped), "ai_assumed": bool(getattr(res, "ai_state_assumed", False)),
-            "cpu_s": None if cpu_s is None else round(cpu_s, 3), "load": load, "pos_kind": pos_kind,
+            "capped": bool(capped), "cpu_s": None if cpu_s is None else round(cpu_s, 3), "load": load, "pos_kind": pos_kind,
             "n_moves": len(children), "best": child_record(res.best), "children": children}
 
 

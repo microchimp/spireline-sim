@@ -288,7 +288,7 @@ def label_of(rec: dict, tier: str, rel: float | str, rungs: Sequence[dict] = ())
         out["duel"] = rec["duel"]
     if rungs:
         out["rungs"] = [{"rel": r["rel"], "best": [r["best"]["a"], r["best"]["t"], r["best"]["kind"]], "n": r["best"]["n"], "sims": r.get("sims"),
-                         "cpu_s": r.get("cpu_s"), "capped": r.get("capped"), "from_game": r.get("from_game", False), "ai_assumed": r.get("ai_assumed"),
+                         "cpu_s": r.get("cpu_s"), "capped": r.get("capped"), "from_game": r.get("from_game", False),
                          "top2": [[c["a"], c["t"], c["kind"], c["n"], c["v"], c["se"]] for c in r["children"][:2]],  # the unpaired reading, for comparison
                          **({"duel": r["duel"], "duel_cpu_s": r.get("duel_cpu_s")} if r.get("duel") else {})} for r in rungs]
     return out
@@ -599,12 +599,9 @@ def coverage_md(rows: Sequence[Mapping[str, Any]], minimums: Mapping[str, int], 
         lines.append(f"\nDoor positions (the fight's first decision; a sampled early turn can be one): {shown(doors)}")
         known = [r for r in sub if r.get("ai_assumed") is not None]
         if known:
-            lines.append(f"\n`ai_assumed` (the game's search at the position kept the true enemy moves, because a position built from a saved state cannot roll them again; "
-                         f"such fights play worse at a boss than the same fight inside a run): recorded on {shown(len(known))} of {shown(len(sub))} positions, "
-                         f"true on {100 * sum(1 for r in known if r['ai_assumed']) / len(known):.0f}% of those; absent on the rest (rows built before the field was added, "
-                         "and every self-play row: the buffer does not hold it).")
-        else:
-            lines.append("\n`ai_assumed` is absent from every row of this source (not recorded when it was built).")
+            lines.append(f"\n`ai_assumed` is on {shown(len(known))} of {shown(len(sub))} positions of this source (rows built on 2026-11-11 after 08:21Z, before the field was withdrawn). "
+                         "It is the search flag `ai_state_assumed`, which a fight loaded from a saved position never clears: it is sticky and carries no information "
+                         "about the position. Do not read it.")
         _emit(lines, sub, "By deck type", lambda r: r["arch"], ARCHETYPES, minimums.get("arch"))
         _emit(lines, sub, "By health band", lambda r: health_band(r["hp_frac"]), BANDS, None)
         _emit(lines, sub, "By potions held", lambda r: potion_state(r["potions"]), ("none", "one", "two+"), None)

@@ -188,7 +188,7 @@ class BuildFightTests(unittest.TestCase):
         n = 12
         dec = [{"k": k, "n_moves": 3 if k in eligible else 1, "pos_kind": "play", "move": [k % 4, -1], "obs": f"h{k}",
                 "search": {**rec("game", [child(1, 400, 12.0), child(2, 80, 11.0)]), "best": {**child(1, 400, 12.0), "kind": "end_turn" if k % 5 == 4 else "card"},
-                           "ai_assumed": k % 2 == 1}}
+                           }}
                for k in range(n)]
         game = {"won": True, "end_hp": 22, "max_hp": 80, "turns": 3, "decisions": n, "sims": 999, "capped": capped_game, "moves_sha": "x", "potions_held": 1, "L0": 0.6,
                 "cpu_s": 5.0, "wall_s": 6.0}
@@ -241,7 +241,6 @@ class BuildFightTests(unittest.TestCase):
         self.assertEqual(p["replay"]["ns"], "x")
         self.assertEqual(len(jc.moves_of(p["replay"]["moves"])), p["k"])
         self.assertEqual(p["played"], [p["k"] % 4, -1])
-        self.assertTrue(all(q["ai_assumed"] == (q["k"] % 2 == 1) for q in res["positions"]))  # the game's search's flag, per position
         self.assertEqual(jc.tokens_of_b64(p["tok"])["ids"].tolist(), [1, 1, 2, 1, 1, 0])
         self.assertEqual(res["decisions"], 12)
         self.assertEqual(labels[0], "act2-boss game")

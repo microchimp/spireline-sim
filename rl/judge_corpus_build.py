@@ -297,7 +297,6 @@ def build_fight(item: dict, ctx: dict, log: Callable[[str], None] = print, pause
                 row["cpu_s"] = 0.0
             row["game"] = {"sims": game_rec.get("sims"), "move": [dec[k]["move"][0], dec[k]["move"][1]]}
             row["played"] = [int(dec[k]["move"][0]), int(dec[k]["move"][1])]
-            row["ai_assumed"] = bool(game_rec.get("ai_assumed"))  # the game's search at this decision kept the true enemy moves (a saved position cannot roll them again)
             row["teacher"] = teacher
             row["oh"] = oh
             row["replay"] = {"j": converge.GAME_J, "ns": converge.GAME_NS, "moves": jc.moves_string(moves[:k])}

@@ -631,7 +631,6 @@ class RealFightTests(unittest.TestCase):
         r3 = cv.search_rung(w, self.start, "hallway", 2, 0, {}, config=cfg)
         w.close()
         for r in (r1, r2, r3):
-            self.assertIsInstance(r["ai_assumed"], bool)  # whether the search kept the true enemy moves (a position loaded from a saved state)
             self.assertEqual(r["max_sims"], 24)
             self.assertFalse(r["capped"])
             self.assertEqual(r["sims"], 24)
