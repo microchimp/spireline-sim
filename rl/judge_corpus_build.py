@@ -9,6 +9,7 @@ are `judge_corpus.py` (read its docstring first); this file is the part that pla
     python rl/judge_corpus_build.py finalize  [--store DIR]       # compact, coverage.md, and `complete` in the manifest when the plan is done
     python rl/judge_corpus_build.py selfplay  [--store DIR]
     python rl/judge_corpus_build.py coverage  [--store DIR]
+    python rl/judge_corpus_build.py report    [--store DIR]       # report.md: the human build's tiers, the paired rule against the unpaired, CPU, teacher against human
     python rl/judge_corpus_build.py status    [--store DIR]
     python rl/judge_corpus_build.py hold      --pid PID           # the `judge-corpus` QUIET.lock line while the supervisor PID lives
     python rl/judge_corpus_build.py stop      [--store DIR]       # a STOP file: the work processes end after their fight
@@ -864,12 +865,123 @@ def cmd_coverage(a: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------------------------------------- report
+
+
+def rungs_as_turn(label: dict) -> dict | None:
+    """A label's rung lines as a `converge` turn (rungs with their best move, top two moves and duel), so the rule can be applied again under
+    another reading of the gap. The rung lines keep the top two moves' visits, values and errors; a move's merged copies are not kept, so two
+    rungs that chose the same move through different copies read as a change (rare)."""
+    rungs = []
+    for r in label.get("rungs") or []:
+        top = [{"a": c[0], "t": c[1], "kind": c[2], "card": None, "merged": [], "n": c[3], "v": c[4], "se": c[5], "pd": None} for c in r.get("top2") or []]
+        if not top:
+            return None
+        rungs.append({"rel": r["rel"], "capped": bool(r.get("capped")), "best": top[0], "children": top, "duel": r.get("duel")})
+    return {"rungs": rungs} if rungs else None
+
+
+def settled_under(label: dict, se_mode: str) -> tuple[str, float | None] | None:
+    """What the ladder would have said under `se_mode` ("paired" or "pooled"): ("settled", rel) at the first rung of the ladder where the rule
+    holds, else ("soft", None); None for a label with no ladder."""
+    import converge  # noqa: PLC0415
+
+    turn = rungs_as_turn(label)
+    if turn is None or len(turn["rungs"]) < 2:
+        return None
+    for rel in jc.LADDER_RELS:
+        if any(r["rel"] == rel for r in turn["rungs"]) and converge.rule_holds(turn, rel, se_mode=se_mode):
+            return "settled", rel
+    return "soft", None
+
+
+def pct(k: int, n: int) -> str:
+    return "-" if n < jc.MIN_CELL else f"{100 * k / n:.0f}% ({k}/{n})"
+
+
+def report_md(rows: Sequence[dict], fights: Sequence[dict]) -> str:
+    """Aggregates of the human build for `JUDGE_CORPUS.md` section 8 (no cell under MIN_CELL fights or positions): label tiers, the paired rule against
+    the unpaired one on the same searches, CPU, and the teacher's own result against the human's on the built fights."""
+    lines: list[str] = []
+    human = [r for r in rows if r["src"] == "human"]
+    cells = [(a, k) for a in (1, 2) for k in jc.KINDS]
+    lines.append("\n**Label tiers of the human positions**\n")
+    lines.append("| cell | fights | positions | settled at the first rung | settled at the cap | soft | played (one move, or a hallway) |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for a, k in cells:
+        sub = [r for r in human if (r["act"], r["kind"]) == (a, k)]
+        nf = len({r["start"] for r in sub})
+        if nf < jc.MIN_CELL or len(sub) < jc.MIN_CELL:
+            lines.append(f"| act{a}-{k} | <{jc.MIN_CELL} | <{jc.MIN_CELL} | | | | |")
+            continue
+        n1 = sum(1 for r in sub if r["label"]["tier"] == "settled" and r["label"]["rel"] == jc.LADDER_RELS[0])
+        n2 = sum(1 for r in sub if r["label"]["tier"] == "settled" and r["label"]["rel"] == jc.LADDER_RELS[1])
+        soft = sum(1 for r in sub if r["label"]["tier"] == "soft")
+        played = sum(1 for r in sub if r["label"]["tier"] == "played")
+        lines.append(f"| act{a}-{k} | {nf} | {len(sub)} | {pct(n1, len(sub))} | {pct(n2, len(sub))} | {pct(soft, len(sub))} | {pct(played, len(sub))} |")
+    lines.append("\n**The rule with the paired comparison and with the unpaired spread (the same searches; boss and elite turns with a ladder)**\n")
+    lines.append("| cell | turns | settled, paired | settled, unpaired | both | paired only | unpaired only | the duel puts the runner-up ahead at the last rung |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for a, k in [(a, k) for a in (1, 2) for k in jc.LADDER_KINDS]:
+        sub = [r for r in human if (r["act"], r["kind"]) == (a, k) and r["label"]["tier"] in ("settled", "soft")]
+        both = pa = un = ahead = n = sp = su = 0
+        for r in sub:
+            p, q = settled_under(r["label"], "paired"), settled_under(r["label"], "pooled")
+            if p is None or q is None:
+                continue
+            n += 1
+            sp += p[0] == "settled"
+            su += q[0] == "settled"
+            both += p[0] == "settled" and q[0] == "settled"
+            pa += p[0] == "settled" and q[0] != "settled"
+            un += q[0] == "settled" and p[0] != "settled"
+            d = r["label"].get("duel") or {}
+            ahead += bool(d.get("mean") is not None and d.get("se") and d["mean"] <= -2 * d["se"])
+        if n < jc.MIN_CELL:
+            lines.append(f"| act{a}-{k} | <{jc.MIN_CELL} | | | | | | |")
+            continue
+        lines.append(f"| act{a}-{k} | {n} | {pct(sp, n)} | {pct(su, n)} | {pct(both, n)} | {pct(pa, n)} | {pct(un, n)} | {pct(ahead, n)} |")
+    lines.append("\n**CPU (process time, on a machine shared with the practice loop and others: it reads high), per fight**\n")
+    lines.append("| cell | fights | the teacher's game, s | the ladder, s | whole fight, s | positions a fight |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
+    for a, k in cells:
+        fs = [f for f in fights if not f.get("error") and (f["act"], f["kind"]) == (a, k)]
+        if len(fs) < jc.MIN_CELL:
+            lines.append(f"| act{a}-{k} | <{jc.MIN_CELL} | | | | |")
+            continue
+        game = sum(f["game"]["cpu_s"] for f in fs) / len(fs)
+        lad = sum(sum(p["cpu_s"] for p in f["positions"]) for f in fs) / len(fs)
+        lines.append(f"| act{a}-{k} | {len(fs)} | {game:.1f} | {lad:.1f} | {sum(f['cpu_s'] for f in fs) / len(fs):.1f} | {sum(len(f['positions']) for f in fs) / len(fs):.2f} |")
+    lines.append("\n**The teacher's own result of the fight against the human's, on the built fights (the door's win rate; the human's from the run record)**\n")
+    lines.append("| cell | fights | the teacher (v3, the cell's budget) survived | the human survived |")
+    lines.append("| --- | --- | --- | --- |")
+    for a, k in cells:
+        doors = {r["start"]: r for r in human if (r["act"], r["kind"]) == (a, k) and r.get("teacher") is not None and r.get("human") is not None}
+        if len(doors) < jc.MIN_CELL:
+            lines.append(f"| act{a}-{k} | <{jc.MIN_CELL} | | |")
+            continue
+        won = sum(1 for r in doors.values() if r["teacher"]["won"])
+        surv = sum(1 for r in doors.values() if r["human"]["survived"])
+        lines.append(f"| act{a}-{k} | {len(doors)} | {pct(won, len(doors))} | {pct(surv, len(doors))} |")
+    return "\n".join(lines)
+
+
+def cmd_report(a: argparse.Namespace) -> int:
+    store = Path(a.store)
+    rows = [r for r, _s, _i in jc.Corpus(store).iter_rows(src="human")]
+    md = ("# Judge corpus: the human build, aggregates\n\nWritten by `rl/judge_corpus_build.py report`. Aggregates only; a cell under "
+          f"{jc.MIN_CELL} fights or positions is not shown. Source of the human positions: {jc.ATTRIBUTION}.\n" + report_md(rows, read_fights(store)))
+    (store / "report.md").write_text(md, encoding="utf-8", newline="\n")
+    print(md)
+    return 0
+
+
 # ---------------------------------------------------------------------------------------------------------- main
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("plan", "work", "run", "hold", "compact", "finalize", "selfplay", "coverage", "status", "stop"))
+    ap.add_argument("cmd", choices=("plan", "work", "run", "hold", "compact", "finalize", "selfplay", "coverage", "report", "status", "stop"))
     ap.add_argument("--store", default=str(STORE))
     ap.add_argument("--loop", default=str(jc.LOOP))
     ap.add_argument("--player", default=PLAYER_DEFAULT)
@@ -883,7 +995,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.procs > 8:
         raise SystemExit("at most 8 processes")
-    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "hold": cmd_hold, "compact": cmd_compact, "finalize": cmd_finalize, "selfplay": cmd_selfplay, "coverage": cmd_coverage,
+    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "hold": cmd_hold, "compact": cmd_compact, "finalize": cmd_finalize, "selfplay": cmd_selfplay, "coverage": cmd_coverage, "report": cmd_report,
             "status": cmd_status, "stop": cmd_stop}[a.cmd](a)
 
 

@@ -436,6 +436,41 @@ class WorkTests(unittest.TestCase):
             self.assertIn("died", jb.read_fights(store)[0]["error"])
 
 
+class ReportTests(unittest.TestCase):
+    def label(self, duel_mean: float, v2: float = 5.0) -> dict:
+        """A ladder label: the game's rung, then x32 with the same move, a visit gap of 40 HP in the values and a duel of `duel_mean` +- 1."""
+        return {"tier": "settled", "rel": 2, "rungs": [
+            {"rel": 1, "best": [1, -1, "card"], "n": 400, "from_game": True, "top2": [[1, -1, "card", 400, 12.0, 1.0], [2, -1, "card", 80, 11.0, 1.0]]},
+            {"rel": 2, "best": [1, -1, "card"], "n": 900, "top2": [[1, -1, "card", 900, 13.0, 1.0], [2, -1, "card", 60, v2, 1.0]],
+             "duel": {"n": 128, "mean": duel_mean, "se": 1.0}}]}
+
+    def test_the_rule_is_applied_again_under_either_reading_of_the_gap(self):
+        self.assertEqual(jb.settled_under(self.label(5.0), "paired"), ("settled", 2))
+        self.assertEqual(jb.settled_under(self.label(1.0), "paired"), ("soft", None))  # a duel gap of 1 against an error of 1
+        self.assertEqual(jb.settled_under(self.label(1.0), "pooled"), ("settled", 2))  # the values' gap of 8 over a small pooled error
+        self.assertIsNone(jb.settled_under({"tier": "played"}, "paired"))
+        self.assertIsNone(jb.rungs_as_turn({"rungs": [{"rel": 1, "best": [1, -1, "card"], "n": 1}]}))
+
+    def test_the_report_has_the_tables_and_hides_small_cells(self):
+        def row(i: int, kind: str, act: int, tier: str, duel_mean: float = 5.0) -> dict:
+            lab = self.label(duel_mean) if tier != "played" else {"tier": "played", "rel": 1}
+            lab["tier"] = tier
+            return {"src": "human", "start": f"s{i}", "run": f"r{i}", "kind": kind, "act": act, "label": lab, "duel": None,
+                    "teacher": {"won": i % 2 == 0}, "human": {"survived": True}}
+
+        rows = [row(i, "boss", 2, "settled" if i % 3 else "soft", 5.0 if i % 3 else 1.0) for i in range(60)] + [row(i, "elite", 1, "settled") for i in range(60, 70)]
+        for r in rows:
+            r["label"]["duel"] = r["label"]["rungs"][-1]["duel"] if r["label"]["rungs"][-1].get("duel") else None
+        fights = [{"act": 2, "kind": "boss", "cell": "act2-boss", "cpu_s": 90.0, "game": {"cpu_s": 60.0}, "positions": [{"cpu_s": 7.5}] * 4} for _ in range(30)]
+        md = jb.report_md(rows, fights)
+        self.assertIn("| act2-boss | 60 | 60 |", md)
+        self.assertIn("| act1-elite | <20 | <20 |", md)  # ten fights: not shown
+        self.assertIn("| act2-boss | 30 | 60.0 | 30.0 | 90.0 | 4.00 |", md)
+        self.assertIn("the human survived", md)
+        self.assertIn("| act2-boss | 60 | 50% (30/60) | 100% (60/60) |", md)
+        self.assertNotRegex(md, r"\br\d+\b")  # no run id is printed
+
+
 class HoldTests(unittest.TestCase):
     def test_the_line_is_written_while_the_pid_lives_refreshed_and_removed_after(self):
         with tempfile.TemporaryDirectory() as d:
