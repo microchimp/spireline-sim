@@ -20,14 +20,30 @@ From a tree that does not move under it (a worktree detached at the landed commi
 
 ```
 D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py job --lab D:/spireline/referee/LAB --store D:/spireline/referee/run-teacher \
-    --agent-root D:/spireline/referee/agent --judge D:/spireline/referee/agent/judge/v0/judge.pt --procs 4 --loop
+    --agent-root D:/spireline/referee/agent --judge D:/spireline/referee/agent/judge/v0/judge.pt --source new --procs 4 --loop
 ```
 
-It reads the player from `agent/current.json`, plays one block (`--block-min`, default 60: no run starts after that; the runs in flight
+**Round 0** (labelling the stored generation 13 exploring runs; a one-off, **not under the daily budget**, which applies from round 1, the daily
+job above) is the same program with `label`, which takes `--procs N` (a spawn pool, one engine per process, BelowNormal; the pool's usual cap of
+six is lifted for this job; `--mem-gb 4` kills and retries a worker over that much private memory):
+
+```
+D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py label --lab D:/spireline/referee/LAB     --store D:/spireline/referee/run-teacher/gen13-r0 --agent-root D:/spireline/referee/agent     --judge D:/spireline/referee/agent/judge/v0/judge.pt --procs 12 --share
+```
+
+`--share` because the machine is shared by order (without it the job waits on any live QUIET.lock line, a corpus builder's included). It is one
+block of up to 12 hours over the stored runs in a fixed shuffle, 5 screens at most from each (`--per-run`), stopping new runs when the store holds
+10,000 labelled screens (`--target-screens`, 0: no limit; the runs in flight finish), and it writes the shard of the runs finished so far every
+30 minutes (`--shard-every-min`, parts `<job>-p001`, ...; each run is in one part only), so the student can be started on a part while the
+block goes on. Its data is under `gen13-r0/13/` (`<store>/<generation>/`); `run_student.py ... --shards-root D:/spireline/referee/run-teacher`
+reads it and the daily job's together. A stopped or killed round 0 is started again with the same command: finished runs are not played again.
+
+The daily job reads the player from `agent/current.json`, plays one block (`--block-min`, default 60: no run starts after that; the runs in flight
 finish), writes the shard, waits while a rule holds it, and starts the next block, day after day (`--loop`; without it, one block and exit).
-`--source auto` (the default) is **round 0 first**: the stored generation 13 exploring runs of 2026-11-05 to 11-08 (6,889 runs), replayed
-exactly and labelled, until 10,000 screens have come from them; then new play. `--source new` and `--source stored` (also the command
-`label`) choose one. `--share` (a hand-started job only) honours HALT, PAUSE and the night, and ignores QUIET.lock lines, judgement first
+`--source new` (the default of `job`) is round 1 and on: whole runs the guarded teacher plays. `--source stored` (the command `label`) is round 0,
+above. `--source auto` is both in one store: the stored generation 13 exploring runs of 2026-11-05 to 11-08 (6,889 runs), replayed exactly and
+labelled, until 10,000 screens have come from the store, then new play (not beside a separate round 0 store: it would label the same stored runs
+again). `--share` (a hand-started job only) honours HALT, PAUSE and the night, and ignores QUIET.lock lines, judgement first
 and the presort rule: for a machine shared by order.
 
 ## The rules (the filler's, in `tools/lab/jobs.teacher_hold`)
@@ -80,7 +96,7 @@ above, which keeps to the same rules by itself.
   "cmd": [
    "{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
    "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
-   "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"
+   "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"
   ],
   "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]
  }

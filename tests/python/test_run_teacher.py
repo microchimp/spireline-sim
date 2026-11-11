@@ -989,7 +989,7 @@ class NoHumanRecordTests(unittest.TestCase):
 class JobCommandTests(unittest.TestCase):
     def test_the_job_and_label_parsers(self):
         a = rt.build_parser().parse_args(["job"])
-        self.assertEqual((a.k, a.k_max, a.procs, a.source, a.block_min, a.share, a.loop), (rt.JOB_K, rt.JOB_K_MAX, 4, "auto", 60.0, False, False))
+        self.assertEqual((a.k, a.k_max, a.procs, a.source, a.block_min, a.share, a.loop), (rt.JOB_K, rt.JOB_K_MAX, 4, "new", 60.0, False, False))
         self.assertEqual((rt.JOB_K, rt.JOB_K_MAX), (2, 4))
         a = rt.build_parser().parse_args(["label", "--per-run", "7", "--stored-from", "20261106"])
         self.assertEqual((a.cmd, a.per_run, a.stored_from), ("label", 7, "20261106"))
@@ -1070,6 +1070,129 @@ class JobCommandTests(unittest.TestCase):
             self.assertEqual(100.0, res["label"]["cpu_mean"])
             self.assertEqual(rt.stored_screens_done(out), 1)
 
+
+
+class RoundZeroTests(unittest.TestCase):
+    """Round 0 (`label`): not under the daily budget, up to 12 processes, a screen target, parts of the shard while the block runs."""
+
+    def test_label_defaults_are_one_long_block_over_the_stored_runs(self):
+        a = rt.build_parser().parse_args(["label"])
+        self.assertEqual((a.block_min, a.max_runs, a.target_screens, a.procs, a.shard_every_min), (rt.ROUND0_BLOCK_MIN, rt.ROUND0_MAX_RUNS, rt.STORED_TARGET, 4, rt.SHARD_EVERY_MIN))
+        a = rt.build_parser().parse_args(["label", "--procs", "12", "--target-screens", "0", "--share"])
+        self.assertEqual((a.procs, a.target_screens, a.share), (12, 0, True))
+        j = rt.build_parser().parse_args(["job"])
+        self.assertEqual((j.block_min, j.max_runs), (60.0, 400))  # the daily job keeps its small blocks
+
+    def run_cmd(self, argv):
+        from tools.lab import jobs
+
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "LAB").mkdir()
+            (tmp / "agent").mkdir()
+            (tmp / "agent" / "current.json").write_text(json.dumps({"generation": 13, "dir": "D:/nowhere/gen13/x"}), encoding="utf-8")
+            a = rt.build_parser().parse_args([*argv, "--lab", str(tmp / "LAB"), "--store", str(tmp / "store"), "--agent-root", str(tmp / "agent")])
+
+            def block(args, cfg, **kw):
+                seen.update(cfg=cfg, a=args, source=args.source)
+                return {"runs": 1, "capped": 0, "decisions": 1}
+
+            with mock.patch.object(jobs, "_git_main", return_value=None), mock.patch.object(rt, "job_block", side_effect=block):
+                self.assertEqual(0, rt.job_cmd(a))
+        return seen
+
+    def test_round_0_is_not_under_the_daily_budget_and_the_daily_job_is(self):
+        label = self.run_cmd(["label", "--share"])
+        self.assertEqual("stored", label["source"])
+        self.assertGreater(label["cfg"]["core_hours_per_day"], 1e6)
+        self.assertEqual(24.0, self.run_cmd(["job"])["cfg"]["core_hours_per_day"])
+        self.assertEqual(5.0, self.run_cmd(["label", "--budget-h", "5"])["cfg"]["core_hours_per_day"])  # an explicit budget is kept
+        self.assertEqual(8.0, self.run_cmd(["job", "--budget-h", "8"])["cfg"]["core_hours_per_day"])
+
+    def test_a_label_job_asked_for_twelve_processes_gets_them(self):
+        a = rt.build_parser().parse_args(["label", "--procs", "12"])
+        self.assertEqual(12, a.procs)
+
+    def test_the_target_stops_new_runs_and_leaves_no_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            saved = dict(rt._J)
+            try:
+                rt._J.clear()
+                rt._J.update(deadline=time.time() + 3600, stop_file="", ledger=str(tmp / "ledger.jsonl"), job="J", budget_h=1e9, gen_dir=tmp, target_screens=10)
+                (tmp / "runs.jsonl").write_text(json.dumps({"_task": ["rt-label", "A", 1], "seed": "A", "source": "stored", "teacher_screens": 6}) + "\n", encoding="utf-8")
+                self.assertIsNone(rt._gate(100.0, "B"))
+                (tmp / "runs.jsonl").write_text("".join(json.dumps({"_task": ["rt-label", s, 1], "seed": s, "source": "stored", "teacher_screens": 6}) + "\n" for s in "AB"),
+                                                encoding="utf-8")
+                self.assertEqual("target", rt._gate(100.0, "C"))
+                rt._J["target_screens"] = 0  # no limit
+                self.assertIsNone(rt._gate(100.0, "C"))
+                rows = [{"_task": ["rt-label", "D", 1], "capped": True, "cap_reason": "target", "seed": "D"},
+                        {"_task": ["rt-label", "E", 1], "capped": True, "cap_reason": "memory over 4.0 GB (killed)", "seed": "E"}]
+                f = tmp / "r2.jsonl"
+                f.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+                rt.drop_skips(f)
+                self.assertEqual(["E"], [r["seed"] for r in rt.read_jsonl(f)])
+            finally:
+                rt._J.clear()
+                rt._J.update(saved)
+
+    def test_a_block_with_nothing_finished_writes_no_shard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = rt.consolidate(Path(tmp), "J", {"generation": 13, "identity": {}, "judge": None, "lib": None, "tree": None, "k": 2, "k_max": 4, "max_options": 4,
+                                                  "cal_doc": {}}, SimpleNamespace(generation=13))
+            self.assertEqual((0, []), (doc["counts"]["decisions"], doc["seeds"]))
+            self.assertFalse((Path(tmp) / "shards").exists())
+
+    def test_a_long_block_writes_parts_as_runs_finish_and_the_rest_at_its_end(self):
+        import fight_gym
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            store = tmp / "store"
+            gen_dir = store / "13"
+            agent = SimpleNamespace(generation=13, search_config=lambda name: SimpleNamespace(sims=4, c=0.1, name="x"), describe=lambda: {"generation": 13},
+                                    recipe=lambda: "r", macro_npz=None, human_prior=None)
+            a = rt.build_parser().parse_args(["job", "--source", "new", "--max-runs", "3", "--procs", "12", "--shard-every-min", "0.000001", "--judge", "",
+                                              "--lib", str(tmp / "nolib")])
+            seen = {}
+
+            def fake_run_tasks(tasks, fn, target, procs, *, stop=None, mem_limit=None, **kw):
+                seen.update(procs=procs, cap=fight_gym.MAX_PROCS, mem=mem_limit, tasks=len(tasks))
+                for task in tasks:
+                    seed = task[1]
+                    rf = rt.RunFiles(gen_dir, seed)
+                    rf.load()
+                    rf.append(synthetic_record(seed, 0, n=3), rows_for(3, 1.0))
+                    row = {"_task": list(task[:3]), "arm": "teacher", "source": "new", "job": "J", "seed": seed, "ix": task[2], "floor": 9, "cpu": 10.0, "wall": 10.0,
+                           "teacher_cpu": 9.0, "teacher_screens": 1, "screens": {"card/a1": 1}, "bosses": []}
+                    with open(target, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(row) + chr(10))
+                    time.sleep(0.05)  # the clock the supervisor reads ticks every 15 ms on Windows
+                    self.assertIsNone(stop())  # the supervisor's look: a part is written when the time is up
+                return None
+
+            cap0 = fight_gym.MAX_PROCS
+            try:
+                with mock.patch("fight_gym.run_tasks", fake_run_tasks), mock.patch("gen_loop.load_agent", return_value=agent), \
+                        mock.patch.object(rt, "agent_identity", return_value={"agent": "gen13/x", "agent_sha256": "0" * 64}), mock.patch.object(rt, "_git_head", return_value="abc"):
+                    res = rt.job_block(a, {"core_hours_per_day": 24.0}, hold_fn=lambda starting: None, store=store, generation=13, agent_dir="D:/nowhere/gen13/x", name="J")
+            finally:
+                fight_gym.MAX_PROCS = cap0
+            self.assertEqual(12, seen["procs"])
+            self.assertGreaterEqual(seen["cap"], 12)  # the pool's cap of six was lifted for this job
+            self.assertEqual(a.mem_gb * 2**30, seen["mem"])
+            self.assertEqual(3, res["runs"])
+            shards = sorted(p.name for p in (gen_dir / "shards").iterdir())
+            self.assertEqual(["J-p001", "J-p002", "J-p003"], shards)  # each look wrote the runs finished since the one before; none is left for the block's own
+            seeds = [s for name in shards for s in json.loads((gen_dir / "shards" / name / "manifest.json").read_text(encoding="utf-8"))["seeds"]]
+            self.assertEqual(sorted(seeds), sorted(set(seeds)))  # a run is in one shard only
+            self.assertEqual(3, len(seeds))
+            totals = json.loads((gen_dir / "manifest.json").read_text(encoding="utf-8"))["totals"]
+            self.assertEqual((3, 9), (totals["decisions"], totals["rows"]))
+            self.assertTrue((gen_dir / "report.json").is_file())
+            self.assertFalse((store / "job.lock").exists())
 
 
 NATIVE = (ROOT / "out" / "Sts2Emulator.dll").exists()

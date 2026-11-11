@@ -116,6 +116,11 @@ DEFAULT_AGENT_ROOT = "D:/spireline/referee/agent"
 DEFAULT_RUNS_ROOT = "D:/spireline/referee/lab/runs"
 SEED_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # gen0.ALPHABET: the lab's game seeds
 NEW_IX0 = 1_000_000  # the agent streams' index of the job's new runs (the lab's runs count from 0)
+SHARD_EVERY_MIN = 30.0  # a block writes the shard of the runs finished since the last one this often (a part: <job>-p001, ...), so a long block's data is readable while it runs
+JOB_MEM_GB = 4.0  # a worker over this private memory is killed and its run asked for again
+ROUND0_BLOCK_MIN = 720.0  # `label` (round 0): one long block
+ROUND0_MAX_RUNS = 100000
+NO_BUDGET_H = 1.0e9  # `label` is not under the daily budget
 
 
 # ---------------------------------------------------------------------------------------------------------- seeds
@@ -1272,6 +1277,8 @@ def _gate(est_s: float, seed: str) -> str | None:
         return "block-end"
     if _J.get("stop_file") and Path(_J["stop_file"]).exists():
         return "stop-file"
+    if _J.get("target_screens") and stored_screens_done(_J["gen_dir"]) >= int(_J["target_screens"]):
+        return "target"
     ledger = Path(_J["ledger"])
     jobs.append_ledger(ledger, {"ev": "start", "job": _J["job"], "seed": seed, "est": round(est_s, 1)})
     rows = jobs.read_ledger(ledger)
@@ -1486,10 +1493,10 @@ def job_capped_row(task: tuple, reason: str, seconds: float, prog: dict) -> dict
 
 
 def drop_skips(path: Path) -> None:
-    """Take the rows the workers wrote for runs they declined to start (the block's time over, the budget spent, a STOP file) out of runs.jsonl:
+    """Take the rows the workers wrote for runs they declined to start (the block's time over, the budget spent, a STOP file, the target reached) out of runs.jsonl:
     they are not outcomes and the runs are asked for again at the next job."""
     rows = read_jsonl(path)
-    keep = [r for r in rows if r.get("cap_reason") not in ("block-end", "budget", "stop-file")]
+    keep = [r for r in rows if r.get("cap_reason") not in ("block-end", "budget", "stop-file", "target")]
     if len(keep) != len(rows):
         path.write_text("".join(json.dumps(r) + "\n" for r in keep), encoding="utf-8", newline="\n")
 
@@ -1502,6 +1509,8 @@ def consolidate(gen_dir: Path, job_name: str, ctx: dict, agent: Any) -> dict:
     rows = done_rows(gen_dir)
     old = sharded_seeds(gen_dir, but=job_name)
     seeds = list(dict.fromkeys(r["seed"] for r in rows if r["seed"] not in old))  # in the order the runs finished
+    if not seeds:  # no run finished since the last shard: no shard (an empty one for every held block would only be clutter)
+        return {"job": job_name, "seeds": [], "runs": 0, "counts": {"decisions": 0, "rows": 0, "runs": 0, "refused": 0, "k_extended": 0, "by_kind_act": {}}}
     sources = dict(Counter(r.get("source", "?") for r in rows if r["seed"] in set(seeds)))
     manifest = shard_manifest(job=job_name, generation=ctx["generation"], identity=ctx["identity"], judge=ctx["judge"], lib=ctx["lib"], tree=ctx["tree"],
                               k=ctx["k"], k_max=ctx["k_max"], max_options=ctx["max_options"], cal=ctx["cal_doc"], sources=sources)
@@ -1582,27 +1591,45 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
                       "ledger": str(ledger), "job": name, "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal": cal_doc,
                       "deadline": t_start + a.block_min * 60.0, "budget_h": float(cfg.get("core_hours_per_day", 24.0)),
                       "stop_file": str(job_dir / "STOP"), "stop_floor": a.stop_floor, "label_rate": a.label_rate, "per_run": a.per_run,
-                      "kinds": kinds_of(a.kinds),
+                      "kinds": kinds_of(a.kinds), "target_screens": a.target_screens if mode == "stored" else 0,
                       "est_new_s": jobs.TEACHER_EST_CPU_S, "est_label_s": 60.0 + 45.0 * a.per_run}
         if mode == "stored" and gen_loop.load_agent(worker_cfg["replay_agent"]).generation != generation:
             raise SystemExit("the stored runs are of generation %d: --replay-agent must be that generation's player" % generation)
+        ctx = {"generation": generation, "identity": agent_identity(agent_dir, agent), "judge": a.judge, "lib": lib, "tree": _git_head(),
+               "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal_doc": {str(k): v for k, v in cal_doc.items()}}
         why = hold_fn(True)
         if why:
             res["held"] = why
             tasks = []
         capped0 = sum(1 for r in read_jsonl(target) if r.get("capped"))
+        parts = [0, time.monotonic()]
+
+        def stop() -> str | None:
+            if (job_dir / "STOP").exists():
+                return "STOP file"
+            why = hold_fn(False)
+            if why:
+                return why
+            if a.shard_every_min and time.monotonic() - parts[1] > a.shard_every_min * 60:  # the runs finished so far are readable while the block goes on
+                parts[1] = time.monotonic()
+                try:
+                    part = consolidate(gen_dir, f"{name}-p{parts[0] + 1:03d}", ctx, agent)
+                    parts[0] += 1 if part["seeds"] else 0
+                    store_manifest(gen_dir, ctx)
+                except Exception as e:  # noqa: BLE001 -- the part is written again at the next look and the block's own shard at its end
+                    print(f"run-teacher job: a part of the shard failed ({type(e).__name__}: {e})", flush=True)
+            return None
+
         if tasks:
+            fight_gym.MAX_PROCS = max(int(fight_gym.MAX_PROCS), int(a.procs))  # the pool's cap of 6 is the loop's; round 0 asks for more (this process only)
             reason = fight_gym.run_tasks(tasks, job_task, target, a.procs, hard_of=lambda t: RUN_WALL_CAP_S + 600, capped_of=job_capped_row,
-                                         init=_init_job_worker, init_args=(worker_cfg,),
-                                         stop=lambda: "STOP file" if (job_dir / "STOP").exists() else hold_fn(False))
+                                         init=_init_job_worker, init_args=(worker_cfg,), mem_limit=a.mem_gb * 2**30 if a.mem_gb else None, stop=stop)
             drop_skips(target)
             res["capped"] = sum(1 for r in read_jsonl(target) if r.get("capped")) - capped0  # runs lost to a worker that died or ran too long
             if reason:
                 res["stopped"] = reason
             done = {r["seed"] for r in done_rows(gen_dir)}
             tasks = [t for t in tasks if t[1] not in done]
-        ctx = {"generation": generation, "identity": agent_identity(agent_dir, agent), "judge": a.judge, "lib": lib, "tree": _git_head(),
-               "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal_doc": {str(k): v for k, v in cal_doc.items()}}
         manifest = consolidate(gen_dir, name, ctx, agent)
         store_manifest(gen_dir, ctx)
         mine = [r for r in done_rows(gen_dir) if r.get("job") == name]
@@ -1782,6 +1809,8 @@ def job_cmd(a: argparse.Namespace) -> int:
     cfg["store"] = str(store)
     if a.budget_h is not None:
         cfg["core_hours_per_day"] = float(a.budget_h)
+    elif a.cmd == "label":
+        cfg["core_hours_per_day"] = NO_BUDGET_H  # round 0 is a one-off: the daily budget applies from round 1
     if a.share:
         def hold_fn(starting: bool) -> str | None:
             if (lab / "HALT").exists() or (lab / "PAUSE").exists():
@@ -1843,8 +1872,9 @@ def build_parser() -> argparse.ArgumentParser:
         jp.add_argument("--replay-agent", default="", help="source stored: the player that played the stored runs (default: the player)")
         jp.add_argument("--judge", default=DEFAULT_JUDGE)
         jp.add_argument("--lib", default="", help="the engine's native folder (default: this tree's out/)")
-        jp.add_argument("--source", choices=("auto", "new", "stored"), default="auto",
-                        help="new: whole runs the teacher plays; stored: replay the stored exploring runs; auto: stored until it has yielded STORED_TARGET screens")
+        jp.add_argument("--source", choices=("auto", "new", "stored"), default="new",
+                        help="new: whole runs the teacher plays (round 1 and on); stored: replay the stored exploring runs (`label`, round 0); "
+                             "auto: stored until the store has yielded STORED_TARGET screens, then new")
         jp.add_argument("--runs-root", default=DEFAULT_RUNS_ROOT, help="the lab's job folders (the stored exploring runs)")
         jp.add_argument("--stored-from", default=STORED_FROM)
         jp.add_argument("--stored-to", default=STORED_TO)
@@ -1858,6 +1888,10 @@ def build_parser() -> argparse.ArgumentParser:
         jp.add_argument("--k-max", type=int, default=JOB_K_MAX, help="draws at most (equal to --k: fixed K)")
         jp.add_argument("--max-options", type=int, default=DEFAULT_MAX_OPTIONS)
         jp.add_argument("--max-runs", type=int, default=400, help="runs asked of one block (the budget and the block's time end it earlier)")
+        jp.add_argument("--target-screens", type=int, default=STORED_TARGET,
+                        help="source stored: no new run starts once the store holds this many screens from stored runs (0: no limit)")
+        jp.add_argument("--shard-every-min", type=float, default=SHARD_EVERY_MIN, help="write the shard of the runs finished so far this often (0: at the end only)")
+        jp.add_argument("--mem-gb", type=float, default=JOB_MEM_GB, help="a worker over this private memory is killed and its run asked for again (0: none)")
         jp.add_argument("--kinds", default="all", help="screen kinds the teacher covers: all, a comma list, or none (plain player runs)")
         jp.add_argument("--stop-floor", type=int, default=0, help="end a new run at this floor (a smoke test); 0: play it out")
         jp.add_argument("--share", action="store_true", help="the machine is shared by order: honour only HALT, PAUSE and the night")
@@ -1865,6 +1899,8 @@ def build_parser() -> argparse.ArgumentParser:
         jp.add_argument("--result", default="", help="write the block's result.json here")
         jp.add_argument("--name", default="", help="the job's name (default: the UTC minute and -teacher)")
         jp.add_argument("--labels-calibration", default="", help="stored hindsight labels (a labels.d's parent) whose door outcomes seed the calibration")
+        if name == "label":  # round 0: one long block over the stored runs, not under the daily budget
+            jp.set_defaults(block_min=ROUND0_BLOCK_MIN, max_runs=ROUND0_MAX_RUNS)
     return p
 
 

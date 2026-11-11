@@ -77,7 +77,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                 "presort_horizon_min": 60.0, "quiet_ignore": ["gym-loop", "lab-score"], "store": "D:/spireline/referee/run-teacher",
                 "cmd": ["{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
                         "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
-                        "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"],
+                        "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"],
                 "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]},
 }
 BENCH_KEY = {"bench-env": "env", "bench-emu": "emu"}
