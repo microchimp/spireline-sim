@@ -882,5 +882,224 @@ class CommandLineTests(unittest.TestCase):
             p.parse_args(["fit", "--shards-root", "s"])  # the prior and the output are required
 
 
+# ------------------------------------------------------------------------------------------------------------------ the map grid (D58 addendum 13)
+
+
+def tower_weights(seed: int = 3, scale: float = 0.05) -> dict[str, np.ndarray]:
+    """A v2 prior's weights: the plain prior's with the map tower and the first layer's 64 extra columns."""
+    rng = np.random.default_rng(seed)
+    w = random_weights(seed, scale)
+    w["hidden1.weight"] = (rng.standard_normal((256, 454 + 64)) * scale).astype(np.float32)
+    shapes = {"map.conv1.weight": (16, 13, 3, 3), "map.conv1.bias": (16,), "map.conv2.weight": (32, 16, 3, 3), "map.conv2.bias": (32,),
+              "map.fc.weight": (64, 32 * 17 * 7), "map.fc.bias": (64,)}
+    w.update({k: (rng.standard_normal(s) * scale).astype(np.float32) for k, s in shapes.items()})
+    return w
+
+
+def tower_prior_file(path: Path, weights: dict[str, np.ndarray]) -> Path:
+    np.savez(path, meta=np.array(json.dumps({"variant": "test-map", "map_grid": True})), **weights)
+    return path
+
+
+def add_rows_map(d: Path, seed: int = 11, bad: str | None = None) -> np.ndarray:
+    """Write `rows_map.npz` beside a shard's rows.npz: random 0/1 grids, one per row."""
+    with np.load(d / "rows.npz") as z:
+        n = len(z["rows"])
+    grid = (np.random.default_rng(seed).random((n, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+    if bad == "shape":
+        grid = grid[:, :-1]
+    elif bad == "values":
+        grid[0, 0] = 2
+    elif bad == "rows":
+        grid = grid[:-1]
+    np.savez_compressed(d / rs.ROWS_MAP_FILE, grid=grid)
+    return grid
+
+
+def human_dataset_v2(runs_by_fifth: dict[int, list[str]], seed: int = 5, **kw) -> "hp.Dataset":
+    """`human_dataset` with block M: a table of 20 random grids and each row's entry in it."""
+    ds = human_dataset(runs_by_fifth, seed=seed, **kw)
+    rng = np.random.default_rng(seed + 1)
+    table = (rng.random((20, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+    out = hp.Dataset(ds.dec, ds.dense, ds.counts, ds.role, ds.ident, ds.run_ids, table, rng.integers(0, 20, len(ds.dense)).astype(np.int32))
+    out._index(None)  # noqa: SLF001
+    return out
+
+
+class MapGridTests(unittest.TestCase):
+    """A fit with the map tower: the shards' `rows_map.npz`, the v2 human shards, the teacher's own prior for the target, the refusals."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.plain = random_weights()  # the prior the teacher played with
+        cls.tower = tower_weights()  # the v2 prior the fit starts from
+        cls.plain_path = write_weights(cls.root / "pi_h.npz", cls.plain)
+        cls.tower_path = tower_prior_file(cls.root / "pi_h_v2.npz", cls.tower)
+        cls.plain_prior = hpi.PriorScorer.load(cls.plain_path)
+        cls.tower_prior = hpi.PriorScorer.load(cls.tower_path)
+        cls.synth = Synth(cls.plain, seed=17)
+        cls.shards = synth_shards(cls.root, cls.synth, runs=60, kinds=("card", "route", "shop", "reward"), per_kind=2)
+        cls.grid = add_rows_map(cls.shards)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_constants_agree(self):
+        from run_train import features
+
+        self.assertEqual(features.MAP_GRID_SIZE, rs.GRID_WIDTH)
+
+    def test_a_shard_with_rows_map_loads_its_grid_row_for_row(self):
+        ts = rs.load_shards(self.shards, prior=self.tower_prior, map_grid=True, teacher_prior=self.plain_prior)
+        self.assertEqual((len(ts.q), rs.GRID_WIDTH), ts.grid.shape)
+        self.assertEqual(np.int8, ts.grid.dtype)
+        self.assertTrue(rs.public_stats(ts)["map_grid"])
+        # the set's rows are the shard's in decision order: the first decision's rows are the shard's first
+        n = int(ts.count[0])
+        np.testing.assert_array_equal(ts.grid[:n], self.grid[:n])
+        # the tower prior's logits are scored with those grids
+        want = self.tower_prior.logits(ts.dense[:50], ts.counts[:50], ts.grid[:50])
+        np.testing.assert_allclose(ts.zh[:50], want, atol=1e-5)
+        # the loader without the flag does not carry them
+        plain_ts = rs.load_shards(self.shards, prior=self.plain_prior)
+        self.assertIsNone(plain_ts.grid)
+        self.assertFalse(rs.public_stats(plain_ts)["map_grid"])
+
+    def test_the_target_uses_the_prior_the_teacher_played_with(self):
+        ts = rs.load_shards(self.shards, prior=self.tower_prior, map_grid=True, teacher_prior=self.plain_prior)
+        self.assertIsNotNone(ts.zt)
+        self.assertEqual(0.0 <= ts.stats["logp_check"]["max_abs_difference"] < 1e-4, True)  # the recorded log-probabilities are the plain prior's
+        blended = [i for i in range(len(ts)) if ts.lam[i] > 0]
+        self.assertTrue(blended)
+        t = ts.targets()
+        i = blended[0]
+        a, b = int(ts.start[i]), int(ts.start[i] + ts.count[i])
+        want = rs.teacher_target(ts.q[a:b], hpi.log_softmax(self.plain_prior.logits(ts.dense[a:b], ts.counts[a:b])), float(ts.lam[i]), float(ts.tau[i]))
+        np.testing.assert_allclose(t[a:b], want, atol=1e-6)
+        # not the v2 prior's own log-probabilities, which the recorded ones are not
+        own = rs.teacher_target(ts.q[a:b], hpi.log_softmax(ts.zh[a:b]), float(ts.lam[i]), float(ts.tau[i]))
+        self.assertFalse(np.allclose(t[a:b], own, atol=1e-4))
+        # without naming the teacher's prior the recorded log-probabilities are not the v2 prior's: the shard is refused
+        with self.assertRaisesRegex(rs.ShardError, "another human prior"):
+            rs.load_shards(self.shards, prior=self.tower_prior, map_grid=True)
+
+    def test_a_map_grid_fit_refuses_what_has_no_grid_and_the_flag_and_the_prior_must_agree(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        bare = synth_shards(Path(scratch.name), self.synth, runs=6, kinds=("card",), per_kind=1, name="bare")  # no rows_map.npz
+        with self.assertRaisesRegex(rs.ShardError, "reencode"):
+            rs.load_shards(bare, prior=self.tower_prior, map_grid=True, teacher_prior=self.plain_prior)
+        with self.assertRaisesRegex(rs.ShardError, "no map tower"):
+            rs.load_shards(self.shards, prior=self.plain_prior, map_grid=True)
+        with self.assertRaisesRegex(rs.ShardError, "--map-grid"):  # a fit without the flag refuses a prior that has the tower
+            rs.load_shards(self.shards, prior=self.tower_prior)
+        with self.assertRaisesRegex(rs.ShardError, "--map-grid"):
+            rs.load_shards(self.shards, prior=self.plain_prior, teacher_prior=self.tower_prior)
+        ts = rs.load_shards(bare, prior=self.plain_prior)  # a plain fit on shards without the grid is as it was
+        self.assertEqual(6, len(ts))
+        with self.assertRaisesRegex(rs.ShardError, "map tower"):
+            ts.logits_of(self.tower_prior)
+
+    def test_a_malformed_rows_map_is_refused(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        for bad, why in (("shape", "not"), ("values", "0 or 1"), ("rows", "not")):
+            d = synth_shards(Path(scratch.name), self.synth, runs=3, kinds=("card",), per_kind=1, name=f"bad-{bad}")
+            add_rows_map(d, bad=bad)
+            with self.assertRaisesRegex(rs.ShardError, why):
+                rs.read_shard(d)
+
+    def test_the_human_shards_need_the_grid_for_a_map_grid_fit(self):
+        ids = run_ids_by_bucket(25)
+        for ds, kw in ((human_dataset({1: ids[1][:4]}), {"map_grid": True}),):
+            d = self.root / "human-plain"
+            d.mkdir(exist_ok=True)
+            np.savez(d / "shard-00000.npz", dec=ds.dec, dense=ds.dense, counts=ds.counts, role=ds.role, ident=ds.ident, run_ids=np.array(ds.run_ids))
+            with self.assertRaisesRegex(rs.ShardError, "no map grid"):
+                rs.load_human(d, (1,), exam_ids=frozenset(), **kw)
+            self.assertEqual(len(ds.dec), len(rs.load_human(d, (1,), exam_ids=frozenset()).dec))  # a plain fit reads them as always
+        v2 = human_dataset_v2({1: ids[1][:4]})
+        d2 = self.root / "human-v2"
+        d2.mkdir(exist_ok=True)
+        np.savez(d2 / "shard-00000.npz", dec=v2.dec, dense=v2.dense, counts=v2.counts, role=v2.role, ident=v2.ident, run_ids=np.array(v2.run_ids),
+                 grid=v2.grid, grid_ix=v2.grid_ix)
+        got = rs.load_human(d2, (1,), exam_ids=frozenset(), map_grid=True)
+        self.assertTrue(got.has_grid)
+        np.testing.assert_array_equal(got.grid_rows(np.arange(len(got.dense))), v2.grid_rows(np.arange(len(v2.dense))))
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_the_student_net_has_the_tower_and_is_the_prior_logit_for_logit(self):
+        rows = np.random.default_rng(1).normal(0, 0.4, (30, rs.ROWS_WIDTH)).astype(np.float32)
+        dense, counts = models.value_inputs(rows)
+        grid = (np.random.default_rng(2).random((30, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+        net = rs.make_net(self.tower, 0.0).eval()
+        self.assertTrue(net.uses_map)
+        with torch.no_grad():
+            got = net(torch.from_numpy(dense), torch.from_numpy(counts), torch.from_numpy(grid)).numpy()
+            with self.assertRaises(ValueError):
+                net(torch.from_numpy(dense), torch.from_numpy(counts))  # a tower net never scores without grids
+        np.testing.assert_allclose(got, self.tower_prior.logits(dense, counts, grid), atol=2e-5)
+        self.assertEqual(set(self.tower), set(rs.net_params(net)))
+        self.assertFalse(rs.make_net(self.plain, 0.0).uses_map)
+
+    def test_a_student_file_carries_the_tower_and_says_so(self):
+        weights = tower_weights(seed=9)
+        path = student_file(self.root / "s_map.npz", weights, kinds=("route", "card"), prior_sha=hpi.file_sha256(self.tower_path))
+        with np.load(path) as z:
+            self.assertTrue(set(hpi.MAP_KEYS) <= set(z.files))
+            self.assertTrue(json.loads(str(z["meta"]))["map_grid"])
+        s = hpi.StudentScorer.load(path)
+        self.assertTrue(s.map_grid)
+        self.assertEqual(("route", "card"), s.kinds)
+        rows = np.random.default_rng(3).normal(0, 0.4, (4, rs.ROWS_WIDTH)).astype(np.float32)
+        grid = (np.random.default_rng(4).random((4, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+        np.testing.assert_allclose(s.row_logits(rows, grid), hpi.PriorScorer(weights, {"map_grid": True}).row_logits(rows, grid), atol=1e-6)
+        with self.assertRaisesRegex(ValueError, "map tower"):
+            s.row_logits(rows)
+        plain = student_file(self.root / "s_plain.npz", self.plain, kinds=("card",))  # a plain student has no tower and no flag
+        with np.load(plain) as z:
+            self.assertNotIn("map_grid", json.loads(str(z["meta"])))
+            self.assertFalse(set(hpi.MAP_KEYS) & set(z.files))
+        self.assertFalse(hpi.StudentScorer.load(plain).map_grid)
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_a_map_grid_fit_and_both_legs_run_end_to_end_and_the_student_carries_the_tower(self):
+        ids = run_ids_by_bucket(30)
+        human = {1: human_dataset_v2({1: ids[1][:30]}, per_run=1), 4: human_dataset_v2({4: ids[4][:30]}, per_run=1)}
+        with mock.patch.object(rs, "BOOT_DRAWS", 100), mock.patch.object(rs, "LEG1_MIN_DECISIONS", 10), mock.patch.object(rs, "MIN_LAMBDA_DECISIONS", 10), \
+                mock.patch.object(rs, "load_human", side_effect=lambda d, fifths, **kw: human[1 if fifths == rs.HUMAN_TRAIN_FIFTHS else 4]) as lh:
+            legs = rs.run_fit(self.root, self.tower_path, self.root / "out_map", human_dir=self.root, exam_ids=frozenset(),
+                              cfg=rs.FitConfig(epochs=2, patience=2, lr=1e-3, beta=0.5, kl=0.05, batch_teacher=64, batch_human=16, dropout=0.0),
+                              device="cpu", log=lambda *_: None, map_grid=True, teacher_prior_path=self.plain_path)
+        self.assertTrue(all(c.kwargs.get("map_grid") for c in lh.call_args_list))  # the human shards are read with their grid
+        out = self.root / "out_map"
+        with np.load(out / rs.STUDENT_OUT) as z:
+            self.assertTrue(set(hpi.MAP_KEYS) <= set(z.files))
+            self.assertTrue(json.loads(str(z["meta"]))["map_grid"])
+        student = hpi.StudentScorer.load(out / rs.STUDENT_OUT)
+        self.assertTrue(student.map_grid)
+        self.assertEqual(hpi.file_sha256(self.tower_path), legs["baseline"]["sha256"])  # measured against the v2 prior
+        fit_doc = json.loads((out / rs.FIT_FILE).read_text())
+        self.assertTrue(fit_doc["map_grid"])
+        self.assertEqual(hpi.file_sha256(self.plain_path), fit_doc["teacher_prior_sha256"])
+        self.assertTrue(fit_doc["data"]["map_grid"])
+        self.assertIn("card", legs["leg1"]["kinds"])
+        self.assertIn("card", legs["leg2"]["kinds"])  # leg 2 scored the tower student and prior on the grids of the v2 human shards
+        # leg 2 on shards without the grid refuses to score a tower
+        with self.assertRaisesRegex(rs.ShardError, "map grid"):
+            rs.leg2(human_dataset({4: ids[4][:30]}, per_run=1), student, self.tower_prior, exam_ids=frozenset())
+
+    def test_the_command_line_has_the_flag_and_the_teachers_prior(self):
+        p = rs.build_parser()
+        a = p.parse_args(["fit", "--shards-root", "s", "--prior", "p", "--out", "o", "--map-grid", "--teacher-prior", "t"])
+        self.assertEqual((True, "t"), (a.map_grid, a.teacher_prior))
+        b = p.parse_args(["round", "--shards-root", "s", "--prior", "p", "--out", "o", "--base", "b", "--agent-root", "r", "--target", "9"])
+        self.assertEqual((False, None), (b.map_grid, b.teacher_prior))
+        self.assertTrue(p.parse_args(["check", "--shards-root", "s", "--map-grid"]).map_grid)
+
+
 if __name__ == "__main__":
     unittest.main()

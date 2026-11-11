@@ -99,6 +99,40 @@ Act 1, near 0 for cards, against the 0.5 the recipe uses today.
 lambda. A kind the base decides by `V` alone whose measured lambdas are all 0 is left out (the student there would be `vrun` again);
 card, ancient and rest at lambda 0 are kept, because they replace the prior's blend by `vrun`, which is a change.
 
+## The map rows (`--map-grid`, D58 addendum 13)
+
+The prior and the student see the whole act map, not a summary: each row also comes with block M (`features.map_grid`: 17 rows of 7 columns of
+13 numbers: the node type, the three edges to the next row, whether the cell is on a path from the position to the boss, whether it is the
+position), and the net has a map tower for it (two 3x3 convolutions, a linear layer to 64, concatenated before the first layer; the first layer
+reads 518 numbers instead of 454). The base vector the run judgement reads is unchanged. `HUMAN_PRIOR.md` section "v2: the map grid" has the
+encoding and the v2 prior's agreement.
+
+* **Data.** The teacher's shards carry `rows_map.npz` beside `rows.npz` (`grid` int8, one row of 1,547 a row; `docs/lab/TEACHER_JOB.md`);
+  `run_teacher.py reencode` adds it to shards played before. The human shards are the v2 ones (`human-prior/decisions-v2`: `grid` and `grid_ix` beside
+  each shard's rows).
+* **The flag and the prior must agree.** A fit with `--map-grid` needs the v2 prior (it refuses one without the tower), every shard with its
+  `rows_map.npz` (`ShardError` names the shards that lack it and says to run `reencode`) and human shards with the grid. A fit without the flag refuses a
+  prior that has the tower. A `rows_map.npz` that is not one 0-or-1 int8 row per row of `rows.npz` is refused.
+* **`--teacher-prior`.** The target is `Q + lambda log pi_h` with the human prior the teacher *decided with*, whose log-probabilities are in the
+  shard (`logp`; the loader checks them within 0.001). The v2 prior is not that prior, so a map-grid fit names the plain prior the teacher played
+  with (`--teacher-prior human_prior.npz`): the target uses its log-probabilities, and `--prior` (the v2 prior) is where the student starts, what its
+  KL term anchors it to and the baseline both legs measure it against. Without `--teacher-prior` the check refuses the shards (the recorded
+  log-probabilities are not the v2 prior's).
+* **The student file** carries the tower's six arrays and `map_grid: true` in its meta (`human_prior_infer.write_student`); `StudentScorer` runs the
+  tower in numpy and refuses to score a row without its grid. At play `option_rows(..., with_grid=True)` gives the grids beside the rows
+  (`imitation_chooser.BlendedPolicy` passes them to a scorer that has the tower; a plain scorer is called as it always was).
+* **The legs and the recipe are unchanged**: leg 1 on the held-out teacher runs, leg 2 on fifth 4 (from the v2 shards), lambda per kind and act, the
+  verdict, the candidate. A candidate built from a map-grid fit has the v2 prior as the student's baseline: `build_student_candidate` refuses a base
+  whose human prior is another file (the legs were measured against the v2 prior), so a base on the plain prior takes `--human-prior <v2> --lambda L`.
+
+```
+D:/spireline/venv-gpu/Scripts/python.exe rl/run_student.py round --map-grid \
+    --shards-root D:/spireline/referee/run-teacher/<generation> \
+    --prior <the v2 prior's weights.npz> --teacher-prior <the incumbent's human_prior.npz> \
+    --human-shards D:/spireline/referee/human-prior/decisions-v2 \
+    --out D:/spireline/referee/run-student/<generation>-r1-map [--no-build] ...
+```
+
 ## The recipe and the policy
 
 ```
@@ -177,7 +211,8 @@ counts (decisions by kind, split, dropped reasons) without a fit; that is what t
 
 ## Tests
 
-`tests/python/test_run_student.py` (targets and temperature, the loader and each refusal, the measurement's records, the split, the exam
+`tests/python/test_run_student.py` (the map grid: `rows_map.npz` in the loader, the refusals both ways, the teacher's prior for the target, the student
+net and file with the tower, a whole map-grid fit and both legs; targets and temperature, the loader and each refusal, the measurement's records, the split, the exam
 refusals, the net equal to the prior, the fit on a planted teacher, leg 1, the KL term, leg 2, the verdict's margins, lambda recovering a
 planted value, a whole round, the command line), `test_imitation_chooser.py` (the recipe grammar and the byte-for-byte plain recipes, the
 student's screens and guard, the policy with a student), `test_screens.py` (`screen:student`: kinds, verdicts, skips, the promote path,
