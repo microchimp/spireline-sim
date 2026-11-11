@@ -772,5 +772,229 @@ class RunFieldsTests(unittest.TestCase):
         self.assertEqual(set(run_fields.ROW_KEYS), set(row) - {"decided"})
 
 
+
+# ---------------------------------------------------------------------------------------------------------- the run student (2026-11-11)
+
+H_SHA = "2ebfe6d7" + "0" * 56
+S_SHA = "abcd1234" + "0" * 56
+BASE_RECIPE = "vrun+pi_h:lambda=0.5:pi_h=2ebfe6d7"
+
+
+class StudentRecipeTests(unittest.TestCase):
+    """`vrun+pi_s:...`: the blended recipe with the student's parts; the recipes without a student are what they always were."""
+
+    def test_the_student_recipe_is_the_blended_one_with_the_students_parts_after_it(self):
+        name = mr.student_name(0.5, H_SHA, S_SHA, {"route": (0.1, 0.2, 0.2), "card": (0.3, 0.3, 0.3), "shop": (0, math.inf, 1)})
+        self.assertEqual("vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234:card=0.3/0.3/0.3:route=0.1/0.2/0.2:shop=0/inf/1", name)  # kinds in their order
+        self.assertEqual((True, True), (mr.is_blended(name), mr.is_student(name)))
+        self.assertEqual(BASE_RECIPE, mr.blended_of(name))
+        self.assertEqual(("abcd1234", {"card": (0.3, 0.3, 0.3), "route": (0.1, 0.2, 0.2), "shop": (0.0, math.inf, 1.0)}), mr.parse_student(name))
+
+    def test_the_parsers_read_the_blended_part_of_a_student_recipe_as_they_read_the_plain_one(self):
+        name = mr.student_name(0.5, H_SHA, S_SHA, {"route": (0.1, 0.2, 0.2)}, mr.PICK_SKIPCAL, 0.35, {1: 0.0})
+        self.assertEqual("vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:act1=0:pi_s=abcd1234:route=0.1/0.2/0.2:pick=skipcal0.35", name)
+        self.assertEqual((0.5, "2ebfe6d7"), mr.parse_macro(name))
+        self.assertEqual({1: 0.0}, mr.parse_act_lambdas(name))
+        self.assertEqual((mr.PICK_SKIPCAL, 0.35), mr.parse_pick(name))
+        self.assertEqual("vrun+pi_h:lambda=0.5:pi_h=2ebfe6d7:act1=0:pick=skipcal0.35", mr.blended_of(name))
+        self.assertEqual((mr.PICK_SAMPLE, 0.0), mr.parse_pick(mr.student_name(0.5, H_SHA, S_SHA, {"shop": (0.1,) * 3}, mr.PICK_SAMPLE)))
+
+    def test_a_recipe_without_the_student_is_byte_for_byte_what_it_was(self):
+        for args, want in (((math.inf,), "vrun+pi_h:lambda=inf:pi_h=2ebfe6d7"), ((0.5,), BASE_RECIPE), ((0.25,), "vrun+pi_h:lambda=0.25:pi_h=2ebfe6d7"),
+                           ((0.5, mr.PICK_SAMPLE), BASE_RECIPE + ":pick=sample"), ((0.5, mr.PICK_SKIPCAL, 0.35), BASE_RECIPE + ":pick=skipcal0.35")):
+            self.assertEqual(want, mr.macro_name(args[0], H_SHA, *args[1:]))
+            self.assertIsNone(mr.parse_student(want))
+            self.assertEqual(want, mr.blended_of(want))
+            self.assertEqual((False, True), (mr.is_student(want), mr.is_blended(want)))
+            self.assertEqual(want, mr.recipe_of(want))
+        for plain in ("rules", "vrun", None, ""):
+            self.assertEqual((False, False), (mr.is_student(plain), mr.is_blended(plain)))
+            self.assertIsNone(mr.parse_student(plain))
+        self.assertEqual(BASE_RECIPE + "+stakes:a3-v1@h1e4b16+hold:30", mr.full_recipe(BASE_RECIPE, "a3-v1@h1e4b16", 30))
+
+    def test_the_student_recipe_is_a_recipe_of_its_own_in_the_ledger_and_survives_the_search_parts(self):
+        name = mr.student_name(0.5, H_SHA, S_SHA, {"route": (0.1, 0.2, 0.2)})
+        self.assertNotEqual(BASE_RECIPE, mr.recipe_of(name))
+        self.assertNotEqual(name, mr.student_name(0.5, H_SHA, "abcd1235" + "0" * 56, {"route": (0.1, 0.2, 0.2)}))  # another student, another recipe
+        self.assertNotEqual(name, mr.student_name(0.5, H_SHA, S_SHA, {"route": (0.1, 0.2, 0.3)}))  # another lambda
+        full = mr.full_recipe(name, "a3-v1@h1e4b16", None)
+        self.assertEqual((name, "a3-v1@h1e4b16", None), mr.split_recipe(full))
+
+    def test_the_grammar_has_one_canonical_form_and_refuses_the_rest(self):
+        for bad in ("vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234",  # no kind
+                    "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234:shop=0/0/0:card=0/0/0",  # out of order
+                    "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234:card=0/0/0:card=0/0/0",  # twice
+                    "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234:card=0/0",  # two acts
+                    "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=abcd1234:bundle=0/0/0",  # a kind the student does not take
+                    "vrun+pi_s:lambda=0.5:pi_s=abcd1234:card=0/0/0",  # no prior
+                    "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:act1=0:act1=1:pi_s=abcd1234:card=0/0/0"):
+            with self.assertRaises(ValueError, msg=bad):
+                mr.parse_student(bad)
+        for kwargs in ({"kinds": {}}, {"kinds": {"bundle": (0, 0, 0)}}, {"kinds": {"card": (0, 0)}}, {"kinds": {"card": (0, 0, -1)}}):
+            with self.assertRaises(ValueError, msg=str(kwargs)):
+                mr.student_name(0.5, H_SHA, S_SHA, **kwargs)
+        with self.assertRaises(ValueError):
+            mr.student_name(0.5, H_SHA, "not hex", {"card": (0, 0, 0)})
+
+    def test_the_students_lambda_for_a_floor_is_its_acts(self):
+        lams = (0.1, 0.2, 0.3)
+        self.assertEqual([0.1, 0.1, 0.2, 0.2, 0.3], [mr.student_lambda_for_floor(lams, f) for f in (1, 17, 18, 33, 34)])
+
+
+class StudentScreenKindTests(unittest.TestCase):
+    def test_the_student_takes_the_screens_the_teacher_labels_and_only_when_the_judgement_scores_every_option(self):
+        for dtype, kinds, want in (("map", ("map.node", "map.node"), "route"), ("shop", ("shop.card", "shop.relic", "shop.leave"), "shop"),
+                                   ("event", ("event.option", "event.option"), "event"), ("rewards", ("reward.potion", "reward.proceed"), "reward"),
+                                   ("card_select", ("select.upgrade", "select.upgrade"), "select"),
+                                   ("card_reward", ("card.take", "card.take", "card.take", "card.skip"), "card"),
+                                   ("neow", ("neow.relic", "neow.relic", "neow.relic"), "ancient"), ("rest", ("rest.heal", "rest.smith", "rest.lift"), "rest")):
+            self.assertEqual(want, ic.student_kind_of(decision(dtype, *kinds)), dtype)
+        for d in (decision("bundle", "bundle.pick", "bundle.pick"), decision("map", "map.node"), decision("map", "map.node", "map.node", scorable=False),
+                  decision("card_reward", "card.take", "card.skip", "card.reroll"), decision("rest", "rest.heal", "rest.smith", "rest.leave"),
+                  decision("neow", "neow.relic"), decision("unknown_type", "x", "y")):
+            self.assertIsNone(ic.student_kind_of(d), (d.type, [o.kind for o in d.options]))
+        self.assertEqual(ic.KIND_OF_TYPE["map"], "route")
+        self.assertEqual(set(ic.KIND_OF_TYPE.values()), set(mr.STUDENT_KINDS))
+
+    def test_the_students_guard_scales_with_the_options_and_the_prior_s_is_unchanged(self):
+        self.assertEqual(ic.GUARD_PROB, ic.guard_prob_for(4))
+        self.assertEqual(ic.GUARD_PROB, ic.guard_prob_for(29))
+        self.assertEqual(ic.GUARD_PROB, ic.guard_prob_for(2, student=True))
+        self.assertEqual(ic.GUARD_PROB, ic.guard_prob_for(12, student=True))
+        self.assertAlmostEqual(0.25 / 29, ic.guard_prob_for(29, student=True))
+        # a shop of 29 offers: an option at 1.5 in 100 is above the student's guard (0.0086) and under the prior's (0.02)
+        values, logp = [0.0] * 29, [math.log(0.015)] * 28 + [math.log(1 - 0.015 * 28)]
+        values[3] = 5.0
+        scaled = ic.blend_pick(values, logp, 0.5, guard_prob=ic.guard_prob_for(29, student=True))
+        self.assertEqual((3, False), (scaled.index, scaled.guard))  # allowed: it is simply the best score
+        self.assertTrue(ic.blend_pick(values, logp, 0.5).guard)  # under the prior's guard it needed V's say-so (and had it)
+
+    def test_the_guard_probability_is_a_default_the_old_callers_never_pass(self):
+        values, logp = [0.0, 0.5, 0.0], lp(0.01, 0.5, 0.49)
+        self.assertEqual((ic.blend_pick(values, logp, 0.5).index, ic.blend_pick(values, logp, 0.5, None, ic.GUARD_PROB).index), (1, 1))
+        self.assertEqual(ic.blend_rest([0.0, 1.0, 0.5], [0.0, 1.0, 0.5], [0, 1, 2], 0.5).index, ic.blend_rest([0.0, 1.0, 0.5], [0.0, 1.0, 0.5], [0, 1, 2], 0.5, ic.GUARD_PROB).index)
+
+
+@unittest.skipUnless(REAL_WEIGHTS.is_file() and REAL_JUDGE.is_file(), "the fitted prior and the run judgement are not on this machine")
+class StudentPolicyTests(unittest.TestCase):
+    """The policy with a student on a decision built from a record's state, with the real judgement; the student here is the prior's own
+    weights in a student file, so what it decides is what the prior's blend decides (and anything else is the plumbing's doing)."""
+
+    @classmethod
+    def setUpClass(cls):
+        hp.stack()
+        cls.t = hp.Tables()
+        cls.nets = models.load_numpy(REAL_JUDGE)
+        cls.prior = hpi.PriorScorer.load(REAL_WEIGHTS)
+        cls.tmp = tempfile.TemporaryDirectory()
+        with np.load(REAL_WEIGHTS, allow_pickle=False) as z:
+            params = {k: z[k] for k in z.files if k != "meta"}
+        cls.same = Path(cls.tmp.name) / "same.npz"
+        hpi.write_student(cls.same, params, kinds=("card", "route", "shop", "reward"), prior_sha256=cls.prior.sha256)
+        flipped = dict(params)
+        flipped["score.weight"] = -params["score.weight"]  # a student that prefers what the prior does not
+        flipped["score.bias"] = -params["score.bias"]
+        cls.flipped = Path(cls.tmp.name) / "flipped.npz"
+        hpi.write_student(cls.flipped, flipped, kinds=("card", "route", "shop", "reward"), prior_sha256=cls.prior.sha256)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def view_and_decision(self):
+        from collections import Counter
+
+        specs = hp.run_decisions(synthetic_run(_find_ids(False, 1)[0]), self.t, Counter(), Counter(), Counter())
+        sp = next(s for s in specs if s["kind"] == "card")
+        view = hp.spec_view(sp)
+        options = tuple(hp._option(o, view, j) for j, o in enumerate(sp["options"]))
+        return view, F.Decision("card_reward", options)
+
+    def policy(self, student, lams, lam=0.5, **kw):
+        return ic.BlendedPolicy(REAL_JUDGE, self.prior, lam, W=53.0, student=student, student_lams=lams, **kw)
+
+    def test_a_student_equal_to_the_prior_decides_a_card_screen_as_the_priors_blend_does(self):
+        view, d = self.view_and_decision()
+        plain = ic.BlendedPolicy(REAL_JUDGE, self.prior, 0.5, W=53.0)
+        pol = self.policy(self.same, {"card": (0.5, 0.5, 0.5)})
+        a, b = plain.pick(view, d, None), pol.pick(view, d, None)
+        self.assertEqual((a.index, a.values), (b.index, b.values))
+        self.assertEqual("card", plain.last["screen"])
+        self.assertEqual("s:card", pol.last["screen"])  # the run row says the student decided
+        self.assertEqual({k: v for k, v in plain.last.items() if k != "screen"}, {k: v for k, v in pol.last.items() if k != "screen"})
+
+    def test_a_kind_the_student_has_taken_is_decided_by_v_plus_lambda_log_pi_s_and_an_untaken_one_is_as_before(self):
+        from run_train.policy import LookaheadPolicy
+
+        view, d = self.view_and_decision()
+        route = F.Decision("map", d.options[:3])
+        rows = hpi.option_rows(self.nets, view, route.options)
+        v = models.expected_floors(self.nets.value.floor_probs(rows), 53.0)
+        logp_s = hpi.log_softmax(hpi.load_student(self.flipped).row_logits(rows))
+        for lam in (0.3, 4.0):
+            pol = self.policy(self.flipped, {"route": (lam, lam, lam)})
+            pick = pol.pick(view, route, None)
+            if not pol.last["guard"]:  # the guard may hand the pick to the judgement; otherwise it is the blend's argmax
+                self.assertEqual(int(np.argmax(v + lam * logp_s)), pick.index, lam)
+            self.assertEqual("s:route", pol.last["screen"])
+        plain = LookaheadPolicy(REAL_JUDGE, 0.0, eps=0.0, W=53.0)
+        pol = self.policy(self.flipped, {"route": (0.5, 0.5, 0.5)})
+        shop = F.Decision("shop", d.options[:3])  # a kind the student has not taken: the judgement's, as before
+        self.assertEqual(plain.pick(view, shop, None).index, pol.pick(view, shop, None).index)
+        self.assertIsNone(pol.last)
+        card = pol.pick(view, d, None)  # the prior's blend still decides the deck screens the student has not taken
+        self.assertEqual(ic.BlendedPolicy(REAL_JUDGE, self.prior, 0.5, W=53.0).pick(view, d, None).index, card.index)
+        self.assertEqual("card", pol.last["screen"])
+
+    def test_a_students_lambda_of_zero_is_vrun_for_that_kind_and_act(self):
+        from run_train.policy import LookaheadPolicy
+
+        view, d = self.view_and_decision()
+        plain = LookaheadPolicy(REAL_JUDGE, 0.0, eps=0.0, W=53.0)
+        pol = self.policy(self.flipped, {"card": (0.0, 0.0, 0.0)})
+        self.assertEqual(plain.pick(view, d, None).index, pol.pick(view, d, None).index)  # not the prior's blend: the student took the kind at 0
+        self.assertIsNone(pol.last)
+
+    def test_the_students_lambda_is_the_floors_act_s(self):
+        view, d = self.view_and_decision()
+        route = F.Decision("map", d.options[:3])
+        pol = self.policy(self.flipped, {"route": (0.0, 3.0, 3.0)})
+        self.assertEqual(("route", 0.0), pol.student_at(view, route))  # the view's floor is in Act 1
+        late = dataclasses_replace_view(view, floor=20)
+        self.assertEqual(("route", 3.0), pol.student_at(late, F.Decision("map", route.options)))
+
+    def test_the_describe_and_the_constructor(self):
+        pol = self.policy(self.same, {"card": (0.5, 0.5, 0.5), "route": (0.1, 0.2, 0.2)})
+        d = pol.describe()
+        self.assertEqual(hpi.load_student(self.same).sha256[:8], d["pi_s"])
+        self.assertEqual({"card": ["0.5"] * 3, "route": ["0.1", "0.2", "0.2"]}, d["student_kinds"])
+        self.assertNotIn("pi_s", ic.BlendedPolicy(REAL_JUDGE, self.prior, 0.5, W=53.0).describe())  # a policy without a student describes as it did
+        for kwargs in ({"student": self.same, "student_lams": None}, {"student": None, "student_lams": {"card": (0.5,) * 3}},
+                       {"student": self.same, "student_lams": {"rest": (0.5,) * 3}},  # the file was not fitted for rest
+                       {"student": self.same, "student_lams": {"bundle": (0.5,) * 3}}, {"student": self.same, "student_lams": {"card": (0.5, 0.5)}},
+                       {"student": self.same, "student_lams": {"card": (0.5, 0.5, -1)}}):
+            with self.assertRaises(ValueError, msg=str(kwargs)):
+                ic.BlendedPolicy(REAL_JUDGE, self.prior, 0.5, W=53.0, **kwargs)
+
+    def test_exploring_and_sampling_a_student_screen_stay_in_the_guarded_set_and_replay(self):
+        view, d = self.view_and_decision()
+        route = F.Decision("map", d.options[:3])
+        pol = self.policy(self.same, {"route": (0.5, 0.5, 0.5)}, temperature=0.5, eps=0.0)
+        rng = np.random.default_rng(0)
+        picks = {pol.pick(view, route, rng).index for _ in range(60)}
+        self.assertGreater(len(picks), 1)
+        sampled = self.policy(self.same, {"route": (0.5, 0.5, 0.5)}, pick=mr.PICK_SAMPLE)
+        sampled.begin_run("SEED")
+        first = [sampled.pick(view, route, None).index for _ in range(8)]
+        sampled.begin_run("SEED")
+        self.assertEqual(first, [sampled.pick(view, route, None).index for _ in range(8)])  # a block replays exactly
+
+
+def dataclasses_replace_view(view, **changes):
+    import dataclasses
+
+    return dataclasses.replace(view, **changes)
+
+
 if __name__ == "__main__":
     unittest.main()
