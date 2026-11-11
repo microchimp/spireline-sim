@@ -57,8 +57,8 @@ from judge_corpus import STORE, TAG  # noqa: E402
 PLAYER_DEFAULT = "v3"
 MINIMUMS = {"cell": 3000, "enemy": 400, "arch": 300, "relic": 150, "card": 150}  # positions: the cell minimums the build aims at (coverage.md)
 STOP_NAME = "STOP"
-MAX_ATTEMPTS = 3  # a fight whose worker died this many times is recorded as failed
-RESTARTS = 40  # a work process that dies is started again this many times in all
+MAX_ATTEMPTS = 2  # a fight whose worker died this many times is recorded as failed (the emulator fails fast on a few states, the same each time)
+RESTARTS = 2000  # a work process that dies is started again this many times in all (a fight that kills its worker costs MAX_ATTEMPTS restarts)
 USABLE_MIN_KIND = 500  # labelled human turns (settled or soft) of bosses, and of elites, for the manifest's `usable_for_training`
 USABLE_MIN_KIND_ACT = 150  # and of each kind in each act
 COMPACT_EVERY_S = (900, 2700)  # the supervisor compacts every 15 minutes until the corpus is usable for training, every 45 minutes after
