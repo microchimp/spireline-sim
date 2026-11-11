@@ -797,12 +797,16 @@ def write_manifest(store: Path, loop: Path, plan: dict) -> dict:
                       "fights_built": len(ok), "fights_failed": len(fights) - len(ok)},
     }
     old = read_json(store / "manifest.json") if (store / "manifest.json").is_file() else {}
-    man.update(readiness(rows, old, plan, len(ok), len(fights) - len(ok)))
+    try:
+        eta = eta_of(store, plan, fights)
+    except Exception:  # noqa: BLE001 -- a figure for the reader; it must never stop the manifest
+        eta = {}
+    man.update(readiness(rows, old, plan, len(ok), len(fights) - len(ok), eta))
     jc.write_atomic(store / "manifest.json", man)
     return man
 
 
-def readiness(rows: Sequence[dict], old: dict, plan: dict, built: int, failed: int) -> dict:
+def readiness(rows: Sequence[dict], old: dict, plan: dict, built: int, failed: int, eta: dict | None = None) -> dict:
     """The manifest's flags for the judge-training lane: `usable_for_training` (sticky: once the human boss and elite turns carry their labels,
     at least USABLE_MIN_KIND of each kind and USABLE_MIN_KIND_ACT of each kind and act, settled or soft, with the counts at that moment) and
     `complete` (set by `finalize` once every planned fight has a result and the shards, coverage and manifest were made from them; kept only while
@@ -823,8 +827,41 @@ def readiness(rows: Sequence[dict], old: dict, plan: dict, built: int, failed: i
             "selfplay_positions": sum(1 for r in rows if r["src"] == "selfplay"), "human_fights_built": built}
     out["complete"] = bool(old.get("complete") is True and old.get("human_build", {}).get("built") == built)
     out["human_build"] = {"planned": len(plan.get("order", [])), "built": built, "failed": failed, "paused_by": converge.quiet_reason(ignore=(TAG,)),
-                          "labelled_boss_by_act": boss, "labelled_elite_by_act": elite}
+                          "labelled_boss_by_act": boss, "labelled_elite_by_act": elite, **(eta or {})}
     return out
+
+
+def eta_of(store: Path, plan: dict, fights: Sequence[dict], now: dt.datetime | None = None, window_h: float = 2.0) -> dict:
+    """Where the human build stands in time: the CPU-hours the planned fights still without a result will take (each at the mean of its cell's built
+    fights), the CPU-hours an hour the work processes have been getting over the last `window_h` hours (by the fights' finish stamps) and the hours
+    that makes. The rate reads what the machine gave the work, so it moves with the load."""
+    now = now or dt.datetime.now(dt.UTC)
+
+    def stamp(f: dict) -> dt.datetime | None:
+        try:
+            return dt.datetime.strptime(f["done"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC)
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    ok = [f for f in fights if not f.get("error") and stamp(f) is not None]
+    if not ok or not plan.get("order"):
+        return {}
+    by_cell: dict[str, list[float]] = defaultdict(list)
+    for f in ok:
+        by_cell[f["cell"]].append(f["cpu_s"])
+    overall = sum(f["cpu_s"] for f in ok) / len(ok)
+    cell_of = {r["id"]: r["cell"] for r in read_jsonl(work_dir(store) / "pool.jsonl")}
+    left = pending(store, plan)
+    remaining = sum((sum(by_cell[cell_of[i]]) / len(by_cell[cell_of[i]])) if by_cell.get(cell_of.get(i)) else overall for i in left)
+    cutoff = now - dt.timedelta(hours=window_h)
+    recent = [f for f in ok if stamp(f) >= cutoff]
+    if not recent:
+        return {"remaining_cpu_hours": round(remaining / 3600, 1)}
+    first = min(stamp(f) for f in recent)
+    span = max(1.0, (now - max(first, cutoff)).total_seconds())
+    rate = sum(f["cpu_s"] for f in recent) / span  # CPU-seconds a second
+    return {"remaining_cpu_hours": round(remaining / 3600, 1), "cpu_hours_per_hour_recent": round(rate, 2), "eta_hours": round(remaining / max(rate, 1e-6) / 3600, 1),
+            "fights_left": len(left)}
 
 
 def cmd_finalize(a: argparse.Namespace) -> int:

@@ -471,6 +471,33 @@ class ReportTests(unittest.TestCase):
         self.assertNotRegex(md, r"\br\d+\b")  # no run id is printed
 
 
+class EtaTests(unittest.TestCase):
+    def test_the_time_left_is_the_remaining_fights_at_their_cells_mean_over_the_recent_rate(self):
+        import datetime as dt
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Path(d)
+            now = dt.datetime(2026, 11, 11, 12, 0, 0, tzinfo=dt.UTC)
+            stamp = lambda h: (now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+            pool = [{"id": f"a{i}", "cell": "act2-boss"} for i in range(10)] + [{"id": f"b{i}", "cell": "act1-elite"} for i in range(10)]
+            (jb.work_dir(store)).mkdir(parents=True)
+            (jb.work_dir(store) / "pool.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in pool), encoding="utf-8")
+            plan = {"order": [r["id"] for r in pool]}
+            fights = [{"start": "a0", "cell": "act2-boss", "cpu_s": 100.0, "done": stamp(1.0)}, {"start": "a1", "cell": "act2-boss", "cpu_s": 100.0, "done": stamp(0.5)},
+                      {"start": "b0", "cell": "act1-elite", "cpu_s": 10.0, "done": stamp(0.2)}, {"start": "old", "cell": "act2-boss", "cpu_s": 999.0, "done": stamp(5.0)}]
+            for f in fights[:3]:
+                jc.write_atomic(jb.fight_path(store, f["start"]), f)
+            e = jb.eta_of(store, plan, fights, now=now)
+            # left: 8 act2-boss at the mean of 100, 100 and 999 (all built fights of the cell), 9 act1-elite at 10
+            mean_boss = (100 + 100 + 999) / 3
+            self.assertAlmostEqual(e["remaining_cpu_hours"], round((8 * mean_boss + 9 * 10.0) / 3600, 1), places=1)
+            self.assertEqual(e["fights_left"], 17)
+            # recent: the three fights of the last two hours, 210 CPU-s over the 1 h since the first of them
+            self.assertAlmostEqual(e["cpu_hours_per_hour_recent"], round(210 / 3600, 2), places=2)
+            self.assertGreater(e["eta_hours"], 1.0)
+            self.assertEqual(jb.eta_of(store, plan, [], now=now), {})
+
+
 class HoldTests(unittest.TestCase):
     def test_the_line_is_written_while_the_pid_lives_refreshed_and_removed_after(self):
         with tempfile.TemporaryDirectory() as d:
