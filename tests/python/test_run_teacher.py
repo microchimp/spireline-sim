@@ -390,7 +390,7 @@ def fake_decision(kinds=("card.take", "card.take", "card.skip"), typ="card_rewar
     return SimpleNamespace(type=typ, view=None, options=[SimpleNamespace(kind=k, scorable=False, i=i) for i, k in enumerate(kinds)])
 
 
-VIEW = SimpleNamespace(act_index=0, floor=5, hp=60, max_hp=80)
+VIEW = SimpleNamespace(act_index=0, floor=5, hp=60, max_hp=80, map_nodes=(), position=(0, 0))
 
 
 class AdaptiveKTests(unittest.TestCase):
@@ -1452,6 +1452,311 @@ class NativeJobTests(unittest.TestCase):
         self.assertEqual("budget", row["cap_reason"])
         self.assertEqual([], self.decided)
         self.assertFalse(rt.RunFiles(self.tmp, "RTJOB0008").recs.exists())
+
+
+class MapGridStoreTests(unittest.TestCase):
+    """The map grid beside the rows (D58 addendum 13): `rows_map.npz` in a new shard, the run files that carry it, `reencode` for a shard that lacks it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    @staticmethod
+    def grid_for(n: int, base: int):
+        import numpy as np
+
+        return (np.random.default_rng(base).random((n, rt.GRID_WIDTH)) < 0.2).astype("int8")
+
+    def make_run(self, seed, widths=(3, 4, 2), with_grid=True):
+        rf = rt.RunFiles(self.tmp, seed)
+        rf.load()
+        rows, grids = [], []
+        for i, n in enumerate(widths):
+            r, g = rows_for(n, i + sum(map(ord, seed)) % 7), self.grid_for(n, i + sum(map(ord, seed)))
+            rows.append(r)
+            grids.append(g)
+            rf.append(synthetic_record(seed, i * 2, n=n), r, g if with_grid else None)
+        return rf, rows, grids
+
+    def manifest(self):
+        return rt.shard_manifest(job="J1", generation=13, identity={"agent": "gen13/x", "agent_sha256": "ab" * 32, "generation": 13, "recipe": "r",
+                                                                  "agent_files": {}}, judge=None, lib=None, tree="abc", k=2, k_max=4, max_options=4,
+                                 cal={}, sources={"new": 2})
+
+    def test_the_constant_is_the_features_block_m(self):
+        from run_train import features
+
+        self.assertEqual(features.MAP_GRID_SIZE, rt.GRID_WIDTH)
+
+    def test_a_screen_has_the_grid_of_each_option_beside_its_rows(self):
+        import numpy as np
+
+        from run_train import features
+
+        nodes = (features.MapNode(3, 0, 8, ((3, 1),)), features.MapNode(3, 1, 3, ((3, 2),)), features.MapNode(3, 2, 6, ()))
+        view = SimpleNamespace(act_index=0, floor=5, hp=60, max_hp=80, map_nodes=nodes, position=(3, 0))
+        d = fake_decision()
+        for o in d.options:
+            o.scorable = True
+        want = np.random.default_rng(1).normal(size=(3, rt.ROWS_WIDTH))
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.0, W=53.0)
+        a, b = ScreenRowsTests.patches()
+        with mock.patch("human_prior_infer.option_rows", return_value=want), a, b:
+            rd = rt.screen_inputs(policy, view, d, rows=True)
+        self.assertEqual((3, rt.GRID_WIDTH), rd["grid"].shape)
+        self.assertEqual(np.int8, rd["grid"].dtype)
+        np.testing.assert_array_equal(rd["grid"][0], features.map_grid(view))  # a card option leaves the position where it is
+        with mock.patch("human_prior_infer.option_rows", return_value=want), a, b:
+            self.assertIsNone(rt.screen_inputs(policy, view, d)["grid"])  # not asked for: not built
+
+    def test_a_prior_with_the_map_tower_is_scored_with_the_grid(self):
+        import numpy as np
+
+        seen = {}
+
+        def row_logits(mat, grid=None):
+            seen["grid"] = grid
+            return np.zeros(len(mat))
+
+        d = fake_decision()
+        for o in d.options:
+            o.scorable = True
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.5, W=53.0, prior=SimpleNamespace(map_grid=True, row_logits=row_logits))
+        a, b = ScreenRowsTests.patches()
+        with mock.patch("human_prior_infer.option_rows", return_value=np.ones((3, rt.ROWS_WIDTH))), a, b, \
+                mock.patch("imitation_chooser.screen_of", return_value="card"):
+            rd = rt.screen_inputs(policy, VIEW, d)  # not stored: the grid is built because the prior reads it
+        self.assertEqual((3, rt.GRID_WIDTH), seen["grid"].shape)
+        self.assertEqual(3, len(rd["logp"]))
+        policy.prior = SimpleNamespace(row_logits=lambda mat: np.zeros(len(mat)))  # a prior without the tower: no grid is built or passed
+        with mock.patch("human_prior_infer.option_rows", return_value=np.ones((3, rt.ROWS_WIDTH))), a, b, \
+                mock.patch("imitation_chooser.screen_of", return_value="card"), mock.patch("human_prior_infer.option_grids") as grids:
+            rt.screen_inputs(policy, VIEW, d)
+            grids.assert_not_called()
+
+    def test_the_run_files_keep_the_grid_in_step_with_the_rows(self):
+        import numpy as np
+
+        rf, rows, grids = self.make_run("GGG")
+        again = rt.RunFiles(self.tmp, "GGG")
+        again.load()
+        self.assertTrue(again.grid_ok)
+        self.assertEqual(9 * rt.GRID_WIDTH, rf.grid.stat().st_size)
+        np.testing.assert_array_equal(np.fromfile(rf.grid, dtype="int8").reshape(-1, rt.GRID_WIDTH), np.concatenate(grids))
+        # a kill after the grid of a screen and before its rows: the grid is cut back to the rows with the record
+        with open(rf.grid, "ab") as fh:
+            fh.write(self.grid_for(2, 99).tobytes())
+        cut = rt.RunFiles(self.tmp, "GGG")
+        cut.load()
+        self.assertTrue(cut.grid_ok)
+        self.assertEqual(9 * rt.GRID_WIDTH, rf.grid.stat().st_size)
+        # a replay that left the stored screens drops their grids with their rows
+        cut.drop_from(2)
+        self.assertEqual(3 * rt.GRID_WIDTH, rf.grid.stat().st_size)
+        cut.append(synthetic_record("GGG", 2, n=2), rows_for(2, 5.0), self.grid_for(2, 7))
+        self.assertEqual(5 * rt.GRID_WIDTH, rf.grid.stat().st_size)
+        with self.assertRaises(ValueError):
+            cut.append(synthetic_record("GGG", 4, n=2), rows_for(2, 5.0), self.grid_for(3, 7))
+
+    def test_a_run_played_before_the_grid_has_none_and_never_half_of_one(self):
+        rf, _, _ = self.make_run("LLL", with_grid=False)  # rows without grids: an earlier build's run
+        again = rt.RunFiles(self.tmp, "LLL")
+        again.load()
+        self.assertFalse(again.grid_ok)
+        self.assertFalse(rf.grid.exists())
+        again.append(synthetic_record("LLL", 6, n=2), rows_for(2, 5.0), self.grid_for(2, 7))  # a later screen with a grid is not written: it would not line up
+        self.assertFalse(rf.grid.exists())
+        # the same when the grid file is short
+        rf2, _, _ = self.make_run("SSS")
+        with open(rf2.grid, "r+b") as fh:
+            fh.truncate(4 * rt.GRID_WIDTH)
+        short = rt.RunFiles(self.tmp, "SSS")
+        short.load()
+        self.assertFalse(short.grid_ok)
+
+    def test_a_new_shard_has_rows_map_beside_rows_and_says_so(self):
+        import numpy as np
+
+        _, rows_a, grids_a = self.make_run("AAA")
+        _, rows_b, grids_b = self.make_run("BBB", widths=(2, 5, 3))
+        doc = rt.build_shard(self.tmp, "J1", ["AAA", "BBB"], self.manifest())
+        d = self.tmp / "shards" / "J1"
+        self.assertEqual({"decisions.jsonl", "rows.npz", "rows_map.npz", "manifest.json"}, {p.name for p in d.iterdir()})
+        self.assertTrue(doc["map_grid"])
+        self.assertTrue(json.loads((d / "manifest.json").read_text(encoding="utf-8"))["map_grid"])
+        z, zm = np.load(d / "rows.npz"), np.load(d / "rows_map.npz")
+        self.assertEqual((np.int8, (len(z["rows"]), rt.GRID_WIDTH)), (zm["grid"].dtype, zm["grid"].shape))
+        np.testing.assert_array_equal(zm["grid"], np.concatenate(grids_a + grids_b))  # row for row the rows' order
+        self.assertTrue(rt.shard_has_grid(d))
+        try:
+            import run_student as rs
+        except ImportError:  # pragma: no cover
+            return
+        self.assertEqual(6, len(rs.read_shard(d)["records"]))  # the loader still reads the rows of such a shard
+
+    def test_a_shard_with_a_run_that_has_no_grid_has_no_rows_map(self):
+        self.make_run("AAA")
+        self.make_run("LLL", with_grid=False)
+        doc = rt.build_shard(self.tmp, "J1", ["AAA", "LLL"], self.manifest())
+        d = self.tmp / "shards" / "J1"
+        self.assertFalse(doc["map_grid"])
+        self.assertFalse((d / "rows_map.npz").exists())
+        self.assertFalse(rt.shard_has_grid(d))
+        self.assertEqual(9 + 9, json.loads((d / "manifest.json").read_text(encoding="utf-8"))["counts"]["rows"])
+
+    # ------------------------------------------------------------------------------------------------------ reencode
+
+    def worker_state(self):
+        saved = dict(rt._J)
+        self.addCleanup(lambda: (rt._J.clear(), rt._J.update(saved)))
+        rt._J.clear()
+        rt._J.update(gen_dir=self.tmp, player=SimpleNamespace(policy=object()), replayers={}, replay_agent="x")
+
+    @staticmethod
+    def fake_screen_inputs(table, seed):
+        """A stand-in for `screen_inputs`: the rows, grid and options the table holds for (seed, the point's ordinal)."""
+
+        def fake(policy, view, decision, rows=False):
+            rows_, grid, opts = table[(seed, int(view.ordinal))]
+            return {"rows": rows_, "grid": grid, "row_options": opts}
+
+        return fake
+
+    @staticmethod
+    def stored_replay(ordinals):
+        def fake_replay(seed_, ix, replayer, record, hook, **kw):
+            res = {"end": "?", "decisions": 0, "floor": 0, "checked": 0}
+            for o in ordinals:
+                pt = SimpleNamespace(view=SimpleNamespace(ordinal=o), decision=fake_decision(), ordinal=o, session=None)
+                if hook(pt):
+                    res["end"] = "hooked"
+                    break
+            return res
+
+        return fake_replay
+
+    def old_shard(self, seeds=("AAA", "BBB"), widths=((3, 4, 2), (2, 5, 3))):
+        """A shard as an earlier build made it (rows, no grid), with the table of rows and grids a fresh build had, and the bytes of its rows_map."""
+        table = {}
+        for seed, w in zip(seeds, widths):
+            _, rows, grids = self.make_run(seed, widths=w)
+            for i in range(len(w)):
+                table[(seed, i * 2)] = (rows[i], grids[i], list(range(w[i])))
+        rt.build_shard(self.tmp, "J1", list(seeds), self.manifest())
+        d = self.tmp / "shards" / "J1"
+        fresh = (d / "rows_map.npz").read_bytes()
+        (d / "rows_map.npz").unlink()  # the shard as the build before the grid left it
+        doc = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        doc.pop("map_grid")
+        (d / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        return d, table, fresh
+
+    def run_reencode(self, d, table, seeds=("AAA", "BBB"), mutate=None):
+        self.worker_state()
+        needs = rt.reencode_needs(d)
+        self.assertEqual(set(seeds), set(needs))
+        for seed in seeds:
+            tab = mutate(dict(table), seed) if mutate else table
+            task = ("rt-reencode", seed, 3, "stored", {"_explore": (0.1, 0.02)}, sorted(needs[seed]))
+            with mock.patch.object(rt, "_replayer", return_value=object()), mock.patch("hindsight.replay_run", self.stored_replay(sorted(needs[seed]))), \
+                    mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(tab, seed)):
+                row = rt.reencode_run(task)
+            self.assertTrue(row["ok"], row)
+
+    def test_reencode_gives_an_old_shard_the_grid_a_fresh_one_has(self):
+        import io
+
+        import numpy as np
+
+        d, table, fresh = self.old_shard()
+        self.assertFalse(rt.shard_has_grid(d))
+        self.run_reencode(d, table)
+        info = rt.reencode_assemble(self.tmp, d)
+        self.assertEqual({"shard": "J1", "rows": 19, "decisions": 6, "runs": 2}, info)
+        self.assertTrue(rt.shard_has_grid(d))
+        self.assertTrue(json.loads((d / "manifest.json").read_text(encoding="utf-8"))["map_grid"])
+        np.testing.assert_array_equal(np.load(d / "rows_map.npz")["grid"], np.load(io.BytesIO(fresh))["grid"])  # the same grid, row for row
+        # idempotent: a shard that has its grid is not asked for again and its file is not touched
+        before = (d / "rows_map.npz").read_bytes()
+        self.assertEqual([], [x for x in rt.shard_folders(self.tmp) if not rt.shard_has_grid(x)])
+        self.assertEqual(before, (d / "rows_map.npz").read_bytes())
+
+    def test_reencode_refuses_a_shard_whose_rows_are_not_the_stored_ones(self):
+        d, table, _ = self.old_shard()
+
+        def one_number(tab, seed):
+            if seed == "BBB":
+                rows, grid, opts = tab[(seed, 2)]
+                rows = rows.copy()
+                rows[1, 5] += 1e-3  # one number of one row
+                tab[(seed, 2)] = (rows, grid, opts)
+            return tab
+
+        self.run_reencode(d, table, mutate=one_number)
+        with self.assertRaisesRegex(rt.ReencodeError, "not the stored rows"):
+            rt.reencode_assemble(self.tmp, d)
+        self.assertFalse((d / "rows_map.npz").exists())  # nothing written
+        self.assertFalse(rt.shard_has_grid(d))
+
+        def other_options(tab, seed):
+            rows, grid, opts = tab[(seed, 0)]
+            tab[(seed, 0)] = (rows[:2], grid[:2], opts[:2])
+            return tab
+
+        for f in (self.tmp / rt.REENCODE_DIR).glob("*.npz"):
+            f.unlink()
+        self.run_reencode(d, table, mutate=other_options)
+        with self.assertRaisesRegex(rt.ReencodeError, "differ"):
+            rt.reencode_assemble(self.tmp, d)
+        self.assertFalse((d / "rows_map.npz").exists())
+
+    def test_reencode_stops_on_a_run_with_no_result_and_on_a_replay_that_ends_early(self):
+        d, table, _ = self.old_shard()
+        with self.assertRaisesRegex(rt.ReencodeError, "no result"):
+            rt.reencode_assemble(self.tmp, d)
+        self.worker_state()
+        needs = rt.reencode_needs(d)
+        task = ("rt-reencode", "AAA", 3, "stored", {"_explore": (0.1, 0.02)}, sorted(needs["AAA"]))
+
+        def short_replay(seed, ix, replayer, record, hook, **kw):
+            hook(SimpleNamespace(view=SimpleNamespace(ordinal=0), decision=fake_decision(), ordinal=0, session=None))
+            return {"end": "diverged:cards", "decisions": 1, "floor": 3, "checked": 1}
+
+        with mock.patch.object(rt, "_replayer", return_value=object()), mock.patch("hindsight.replay_run", short_replay), \
+                mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(table, "AAA")):
+            row = rt.reencode_run(task)
+        self.assertFalse(row["ok"])
+        self.assertIn("the replay ended (diverged:cards)", row["why"])
+        self.assertFalse((self.tmp / rt.REENCODE_DIR / "AAA.npz").exists())
+
+    def test_reencode_builds_a_teachers_own_run_from_its_run_record(self):
+        import numpy as np
+
+        d, table, _ = self.old_shard(seeds=("AAA",), widths=((3, 4, 2),))
+        self.worker_state()
+        record = {"decisions": [{"i": i, "state": {"x": i}, "type": "card_reward", "options": []} for i in range(5)], "maps": []}
+        (self.tmp / "decisions.d" / "AAA.record.json").write_text(json.dumps(record), encoding="utf-8")
+        needs = rt.reencode_needs(d)
+        with mock.patch("run_train.shards.state_view", lambda rec, entry: SimpleNamespace(ordinal=entry["i"])), \
+                mock.patch("run_train.shards.entry_decision", lambda entry: fake_decision()), \
+                mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(table, "AAA")), mock.patch("hindsight.replay_run") as replay:
+            row = rt.reencode_run(("rt-reencode", "AAA", 3, "new", None, sorted(needs["AAA"])))
+            replay.assert_not_called()  # no game is played for a run that has its record
+        self.assertTrue(row["ok"], row)
+        rt.reencode_assemble(self.tmp, d)
+        self.assertEqual((9, rt.GRID_WIDTH), np.load(d / "rows_map.npz")["grid"].shape)
+        (self.tmp / "decisions.d" / "AAA.record.json").unlink()
+        (self.tmp / rt.REENCODE_DIR / "AAA.npz").unlink()
+        with mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(table, "AAA")):
+            row = rt.reencode_run(("rt-reencode", "AAA", 3, "new", None, sorted(needs["AAA"])))
+        self.assertFalse(row["ok"])
+        self.assertIn("no run record", row["why"])
+
+    def test_the_command_parses_and_has_nothing_to_do_on_a_store_without_shards(self):
+        a = rt.build_parser().parse_args(["reencode", "--store", str(self.tmp), "--generation", "13"])
+        self.assertEqual((13, 4, []), (a.generation, a.procs, a.shard))
+        self.assertEqual(0, rt.reencode_cmd(a))  # no shard, nothing to give a grid to; and no lock was taken
+        self.assertFalse((self.tmp / "job.lock").exists())
 
 
 if __name__ == "__main__":
