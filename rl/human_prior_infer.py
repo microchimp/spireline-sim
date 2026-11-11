@@ -15,6 +15,10 @@ with one logit in place of the floor and end-HP heads; `logits` is that forward 
 
 The weights are not fitted here and nothing here imports torch or the fit module. `sha256` of the file names the prior in a candidate's
 macro (`imitation_chooser.macro_name`).
+
+The run student `pi_s` (`rl/run_student.py`) is the same net refitted on the run teacher's labels, in the same file format; its file also
+says which decision kinds it was fitted for (`meta["student"]["kinds"]`) and what it started from. `StudentScorer` / `load_student` read
+such a file with the same scoring as `PriorScorer` (a plain prior's file is refused there: it names no kinds), `write_student` writes one.
 """
 
 from __future__ import annotations
@@ -53,6 +57,10 @@ def load(path: Path | str) -> PriorScorer:
     p = Path(path)
     st = p.stat()
     return _load_cached(str(p.resolve()), st.st_mtime_ns, st.st_size)
+
+
+STUDENT_META = "student"  # the key of a student file's meta block
+STUDENT_FORMAT = 1
 
 
 def log_softmax(x: np.ndarray) -> np.ndarray:
@@ -108,6 +116,64 @@ class PriorScorer:
     def log_probs(self, view: Any, options: Sequence[Any], nets: Any) -> np.ndarray:
         """Log-probabilities of a decision's options: the softmax over their logits."""
         return log_softmax(self.row_logits(option_rows(nets, view, options)))
+
+
+class StudentScorer(PriorScorer):
+    """`pi_s`: a `PriorScorer` (one logit per option's afterstate row) whose file names the kinds it was fitted for."""
+
+    def __init__(self, params: dict[str, np.ndarray], meta: dict[str, Any] | None = None, sha256: str = ""):
+        super().__init__(params, meta, sha256)
+        block = self.meta.get(STUDENT_META)
+        if not isinstance(block, dict) or block.get("format") != STUDENT_FORMAT or not block.get("kinds"):
+            raise ValueError(f"not a run student file: its meta has no `{STUDENT_META}` block of format {STUDENT_FORMAT} naming kinds")
+        self.kinds: tuple[str, ...] = tuple(str(k) for k in block["kinds"])
+        self.prior_sha256: str = str(block.get("prior_sha256") or "")
+
+    def has(self, kind: str) -> bool:
+        return kind in self.kinds
+
+
+@lru_cache(maxsize=4)
+def _load_student_cached(path: str, mtime_ns: int, size: int) -> StudentScorer:
+    return StudentScorer.load(path)
+
+
+def load_student(path: Path | str) -> StudentScorer:
+    """`StudentScorer.load`, once per file version in this process."""
+    p = Path(path)
+    st = p.stat()
+    return _load_student_cached(str(p.resolve()), st.st_mtime_ns, st.st_size)
+
+
+def student_kinds_of(path: Path | str) -> tuple[str, ...]:
+    """The kinds a student file was fitted for, read from its meta alone (no weights loaded); ValueError for a file that is not a student's."""
+    with np.load(Path(path), allow_pickle=False) as z:
+        meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
+    block = meta.get(STUDENT_META)
+    if not isinstance(block, dict) or block.get("format") != STUDENT_FORMAT or not block.get("kinds"):
+        raise ValueError(f"{Path(path).name} is not a run student file")
+    return tuple(str(k) for k in block["kinds"])
+
+
+def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Sequence[str], prior_sha256: str, fit: dict[str, Any] | None = None,
+                  extra_meta: dict[str, Any] | None = None) -> str:
+    """Write a student file (the prior's nine arrays and a meta block naming the kinds, the prior it started from and the fit's record),
+    tmp then rename. Returns the file's sha256."""
+    import os  # noqa: PLC0415
+
+    missing = [k for k in _KEYS if k not in params]
+    if missing:
+        raise ValueError(f"the student's weights lack {missing}")
+    if not kinds:
+        raise ValueError("a student file names at least one kind")
+    meta = {**(extra_meta or {}), STUDENT_META: {"format": STUDENT_FORMAT, "kinds": [str(k) for k in kinds], "prior_sha256": prior_sha256,
+                                                  "fit": fit or {}}}
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        np.savez(fh, meta=np.array(json.dumps(meta, sort_keys=True)), **{k: np.asarray(params[k], dtype=np.float32) for k in _KEYS})
+    os.replace(tmp, path)
+    return file_sha256(path)
 
 
 def option_rows(nets: Any, view: Any, options: Sequence[Any]) -> np.ndarray:

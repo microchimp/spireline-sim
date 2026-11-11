@@ -15,6 +15,16 @@ compares agents: an emulator arm's summary names it (`gen0.emu_arm_match`), and 
 (`gen_loop.attempts_before`): the plain macros (`rules`, `vrun`) are one recipe, written "" in the ledger's `macro` column and in every
 row from before the column; each blended string is a recipe of its own.
 
+The run student `pi_s` (`run_student`, D56/D57 part 3; 2026-11-11) adds a recipe of its own beside the blended one:
+
+    vrun+pi_s:lambda=<inf|number>:pi_h=<8 hex>[:act<N>=<lambda>...]:pi_s=<8 hex of the student's weights' sha256>:<kind>=<l1>/<l2>/<l3>...[:pick=...]
+
+It is the blended recipe above (the human prior's blend on every deck screen the student does not take) with the student named after
+it, and one `<kind>=<l1>/<l2>/<l3>` part for each decision kind the student has taken over (`STUDENT_KINDS`, in that order, once each):
+the lambda of `V + lambda log pi_s` in Acts 1, 2 and 3 (lambda 0 is `vrun` for that kind and act, `inf` the student alone). A recipe
+without the parts is the recipe it always was, byte for byte; `parse_macro`, `parse_act_lambdas` and `parse_pick` read a student
+recipe's blended part exactly as they read the plain one's.
+
 Two more identity parts live beside the macro (agent.json `search_schedule` and `potion_hold`), because they change how the fights are
 played and not what the chooser picks (2026-11-06, `docs/rl/STAKES_AND_HOLD.md`):
 
@@ -32,14 +42,23 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 PREFIX = "vrun+pi_h"
+STUDENT_PREFIX = "vrun+pi_s"
+# the decision kinds a student can take over (`rl/run_student.py`), in the order a recipe writes them
+STUDENT_KINDS = ("card", "ancient", "rest", "route", "shop", "event", "reward", "select")
 _LAMBDA = r"(?:inf|[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)"
 _MACRO = re.compile(
     r"vrun\+pi_h:lambda=(" + _LAMBDA + r"):pi_h=([0-9a-f]{8})((?::act[1-3]=" + _LAMBDA + r")*)"
     r"(?::pick=(sample|skipcal-?[0-9]*\.?[0-9]+))?")
 _ACT_PART = re.compile(r":act([1-3])=(" + _LAMBDA + r")")
+_KIND_ALT = "|".join(STUDENT_KINDS)
+_STUDENT = re.compile(
+    r"vrun\+pi_s(:lambda=" + _LAMBDA + r":pi_h=[0-9a-f]{8}(?::act[1-3]=" + _LAMBDA + r")*)"
+    r":pi_s=([0-9a-f]{8})((?::(?:" + _KIND_ALT + r")=" + _LAMBDA + "/" + _LAMBDA + "/" + _LAMBDA + r")+)"
+    r"((?::pick=(?:sample|skipcal-?[0-9]*\.?[0-9]+))?)")
+_STUDENT_KIND = re.compile(r":(" + _KIND_ALT + r")=(" + _LAMBDA + ")/(" + _LAMBDA + ")/(" + _LAMBDA + ")")
 ACT_LAST_FLOORS = (17, 33)  # the boss floors of Acts 1 and 2 (run_fields.ACT_BOSS_FLOORS): a floor past them is in the next act
 ACTS = 3
 PICK_ARGMAX, PICK_SAMPLE, PICK_SKIPCAL = "argmax", "sample", "skipcal"
@@ -102,15 +121,32 @@ def macro_name(lam: float, weights_sha256: str, pick: str = PICK_ARGMAX, skip_bi
 
 
 def is_blended(name: str | None) -> bool:
-    return bool(name) and str(name).startswith(PREFIX)
+    """A recipe of the blended chooser: the human prior's (`vrun+pi_h`) or the student's (`vrun+pi_s`, which keeps that blend on the
+    screens it has not taken over)."""
+    return bool(name) and str(name).startswith((PREFIX, STUDENT_PREFIX))
+
+
+def is_student(name: str | None) -> bool:
+    return bool(name) and str(name).startswith(STUDENT_PREFIX)
 
 
 def _parse_lambda(text: str) -> float:
     return math.inf if text == "inf" else float(text)
 
 
+def blended_of(name: str) -> str:
+    """The human-prior recipe a recipe is built on: a `vrun+pi_h` recipe is itself; a student recipe's is the same blend with the student's
+    parts left out (and its `pick=` part kept). ValueError for a string of neither form."""
+    if not is_student(name):
+        return name
+    m = _STUDENT.fullmatch(name)
+    if not m:
+        raise ValueError(f"{name!r} is not a {STUDENT_PREFIX}:lambda=<..>:pi_h=<8 hex>[:act<N>=<..>]:pi_s=<8 hex>:<kind>=<l1>/<l2>/<l3>... recipe")
+    return PREFIX + m[1] + m[4]
+
+
 def _match(name: str) -> re.Match:
-    m = _MACRO.fullmatch(name)
+    m = _MACRO.fullmatch(blended_of(name))
     if not m:
         raise ValueError(f"{name!r} is not a {PREFIX}:lambda=<inf|number>:pi_h=<8 hex>[:act<N>=<lambda>][:pick=<mode>] recipe")
     return m
@@ -136,6 +172,56 @@ def parse_act_lambdas(name: str) -> dict[int, float]:
     if any(v == base for v in out.values()):
         raise ValueError(f"{name!r}: an act<N> part equal to the base lambda names the same chooser twice; leave it out")
     return out
+
+
+def student_part(sha8_or_sha: str, kinds: Mapping[str, Sequence[float]]) -> str:
+    """The student's recipe parts: `:pi_s=<8 hex>` and one `:<kind>=<l1>/<l2>/<l3>` for each kind in `kinds` (the lambda of the student in
+    Acts 1, 2 and 3: 0 or more, `inf` allowed), in `STUDENT_KINDS` order. At least one kind."""
+    if not re.fullmatch(r"[0-9a-f]{8,64}", sha8_or_sha):
+        raise ValueError("the student's sha256 is lowercase hex")
+    if not kinds:
+        raise ValueError("a student recipe names at least one kind")
+    bad = [k for k in kinds if k not in STUDENT_KINDS]
+    if bad:
+        raise ValueError(f"a student takes over the kinds {', '.join(STUDENT_KINDS)}, not {bad}")
+    out = [f":pi_s={sha8_or_sha[:8]}"]
+    for kind in STUDENT_KINDS:
+        if kind not in kinds:
+            continue
+        lams = [float(x) for x in kinds[kind]]
+        if len(lams) != ACTS or not all(x >= 0 for x in lams):
+            raise ValueError(f"the student's lambda for {kind} is three numbers (Acts 1 to 3), each 0 or more, not {kinds[kind]!r}")
+        out.append(f":{kind}=" + "/".join(format_lambda(x) for x in lams))
+    return "".join(out)
+
+
+def student_name(lam: float, pi_h_sha256: str, pi_s_sha256: str, kinds: Mapping[str, Sequence[float]], pick: str = PICK_ARGMAX,
+                 skip_bias: float = 0.0, acts: Mapping[int, float] | None = None) -> str:
+    """The recipe string of a student candidate: the human prior's blend (`macro_name`, its `acts`) and the student's parts, then the pick."""
+    base = macro_name(lam, pi_h_sha256, PICK_ARGMAX, 0.0, acts)
+    return STUDENT_PREFIX + base[len(PREFIX):] + student_part(pi_s_sha256, kinds) + pick_name(pick, skip_bias)
+
+
+def parse_student(name: str) -> tuple[str, dict[str, tuple[float, float, float]]] | None:
+    """(the 8 hex of the student's sha256, {kind: (lambda in Act 1, Act 2, Act 3)}) of a student recipe; None for any other recipe. One
+    canonical form: the kinds in `STUDENT_KINDS` order, each once, and the per-act lambdas of the human prior's part as `parse_act_lambdas`
+    reads them."""
+    if not is_student(name):
+        return None
+    m = _STUDENT.fullmatch(name)
+    if not m:
+        blended_of(name)  # the refusal's message
+    parse_act_lambdas(name)
+    found = _STUDENT_KIND.findall(m[3])
+    kinds = [k for k, *_ in found]
+    if kinds != [k for k in STUDENT_KINDS if k in set(kinds)] or len(set(kinds)) != len(kinds):
+        raise ValueError(f"{name!r}: the student's kinds come once each, in the order {', '.join(STUDENT_KINDS)}")
+    return m[2], {k: (_parse_lambda(a), _parse_lambda(b), _parse_lambda(c)) for k, a, b, c in found}
+
+
+def student_lambda_for_floor(lams: Sequence[float], floor: int) -> float:
+    """The student's lambda for a kind on `floor`: the entry of the floor's act (`act_of_floor`)."""
+    return float(lams[min(act_of_floor(floor), ACTS - 1)])
 
 
 def parse_pick(name: str) -> tuple[str, float]:
