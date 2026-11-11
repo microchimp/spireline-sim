@@ -137,7 +137,8 @@ futility from 500, sequential); the run-level human bar is reported beside it.
 
 ## The V refit
 
-The run judgement's refit from a window of runs already exists: `python rl/gen0.py vrun-fit --shards-root <LAB/runs> --gen-dir <current.json>
+The run judgement's refit from a window of runs already exists (nothing is built here for it; `gen0.py train --shards-root` fits V_run as part of a
+trained candidate): `python rl/gen0.py vrun-fit --shards-root <LAB/runs> --gen-dir <current.json>
 --out <dir>` (the D33 out-of-fold keep test over five FightNet and five V fits) and `gen0.py build --vrun-fit <dir>`. It is a candidate of its
 own and not part of a student candidate: lambda is measured against the incumbent's `V`, so a student and a new `V` in one candidate
 would have a lambda for a judgement it is not played with.
