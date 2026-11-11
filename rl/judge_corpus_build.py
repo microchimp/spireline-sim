@@ -56,8 +56,8 @@ MINIMUMS = {"cell": 3000, "enemy": 400, "arch": 300, "relic": 150, "card": 150} 
 STOP_NAME = "STOP"
 MAX_ATTEMPTS = 3  # a fight whose worker died this many times is recorded as failed
 RESTARTS = 40  # a work process that dies is started again this many times in all
-USABLE_MIN_KIND = 1000  # labelled human turns (settled or soft) of bosses, and of elites, for the manifest's `usable_for_training`
-USABLE_MIN_KIND_ACT = 300  # and of each kind in each act
+USABLE_MIN_KIND = 500  # labelled human turns (settled or soft) of bosses, and of elites, for the manifest's `usable_for_training`
+USABLE_MIN_KIND_ACT = 150  # and of each kind in each act
 COMPACT_EVERY_S = (900, 2700)  # the supervisor compacts every 15 minutes until the corpus is usable for training, every 45 minutes after
 FAIL_STREAK = 3  # a work process that meets this many failed fights in a row stops (its exit code 3 is not restarted)
 

@@ -90,7 +90,7 @@ back the oversampling only; `"none"` keeps the sample as drawn. Self-play rows w
 
 `manifest.json` is rewritten by every compaction (the supervisor compacts every 15 minutes until the corpus is usable, every 45 after, and once at the
 end with `finalize`; each file is written whole, so a reader never sees half of it). Keys the lane polls: `usable_for_training` (sticky: true once the
-human boss and elite turns carry their labels, settled or soft: at least 1,000 of each kind and 300 of each kind and act; `usable_counts` has the counts at
+human boss and elite turns carry their labels, settled or soft: at least 500 of each kind and 150 of each kind and act; `usable_counts` has the counts at
 that moment and the time) and `complete` (true when every fight of the plan has a result and the shards, `coverage.md` and the manifest were made from
 them; `complete_at`). `human_build` says where the human build stands: fights planned, built and failed, the labelled boss and elite turns by act, and
 `paused_by`, the QUIET.lock line or night block the work processes are waiting on, if any. The self-play shards are in from the start; the human shards
