@@ -265,8 +265,30 @@ It writes `judge.pt` (the corpus's manifest sha256 and counts, the weights, the 
 and `judge.eval.md` (the held-out tables of the three judges). `eval` scores any checkpoints again (`judge_train.py eval --judge A.pt --judge B.pt`);
 `summary` counts what the trainer would read. A retrain as v2b when the manifest says `complete: true` is the same command with another `--out`.
 
-**The board** (rule 1.3 of the training design, board A's starts and draws): `D:/spireline/referee/backlog/scratch-board-a/v2/board_v2.py` (the v1
-board's driver on the same engine tree, so v2's games pair with board A's x16 and v0 rows and with v1's; no timing sample; `JUDGE_BOARD_PATH`
-names the checkpoint, `JUDGE_BOARD_OUT` the results folder, `JUDGE_BOARD_HOLD=1` takes a `judge-train` QUIET line, none by default so as not to pause
-the corpus build) then `analyze.py`, `analyze2.py`, `compare_prev.py` (v2 against v1 and v0) and `make_summary.py`. A pilot of eight games with a
-self-play checkpoint ran end to end (394 s at six processes beside training and the corpus builder).
+**The board, played 2026-11-11** (rule 1.3 of the training design, board A's starts and draws: Act 1 boss the fight board's 200 starts x draws 0 and 1, Act 2 boss board A's
+100 starts x draws 0 to 3, so 400 paired games an arm in each act; x16 is board A's own games, v1 and v0 the v1 board's and board A's rows on the same games). The driver is
+`D:/spireline/referee/backlog/scratch-board-a/v2/board_v2.py` (the v1 board's on the same engine tree; Act 2 first; no timing sample; `JUDGE_BOARD_PATH`, `JUDGE_BOARD_OUT`,
+`JUDGE_BOARD_HOLD=1` for a `judge-train` QUIET line, none by default so as not to pause the corpus build), with `analyze.py`, `analyze2.py`, `compare_prev.py` and `make_summary.py`;
+`summary.md` there has the tables. It played `judge-board.pt`, six processes, K 16, BelowNormal, 02:02Z to 10:49Z (25,379 s of play, stopped once for the 03:10Z night
+window; one j960 Act 1 fight hit the 3,600 s cap and counts as a loss, no search hit the safety clock).
+
+| per 100, SE clustered by start | x16 | j480 (v2) | j960 (v2) |
+|---|---|---|---|
+| Act 1 boss (400 games an arm) | 48.8 +- 3.3 | 52.5 +- 3.3 | 52.8 +- 3.3 |
+| Act 2 boss (400 games an arm) | 19.5 +- 3.2 | 16.8 +- 2.9 | 18.5 +- 3.1 |
+
+Paired differences against x16, points per 100: diff (SE over starts); one-sided 95% lower bound; games only the arm won / only x16 won; one-sided McNemar p that the arm is better.
+
+| | Act 1 | Act 2 | both (800 pairs) |
+|---|---|---|---|
+| j480 - x16 | +3.8 (2.0); +0.5; 33/18; p 0.024 | -2.8 (2.1); -6.2; 19/30; p 0.957 | +0.5 (1.5); -1.9; 52/48; p 0.382 |
+| j960 - x16 | +4.0 (1.8); +1.0; 32/16; p 0.015 | -1.0 (2.3); -4.7; 24/28; p 0.756 | +1.5 (1.5); -0.9; 56/44; p 0.136 |
+
+v2 against v1 on the same games: j480 +2.4 pooled (Act 1 +3.8, p 0.014; Act 2 +1.0), j960 +2.1 pooled (Act 1 +2.8, Act 2 +1.5; p 0.039 pooled); against v0: j480 +3.9, j960 +4.0
+pooled (p 0.001). Seconds a boss fight (own clock, indicative: the machine was full): Act 1 x16 66.5, j480 47.9 (0.72), j960 110.1 (1.66); Act 2 x16 79.7, j480 76.3 (0.96), j960 161.5 (2.03).
+
+**Verdict by rule 1.3: pooled, j480** (j960 is +1.5 with p 0.136, short of +3 with p < 0.05; j480's one-sided 95% lower bound against x16 is -1.9 by the start-clustered SE,
+-1.6 by the pair SE, just above the rule's -2). By act: **Act 1 boss, j960** (+4.0, p 0.015); **Act 2 boss, keep x16** (j960 -1.0, j480 -2.8 with bound -6.2). The pooled pass is
+marginal and comes from Act 1; the Act 2 boss, where v0 and v1 lost most, is still not won (v0 -5.2, v1 -3.8, v2 -2.8 for j480). The judge was trained on 599 human fights, 0.25% of its
+positions; the corpus has since grown to 4,680 fights (`complete` is not set), and the retrain as v2b on it is the one command above. Nothing is switched: the decision is the
+orchestrator's.
