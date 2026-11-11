@@ -355,6 +355,13 @@ class SearchCalibrationTests(unittest.TestCase):
         self.assertTrue(bool(np.all(np.diff(ky) >= 0)))
         np.testing.assert_allclose(np.interp([-50.0, 0.0, 30.0], kx, ky), [0.8 * v + 25 for v in (-50.0, 0.0, 30.0)], atol=2.0)
 
+    def test_equal_values_get_one_output_the_mean_outcome_of_those_rows(self):
+        x = np.concatenate([np.full(600, -100.0), np.linspace(-90, 40, 400)])
+        y = np.concatenate([np.where(np.arange(600) % 5 == 0, 10.0, -100.0), np.linspace(-80, 40, 400)])  # 1 in 5 of the certain deaths was won
+        kx, ky = jt.monotone_map(x, y, bins=40)
+        self.assertEqual(len(kx), len(np.unique(kx)))  # no knot twice
+        self.assertAlmostEqual(float(np.interp(-100.0, kx, ky)), 0.2 * 10.0 + 0.8 * -100.0, places=4)
+
     def test_calibrate_search_moves_the_level_to_the_outcomes_fits_on_training_rows_only_and_leaves_missing_values(self):
         with tempfile.TemporaryDirectory() as d:
             Store(d, n_runs=40)
