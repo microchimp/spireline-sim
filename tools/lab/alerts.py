@@ -7,6 +7,9 @@ in runner.log and was tried again after every backoff, with nothing anywhere els
                             removed by hand. It holds the kind, the two job folders, their return codes and durations, and the last three
                             lines of each failed command's log.
   LAB/alerts/timeouts.txt   one entry for every job, report or practice block killed at its time limit, even the first time.
+  LAB/alerts/run-student.txt   the run loop's stop (D58): every kind with a human bar failed it in two student rounds running (`write_run_student`);
+                            the runner no longer picks the `student` kind until the file is removed by hand.
+  LAB/alerts/run-plateau.txt   ten days without a run-loop promotion (`write_run_plateau`), with the last rounds' verdicts; a note, nothing is held.
 
 `banner` / `status_prefix` are what the daily readers print at the top (status.txt, clock.md, summary.md). Pure file work: no runner state.
 """
@@ -95,6 +98,42 @@ def write_failure(lab: Path | str, kind: str, failures: Sequence[dict], *, block
         if not shown:
             lines.append("  (no log)")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _round_lines(rounds: Sequence[dict]) -> list[str]:
+    """The student rounds' verdicts as lines: round, tag, what was built and which kinds failed which leg (no paths, long lines cut)."""
+    lines: list[str] = []
+    for r in rounds:
+        built = r.get("candidate") or "no candidate"
+        lines.append(f"round {r.get('round')} ({r.get('tag')}, {str(r.get('utc', ''))[:10]}): {built}; judged {r.get('judged') or 'no'}")
+        for kind, v in sorted((r.get("verdict") or {}).items()):
+            if isinstance(v, dict) and not v.get("pass"):
+                lines.append(scrub(f"  {kind}: leg 1 {v.get('leg1')}, leg 2 {v.get('leg2')}: {v.get('why') or 'no reason given'}"))
+    return lines
+
+
+def write_run_student(lab: Path | str, rounds: Sequence[dict], *, now: float | None = None) -> Path:
+    """LAB/alerts/run-student.txt: every kind with a human bar failed it in the two rounds given (the run loop's stop, D58). The student kind is held
+    while it stands; removing it by hand lets the student run again and starts the count over (`jobs.run_loop_tick`)."""
+    path = alert_path(lab, "run-student")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"ALERT run-student: every kind failed the human bar in {len(rounds)} student rounds running, raised {utc(now)}",
+             "The runner no longer picks the student kind (the teacher keeps labelling). Read LAB/student/verdicts.md, then remove this file by hand",
+             "to let the student run again; the count of failing rounds starts over. LAB/student/frozen.json lists the kinds frozen so far.", ""]
+    path.write_text("\n".join([*lines, *_round_lines(rounds)]) + "\n", encoding="utf-8")
+    return path
+
+
+def write_run_plateau(lab: Path | str, since: float, days: float, rounds: Sequence[dict], *, now: float | None = None) -> Path:
+    """LAB/alerts/run-plateau.txt: no run-loop promotion since `since` (epoch seconds; the last promotion, else the loop's start). A note: nothing is
+    held; removing the file starts the count of days again."""
+    path = alert_path(lab, "run-plateau")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"ALERT run-plateau: no run-loop promotion in {days:g} days (since {utc(since)[:10]}), raised {utc(now)}",
+             "The loop keeps running; this is the note. The last student rounds' verdicts follow (LAB/student/verdicts.md has the tables).",
+             "Remove this file by hand when it is dealt with: the days count again from then.", ""]
+    path.write_text("\n".join([*lines, *(_round_lines(rounds) or ["(no student round yet)"])]) + "\n", encoding="utf-8")
     return path
 
 
