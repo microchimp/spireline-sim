@@ -419,6 +419,15 @@ class CoverageTests(unittest.TestCase):
         self.assertIn("Source: human", md)
         self.assertNotIn("run0", md)  # no run id is printed
 
+    def test_ai_assumed_is_counted_where_it_was_recorded_and_said_absent_elsewhere(self):
+        rows = [row(i, f"run{i % 25}", ai_assumed=(i % 4 == 0)) for i in range(40)] + [row(i, f"run{i % 25}") for i in range(40, 60)]
+        md = jc.coverage_md(rows, {})
+        self.assertIn("`ai_assumed`", md)
+        self.assertIn("recorded on 40 of 60 positions, true on 25% of those", md)
+        self.assertIn("absent on the rest", md)
+        none = jc.coverage_md([row(i, f"run{i % 25}") for i in range(30)], {})
+        self.assertIn("`ai_assumed` is absent from every row of this source", none)
+
     def test_each_source_has_its_own_tables(self):
         rows = [row(i, f"run{i % 25}") for i in range(50)] + [row(i, f"sp{i % 25}", src="selfplay", tier="played") for i in range(50)]
         md = jc.coverage_md(rows, {})
