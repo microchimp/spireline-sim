@@ -166,7 +166,7 @@ search settled on a ladder of budgets, and the loop's self-play positions) and s
 `judge.py` gains the policy-and-source readings it needs (`judge_out_policy`, `judge_out_all`, the `src_emb` row); `judge.py train` and the v0 and v1
 checkpoints are unchanged in what they compute. Tests: `tests/python/test_judge_train.py` (24: the reader on a synthetic store, the weights, every
 loss term, the search calibration, the source input, a short training run on a tiny network, the held-out scoring). Folder for the checkpoints:
-`referee/agent/judge/v2/` (the corpus-trained judge, **not trained yet: see Status**), `v2-sp/` (the interim, self-play half of the corpus only).
+`referee/agent/judge/v2/` (the corpus-trained judge: 599 human fights and the self-play half, trained 2026-11-11), `v2-sp/` (the interim, self-play half of the corpus only).
 v0 and v1 are untouched.
 
 **The loss.** Four labels train the judge's three outputs (win logit, end-HP logit, potions) and each term is a weighted mean over the rows that
@@ -224,10 +224,36 @@ positions are the loop's own, not the humans': **the human positions and the set
 The held-out half is the loop's self-play of runs none of the three judges trained on (v1's held-out runs are the same runs; v0 was trained on three nights, some
 of whose runs fall in it).
 
-**Status (2026-11-11 00:30Z).** The corpus's human build (17,001 fights, `judge_corpus.py run`) is stalled: its workers pause while another lane's
-`run-teacher` QUIET line stands (the run-self-play lane's measurement, from 21:34Z; the line is also what holds any heavy job of this lane by the
-brief's rule), so the manifest still says `usable_for_training: false` and v2 on the full corpus has not been trained, and the board not played.
-v2-sp (`referee/agent/judge/v2-sp/judge.pt`, sha256 41429179...) is trained and measured, and board-ready.
+**v2 on the corpus (2026-11-11 01:37Z, the manifest's `usable_for_training: true`).** The corpus's human build had been paused behind another lane's
+`run-teacher` QUIET line (workers wait on every line but the loop's); once it was dropped the build ran, and the manifest said usable with **599 human fights
+of 537 runs** (2,270 positions: boss Act 1 / Act 2 380 / 385, elite 375 / 384, hallway 376 / 370;
+1,821 to train, 449 held out by run) beside the 917,068 self-play positions: **919,338 positions, 657,433 to train, 68,993 for the epoch and the
+calibration, 192,912 held out**. Tiers of the human boss and elite rows: 442 + 352 settled, 323 + 407 soft; hallway rows and every self-play row `played`.
+The human share is small (0.25% of the rows, about 2% of the weight after the corpus's weights `1 / inclusion probability`, clipped at 4 times the mean: the
+design lane's clip), so this v2 is v2-sp plus a first look at the humans' positions; the retrain as v2b is for `complete: true`, hours of CPU away.
+The search calibration on the human rows (training rows only, 12 and 14 bins since a group has few rows): soft turns read -43 HP at the root against +2.6 realised,
+settled turns -51 against -30. Same recipe as v2-sp (the one command below, `--wclip 4`); 1,228 s on the card; `referee/agent/judge/v2/judge.pt`, sha256
+`83440687669c864b24db2a91969fe16b72ec135b2cd5ccda60ceb9c8e455048c`; best validation loss 1.0886; win calibration scale 0.946, shift -0.082.
+For the board it is `judge-board.pt` beside it (sha256 `94eeca3c92efd80853e65e546178104eb8f06ddc2f3d82c223bf57f167df9fbb`): the same checkpoint without the source
+row, which the board's older engine tree (the copy board A and the v1 board played on) cannot load; row 0 is zero, so the two read identically (checked on 64
+human boss positions: difference 0.0).
+
+Held-out, v2 against v2-sp, v1 and v0 (Pearson / Spearman / win calibration error against the teacher's outcome; all 192,912 positions by run):
+
+| cell | positions | v2 | v2-sp | v1 | v0 |
+|---|---|---|---|---|---|
+| all | 192,912 | 0.832 / 0.873 / 0.012 | 0.835 / 0.875 / 0.009 | 0.809 / 0.860 / 0.040 | 0.781 / 0.834 / 0.113 |
+| Act 1 boss | 89,618 | 0.731 / 0.735 / 0.016 | 0.738 / 0.741 / 0.012 | 0.684 / 0.694 / 0.048 | 0.650 / 0.671 / 0.135 |
+| Act 1 elite | 18,879 | 0.703 / 0.812 / 0.023 | 0.717 / 0.820 / 0.019 | 0.680 / 0.820 / 0.045 | 0.691 / 0.799 / 0.060 |
+| Act 1 hallway | 32,790 | 0.891 / 0.927 / 0.004 | 0.892 / 0.931 / 0.005 | 0.889 / 0.927 / 0.006 | 0.897 / 0.922 / 0.006 |
+| Act 2 boss | 18,221 | 0.685 / 0.673 / 0.025 | 0.686 / 0.675 / 0.027 | 0.609 / 0.615 / 0.088 | 0.431 / 0.417 / 0.285 |
+| Act 2 elite | 10,214 | 0.654 / 0.725 / 0.034 | 0.645 / 0.720 / 0.037 | 0.648 / 0.729 / 0.042 | 0.593 / 0.658 / 0.134 |
+| Act 2 hallway | 23,190 | 0.831 / 0.894 / 0.019 | 0.837 / 0.895 / 0.021 | 0.834 / 0.902 / 0.022 | 0.818 / 0.882 / 0.082 |
+
+On the self-play positions v2 and v2-sp are level (the humans' rows are too few to move them, and v2's Act 1 boss and elite are 0.007 and 0.014 lower; not tested against a second seed). On the **human positions held out** (449, 84 Act 1 boss and 95 Act 2 boss: small, read as direction): the judge's V against the search's settled
+and soft root values (306 turns) Pearson / Spearman 0.790 / 0.849 against v2-sp 0.776 / 0.846, v1 0.680 / 0.744, v0 0.648 / 0.666, at Act 2 boss 0.767 / 0.788 against 0.712 / 0.751,
+0.669 / 0.652 and 0.345 / 0.393; against the human's own outcome of the fight (read with the source input) 0.646 / 0.776 against 0.643 / 0.751, 0.610 / 0.727, 0.570 / 0.666, win
+calibration error 0.078 against 0.111, 0.139, 0.269. Every judge reads these positions about 30 HP above the search's settled value (the search's level is low, as measured).
 
 **To train v2 the moment the manifest says `usable_for_training: true`** (GPU venv; about 10 to 15 minutes; leaves the gym trainer running):
 
