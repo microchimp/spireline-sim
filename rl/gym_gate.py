@@ -21,10 +21,12 @@ of n_c pairs each, n pairs in all, mean m: SE = sqrt( C/(C-1) * sum_c (S_c - m n
       c0185 that v2 promoted at p 0.025, so (a) is v2's rule and adds nothing to it), or
   (b) **not worse and the trend positive**: the candidate's lower bound m - Z SE is above -1.0 point, *and* the pooled paired difference of
       the last five stage-2 candidates of this incumbent, this one included, is positive with one-sided p < 0.10. The pooled difference is
-      taken pair by pair: p_pair = mean over the pool's candidates of d_i(s, j); P = mean of p_pair; SE as above on p_pair; z = P / SE;
-      p = 1 - Phi(z). It is the pairs' own spread, so the candidates' shared incumbent and their near-identical play are accounted for
-      (five candidates cut the SE by about a fifth, not by sqrt 5). A pool needs `min` = 3 candidates before it speaks: a trend is more
-      than one point (replayed: a false promotion in the first five candidates of an incumbent 18% against 20% with no minimum, the
+      taken **per start**: a candidate's difference at start s is the mean of its own pairs there, the start's one number u_s is the mean of
+      that over the pool's candidates that played s, and the test is the one-sided paired test over starts: P = mean of u_s, SE = sd(u_s) /
+      sqrt(starts), z = P / SE, p = 1 - Phi(z). It is the starts' own spread of the candidates' average, so the candidates' shared incumbent
+      draws (their differences correlate about 0.5) and their near-identical play are accounted for (five candidates cut the SE by about a
+      fifth, not by sqrt 5; combining the five candidates' own SEs as independent would understate it by about 1.7). A pool needs `min` = 3
+      candidates before it speaks: a trend is more than one point (replayed: a false promotion in the first five candidates of an incumbent 18% against 20% with no minimum, the
       power to promote a +1 point family in five candidates 78% against 80%: close to a wash, kept for the meaning).
   The pool is the ledger's stage-2 rows with the same incumbent (a promotion resets it) and the same rule version (a row written under v1 or
   v2 was picked on a +1.0 stage-1 floor; its 2,000 pairs carry that selection), whatever the engine (each member's difference is taken
@@ -101,21 +103,50 @@ def screen_stage1(d: dict[tuple[str, int], float], screen: dict) -> dict:
 
 
 def pooled(members: list[dict[tuple[str, int], float]]) -> dict:
-    """The pooled paired difference of `members` (each a candidate's pair differences), pair by pair over the pairs all of them have:
-    {k, pairs, diff, se, z, p} with p the one-sided p of 'the pooled difference is not positive'."""
+    """The pooled paired difference of `members` (each a candidate's pair differences, candidate minus the shared incumbent), per start.
+
+    The estimator: each candidate's difference at a start is the mean of its own pairs there (its seeds); a start's one number is the mean of
+    that over **the candidates that played the start** (all of them, in the gate: every stage-2 candidate plays the board's 200 starts x 10
+    seeds; a start some did not play is the mean over those that did, and a start nobody played is not in the test); then the one-sided
+    paired test over starts: P = mean of the start numbers, SE = sd(start numbers) / sqrt(starts), z = P / SE, p = 1 - Phi(z).
+    The five candidates are paired against the same incumbent games, so their differences share the incumbent's draws (correlation about
+    0.5); averaging them per start first and taking the spread of those averages across starts carries that correlation by construction
+    (five candidates cut the SE by about a fifth, not by sqrt 5). The estimator that treats the candidates as independent samples (the
+    candidates' own SEs combined as sqrt(sum SE_i^2) / k) understates the SE by about 1.7 and fires on a shared incumbent draw. The form
+    this function held before (a mean pair by pair over the pairs every member played, then the start-clustered SE) is the same statistic
+    when every member played the same seeds at every start, as the gate's members do, and differs only where a start was not played in full.
+
+    {k, pairs, starts, partial, diff, se, z, p}: `pairs` the pairs every member played (the pairs the first estimator used; kept as a
+    diagnostic), `starts` the starts in the test, `partial` how many of them some member did not play, `p` the one-sided p of 'the pooled
+    difference is not positive' (1.0 with fewer than two starts)."""
     if not members:
-        return {"k": 0, "pairs": 0, "diff": None, "se": None, "z": None, "p": 1.0}
-    keys = set(members[0])
+        return {"k": 0, "pairs": 0, "starts": 0, "partial": 0, "diff": None, "se": None, "z": None, "p": 1.0}
+    common = set(members[0])
     for x in members[1:]:
-        keys &= set(x)
-    m = {k: sum(x[k] for x in members) / len(members) for k in sorted(keys)}
-    mean, se, n, _c = cluster_mean_se(m)
-    if mean is None or se is None:
-        return {"k": len(members), "pairs": n, "diff": mean, "se": se, "z": None, "p": 1.0}
-    if se == 0:  # every start says the same: no spread, so the sign is the whole answer
-        return {"k": len(members), "pairs": n, "diff": mean, "se": se, "z": None, "p": 0.0 if mean > 0 else 1.0}
+        common &= set(x)
+    cells: dict[str, list[float]] = {}
+    for x in members:
+        sums: dict[str, float] = {}
+        sizes: dict[str, int] = {}
+        for (start, _j), v in x.items():
+            sums[start] = sums.get(start, 0.0) + v
+            sizes[start] = sizes.get(start, 0) + 1
+        for start, tot in sums.items():
+            cells.setdefault(start, []).append(tot / sizes[start])
+    per_start = {s: math.fsum(v) / len(v) for s, v in cells.items()}
+    c = len(per_start)
+    partial = sum(1 for v in cells.values() if len(v) < len(members))
+    out = {"k": len(members), "pairs": len(common), "starts": c, "partial": partial}
+    if not c:
+        return {**out, "diff": None, "se": None, "z": None, "p": 1.0}
+    mean = math.fsum(per_start.values()) / c
+    if c < 2:
+        return {**out, "diff": mean, "se": None, "z": None, "p": 1.0}
+    se = math.sqrt(math.fsum((v - mean) ** 2 for v in per_start.values()) / (c - 1) / c)
+    if se <= 1e-12 * max(1.0, abs(mean)):  # every start says the same: no spread, so the sign is the whole answer
+        return {**out, "diff": mean, "se": se, "z": None, "p": 0.0 if mean > 1e-12 else 1.0}
     z = mean / se
-    return {"k": len(members), "pairs": n, "diff": mean, "se": se, "z": z, "p": upper_tail(z)}
+    return {**out, "diff": mean, "se": se, "z": z, "p": upper_tail(z)}
 
 
 def stage2(own: dict[tuple[str, int], float], earlier: list[dict[tuple[str, int], float]], mcnemar_p: float, l0_diff: float | None,

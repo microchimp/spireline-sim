@@ -104,6 +104,122 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(gg.pooled([a, part])["pairs"], 1000)
 
 
+def independent_pooled(members: list[dict]) -> tuple[float, float, float]:
+    """The estimator the gate must not use: the candidates' own means and standard errors combined as if the candidates were independent
+    samples (P = mean of the means, SE = sqrt(sum SE_i^2) / k). Returns (P, SE, one-sided p). A reference for the tests, not a gate function."""
+    stats = [gg.cluster_mean_se(d) for d in members]
+    p_mean = sum(m for m, _se, _n, _c in stats) / len(stats)
+    se = math.sqrt(sum(s * s for _m, s, _n, _c in stats)) / len(stats)
+    return p_mean, se, gg.upper_tail(p_mean / se)
+
+
+class PooledPerStartTests(unittest.TestCase):
+    """The pooled difference averages the candidates per start, then runs one paired test over starts (rl/gym_gate.py `pooled`)."""
+
+    @staticmethod
+    def member(table: dict[str, list[int]]) -> dict:
+        """{(start, j): d} from {start: [d for seed 0, d for seed 1, ...]}; an absent start is one the candidate did not play."""
+        return {(s, j): v for s, vs in table.items() for j, v in enumerate(vs)}
+
+    def test_the_per_start_estimator_is_the_hand_calculation(self):
+        # three candidates, three starts, two seeds each: a candidate's difference at a start is the mean of its seeds
+        c1 = self.member({"A": [1, 1], "B": [0, 0], "C": [-1, 0]})  # start means 1, 0, -1/2
+        c2 = self.member({"A": [1, 0], "B": [0, 1], "C": [0, 0]})  # 1/2, 1/2, 0
+        c3 = self.member({"A": [0, 0], "B": [1, 1], "C": [-1, -1]})  # 0, 1, -1
+        r = gg.pooled([c1, c2, c3])
+        # one number a start: A (1 + 1/2 + 0) / 3 = 1/2, B (0 + 1/2 + 1) / 3 = 1/2, C (-1/2 + 0 - 1) / 3 = -1/2; mean 1/6;
+        # deviations 1/3, 1/3, -2/3 -> sum of squares 2/3, variance 1/3, SE = sqrt(1/3 / 3) = 1/3, z = 1/2
+        self.assertEqual((r["k"], r["starts"], r["partial"], r["pairs"]), (3, 3, 0, 6))
+        self.assertAlmostEqual(r["diff"], 1 / 6)
+        self.assertAlmostEqual(r["se"], 1 / 3)
+        self.assertAlmostEqual(r["z"], 0.5)
+        self.assertAlmostEqual(r["p"], gg.upper_tail(0.5))
+        self.assertAlmostEqual(r["p"], 0.3085375, places=6)
+        # the order of the members changes nothing
+        again = gg.pooled([c3, c1, c2])
+        self.assertAlmostEqual(again["se"], r["se"])
+        self.assertAlmostEqual(again["diff"], r["diff"])
+
+    def test_a_start_some_candidates_did_not_play_is_the_mean_over_those_that_did(self):
+        c1 = self.member({"A": [1, 1], "B": [0, 0], "C": [-1, 0]})  # start means 1, 0, -1/2
+        c2 = self.member({"A": [1, 0], "B": [0], "C": [0, 0]})  # 1/2, 0 (one seed of B), 0
+        c3 = self.member({"A": [0, 0], "B": [1, 1]})  # 0, 1; start C not played
+        r = gg.pooled([c1, c2, c3])
+        # A (1 + 1/2 + 0) / 3 = 1/2; B (0 + 0 + 1) / 3 = 1/3; C (-1/2 + 0) / 2 = -1/4 (two candidates played it); the start still counts once
+        # mean 7/36; deviations 11/36, 5/36, -16/36 -> sum of squares 402/1296, SE = sqrt(402/1296 / 2 / 3) = sqrt(67) / 36, z = 7 / sqrt(67)
+        self.assertEqual((r["k"], r["starts"], r["partial"]), (3, 3, 1))
+        self.assertEqual(r["pairs"], 3)  # the pairs all three played: A's two and B's seed 0
+        self.assertAlmostEqual(r["diff"], 7 / 36)
+        self.assertAlmostEqual(r["se"], math.sqrt(67) / 36)
+        self.assertAlmostEqual(r["z"], 7 / math.sqrt(67))
+        self.assertAlmostEqual(r["p"], gg.upper_tail(7 / math.sqrt(67)))
+        # a start played by one candidate only is still a start of the test
+        alone = gg.pooled([self.member({"A": [1, 1], "B": [0, 0]}), self.member({"A": [0, 0], "C": [1, 1]})])
+        self.assertEqual((alone["starts"], alone["partial"]), (3, 2))
+        self.assertAlmostEqual(alone["diff"], (0.5 + 0.0 + 1.0) / 3)
+
+    def test_one_start_has_no_spread_and_never_fires_and_equal_starts_say_the_sign(self):
+        one = gg.pooled([self.member({"A": [1, 1]}), self.member({"A": [1, 0]})])
+        self.assertEqual((one["starts"], one["p"], one["se"]), (1, 1.0, None))
+        flat_up = gg.pooled([self.member({"A": [1, 0], "B": [0, 1]}), self.member({"A": [1, 0], "B": [1, 0]})])
+        self.assertEqual((flat_up["se"], flat_up["p"]), (0.0, 0.0))  # 1/2 at both starts: no spread, a positive sign
+        flat_down = gg.pooled([self.member({"A": [-1, 0], "B": [0, -1]})])
+        self.assertEqual((flat_down["se"], flat_down["p"]), (0.0, 1.0))
+        self.assertEqual(gg.pooled([{}, {}])["p"], 1.0)
+        self.assertEqual(gg.pooled([{}, {}])["starts"], 0)
+
+    def test_five_candidates_that_share_one_incumbent_draw_fire_the_per_candidate_test_and_not_the_per_start_one(self):
+        inc = incumbent_wins(1)
+        base = candidate_wins(inc, 70, 60, 1)  # +10 pairs in 2,000: +0.5 points, the candidate alone is p 0.19
+        members = []
+        for i in range(5):  # five candidates that are nearly one player: the base's games with six pairs turned over each
+            rnd = random.Random(900 + i)
+            w = dict(base)
+            for k in rnd.sample(KEYS, 6):
+                w[k] = 1 - w[k]
+            members.append({k: w[k] - inc[k] for k in KEYS})
+        own_p = [gg.upper_tail(m / se) for m, se, _n, _c in (gg.cluster_mean_se(d) for d in members)]
+        self.assertTrue(all(p > 0.10 for p in own_p), own_p)  # no candidate alone shows anything
+        p_ind, se_ind, pv_ind = independent_pooled(members)
+        r = gg.pooled(members)
+        self.assertLess(pv_ind, 0.10, pv_ind)  # the per-candidate test fires: five 'independent' looks at the same incumbent draw
+        self.assertGreater(r["p"], 0.10, r["p"])  # the per-start one does not
+        self.assertAlmostEqual(r["diff"], p_ind, places=3)  # the same pooled gain
+        self.assertGreater(r["se"] / se_ind, 2.0)  # the independent SE is too small by about sqrt(5): the candidates are one draw
+        self.assertLess(r["se"] / se_ind, 2.4)
+        # and the gate's stage 2, with these five as the pool, refuses on the pooled test alone (not worse, a pool of five, a positive trend)
+        rule = RULE
+        d = members[-1]
+        b = sum(1 for v in d.values() if v == 1)
+        c = sum(1 for v in d.values() if v == -1)
+        res = gg.stage2(d, members[:-1], gl.mcnemar_one_sided(b, c), 0.0, rule)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["pool"]["k"], 5)
+        self.assertGreater(res["diff_lb"], -0.01)  # it is not worse: the pool is the only thing that decides
+        self.assertGreater(res["pool"]["diff"], 0)
+        self.assertGreater(res["pool"]["p"], float(rule["pool"]["alpha"]))
+        self.assertIn("pooled difference", res["why"])
+
+    def test_independent_candidates_are_not_penalised_the_two_estimators_agree_when_nothing_is_shared(self):
+        rnd = random.Random(7)
+        members = [{k: rnd.choice([-1, 0, 0, 1]) for k in KEYS} for _ in range(5)]  # differences drawn on their own: no shared incumbent
+        _p, se_ind, _pv = independent_pooled(members)
+        r = gg.pooled(members)
+        self.assertLess(abs(r["se"] / se_ind - 1.0), 0.12)
+
+    def test_on_the_boards_balanced_design_it_is_the_pair_level_cluster_form_and_the_order_of_the_pairs_changes_nothing(self):
+        inc = incumbent_wins(3)
+        members = [{k: w[k] - inc[k] for k in KEYS} for w in (candidate_wins(inc, 70 + i, 60, 40 + i) for i in range(3))]
+        shuffled = [dict(random.Random(i).sample(sorted(d.items()), len(d))) for i, d in enumerate(members)]
+        a, b = gg.pooled(members), gg.pooled(shuffled)
+        self.assertAlmostEqual(a["diff"], b["diff"])
+        self.assertAlmostEqual(a["se"], b["se"])
+        keyed = {k: sum(d[k] for d in members) / len(members) for k in KEYS}  # the form this function held before: pair by pair, then clustered
+        m, se, _n, _c = gg.cluster_mean_se(keyed)
+        self.assertAlmostEqual(a["diff"], m)
+        self.assertAlmostEqual(a["se"], se)
+
+
 class StageOneTests(unittest.TestCase):
     """The screen: 400 pairs of stage 1's seed pair (j 4 and 5, pair 2), one-sided 95% bounds."""
 

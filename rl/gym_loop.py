@@ -140,7 +140,8 @@ MEAN_X16_S = {"act1-hallway": 12.0, "act1-elite": 25.0, "act1-boss": 74.0, "act2
 # `rl/gym_gate.py` has the statistics and their reasons: start-clustered standard errors; the screen rejects when the one-sided 95%
 # UPPER bound of the stage-1 difference is under `screen.points`; (b) needs the candidate's 95% lower bound above `pool.not_worse_points`
 # and the pooled paired difference of the last `pool.k` stage-2 candidates of this incumbent and rule version (at least `pool.min` of
-# them) positive at one-sided p < `pool.alpha`; at most one promotion in `guard_h` hours. Nothing tunes on these games: the trainer
+# them; the candidates averaged per start, one paired test over starts: `gym_gate.pooled`) positive at one-sided p < `pool.alpha`; at most
+# one promotion in `guard_h` hours. Nothing tunes on these games: the trainer
 # never sees the board's starts or their runs.
 PROMOTION_RULE_V2 = {"name": "gym-loop-promote-v2", "fixed": "2026-11-01 (D43): stage 1's pair rotates; v1 fixed 2026-10-30",
                      "starts": 200, "cat": "act1-boss", "stage1_seeds": 2, "stage1_rotates": True, "futility_points": 1.0,

@@ -184,9 +184,13 @@ decision: "not worse, and the trend across candidates positive", the lab's judge
   lower (`single.min_points` can ask for a floor on top; 0, because the brief's "+1.5 points" would have refused c0019 and c0185, which v2
   promoted at +1.30 and +1.35, p 0.025), or (b) **not worse and the trend positive**: the candidate's lower bound m - 1.645 SE is above -1.0
   point *and* the pooled paired difference of the last five stage-2 candidates of this incumbent, this one included (at least three,
-  `pool.min`), is positive at one-sided p < 0.10. Pooled: pair by pair p = mean over the pool of d_i(s, j); P = mean of p; SE on p as above;
-  z = P / SE; p = 1 - Phi(z). It is the pairs' own spread, so the candidates' shared incumbent and near-identical play are accounted for:
-  five candidates cut the SE by about a fifth (0.67 to 0.55 points), not by sqrt 5. **The pool** is the ledger's stage-2 rows with the same
+  `pool.min`), is positive at one-sided p < 0.10. Pooled **per start** (2026-11-11, `gym_gate.pooled`): a candidate's difference at a start is the mean
+  of its own pairs there (its seeds); a start's one number u_s is the mean of that over the pool's candidates that played the start (a start
+  some did not play is the mean over those that did; all of them, in the gate); then the one-sided paired test over starts: P = mean of u_s,
+  SE = sd(u_s) / sqrt(starts), z = P / SE, p = 1 - Phi(z). The five candidates are paired against the same incumbent games, so their differences
+  share the incumbent's draws (they correlate about 0.5); the spread of their per-start average carries that: five candidates cut the SE by
+  about a fifth (0.67 to 0.55 points), not by sqrt 5. Treating them as independent samples (their own SEs combined as sqrt(sum SE_i^2) / 5)
+  understates the SE by 1.7 on average (1.2 to 1.9 on the ledger's pools of 2 to 5) and is not what the gate does. **The pool** is the ledger's stage-2 rows with the same
   incumbent (a promotion restarts it) and the **same rule version** (a v1 or v2 row was picked on a +1.0 stage-1 floor and its 2,000 pairs carry
   that selection), whatever the engine (each member's difference is taken on its own engine's games); a member whose games are gone is left
   out. Verdict lines and ledger rows carry the figures (`diff_lb`, `pool_k`, `pool_diff`, `pool_se`, `pool_p`, `pool_prior`, `path`):
@@ -209,7 +213,11 @@ decision: "not worse, and the trend across candidates positive", the lab's judge
   and nothing else; (b)'s lower bound keeps a worse one out. **Power** (a true gain per candidate on the real variances, promoted within 3 / 5 /
   10 candidates): +0.5 points 0.39 / 0.47 / 0.61; +1.0 points 0.70 / 0.78 / 0.87; +1.5 points 0.91 / 0.95 / 0.98. The pool minimum of three
   (the brief had none): 0.18 against 0.20 false promotion in the first five candidates, 0.78 against 0.80 power at +1.0; a wash, kept because a
-  trend is more than one candidate.
+  trend is more than one candidate. **The pooling check** (2026-11-11, `replay_pool.py`, the 38 stage-2 verdicts now in the ledger: the 34 above and
+  four more rejects of the v3 incumbent): the pooled p of every look is the same to 1e-15 whether the pool is averaged pair by pair then
+  clustered by start (as first landed) or per start (as now written); on this board's balanced design (200 starts x 10 seeds) they are one statistic. The
+  independent-candidate version would have fired the pooled path on nine looks (c0018, c0019, c0109, c0120, c0164, c0181, c0182, c0183, c0185), seven
+  of them candidates the gate refused; the gate's own pooled path fires on c0019 alone (which (a) also promotes).
 - **Cost.** Almost every gated candidate now goes to stage 2 (164 of the 166 would have): its 1,600 games are about 9.5 minutes of six processes on
   the fast engine, so a gate is about 12 minutes where a stage-1 reject was 2.6; at one gated candidate an hour (32 since 11-09 12:00Z, 23 a day) the
   loop spends about a fifth of its time on the gate (4% before). The incumbent's 2,000 games are still played once per incumbent and engine. The
