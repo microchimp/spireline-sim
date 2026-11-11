@@ -665,6 +665,87 @@ def _nearest_rows(
 
 
 # --------------------------------------------------------------------------------------
+# Block M: the whole act map as a grid (D58 addendum 13)
+# --------------------------------------------------------------------------------------
+# Not part of `encode` (BASE_SIZE stays 1855 and the run judgement's input is unchanged): only the human prior's and the
+# student's map tower read it. One cell per map coordinate, (row, column), 13 numbers each, in this order: the node type
+# one-hot (vocab.NODE_MONSTER .. NODE_ANCIENT, channels 0-7; an empty cell is all zero), the three edge bits (this node has a
+# child at column -1, 0, +1 of the next row; channels 8-10), reachable (the cell is on some path from the position to the boss,
+# the position included; channel 11) and here (the position; channel 12). The flat layout is [row][column][channel].
+MAP_COLS = 7  # RunConstants.MapWidth
+MAP_GRID_ROWS = MAP_ROWS + 1  # rows 0 (the start) to the boss row: Act 1's boss is on row MAP_ROWS (RunConstants.MapBossRow); later acts end earlier
+MAP_GRID_CHANNELS = 13
+MAP_GRID_SHAPE = (MAP_GRID_ROWS, MAP_COLS, MAP_GRID_CHANNELS)
+MAP_GRID_SIZE = MAP_GRID_ROWS * MAP_COLS * MAP_GRID_CHANNELS
+_GRID_TYPES = tuple(range(vocab.NODE_MONSTER, vocab.NODE_ANCIENT + 1))  # the eight node types, in vocab order
+_GRID_EDGE, _GRID_REACH, _GRID_HERE = len(_GRID_TYPES), len(_GRID_TYPES) + 3, len(_GRID_TYPES) + 4
+assert _GRID_HERE + 1 == MAP_GRID_CHANNELS
+
+
+def map_grid(view: RunView) -> np.ndarray:
+    """Block M: the whole act map of `view` as an int8 array of `MAP_GRID_SIZE` numbers (see above), the position's reachable set
+    included. The edges from the start node to the first row and from the last row to the boss (a fan of up to seven, every node of
+    the row) are not drawn beyond column +-1: they carry no route (the first row is all of the start's children, the last all lead
+    to the boss) and the reachable bit says what a position can still reach. Every other edge of a real map is one row on and
+    at most one column over.
+
+    Raises:
+        ValueError: A node outside the grid (a column over 6, a row over `MAP_ROWS`) or of a type that is not one of the eight.
+    """
+    return _map_grid(view.map_nodes, view.position).copy()
+
+
+def afterstate_map_grid(view: RunView, option: Option) -> np.ndarray:
+    """Block M of the state after `option` (`apply_option`): only a map step moves the position, so it is `view`'s grid with the
+    position at the room the option goes to; every other option leaves the grid as it is."""
+    if option.kind == "map.node":
+        col, row, _ = _need(option.node, option.kind)
+        return _map_grid(view.map_nodes, (col, row)).copy()
+    return map_grid(view)
+
+
+@lru_cache(maxsize=4096)
+def _map_grid(nodes: tuple[MapNode, ...], position: tuple[int, int]) -> np.ndarray:
+    by_coord = {(n.col, n.row): n for n in nodes}
+    out = np.zeros(MAP_GRID_SHAPE, dtype=np.int8)
+    for node in nodes:
+        if not (0 <= node.col < MAP_COLS and 0 <= node.row < MAP_GRID_ROWS):
+            raise ValueError(f"map node ({node.col}, {node.row}) is outside the {MAP_GRID_ROWS}x{MAP_COLS} grid")
+        if node.node_type not in _GRID_TYPES:
+            raise ValueError(f"map node ({node.col}, {node.row}) has type {node.node_type}, not one of the eight room types")
+        cell = out[node.row, node.col]
+        cell[_GRID_TYPES.index(node.node_type)] = 1
+        for child_col, child_row in node.children:
+            if child_row == node.row + 1 and abs(child_col - node.col) <= 1:
+                cell[_GRID_EDGE + child_col - node.col + 1] = 1
+    # the nodes from which the boss can be reached (descending rows: a child's answer is known before its parent's)
+    to_boss: set[tuple[int, int]] = set()
+    for node in sorted(nodes, key=lambda n: -n.row):
+        coord = (node.col, node.row)
+        if node.node_type == vocab.NODE_BOSS or any(child in to_boss for child in node.children):
+            to_boss.add(coord)
+    seen: set[tuple[int, int]] = set()
+    if position in by_coord:
+        seen.add(position)
+        frontier = [position]
+        while frontier:
+            following = []
+            for coord in frontier:
+                for child in by_coord[coord].children:
+                    if child in by_coord and child not in seen:
+                        seen.add(child)
+                        following.append(child)
+            frontier = following
+    for col, row in seen & to_boss:
+        out[row, col, _GRID_REACH] = 1
+    if position in by_coord:
+        out[position[1], position[0], _GRID_HERE] = 1
+    flat = out.reshape(-1)
+    flat.setflags(write=False)
+    return flat
+
+
+# --------------------------------------------------------------------------------------
 # Afterstates (DESIGN.md section 4)
 # --------------------------------------------------------------------------------------
 
