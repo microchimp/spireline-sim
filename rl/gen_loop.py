@@ -153,6 +153,10 @@ class Agent:
     # lambda by act (2026-11-08, D55 addendum 12): the recipe's `:act<N>=<lambda>` parts as ((act number from 1, lambda), ...), sorted; () is
     # every agent that existed before them (the base `lam` for every act)
     lam_acts: tuple[tuple[int, float], ...] = ()
+    # the run student (2026-11-11, `rl/run_student.py`, macro "vrun+pi_s:..."): its weights file (run_student.npz in the candidate's folder) and
+    # its lambda per kind, ((kind, (Act 1, Act 2, Act 3)), ...) in the recipe's order; unset for every agent that existed before it
+    student: str | None = None
+    student_lams: tuple[tuple[str, tuple[float, float, float]], ...] = ()
 
     def search_config(self, sims):
         """The `search_configs.SearchConfig` this agent plays when the lab asks for `sims` (a config name or a flat budget): `sims` itself
@@ -206,8 +210,11 @@ class Agent:
             import imitation_chooser  # noqa: PLC0415
 
             pick, bias = macro_recipe.parse_pick(self.macro)
+            if macro_recipe.is_student(self.macro) and not self.student:
+                raise ValueError(f"macro {self.macro} needs run_student.npz")
             return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W,
-                                                   pick=pick, skip_bias=bias, act_lam=dict(self.lam_acts) or None)
+                                                   pick=pick, skip_bias=bias, act_lam=dict(self.lam_acts) or None,
+                                                   **({"student": self.student, "student_lams": dict(self.student_lams)} if self.student else {}))
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -288,13 +295,32 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
             raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior pick {named['pick']} disagree")
         if named and named.get("lambda_acts", {}) != {str(a): macro_recipe.format_lambda(v) for a, v in sorted(lam_acts.items())}:
             raise ValueError(f"{p.name}/agent.json: the macro {mode} and the human_prior lambda_acts {named.get('lambda_acts')} disagree")
+    student_file, student_lams = None, {}
+    if macro_recipe.is_student(mode):  # the recipe names the student (8 hex of its sha256) and its lambda per kind and act
+        sha8s, student_lams = macro_recipe.parse_student(mode)
+        named_s = meta.get("student") or {}
+        student_file = p / str(named_s.get("file") or STUDENT_FILE)
+        if not student_file.is_file():
+            raise FileNotFoundError(f"macro {mode} needs {student_file.name} in {p.name}")
+        sha_s = file_sha256(student_file)
+        if sha_s[:8] != sha8s or (named_s.get("sha256") and named_s["sha256"] != sha_s):
+            raise ValueError(f"{p.name}/{student_file.name} is not the student macro {mode} names")
+        want = {k: [macro_recipe.format_lambda(x) for x in v] for k, v in student_lams.items()}
+        if named_s and named_s.get("kinds") != want:
+            raise ValueError(f"{p.name}/agent.json: the macro {mode} and the student's kinds {named_s.get('kinds')} disagree")
+        import human_prior_infer  # noqa: PLC0415 -- numpy only
+
+        fitted = human_prior_infer.student_kinds_of(student_file)
+        if any(k not in fitted for k in student_lams):
+            raise ValueError(f"{p.name}/{student_file.name} was fitted for {sorted(fitted)}, the macro {mode} names {sorted(student_lams)}")
     mask_version = meta.get("mask_version", 1)
     if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
         raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
     stakes, hold = search_identity(meta, p.name)
     agent = Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
                   float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
-                  human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold, lam_acts=tuple(sorted(lam_acts.items())))
+                  human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold, lam_acts=tuple(sorted(lam_acts.items())),
+                  student=str(student_file) if student_file else None, student_lams=tuple(student_lams.items()))
     if meta.get("recipe") is not None and meta["recipe"] != agent.recipe():  # the recipe agent.json records is the one the fields give
         raise ValueError(f"{p.name}/agent.json: recipe {meta['recipe']!r} is not the agent's ({agent.recipe()!r})")
     return agent
@@ -1394,6 +1420,8 @@ def shutil_rmtree(p: Path) -> None:
 BUILT_KEY = "built"  # agent.json and train.json of a candidate `build_candidate` assembled: nothing was trained, `train` judges it as it is
 BUILT_PRIOR_FILES = ("combat_policy.pt", "combat_net.pt")  # the prior export's files a built candidate copies (model.json is written anew)
 BUILT_BASE_FILES = ("run_value.npz", "run_value.pt")  # the base generation's V_run fit, copied unchanged
+STUDENT_FILE = "run_student.npz"  # a student candidate's weights (`rl/run_student.py`), and the legs it passed the human bar and the teacher on
+STUDENT_LEGS_FILE = "run_student_legs.json"
 
 
 def candidate_dirname(retrain: int = 0, attempt: int = 1, tag: str = "") -> str:
@@ -1424,7 +1452,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
                     export: bool = True, vrun_fit: Path | str | None = None, attempt: int = 1, tag: str = "",
                     human_prior: Path | str | None = None, lam: float | None = None, pick: str = macro_recipe.PICK_ARGMAX,
                     skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None,
-                    lam_acts: Mapping[int, float] | None = None) -> Path:
+                    lam_acts: Mapping[int, float] | None = None, student: Path | str | None = None,
+                    student_lams: Mapping[str, Sequence[float]] | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1457,7 +1486,14 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     dropped from both (`macro_recipe.act_part`), and without the option nothing is written. `search_schedule` ({"base": a search config
     name, "mult": {"hall", "elite", "boss"}}) gives the candidate a stakes schedule and `potion_hold` (a fraction of max HP, a whole per
     cent) the hallway potion hold, both written to agent.json (`gen_loop.search_identity` reads them back), with `recipe`, the ledger's
-    recipe of the whole (`candidate_recipe`)."""
+    recipe of the whole (`candidate_recipe`).
+
+    `student` (a file `human_prior_infer.write_student` wrote: the run student of `rl/run_student.py`) with `student_lams` ({kind: (lambda in
+    Act 1, 2, 3)}) makes the recipe `vrun+pi_s:...` (`macro_recipe.student_name`): the student is copied as run_student.npz and takes over those
+    kinds at those lambdas, the human prior's blend decides the deck screens it has not taken over. The base may be a vrun generation (then
+    `human_prior` and `lam` name the blend) or a blended one, or a student's, or one with a stakes schedule and a hold: the candidate keeps
+    the base's human prior, lambda, lambda by act, pick mode, stakes schedule and hold unless they are given, so it differs from the base in
+    the student alone (`screens.kind_of` reads it as `screen:student`)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1466,6 +1502,32 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     base_agent = load_agent(base)
     if base_agent.path is None:
         raise ValueError("the base must be a generation directory or a current.json, not generation 0's empty agent")
+    student_sha, student_kinds = None, None
+    if (student is None) != (not student_lams):
+        raise ValueError("a student needs its per-kind lambdas, and lambdas need a student")
+    if student is not None:
+        import human_prior_infer  # noqa: PLC0415 -- numpy only
+
+        if not Path(student).is_file():
+            raise FileNotFoundError(f"no student weights at {student}")
+        fitted = human_prior_infer.student_kinds_of(student)
+        student_kinds = {str(k): tuple(float(x) for x in v) for k, v in student_lams.items()}
+        if any(k not in fitted for k in student_kinds):
+            raise ValueError(f"the student was fitted for {sorted(fitted)}, not for {sorted(set(student_kinds) - set(fitted))}")
+        student_sha = file_sha256(student)
+        if human_prior is None and lam is None:  # keep the base's blend on the screens the student does not take over
+            if not macro_recipe.is_blended(base_agent.macro):
+                raise ValueError("a student recipe keeps the human prior's blend on the other kinds: build on a blended base, or give the "
+                                 "human prior's weights and lambda")
+            human_prior, lam = base_agent.human_prior, base_agent.lam
+            lam_acts = dict(base_agent.lam_acts) if lam_acts is None else lam_acts
+            if pick == macro_recipe.PICK_ARGMAX and not skip_bias:
+                pick, skip_bias = macro_recipe.parse_pick(base_agent.macro)
+        base_meta0 = read_json(Path(base_agent.path) / "agent.json") if (Path(base_agent.path) / "agent.json").is_file() else {}
+        if search_schedule is None and base_meta0.get("search_schedule") is not None:  # the search stays the base's: only the student differs
+            search_schedule = {"base": base_meta0["search_schedule"]["base"], "mult": base_meta0["search_schedule"]["mult"]}
+        if potion_hold is None and base_meta0.get("potion_hold") is not None:
+            potion_hold = float(base_meta0["potion_hold"]["hp_frac"])
     fit_doc = read_vrun_fit(vrun_fit) if vrun_fit is not None else None
     if fit_doc is not None and base_agent.macro != "vrun":
         raise ValueError(f"a V_run fit drives the vrun macro; the base plays {base_agent.macro}")
@@ -1488,7 +1550,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     if (human_prior is None) != (lam is None):
         raise ValueError("the blended chooser needs both the prior's weights and lambda")
     if human_prior is not None:
-        if base_agent.macro != "vrun":
+        if base_agent.macro != "vrun" and not (student is not None and macro_recipe.is_blended(base_agent.macro)):
             raise ValueError(f"the blended chooser adds the prior to the vrun macro; the base plays {base_agent.macro}")
         if not Path(human_prior).is_file():
             raise FileNotFoundError(f"no human prior weights at {human_prior}")
@@ -1503,7 +1565,10 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
             chooser["tau"] = 1.0
         if pick == macro_recipe.PICK_SKIPCAL:
             chooser["skip_bias"] = float(macro_recipe.format_bias(skip_bias))
-        macro = macro_recipe.macro_name(float(lam), chooser["sha256"], pick, skip_bias, lam_acts)
+        if student is not None:
+            macro = macro_recipe.student_name(float(lam), chooser["sha256"], student_sha, student_kinds, pick, skip_bias, lam_acts)
+        else:
+            macro = macro_recipe.macro_name(float(lam), chooser["sha256"], pick, skip_bias, lam_acts)
         kept_acts = macro_recipe.parse_act_lambdas(macro)
         if kept_acts:
             chooser["lambda_acts"] = {str(a): macro_recipe.format_lambda(v) for a, v in sorted(kept_acts.items())}
@@ -1511,7 +1576,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         raise ValueError("a pick mode belongs to the blended chooser (--human-prior and --lambda)")
     elif lam_acts:
         raise ValueError("a lambda by act belongs to the blended chooser (--human-prior and --lambda)")
-    if base_agent.stakes is not None or base_agent.hold is not None:
+    if (base_agent.stakes is not None or base_agent.hold is not None) and student is None:
         raise ValueError("the base has a stakes schedule or a potion hold; build on a plain generation")
     search_meta: dict[str, Any] = {}
     if search_schedule is not None:
@@ -1539,6 +1604,12 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
                 shutil.copyfile(Path(vrun_fit) / name, cand / name)
     if chooser is not None:
         shutil.copyfile(human_prior, cand / "human_prior.npz")
+    student_block = None
+    if student is not None:
+        shutil.copyfile(student, cand / STUDENT_FILE)
+        student_block = {"file": STUDENT_FILE, "sha256": student_sha, "source": f"{Path(student).parent.name}/{Path(student).name}",
+                         "kinds": {k: [macro_recipe.format_lambda(x) for x in v] for k, v in student_kinds.items()},
+                         "fitted_for": list(human_prior_infer.student_kinds_of(student))}
     npz = cand / "run_value.npz"
     fit = {"source": "base", "sha256": file_sha256(npz)} if npz.is_file() else {"source": "none", "sha256": None}
     if fit_doc is not None:
@@ -1553,7 +1624,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
              "prior": {**prior, "model_json": read_json(prior_dir / "model.json")},
              "base": {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro,
                       "policy_sha256": base_agent.describe()["prior_sha256"], "run_value_sha256": fit["sha256"]},
-             **({"chooser": {**chooser, "macro": macro}} if chooser else {})}
+             **({"chooser": {**chooser, "macro": macro}} if chooser else {}), **({"student": student_block} if student_block else {})}
     fit_text = (f"the V_run fit of {Path(vrun_fit).name} ({'matched to this prior' if fit['matched'] else 'played by another prior'})"
                 if fit_doc is not None else "its V_run fit")
     if fit_doc is not None:
@@ -1562,7 +1633,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
         "difference": (f"the combat prior of {prior_dir.parent.name}/{prior_dir.name} (built, not trained) with generation "
                        f"{base_agent.generation}'s macro {base_agent.macro} and {fit_text}"
-                       + (f", the run chooser blended with the human prior ({macro})" if chooser else "")),
+                       + (f", the run chooser blended with the human prior ({macro})" if chooser else "")
+                       + (f" and the run student on {', '.join(sorted(student_kinds, key=macro_recipe.STUDENT_KINDS.index))}" if student_block else "")),
         "decision": why}
     doc: dict[str, Any] = {"candidate_generation": target, BUILT_KEY: built, **({"lineage": lineage} if lineage else {}),
                            "prior_train": source_train}
@@ -1570,7 +1642,11 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         doc["onnx"] = export_all(cand)
     parts = (f", searching its fights under the schedule {stakes_tag}" if stakes_tag else "") + (
         f", holding hallway potions at {hold_per_cent} in 100 of max HP" if hold_per_cent else "")
-    if chooser:
+    if student_block:
+        note = (f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, the run chooser "
+                f"blended with the human prior and the run student on {', '.join(sorted(student_kinds, key=macro_recipe.STUDENT_KINDS.index))} ({macro}){parts}; "
+                f"its E-block judges the student")
+    elif chooser:
         note = (f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, "
                 f"the run chooser blended with the human prior ({macro}){parts}; its E-block judges the "
                 + ("recipe as a whole" if parts else "chooser alone"))
@@ -1586,7 +1662,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     meta = {"generation": target, "macro": macro, "built_on": base_agent.generation, "written": utc_now(),
             **({"lineage": lineage} if lineage else {}), "mask_version": base_agent.mask_version,
             **{k: base_meta[k] for k in ("tau", "eps", "W") if k in base_meta},
-            **({"human_prior": chooser} if chooser else {}), **search_meta, **({"recipe": recipe} if recipe else {}),
+            **({"human_prior": chooser} if chooser else {}), **({"student": student_block} if student_block else {}), **search_meta,
+            **({"recipe": recipe} if recipe else {}),
             "vrun_fit": fit, BUILT_KEY: {"why": why, "trained": False, "prior": prior, "base": built["base"],
                                          **({"attempt": int(attempt)} if int(attempt) > 1 else {}), **({"tag": tag} if tag else {})},
             "note": note}
@@ -2382,7 +2459,9 @@ def run_screen(cand: Path, base_dir: Path, cand_agent: Agent, base_agent: Agent,
     if kind is None:
         return None
     try:
-        if kind == "fight":
+        if kind == "student":
+            got = sc.run_student(cand, base_dir)
+        elif kind == "fight":
             sha, base_sha = candidate_identity(cand_agent)[0], base_agent.describe().get("prior_sha256")
             label = f"lab-g{cand_agent.generation}-{cand.name}-{sha[:8]}"
             if not base_sha:
@@ -2392,7 +2471,7 @@ def run_screen(cand: Path, base_dir: Path, cand_agent: Agent, base_agent: Agent,
         else:
             got = sc.run_prior(cand, base_dir)
     except Exception as error:  # noqa: BLE001 -- a screen is a convenience: its failure plays the arms
-        got = {"rule": sc.SCREEN_FIGHT if kind == "fight" else sc.SCREEN_PRIOR, "kind": kind, "error": type(error).__name__}
+        got = {"rule": {"fight": sc.SCREEN_FIGHT, "student": sc.SCREEN_STUDENT}.get(kind, sc.SCREEN_PRIOR), "kind": kind, "error": type(error).__name__}
         say(f"{got['rule']}: failed ({type(error).__name__}: {str(error)[:200]}); the arms are played")
         return got
     if got.get("skipped"):

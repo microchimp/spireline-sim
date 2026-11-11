@@ -384,5 +384,211 @@ class PromoteScreenTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--procs") + 1], "12")
 
 
+
+# ---------------------------------------------------------------------------------------------------------- screen:student
+
+STUDENT_MACRO = "vrun+pi_s:lambda=0.5:pi_h=2ebfe6d7:pi_s=aaaaaaaa:route=0.2/0.2/0.2"
+
+
+def sha_of(b: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(b).hexdigest()
+
+
+def legs_doc(student: bytes, baseline: bytes, *, kinds=("route",), gain_lo=0.02, won=0.0, allr=0.005, human=("route",), n=500, lam=0.2) -> dict:
+    """The stored legs of a student (what `run_student.run_legs` writes), for the kinds given."""
+    l1 = {k: {"n": n, "runs": 80, "gain": {"mean": gain_lo + 0.02, "lo95": gain_lo, "hi95": gain_lo + 0.04, "runs": 80}} for k in kinds}
+    l2 = {k: {"won": {"n": 900, "runs": 200, "diff": won, "lo95": won - 0.01, "hi95": won + 0.01},
+              "all": {"n": 9000, "runs": 2000, "diff": allr, "lo95": allr - 0.01, "hi95": allr + 0.01}} for k in human}
+    return {"version": 1, "student_sha256": sha_of(student), "baseline": {"sha256": sha_of(baseline), "kind": "human prior"},
+            "leg1": {"kinds": l1}, "leg2": {"measured": True, "kinds": l2, "no_human_fit": [k for k in kinds if k not in human] + ["reward", "select"]},
+            "lambda": {"chosen": {k: [lam, lam, lam] for k in kinds}}}
+
+
+def student_folder(root: Path, name: str, *, student: bytes = b"s1", kinds: dict | None = None, legs: dict | None = None, prior: bytes | None = b"p1",
+                   macro: str = STUDENT_MACRO, **kw) -> Path:
+    d = folder(root, name, prior=prior, macro=macro, **kw)
+    (d / "run_student.npz").write_bytes(student)
+    doc = json.loads((d / "agent.json").read_text(encoding="utf-8"))
+    doc["student"] = {"file": "run_student.npz", "kinds": kinds if kinds is not None else {"route": ["0.2", "0.2", "0.2"]}}
+    (d / "agent.json").write_text(json.dumps(doc), encoding="utf-8")
+    if legs is not None:
+        (d / "run_student_legs.json").write_text(json.dumps(legs), encoding="utf-8")
+    return d
+
+
+class StudentKindTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, True))
+        self.base = folder(self.tmp, "base", generation=3)
+
+    def test_a_candidate_that_differs_in_the_student_and_the_recipe_naming_it_is_the_student_screen(self):
+        c = student_folder(self.tmp, "c")
+        self.assertEqual(screens.differing(c, self.base), ["student", "settings"])
+        self.assertEqual(screens.kind_of(c, self.base), "student")
+
+    def test_two_students_with_the_same_recipe_differ_in_the_student_alone(self):
+        a = student_folder(self.tmp, "a", student=b"s1")
+        b = student_folder(self.tmp, "b", student=b"s2", macro=STUDENT_MACRO.replace("aaaaaaaa", "bbbbbbbb"))  # the tag is masked, as the prior's is
+        self.assertEqual(screens.differing(b, a), ["student"])
+        self.assertEqual(screens.kind_of(b, a), "student")
+
+    def test_a_student_candidate_is_never_read_by_the_prior_or_the_fight_screen(self):
+        # the student's file in place of the human prior would fail screen:prior by design (it is fitted to the teacher): no screen at all
+        swapped = student_folder(self.tmp, "p", prior=b"the weights of a student in the priors place")
+        self.assertEqual(screens.differing(swapped, self.base), ["prior", "student", "settings"])
+        self.assertIsNone(screens.kind_of(swapped, self.base))
+        self.assertIsNone(screens.kind_of(student_folder(self.tmp, "f", fight=b"f2"), self.base))
+        self.assertIsNone(screens.kind_of(student_folder(self.tmp, "v", value=b"v2"), self.base))
+        # the same student as an incumbent that has it: nothing differs, nothing to screen
+        same = student_folder(self.tmp, "same")
+        self.assertIsNone(screens.kind_of(same, student_folder(self.tmp, "twin")))
+        # a candidate with no student never gets the student screen, whatever the incumbent has
+        self.assertIsNone(screens.kind_of(folder(self.tmp, "plain", generation=5), student_folder(self.tmp, "inc")))
+        self.assertEqual(screens.kind_of(folder(self.tmp, "plain2", prior=b"p9"), self.base), "prior")  # and a plain prior difference is as it was
+
+    def test_the_other_screens_are_as_they_were(self):
+        self.assertEqual(screens.kind_of(folder(self.tmp, "c", fight=b"f2"), self.base), "fight")
+
+
+class StudentScreenTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, True))
+        self.base = folder(self.tmp, "base", generation=3)  # its human prior is b"p1"
+
+    def cand(self, name="c", **kw):
+        legs = kw.pop("legs", None)
+        doc = kw.pop("doc", {})
+        student = kw.get("student", b"s1")
+        return student_folder(self.tmp, name, legs=legs if legs is not None else legs_doc(student, b"p1", **doc), **kw)
+
+    def test_a_student_that_passes_both_legs_is_passed_and_its_figures_are_in_the_line_and_the_ledger_rule(self):
+        r = screens.run_student(self.cand(), self.base)
+        self.assertFalse(r["rejected"])
+        self.assertEqual((r["gain"], r["won"], r["all"]), (0.04, 0.0, 0.005))
+        self.assertEqual(r["ledger_rule"], "screen:student gain=+0.040 won=+0.000 all=+0.005")
+        self.assertIn("screen:student passed", r["line"])
+        self.assertIn("route", r["line"])
+
+    def test_a_gain_whose_lower_bound_is_not_above_zero_is_rejected(self):
+        r = screens.run_student(self.cand(doc={"gain_lo": -0.001}), self.base)
+        self.assertTrue(r["rejected"])
+        self.assertEqual(r["failed"], ["route"])
+        self.assertIn("leg 1", r["line"])
+        self.assertIn("REJECTED", r["line"])
+
+    def test_the_human_bar_is_the_second_leg_with_its_two_margins(self):
+        self.assertFalse(screens.run_student(self.cand("a", doc={"won": 0.0015, "allr": 0.019}), self.base)["rejected"])
+        r = screens.run_student(self.cand("b", doc={"won": 0.0021}), self.base)
+        self.assertTrue(r["rejected"])
+        self.assertIn("leg 2", r["line"])
+        self.assertTrue(screens.run_student(self.cand("c", doc={"allr": 0.0201}), self.base)["rejected"])
+
+    def test_a_kind_with_no_human_fit_is_read_on_leg_1_alone(self):
+        c = self.cand(kinds={"reward": ["0.3", "0.3", "0.3"]}, doc={"kinds": ("reward",), "human": (), "won": 9.0, "allr": 9.0})
+        r = screens.run_student(c, self.base)
+        self.assertFalse(r["rejected"])
+        self.assertEqual((r["won"], r["all"]), (None, None))
+        self.assertIn("n/a", r["line"])
+
+    def test_one_failing_kind_rejects_the_candidate_and_the_line_names_it(self):
+        legs = legs_doc(b"s1", b"p1", kinds=("route", "reward"), human=("route",))
+        legs["leg1"]["kinds"]["reward"]["gain"]["lo95"] = -0.5
+        c = self.cand(kinds={"route": ["0.2"] * 3, "reward": ["0.3"] * 3}, legs=legs)
+        r = screens.run_student(c, self.base)
+        self.assertTrue(r["rejected"])
+        self.assertEqual(r["failed"], ["reward"])
+        self.assertIn("reward: leg 1", r["line"])
+
+    def test_a_kind_the_legs_do_not_cover_is_a_rejection_not_a_pass(self):
+        c = self.cand(kinds={"route": ["0.2"] * 3, "shop": ["0.1"] * 3})
+        r = screens.run_student(c, self.base)
+        self.assertTrue(r["rejected"])
+        self.assertEqual(r["failed"], ["shop"])
+
+    def test_a_screen_that_cannot_be_read_says_why(self):
+        c = student_folder(self.tmp, "nolegs")
+        self.assertIn("no readable run_student_legs.json", screens.run_student(c, self.base)["skipped"])
+        other = student_folder(self.tmp, "other", student=b"s9", legs=legs_doc(b"s1", b"p1"))
+        self.assertIn("not for this student's weights", screens.run_student(other, self.base)["skipped"])
+        wrong = student_folder(self.tmp, "wrong", legs=legs_doc(b"s1", b"another prior"))
+        self.assertIn("another baseline", screens.run_student(wrong, self.base)["skipped"])
+        nokinds = student_folder(self.tmp, "nokinds", kinds={}, legs=legs_doc(b"s1", b"p1"))
+        self.assertIn("agent.json names no student kinds", screens.run_student(nokinds, self.base)["skipped"])
+        self.assertIn("agent.json cannot be read", screens.run_student(self.tmp / "nope", self.base)["skipped"])
+
+    def test_an_incumbent_with_a_student_is_the_baseline_the_legs_must_name(self):
+        inc = student_folder(self.tmp, "inc", student=b"s0", macro=STUDENT_MACRO.replace("aaaaaaaa", "cccccccc"))
+        against_student = student_folder(self.tmp, "n1", student=b"s1", legs=legs_doc(b"s1", b"s0"))
+        self.assertFalse(screens.run_student(against_student, inc)["rejected"])
+        against_prior = student_folder(self.tmp, "n2", student=b"s1", legs=legs_doc(b"s1", b"p1"))  # measured against the prior: not this incumbent
+        self.assertIn("another baseline", screens.run_student(against_prior, inc)["skipped"])
+
+    def test_the_rule_names_are_distinct(self):
+        self.assertEqual(screens.SCREEN_STUDENT, "screen:student")
+        self.assertNotIn(screens.SCREEN_STUDENT, (screens.SCREEN_FIGHT, screens.SCREEN_PRIOR))
+
+    def test_the_run_screen_of_the_loop_reads_the_student_and_names_its_rule_when_it_fails(self):
+        c = self.cand()
+        with mock.patch.object(screens, "run_student", side_effect=RuntimeError("boom")):
+            got = gen_loop.run_screen(c, self.base, None, None, say=lambda m: None)
+        self.assertEqual((got["rule"], got["kind"], got["error"]), ("screen:student", "student", "RuntimeError"))
+        got = gen_loop.run_screen(c, self.base, None, None, say=lambda m: None)
+        self.assertEqual("screen:student", got["rule"])
+        self.assertFalse(got["rejected"])
+
+
+class StudentPromoteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.agents = self.root / "agent"
+        self.agents.mkdir()
+        (self.root / "seeds").mkdir()
+        self.seed_file = self.root / "seeds" / "Etest-8.json"
+        seeds, self.cand_rows, self.base_rows = make_block(0.5, n=400, prefix="S")
+        self.seed_file.write_text(json.dumps({"seeds": seeds}))
+        for name in ("EXAM_DIR", "LOOP_ROOT"):
+            patcher = mock.patch.object(fe, name, self.root / "no-gym")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.base = stub_candidate(self.root, "base", "sha-b", generation=3)
+        self.cand = stub_candidate(self.root, "cand", "sha-a", generation=4)
+        (self.cand / "run_student.npz").write_bytes(b"a student")  # the only part that differs
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def promote(self):
+        arms = StubArms(self.cand_rows, self.base_rows)
+        with mock.patch.object(gen_loop, "run_arm", arms), contextlib.redirect_stdout(io.StringIO()):
+            doc = gen_loop.promote(self.cand, self.base, self.seed_file, agent_root=self.agents, lab=self.root / "lab", boot=300, review_guard=True,
+                                   futility=False)
+        return doc, arms
+
+    def test_a_student_that_fails_its_screen_is_rejected_before_any_arm_with_its_rule_in_the_ledger(self):
+        canned = {"rule": "screen:student", "kind": "student", "rejected": True, "gain": -0.01, "won": 0.01, "all": 0.03,
+                  "line": "screen:student REJECTED: figures", "ledger_rule": "screen:student gain=-0.010 won=+0.010 all=+0.030"}
+        with mock.patch.object(screens, "run_student", return_value=canned), mock.patch.object(screens, "run_prior") as rp, \
+                mock.patch.object(screens, "run_fight") as rf:
+            doc, arms = self.promote()
+        self.assertEqual((arms.calls, doc["decision"]["rule"], doc["decision_text"]), ([], "screen:student", "rejected"))
+        rp.assert_not_called()  # the prior's screen never reads a student candidate
+        rf.assert_not_called()
+        row = gen_loop.read_promotions(self.agents / "promotions.tsv")[0]
+        self.assertEqual(row["rule"], "screen:student gain=-0.010 won=+0.010 all=+0.030")
+        self.assertEqual((row["seeds"], row["decision"]), ("0", "rejected"))
+
+    def test_a_student_that_passes_plays_the_arms(self):
+        canned = {"rule": "screen:student", "kind": "student", "rejected": False, "line": "screen:student passed: figures", "ledger_rule": "x"}
+        with mock.patch.object(screens, "run_student", return_value=canned):
+            doc, arms = self.promote()
+        self.assertTrue(arms.calls)
+        self.assertEqual(doc["screen"]["line"], "screen:student passed: figures")
+
+
 if __name__ == "__main__":
     unittest.main()

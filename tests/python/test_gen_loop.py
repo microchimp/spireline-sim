@@ -24,6 +24,8 @@ os.environ.setdefault("STS2_ALLOW_STALE_NATIVE", "1")
 import fight_exam as fe  # noqa: E402
 import gen0  # noqa: E402
 import gen_loop  # noqa: E402
+import human_prior_infer  # noqa: E402
+import run_student  # noqa: E402
 import keep_v2_fixtures as fx  # noqa: E402
 from test_fight_exam import human_gym_folder  # noqa: E402
 
@@ -1322,6 +1324,295 @@ class RecorderTests(unittest.TestCase):
         for run_id in ids:
             rows = data["fights"] == run_id
             self.assertTrue(in_val[rows].all() or not in_val[rows].any())
+
+
+
+# ---------------------------------------------------------------------------------------------------------- a candidate with the run student (2026-11-11)
+
+
+def student_world(root: Path, *, blended: bool = True, schedule: bool = True):
+    """A base generation (a blended recipe with a stakes schedule and the hold, or a plain vrun one), a prior export to build on and a student
+    file fitted for card, route and shop. Returns (agents, base, prior export, student file, human prior file)."""
+    import hashlib
+
+    import human_prior_infer as hpi
+    import macro_recipe as mr
+    from test_run_student import random_weights, write_weights
+
+    _, _, trained = trained_candidate()
+    agents = root / "agent"
+    base = agents / "gen5" / "candidate"
+    base.mkdir(parents=True)
+    for name in ("combat_policy.pt", "combat_net.pt", "model.json"):
+        (base / name).write_bytes((trained / name).read_bytes())
+    (base / "run_value.npz").write_bytes(b"the base fit")
+    (base / "run_value.pt").write_bytes(b"the base fit, torch")
+    human = write_weights(root / "pi_h.npz", random_weights())
+    meta = {"generation": 5, "macro": "vrun", "mask_version": 4, "tau": 0.0}
+    if blended:
+        sha = hashlib.sha256(human.read_bytes()).hexdigest()
+        (base / "human_prior.npz").write_bytes(human.read_bytes())
+        meta.update(macro=mr.macro_name(0.5, sha, acts={1: 0.0}), human_prior={"file": "human_prior.npz", "sha256": sha, "lambda": "0.5",
+                                                                              "source": "pi_h/weights.npz", "lambda_acts": {"1": "0"}})
+        if schedule:
+            meta.update(search_schedule={"base": "a3-v1", "mult": {"hall": 1, "elite": 4, "boss": 16}, "tag": "a3-v1@h1e4b16"},
+                        potion_hold={"hp_frac": 0.3, "fights": "hall"})
+            meta["recipe"] = mr.full_recipe(meta["macro"], "a3-v1@h1e4b16", 30)
+    (base / "agent.json").write_text(json.dumps(meta))
+    (agents / "current.json").write_text(json.dumps({"generation": 5, "dir": str(base)}))
+    prior = root / "players" / "v2"
+    prior.mkdir(parents=True)
+    for name in ("combat_policy.pt", "combat_net.pt", "model.json"):
+        (prior / name).write_bytes((trained / name).read_bytes())
+    student = root / "student.npz"
+    hpi.write_student(student, random_weights(seed=9), kinds=("card", "route", "shop"), prior_sha256=hpi.file_sha256(human), fit={"test": True})
+    return agents, base, prior, student, human
+
+
+class StudentBuildTests(unittest.TestCase):
+    """`build_candidate(student=, student_lams=)`: the recipe `vrun+pi_s:...`, the folder, the base's blend, search and hold kept, and the loader."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.agents, self.base, self.prior, self.student, self.human = student_world(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def build(self, **kw):
+        kw.setdefault("student_lams", {"route": (0.1, 0.2, 0.2), "card": (0.3, 0.3, 0.3)})
+        return gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="test", export=False, tag="student",
+                                        student=self.student, **kw)
+
+    def test_the_candidate_keeps_the_bases_blend_search_and_hold_and_names_the_student(self):
+        import hashlib
+
+        import screens
+
+        cand = self.build()
+        sha8 = hashlib.sha256(self.student.read_bytes()).hexdigest()[:8]
+        meta = json.loads((cand / "agent.json").read_text())
+        base_meta = json.loads((self.base / "agent.json").read_text())
+        hp8 = base_meta["human_prior"]["sha256"][:8]
+        want = f"vrun+pi_s:lambda=0.5:pi_h={hp8}:act1=0:pi_s={sha8}:card=0.3/0.3/0.3:route=0.1/0.2/0.2"
+        self.assertEqual(want, meta["macro"])
+        self.assertEqual(want + "+stakes:a3-v1@h1e4b16+hold:30", meta["recipe"])
+        self.assertEqual(base_meta["human_prior"]["sha256"], meta["human_prior"]["sha256"])  # the prior's blend is the base's, not re-chosen
+        self.assertEqual({"1": "0"}, meta["human_prior"]["lambda_acts"])
+        self.assertEqual(base_meta["search_schedule"]["mult"], meta["search_schedule"]["mult"])
+        self.assertEqual(0.3, meta["potion_hold"]["hp_frac"])
+        self.assertEqual(self.student.read_bytes(), (cand / "run_student.npz").read_bytes())
+        self.assertEqual(self.human.read_bytes(), (cand / "human_prior.npz").read_bytes())
+        self.assertEqual({"card": ["0.3"] * 3, "route": ["0.1", "0.2", "0.2"]}, meta["student"]["kinds"])
+        self.assertEqual(["card", "route", "shop"], meta["student"]["fitted_for"])
+        self.assertIn("run student on card, route", meta["note"])
+        a = gen_loop.load_agent(cand)
+        self.assertEqual((want, str(cand / "run_student.npz")), (a.macro, a.student))
+        self.assertEqual((("card", (0.3, 0.3, 0.3)), ("route", (0.1, 0.2, 0.2))), a.student_lams)
+        self.assertEqual((0.5, ((1, 0.0),), "a3-v1@h1e4b16", 30), (a.lam, a.lam_acts, a.stakes, a.hold))
+        self.assertEqual(meta["recipe"], gen_loop.candidate_recipe(a))
+        self.assertEqual(cand, gen_loop.built_candidate(self.agents, 7, tag="student"))
+        self.assertEqual("student", screens.kind_of(cand, self.base))  # it differs from the base in the student (and the recipe naming it) alone
+
+    def test_a_base_that_is_already_a_student_is_replaced_by_the_new_student(self):
+        first = self.build()
+        again = gen_loop.build_candidate(self.prior, first, self.agents, 8, why="second", export=False, tag="second", student=self.student,
+                                         student_lams={"shop": (0.4, 0.4, 0.4)})
+        meta = json.loads((again / "agent.json").read_text())
+        self.assertEqual({"shop": ["0.4"] * 3}, meta["student"]["kinds"])  # the new student's kinds, not the earlier student's
+        self.assertTrue(meta["macro"].startswith("vrun+pi_s:lambda=0.5:pi_h="))
+        self.assertEqual(json.loads((first / "agent.json").read_text())["human_prior"]["sha256"], meta["human_prior"]["sha256"])
+
+    def test_a_plain_vrun_base_needs_the_human_prior_given_and_then_builds_the_blend_and_the_student(self):
+        root = self.root / "plain"
+        root.mkdir()
+        agents, base, prior, student, human = student_world(root, blended=False)
+        with self.assertRaisesRegex(ValueError, "blended base"):
+            gen_loop.build_candidate(prior, agents / "current.json", agents, 7, why="t", export=False, student=student, student_lams={"route": (0.1,) * 3})
+        self.assertFalse((agents / "gen7").exists() and any((agents / "gen7").iterdir()))  # nothing was written
+        cand = gen_loop.build_candidate(prior, agents / "current.json", agents, 7, why="t", export=False, student=student, student_lams={"route": (0.1,) * 3},
+                                        human_prior=human, lam=0.5)
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertTrue(meta["macro"].startswith("vrun+pi_s:lambda=0.5:pi_h="))
+        self.assertNotIn("search_schedule", meta)  # a plain base has no schedule to keep
+
+    def test_what_the_builder_refuses_it_refuses_before_writing(self):
+        for kw, pattern in (({"student_lams": {"rest": (0.1,) * 3}}, "was fitted for"),  # a kind the file was not fitted for
+                            ({"student_lams": {"bundle": (0.1,) * 3}}, "was fitted for|takes over the kinds"),
+                            ({"student_lams": {"route": (0.1, 0.1)}}, "three numbers"),
+                            ({"student_lams": {"route": (0.1, 0.1, -1.0)}}, "three numbers"),
+                            ({"student_lams": {}}, "needs its per-kind lambdas")):
+            with self.assertRaisesRegex(ValueError, pattern, msg=str(kw)):
+                self.build(**kw)
+        with self.assertRaisesRegex(ValueError, "needs its per-kind lambdas"):
+            gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="t", export=False, student_lams={"route": (0.1,) * 3})
+        with self.assertRaises(FileNotFoundError):
+            gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="t", export=False, student=self.root / "nope.npz",
+                                     student_lams={"route": (0.1,) * 3})
+        with self.assertRaisesRegex(ValueError, "not a run student"):
+            gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="t", export=False, student=self.human,
+                                     student_lams={"route": (0.1,) * 3})
+        self.assertFalse((self.agents / "gen7").exists() and any((self.agents / "gen7").iterdir()))
+
+    def test_without_a_student_a_blended_base_is_still_refused_and_nothing_else_changed(self):
+        with self.assertRaisesRegex(ValueError, "adds the prior to the vrun macro"):
+            gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="t", export=False, human_prior=self.human, lam=0.5)
+        with self.assertRaisesRegex(ValueError, "stakes schedule or a potion hold"):
+            gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 7, why="t", export=False)
+
+    def test_the_loader_holds_the_folder_to_the_recipe(self):
+        cand = self.build()
+        meta_path = cand / "agent.json"
+        good = json.loads(meta_path.read_text())
+        gen_loop.load_agent(cand)
+        bad = json.loads(json.dumps(good))
+        bad["student"]["kinds"]["route"] = ["0.1", "0.2", "0.9"]
+        meta_path.write_text(json.dumps(bad))
+        with self.assertRaisesRegex(ValueError, "student's kinds"):
+            gen_loop.load_agent(cand)
+        meta_path.write_text(json.dumps(good))
+        original = (cand / "run_student.npz").read_bytes()
+        (cand / "run_student.npz").write_bytes(original + b"x")
+        with self.assertRaisesRegex(ValueError, "is not the student"):
+            gen_loop.load_agent(cand)
+        (cand / "run_student.npz").write_bytes(self.human.read_bytes())  # a plain prior in the student's place (its sha is of course not the recipe's)
+        with self.assertRaises(ValueError):
+            gen_loop.load_agent(cand)
+        (cand / "run_student.npz").unlink()
+        with self.assertRaises(FileNotFoundError):
+            gen_loop.load_agent(cand)
+        (cand / "run_student.npz").write_bytes(original)
+        gen_loop.load_agent(cand)
+
+    def test_a_recipe_that_names_a_kind_the_file_was_not_fitted_for_does_not_load(self):
+        import hashlib
+
+        import human_prior_infer as hpi
+        from test_run_student import random_weights
+
+        cand = self.build()
+        narrow = self.root / "narrow.npz"
+        hpi.write_student(narrow, random_weights(seed=9), kinds=("card",), prior_sha256="0" * 64)
+        (cand / "run_student.npz").write_bytes(narrow.read_bytes())
+        meta = json.loads((cand / "agent.json").read_text())
+        sha = hashlib.sha256(narrow.read_bytes()).hexdigest()
+        meta["macro"] = meta["macro"].replace(meta["student"]["sha256"][:8], sha[:8])
+        meta["recipe"] = meta["recipe"].replace(meta["student"]["sha256"][:8], sha[:8])
+        meta["student"]["sha256"] = sha
+        (cand / "agent.json").write_text(json.dumps(meta))
+        with self.assertRaisesRegex(ValueError, "was fitted for"):
+            gen_loop.load_agent(cand)
+
+    def test_the_recipe_is_its_own_in_the_ledger_and_the_exploring_agent_keeps_the_student(self):
+        a = gen_loop.load_agent(self.build())
+        e = gen_loop.exploring_agent(a, 0.5, 0.0)
+        self.assertEqual((a.student, a.student_lams, a.macro), (e.student, e.student_lams, e.macro))
+        base_a = gen_loop.load_agent(self.base)
+        self.assertNotEqual(gen_loop.candidate_recipe(a), gen_loop.candidate_recipe(base_a))
+        rows = [{"cand_gen": "7", "macro": gen_loop.candidate_recipe(base_a), "cand_sha": "x", "run_head_sha": "y"}]
+        self.assertEqual(0, gen_loop.attempts_before(rows, 7, "x", "y", gen_loop.candidate_recipe(a)))  # the student's recipe starts at attempt 1
+
+
+class StudentCandidateTests(unittest.TestCase):
+    """`run_student.build_student_candidate`: the fit folder's student and legs become `vrun+pi_s:...` on the incumbent, the legs stored beside it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.agents, self.base, self.prior, self.student, self.human = student_world(self.root)
+        self.out = self.root / "fit"
+        self.out.mkdir()
+        (self.out / run_student.STUDENT_OUT).write_bytes(self.student.read_bytes())
+        self.sha = human_prior_infer.file_sha256(self.student)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def legs(self, **kw) -> dict:
+        from test_screens import legs_doc
+
+        kinds = kw.pop("kinds", ("route", "shop"))
+        doc = legs_doc(self.student.read_bytes(), self.human.read_bytes(), kinds=kinds, human=kw.pop("human", kinds), **kw)
+        doc["student_sha256"] = self.sha
+        return doc
+
+    def write(self, legs: dict) -> None:
+        (self.out / run_student.LEGS_FILE).write_text(json.dumps(legs), encoding="utf-8")
+
+    def build(self, **kw):
+        return run_student.build_student_candidate(self.out, self.agents / "current.json", self.agents, 7, why="test", export=False, **kw)
+
+    def test_the_passing_kinds_become_the_recipe_and_the_legs_sit_beside_the_student(self):
+        self.write(self.legs(lam=0.25))
+        cand = self.build()
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertEqual({"route": ["0.25"] * 3, "shop": ["0.25"] * 3}, meta["student"]["kinds"])
+        self.assertTrue(meta["macro"].endswith(f":pi_s={self.sha[:8]}:route=0.25/0.25/0.25:shop=0.25/0.25/0.25"), meta["macro"])
+        stored = json.loads((cand / "run_student_legs.json").read_text())
+        self.assertEqual(self.sha, stored["student_sha256"])
+        import screens
+
+        r = screens.run_student(cand, self.base)  # the screen reads exactly what the builder stored
+        self.assertFalse(r["rejected"], r.get("line"))
+        self.assertNotIn("skipped", r)
+
+    def test_only_the_kinds_that_passed_are_given_to_the_student(self):
+        legs = self.legs()
+        legs["leg1"]["kinds"]["shop"]["gain"]["lo95"] = -0.01  # shop fails leg 1
+        self.write(legs)
+        meta = json.loads((self.build() / "agent.json").read_text())
+        self.assertEqual(["route"], list(meta["student"]["kinds"]))
+
+    def test_a_subset_may_be_asked_for_and_no_passing_kind_is_no_candidate(self):
+        self.write(self.legs())
+        meta = json.loads((self.build(kinds=("shop",), tag="only-shop") / "agent.json").read_text())
+        self.assertEqual(["shop"], list(meta["student"]["kinds"]))
+        legs = self.legs()
+        for k in legs["leg1"]["kinds"].values():
+            k["gain"]["lo95"] = -1.0
+        self.write(legs)
+        with self.assertRaisesRegex(ValueError, "no kind passed"):
+            self.build(tag="none")
+        self.assertFalse((self.agents / "gen7" / "candidate-none").exists())
+
+    def test_legs_measured_against_another_prior_than_the_bases_are_refused(self):
+        legs = self.legs()
+        legs["baseline"]["sha256"] = "0" * 64
+        self.write(legs)
+        with self.assertRaisesRegex(ValueError, "another prior than the base's"):
+            self.build()
+
+    def test_the_candidate_is_the_base_with_the_student_and_nothing_else(self):
+        import screens
+
+        self.write(self.legs())
+        cand = self.build()
+        self.assertEqual(["student", "settings"], screens.differing(cand, self.base))
+        self.assertEqual("student", screens.kind_of(cand, self.base))
+        for name in ("combat_policy.pt", "combat_net.pt", "run_value.npz", "human_prior.npz"):
+            self.assertEqual((self.base / name).read_bytes(), (cand / name).read_bytes(), name)
+
+
+    def test_a_vrun_base_takes_the_blend_by_name_and_the_legs_must_be_against_that_prior(self):
+        from test_screens import legs_doc
+
+        root = self.root / "plain"
+        root.mkdir()
+        agents, base, prior, student, human = student_world(root, blended=False)
+        out = root / "fit"
+        out.mkdir()
+        (out / run_student.STUDENT_OUT).write_bytes(student.read_bytes())
+        legs = legs_doc(student.read_bytes(), human.read_bytes(), kinds=("route",), lam=0.2)
+        legs["student_sha256"] = human_prior_infer.file_sha256(student)
+        (out / run_student.LEGS_FILE).write_text(json.dumps(legs), encoding="utf-8")
+        args = (out, agents / "current.json", agents, 7)
+        with self.assertRaisesRegex(ValueError, "another prior than the base's"):  # a vrun base has no prior of its own to be the baseline
+            run_student.build_student_candidate(*args, why="t", export=False)
+        with self.assertRaisesRegex(ValueError, "both the human prior's weights and lambda"):
+            run_student.build_student_candidate(*args, why="t", export=False, human_prior=human)
+        cand = run_student.build_student_candidate(*args, why="t", export=False, human_prior=human, lam=0.5)
+        self.assertTrue(json.loads((cand / "agent.json").read_text())["macro"].startswith("vrun+pi_s:lambda=0.5:pi_h="))
 
 
 if __name__ == "__main__":

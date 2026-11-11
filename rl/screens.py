@@ -13,6 +13,15 @@ in one part only has a cheap test of that part:
                 log-loss on ALL held-out runs, where it may be worse by at most 0.02 nats. The candidate is rejected when the primary fails or the guard
                 fails; both differences go in the summary and the ledger's rule column (`screen:prior won=-0.0xx all=+0.0xx`).
 
+  screen:student  only the run student differs (run_student.npz; the settings differ only in the recipe that names it, `vrun+pi_s:...`): the
+                student's own legs, measured when it was fitted and stored beside it (run_student_legs.json: `run_student.legs`), are read for
+                every kind the recipe gives it. Leg 1, teacher imitation on held-out runs: the student must predict the run teacher's choice
+                distribution better than the incumbent's prior (the gain's 95% lower bound above 0). Leg 2, the human bar on held-out fifth 4:
+                where the kind has human choices the student's log-loss may be above the prior's by at most 0.002 nats on the won runs and 0.02
+                on all runs; a kind with no human fit hands over on leg 1 alone. A candidate with a student is never read by `screen:prior`
+                (a student is fitted to the teacher, so a rule that wants it better than the prior on the humans' choices would fail it by
+                design) and never by `screen:fight`.
+
 Anything else (several parts differ, or only the settings, the run value or the stakes): no screen. A screen that cannot be read (no human
 stratum, no games for the incumbent's network, engine tags that differ, a run that was blocked or stopped, the held-out decisions absent)
 says why and the arms are played as before; a screen never fails a judgement. A rejection is a rejected judgement: `promotion.json` carries the
@@ -32,11 +41,15 @@ import numpy as np
 
 SCREEN_FIGHT = "screen:fight"
 SCREEN_PRIOR = "screen:prior"
+SCREEN_STUDENT = "screen:student"
+STUDENT_FILES = ("run_student.npz",)  # the run student's weights (gen_loop.STUDENT_FILE)
+STUDENT_LEGS_FILE = "run_student_legs.json"  # what the student passed when it was fitted (gen_loop.STUDENT_LEGS_FILE)
 FIGHT_FILES = ("combat_policy.pt", "combat_net.pt", "combat_net.onnx")  # the network the fights are searched with
 PRIOR_FILES = ("human_prior.npz",)
 VALUE_FILES = ("run_value.npz", "run_value.pt", "run_value.onnx", "fight_net.pt", "fight_net.onnx")  # the run-level judgement (FightNet feeds it)
 FIGHT_SE = 2.0  # screen:fight rejects below the incumbent's survival by more than this many standard errors
 PI_H = re.compile(r"pi_h=[0-9a-f]{8}")  # the prior's tag inside a macro or recipe string
+PI_S = re.compile(r"pi_s=[0-9a-f]{8}")  # the student's
 
 
 def sha256_file(path: Path | str) -> str | None:
@@ -55,31 +68,36 @@ def settings_of(doc: Mapping[str, Any]) -> dict[str, Any]:
     prior is a different file, compared as such), the mask version, the human prior's lambda, lambda by act and guard, the stakes schedule and
     the potion hold. Bookkeeping (generation, dates, lineage, notes, the fit's record) is left out."""
     hp = doc.get("human_prior") if isinstance(doc.get("human_prior"), dict) else {}
-    return {"macro": PI_H.sub("pi_h=*", str(doc.get("macro"))), "recipe": PI_H.sub("pi_h=*", str(doc.get("recipe"))),
+    return {"macro": PI_S.sub("pi_s=*", PI_H.sub("pi_h=*", str(doc.get("macro")))), "recipe": PI_S.sub("pi_s=*", PI_H.sub("pi_h=*", str(doc.get("recipe")))),
             "mask_version": doc.get("mask_version"), "lambda": hp.get("lambda"), "lambda_acts": hp.get("lambda_acts"), "guard": hp.get("guard"),
             "search_schedule": doc.get("search_schedule"), "potion_hold": doc.get("potion_hold")}
 
 
 def parts(folder: Path | str) -> dict[str, Any]:
-    """A candidate folder as the screens compare it: {"fight": {file: sha}, "prior": {...}, "value": {...}, "settings": {...}}."""
+    """A candidate folder as the screens compare it: {"fight": {file: sha}, "prior": {...}, "value": {...}, "student": {...}, "settings": {...}}."""
     d = Path(folder)
     try:
         doc = json.loads((d / "agent.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         doc = {}
     return {"fight": {f: sha256_file(d / f) for f in FIGHT_FILES}, "prior": {f: sha256_file(d / f) for f in PRIOR_FILES},
-            "value": {f: sha256_file(d / f) for f in VALUE_FILES}, "settings": settings_of(doc)}
+            "value": {f: sha256_file(d / f) for f in VALUE_FILES}, "student": {f: sha256_file(d / f) for f in STUDENT_FILES},
+            "settings": settings_of(doc)}
 
 
 def differing(cand: Path | str, base: Path | str) -> list[str]:
-    """The parts (fight, prior, value, settings) in which the candidate's folder differs from the incumbent's, in that order."""
+    """The parts (fight, prior, value, student, settings) in which the candidate's folder differs from the incumbent's, in that order."""
     a, b = parts(cand), parts(base)
-    return [k for k in ("fight", "prior", "value", "settings") if a[k] != b[k]]
+    return [k for k in ("fight", "prior", "value", "student", "settings") if a[k] != b[k]]
 
 
 def kind_of(cand: Path | str, base: Path | str) -> str | None:
-    """"fight" when only the fight network differs, "prior" when only the human prior does, None otherwise (no screen)."""
+    """"fight" when only the fight network differs, "prior" when only the human prior does, "student" when the run student differs (and
+    the settings only as the recipe that names it), None otherwise (no screen). A candidate with a student is read by the student's screen
+    or by none: never by `screen:prior` or `screen:fight`."""
     got = differing(cand, base)
+    if any(sha256_file(Path(cand) / f) for f in STUDENT_FILES):
+        return "student" if "student" in got and set(got) <= {"student", "settings"} else None
     return got[0] if len(got) == 1 and got[0] in ("fight", "prior") else None
 
 
@@ -224,4 +242,75 @@ def run_prior(cand: Path, base: Path, *, work: Path | None = None, legs: Callabl
     c, b = legs([cp, bp], w)
     r = prior_reading(c, b)
     r["line"] = prior_line(r)
+    return r
+
+
+# ---------------------------------------------------------------------------------------------------------- screen:student
+
+
+def student_reading(legs: dict, kinds: Mapping[str, Any]) -> dict:
+    """The verdict from a student's stored legs (`run_student.legs`) for the kinds its recipe gives it: each kind must pass
+    `run_student.kind_verdict` (leg 1's gain, leg 2's human bar where the kind has human choices); a kind the legs do not cover is a
+    rejection. Aggregates only; `gain` is the decision-weighted mean of leg 1's gains over the kinds, `won` and `all` the largest of leg 2's
+    log-loss differences over the kinds that have human choices."""
+    import run_student as rs  # noqa: PLC0415
+
+    l1 = (legs.get("leg1") or {}).get("kinds") or {}
+    l2 = (legs.get("leg2") or {}).get("kinds") or {}
+    out: dict[str, Any] = {"rule": SCREEN_STUDENT, "kind": "student", "kinds": {}}
+    gains, weights, won, allr = [], [], [], []
+    for kind in kinds:
+        v = rs.kind_verdict(legs, kind)
+        out["kinds"][kind] = v
+        if l1.get(kind):
+            gains.append(float(l1[kind]["gain"]["mean"]))
+            weights.append(int(l1[kind]["n"]))
+        if l2.get(kind) and l2[kind].get("won") and l2[kind].get("all"):
+            won.append(float(l2[kind]["won"]["diff"]))
+            allr.append(float(l2[kind]["all"]["diff"]))
+    gain = float(np.average(gains, weights=weights)) if gains and sum(weights) else None
+    out.update(gain=None if gain is None else round(gain, 5), won=round(max(won), 5) if won else None, all=round(max(allr), 5) if allr else None,
+               failed=sorted(k for k, v in out["kinds"].items() if not v["pass"]))
+    out["rejected"] = bool(out["failed"])
+    f = lambda x: "n/a" if x is None else f"{x:+.3f}"  # noqa: E731
+    out["ledger_rule"] = f"{SCREEN_STUDENT} gain={f(out['gain'])} won={f(out['won'])} all={f(out['all'])}"
+    return out
+
+
+def student_line(r: dict) -> str:
+    verdict = "REJECTED" if r["rejected"] else "passed"
+    why = "" if not r["rejected"] else " (" + "; ".join(f"{k}: {r['kinds'][k]['why']}" for k in r["failed"]) + ")"
+    return (f"{SCREEN_STUDENT} {verdict}{why}: kinds {', '.join(r['kinds'])}; teacher imitation gain over the incumbent's prior (leg 1) "
+            f"{'n/a' if r['gain'] is None else format(r['gain'], '+.4f')} nats, held-out human log-loss against the prior (leg 2) won runs "
+            f"{'n/a' if r['won'] is None else format(r['won'], '+.4f')} (at most +0.002), all runs "
+            f"{'n/a' if r['all'] is None else format(r['all'], '+.4f')} (at most +0.02); higher gain is better, lower leg 2 is better")
+
+
+def run_student(cand: Path, base: Path, *, legs: dict | None = None) -> dict:
+    """The student screen end to end: the candidate's stored legs (run_student_legs.json beside its student, or `legs` given) read for the kinds
+    its agent.json names. Skipped, with the reason, when the legs are absent, are not for this student's bytes, or were measured against
+    another baseline than the incumbent's (its student's if it has one, else its human prior's)."""
+    out: dict[str, Any] = {"rule": SCREEN_STUDENT, "kind": "student"}
+    cand, base = Path(cand), Path(base)
+    try:
+        doc = json.loads((cand / "agent.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {**out, "skipped": "the candidate's agent.json cannot be read"}
+    named = (doc.get("student") or {}).get("kinds") or {}
+    if not named:
+        return {**out, "skipped": "agent.json names no student kinds"}
+    if legs is None:
+        path = cand / STUDENT_LEGS_FILE
+        try:
+            legs = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {**out, "skipped": f"the candidate has no readable {STUDENT_LEGS_FILE}"}
+    sha = sha256_file(cand / STUDENT_FILES[0])
+    if not sha or legs.get("student_sha256") != sha:
+        return {**out, "skipped": "the stored legs are not for this student's weights"}
+    reference = sha256_file(base / STUDENT_FILES[0]) or sha256_file(base / PRIOR_FILES[0])
+    if not reference or (legs.get("baseline") or {}).get("sha256") != reference:
+        return {**out, "skipped": "the stored legs were measured against another baseline than the incumbent's"}
+    r = student_reading(legs, named)
+    r["line"] = student_line(r)
     return r
