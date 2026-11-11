@@ -34,6 +34,8 @@ def iso(t: float) -> str:
 
 class Base(unittest.TestCase):
     def setUp(self):
+        global NOW
+        NOW = time.time()  # not the time the module was imported: in the full suite that is hours earlier than the test, and the files these tests write are dated now
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.lab = self.tmp / "ref" / "LAB"
@@ -200,7 +202,9 @@ class PresortTests(Base):
 
 
 class BudgetTests(Base):
-    DAY = time.strftime("%Y-%m-%d", time.gmtime(NOW))
+    def setUp(self):
+        super().setUp()
+        self.DAY = time.strftime("%Y-%m-%d", time.gmtime(NOW))
 
     def end(self, cpu, seed="s", job="j1", day=None, **extra):
         t = NOW if day is None else day
