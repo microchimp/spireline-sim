@@ -157,9 +157,23 @@ labels' door outcomes for the first days. Plain player runs (`--kinds none`, abo
 
 ## Cost (the measurement's figures, and the first smoke's)
 
-The measurement (K 4, M 4, 38 teacher runs on the shared machine): 1,709 CPU-s a run, 43 screens, 39 CPU-s a screen; the plan's
-estimate 1,091 a run and 26 a screen. At 24 core-hours a day that is 50 to 80 teacher runs and 2,000 to 3,200 screens a day. Round 0's
-stored runs cost the same per screen (the continuations are the cost). The smoke run's figures are in the HANDOFF line of the landing.
+The measurement's final figures (K 4, M 4; `referee/backlog/run-self-play/BUILD-PLAN.md`): 1,383 CPU-s a run, 43.8 screens a run, 33.5 CPU-s
+a screen on 24 runs played with the machine held, and 2,342 a run, 48.7 screens, 48 a screen on 26 runs played while it was shared (about
+1.45 times the CPU-s on a loaded machine). At 24 core-hours a day that is about 60 teacher runs and 2,700 screens a day on a held machine and
+about 37 runs and 1,800 screens on a shared one. Round 0's
+stored runs cost the same per screen (the continuations are the cost).
+
+**The first smoke** (2026-11-11, a scratch lab folder, 2 processes beside the corpus builder, a judge board and the practice loop; BelowNormal):
+two new runs of the current player stopped at floor 9, K 2 first and up to 4 (`--stop-floor 9`): 31 teacher screens, 1,237 CPU-s on them,
+**39.9 CPU-s a screen** against the measurement's 33.5 held and 48 shared (the smoke's screens are floors 1 to 9, whose play-outs run
+furthest to the door, on a machine that was shared), 621 CPU-s a run to floor 9 (a whole run is 1,400 to 1,700). Adaptive K: 27 of the 31 screens went on to four
+draws (87%), so it saved about 6% of the CPU here, not more: at K 2 the guard's error is 2.2 floors and only a gap over 4.4 floors stops
+the draws. The teacher changed 1 screen of 31 (3.2%; measurement 2.8%), its raw pick differed on 52% (39%). One run lost its first attempt to
+`select.enchant` (the judgement has no row for an option the rules policy decides: fixed, see above) and was replayed from its seven stored
+screens to the same place. `label` on two stored exploring runs: the replays matched their records at every decision checked, and labelled 4
+screens at floors 1 to 2 for 271 CPU-s (68 a screen). The shard of both jobs loaded in `run_student.load_shards`: 34 decisions kept of 35
+(the one with an option that has no row is counted incomplete), 106 rows, 4 runs, 7 kinds. A plain player run (`--kinds none`) is 38 to 48
+CPU-s here, with the door's P(death) recorded.
 
 ## Checks and failure modes
 
