@@ -244,7 +244,11 @@ def monotone_map(x: np.ndarray, y: np.ndarray, bins: int = 100) -> tuple[np.ndar
             kx.append(xs[lo:hi].mean())
             ky.append(ys[lo:hi].mean())
             kw.append(hi - lo)
-    return np.array(kx), pav(np.array(ky), np.array(kw))
+    # equal x must have one value: a search that saw certain death at 30% of its positions gives bins of x = -100 exactly, which pool
+    ux, inv = np.unique(np.array(kx), return_inverse=True)
+    wsum = np.bincount(inv, weights=np.array(kw, np.float64))
+    ysum = np.bincount(inv, weights=np.array(ky) * np.array(kw, np.float64))
+    return ux, pav(ysum / wsum, wsum)
 
 
 def outcome_value(a: dict[str, np.ndarray]) -> np.ndarray:
