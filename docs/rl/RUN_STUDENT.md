@@ -172,8 +172,8 @@ counts (decisions by kind, split, dropped reasons) without a fit; that is what t
   buy-or-leave per offer (shop) or a page of two or three options (event). Both train one logit per afterstate row; whether the mix helps
   or hurts is what leg 2 measures on the first fit.
 * `beta`, `kl`, the epoch count, the 100-decision floor of leg 1 and the guard's scaling are first values.
-* `run_teacher.lambda_fit` and `noise_and_spread` are local copies (marked) until `rl/run_teacher.py` is on main; `teacher_fn` returns the
-  teacher's own the moment it imports, and a test holds the two equal while both exist.
+* Lambda and the temperature use `run_teacher.lambda_fit` and `run_teacher.noise_and_spread` themselves (imported at the call; a test holds that
+  they are those functions).
 
 ## Tests
 

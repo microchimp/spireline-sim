@@ -101,92 +101,19 @@ class ShardError(ValueError):
 
 
 # ---------------------------------------------------------------------------------------------------------- lane 2's functions
-# `lambda_fit`, `noise_and_spread` and what they use are run_teacher's (rl/run_teacher.py, lane 2). Until that file is on main this module
-# carries LOCAL COPIES of them (the same arithmetic, taken from feat/run-self-play 4fe979bd); `teacher_fn` returns run_teacher's when it
-# imports, so the copy is never what runs once the teacher has landed. A test holds the two equal while both exist.
+# `lambda_fit` and `noise_and_spread` are run_teacher's (rl/run_teacher.py, lane 2): the student measures lambda and the targets' temperature
+# with the teacher's own arithmetic, imported at the call, so the two can never disagree.
 
 
-def _mean(xs: Sequence[float]) -> float:
-    return sum(xs) / len(xs) if xs else float("nan")
+def teacher_module() -> Any:
+    import run_teacher  # noqa: PLC0415
 
-
-def _sample_var(xs: Sequence[float]) -> float:
-    n = len(xs)
-    if n < 2:
-        return float("nan")
-    m = _mean(xs)
-    return sum((x - m) ** 2 for x in xs) / (n - 1)
-
-
-def _pooled(vs) -> float | None:
-    num = den = 0.0
-    for v, df in vs:
-        if df > 0 and not math.isnan(v):
-            num += v * df
-            den += df
-    return num / den if den else None
-
-
-def _advantage_variances(g: Sequence[Sequence[float]]) -> list[tuple[float, int]]:
-    n = min((len(r) for r in g), default=0)
-    if n < 2 or len(g) < 2:
-        return []
-    mk = [_mean([g[o][k] for o in range(len(g))]) for k in range(n)]
-    return [(_sample_var([g[o][k] - mk[k] for k in range(n)]), n - 1) for o in range(len(g))]
-
-
-def _noise_and_spread_local(gs: Sequence[Sequence[Sequence[float]]]) -> dict[str, float | None]:
-    """LOCAL COPY of `run_teacher.noise_and_spread`."""
-    gs = [g for g in gs if len(g) >= 2 and min(len(r) for r in g) >= 2]
-    if not gs:
-        return {"decisions": 0, "noise_sd": None, "spread_sd": None, "snr": None, "w": None, "k": None}
-    va = _pooled(x for g in gs for x in _advantage_variances(g))
-    k = _mean([min(len(r) for r in g) for g in gs])
-    obs = [m - _mean([_mean(r) for r in g]) for g in gs for m in (_mean(r) for r in g)]
-    tau2 = max(0.0, _sample_var(obs) - (va or 0.0) / k) if len(obs) > 2 else 0.0
-    noise2 = (va or 0.0) / k
-    return {"decisions": len(gs), "noise_sd": None if va is None else round(math.sqrt(va), 3), "spread_sd": round(math.sqrt(tau2), 3),
-            "snr": None if not noise2 else round(math.sqrt(tau2 / noise2), 3), "w": None if not (tau2 + noise2) else round(tau2 / (tau2 + noise2), 3),
-            "k": round(k, 2)}
-
-
-def _lambda_fit_local(decisions: Sequence[Sequence[tuple[float, float, float]]]) -> dict[str, float | int | None]:
-    """LOCAL COPY of `run_teacher.lambda_fit`: each decision is a list of (Q, V, log p) over the options the teacher played; centred within
-    the decision, `lambda = sum (A_Q - A_V) l / sum l^2` with a standard error clustered by decision."""
-    num = den = 0.0
-    cen: list[tuple[list[float], list[float]]] = []
-    for d in decisions:
-        if len(d) < 2:
-            continue
-        q, v, lp = (list(x) for x in zip(*d, strict=True))
-        mq, mv, ml = _mean(q), _mean(v), _mean(lp)
-        y = [(a - mq) - (b - mv) for a, b in zip(q, v, strict=True)]
-        ll = [x - ml for x in lp]
-        cen.append((y, ll))
-        num += sum(a * b for a, b in zip(y, ll, strict=True))
-        den += sum(b * b for b in ll)
-    if not cen or den <= 0:
-        return {"decisions": len(cen), "lambda": None, "se": None}
-    lam = num / den
-    meat = sum(sum(b * (a - lam * b) for a, b in zip(y, ll, strict=True)) ** 2 for y, ll in cen)
-    return {"decisions": len(cen), "lambda": round(lam, 4), "se": round(math.sqrt(meat) / den, 4)}
-
-
-def teacher_module() -> Any | None:
-    """`rl/run_teacher.py` when it is importable (lane 2 landed), else None."""
-    try:
-        import run_teacher  # noqa: PLC0415
-    except ImportError:
-        return None
     return run_teacher
 
 
 def teacher_fn(name: str) -> Any:
-    """`run_teacher.<name>` when the teacher imports, else this module's local copy (`lambda_fit`, `noise_and_spread`)."""
-    rt = teacher_module()
-    if rt is not None and hasattr(rt, name):
-        return getattr(rt, name)
-    return {"lambda_fit": _lambda_fit_local, "noise_and_spread": _noise_and_spread_local}[name]
+    """`run_teacher.<name>` (`lambda_fit`, `noise_and_spread`)."""
+    return getattr(teacher_module(), name)
 
 
 # ---------------------------------------------------------------------------------------------------------- the split

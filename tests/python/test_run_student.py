@@ -810,23 +810,20 @@ class LambdaTests(unittest.TestCase):
             self.assertLess(abs(fit["lambda"] - lam), 3 * fit["se"] + 1e-3, (lam, fit))
             self.assertEqual(300, fit["decisions"])
 
-    def test_the_local_copy_is_run_teachers_where_both_exist(self):
-        rt = rs.teacher_module()
-        if rt is None:
-            self.skipTest("rl/run_teacher.py is not on this branch yet: the local copy is what runs")
-        data = self.planted(0.4, n=40)
-        self.assertEqual(rt.lambda_fit(data), rs._lambda_fit_local(data))  # noqa: SLF001
-        gs = [[[float(x) for x in np.random.default_rng(i).normal(0, 2, 4)] for _ in range(3)] for i in range(30)]
-        self.assertEqual(rt.noise_and_spread(gs), rs._noise_and_spread_local(gs))  # noqa: SLF001
+    def test_lambda_and_the_noise_are_run_teachers_own_functions(self):
+        import run_teacher as rt
 
-    def test_the_local_copy_matches_a_hand_computation(self):
+        self.assertIs(rt.lambda_fit, rs.teacher_fn("lambda_fit"))
+        self.assertIs(rt.noise_and_spread, rs.teacher_fn("noise_and_spread"))
+
+    def test_the_regression_is_exact_on_a_hand_computation(self):
         # one decision, three options: q = v + 0.5 l exactly, so lambda is 0.5 and the standard error 0
         l = [-1.0, 0.0, 1.0]
         v = [3.0, 1.0, 2.0]
         data = [[(v[i] + 0.5 * l[i], v[i], l[i]) for i in range(3)]] * 4
-        fit = rs._lambda_fit_local(data)  # noqa: SLF001
+        fit = rs.teacher_fn("lambda_fit")(data)
         self.assertEqual((0.5, 0.0, 4), (fit["lambda"], fit["se"], fit["decisions"]))
-        self.assertEqual({"decisions": 0, "lambda": None, "se": None}, rs._lambda_fit_local([[(1.0, 1.0, 0.0)]]))  # noqa: SLF001
+        self.assertEqual({"decisions": 0, "lambda": None, "se": None}, rs.teacher_fn("lambda_fit")([[(1.0, 1.0, 0.0)]]))
 
 
 # ------------------------------------------------------------------------------------------------------------------ the whole round
