@@ -333,10 +333,14 @@ class BlendedPolicy(LookaheadPolicy):
         """One screen decided by the blend of V and `scorer`'s log-probabilities (the human prior's, or the student's for a kind it took over)."""
         view = decision.view or view
         options = list(decision.options)
-        rows = option_rows(self.nets, view, options)
+        tower = bool(getattr(scorer, "map_grid", False))  # a scorer with the map tower reads each option's block M (the rows are the same bytes)
+        if tower:
+            rows, grid = option_rows(self.nets, view, options, with_grid=True)
+        else:
+            rows, grid = option_rows(self.nets, view, options), None
         probs = self.nets.value.floor_probs(rows)
         values = models.expected_floors(probs, self.W)
-        logits = scorer.row_logits(rows)
+        logits = scorer.row_logits(rows, grid) if tower else scorer.row_logits(rows)
         logp = log_softmax(logits)
         gp = guard_prob_for(len(options), student)
         skip = next((i for i, o in enumerate(options) if o.kind == "card.skip"), None) if screen == "card" else None

@@ -2,8 +2,8 @@
 """The human deck prior (milestones 2 and 3 of the 2026-11-05 strategy memo, sections 3.1 to 3.3 and 3.6).
 
     python rl/human_prior.py donors    [--gens 11,9] [--per-key 64] [--max-runs 8000]
-    python rl/human_prior.py build     [--procs 4] [--limit-runs N] [--clean] [--truth DIR]
-    python rl/human_prior.py fit       [--out-dir DIR] [--variants gen11,scratch] [--winner-weights 1,2] [--decisions NAME] [--win-input]
+    python rl/human_prior.py build     [--procs 4] [--limit-runs N] [--clean] [--truth DIR] [--map-grid]
+    python rl/human_prior.py fit       [--out-dir DIR] [--variants gen11,scratch] [--winner-weights 1,2] [--decisions NAME] [--win-input] [--map-grid]
     python rl/human_prior.py agreement --model DIR [--baseline run_value.npz] [--decisions NAME]
 
 v1 (2026-11-05, `docs/rl/HUMAN_PRIOR.md` section "v1"): `rl/human_prior_replay.py run` regenerates every run's act maps from its seed on the
@@ -11,6 +11,11 @@ copy and replays its run layer for the shop prices; `build --truth` then puts th
 into every row in place of a donor's, adds the route kind (which room to go to, among the rooms the node the human stood on leads
 to), and takes shop shelves and prices from the replay where it was in step; `fit --decisions decisions-v1` fits on those, with
 `--win-input` giving the net one extra input, "this run won".
+
+v2 (D58 addendum 13, `docs/rl/HUMAN_PRIOR.md` section "v2: the map grid"): `build --truth --map-grid` also writes block M (`features.map_grid`: the
+whole act map, 17 rows of 7 columns of 13 numbers) for every row, as a table of distinct grids and a per-row index beside the row (`grid`, `grid_ix`;
+shards `decisions-v2`, beside `decisions-v1`, which it never overwrites; every other array is the v1 shard's byte for byte), and `fit --map-grid` gives
+the net a map tower (`MapTower`: two 3x3 convolutions, a linear layer to 64, concatenated before `hidden1`).
 
 What the public Ironclad Ascension 10 record teaches, one decision at a time: which card a human took (or skipped) from the
 offers, which ancient option they chose at an act's start, whether they healed or smithed at a rest site (and which card the
@@ -904,6 +909,23 @@ def spec_rows(sp: dict) -> list[np.ndarray]:
     return rows
 
 
+def spec_grids(sp: dict) -> list[np.ndarray]:
+    """Block M (int8, `features.MAP_GRID_SIZE`) of every option's afterstate of a spec with a true map: the act's whole map with the position of
+    the state after the option (a route option moves it to the room it goes to; every other kind stays where the human stood)."""
+    F = stack().F
+    view = spec_view(sp)
+    here = None
+    out = []
+    for j, o in enumerate(sp["options"]):
+        if o["k"] == "map.node":
+            out.append(F.afterstate_map_grid(view, _option(o, view, j)))
+        else:
+            if here is None:
+                here = F.map_grid(view)
+            out.append(here)
+    return out
+
+
 def pack_dense(bases: np.ndarray, h: np.ndarray) -> np.ndarray:
     """A base vectors (rows x 1855) and their fight blocks -> the stored dense part (rows x 88)."""
     F = stack().F
@@ -1002,21 +1024,27 @@ def build_chunk(job: dict) -> dict:
             specs.extend(got)
     hs.assert_no_exam(run_ids, exam)
     path = Path(job["out"])
-    n = write_shard(path, specs, run_ids, judge, dindex, donors)
+    n = write_shard(path, specs, run_ids, judge, dindex, donors, map_grid=bool(job.get("map_grid")))
     stats["decisions"] = len(specs)
     stats["rows"] = n
     return {"stats": dict(stats), "seen": dict(seen), "price": dict(price_stats), "runs": len(run_ids), "path": str(path)}
 
 
-def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex: dict, donors: dict | None) -> int:
+def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex: dict, donors: dict | None, map_grid: bool = False) -> int:
     """Featurize `specs` and write them as one npz shard (atomically). Returns the number of rows. Specs with a true map (`map_nodes`)
     make a v1 shard: the map block is stored with the row and the fight block is computed from the true map; the others make a v0
-    shard (no map block, a donor's at fit time)."""
+    shard (no map block, a donor's at fit time). With `map_grid` (v1 specs only) the shard also holds block M of every row: `grid` int8
+    (distinct grids, `features.MAP_GRID_SIZE` wide) and `grid_ix` int32 (the row's entry), nothing else changed."""
     F = stack().F
     v1 = bool(specs) and all("map_nodes" in sp for sp in specs)
     if any("map_nodes" in sp for sp in specs) and not v1:
         raise ValueError("write_shard: some specs carry a true map and some do not")
+    if map_grid and specs and not v1:
+        raise ValueError("write_shard: the map grid is the true map's: build with --truth")
     all_rows: list[np.ndarray] = []
+    grid_table: list[np.ndarray] = []
+    grid_ix: list[int] = []
+    grid_seen: dict[bytes, int] = {}
     dec = np.zeros((len(specs), len(COLS)), dtype=np.int32)
     role: list[int] = []
     ident: list[int] = []
@@ -1024,6 +1052,13 @@ def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex
     for d, sp in enumerate(specs):
         rows = spec_rows(sp)
         all_rows.extend(rows)
+        if map_grid:
+            for g in spec_grids(sp):
+                key = g.tobytes()
+                if key not in grid_seen:
+                    grid_seen[key] = len(grid_table)
+                    grid_table.append(g)
+                grid_ix.append(grid_seen[key])
         dec[d, C["kind"]] = KIND[sp["kind"]]
         dec[d, C["fifth"]] = sp["fifth"]
         dec[d, C["act"]] = sp["act"]
@@ -1083,10 +1118,14 @@ def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex
     else:
         dense = pack_dense(bases, h) if len(bases) else np.zeros((0, N_DENSE), np.float32)
     counts = pack_counts(bases) if len(bases) else np.zeros((0, F.COUNTS_END - F.E_OFFSET), np.uint8)
+    extra = {}
+    if map_grid:
+        extra = {"grid": np.stack(grid_table).astype(np.int8) if grid_table else np.zeros((0, F.MAP_GRID_SIZE), dtype=np.int8),
+                 "grid_ix": np.array(grid_ix, dtype=np.int32)}
     tmp = Path(str(path) + ".tmp")
     with open(tmp, "wb") as fh:
         np.savez_compressed(fh, dec=dec, dense=dense, counts=counts, role=np.array(role, dtype=np.int8), ident=np.array(ident, dtype=np.int32),
-                            run_ids=np.array(run_ids, dtype="U32"), cols=np.array(COLS))
+                            run_ids=np.array(run_ids, dtype="U32"), cols=np.array(COLS), **extra)
     os.replace(tmp, path)
     return len(bases)
 
@@ -1300,7 +1339,11 @@ def cmd_build(a: argparse.Namespace) -> int:
         raise SystemExit("human_prior: at most 4 processes")
     below_normal()
     out_dir = Path(a.out_dir)
-    dec_dir = out_dir / (a.decisions or ("decisions-v1" if a.truth else "decisions"))
+    if a.map_grid and not a.truth:
+        raise SystemExit("human_prior build: --map-grid is the true map's block M: it needs --truth")
+    dec_dir = out_dir / (a.decisions or ("decisions-v2" if a.map_grid else "decisions-v1" if a.truth else "decisions"))
+    if a.map_grid and dec_dir.name == "decisions-v1":
+        raise SystemExit("human_prior build: decisions-v1 is never overwritten; the map-grid shards go beside it (decisions-v2)")
     if a.clean and dec_dir.is_dir():
         for p in dec_dir.glob("shard-*.npz*"):
             p.unlink()
@@ -1352,7 +1395,7 @@ def cmd_build(a: argparse.Namespace) -> int:
         for line in iter_run_lines(Path(a.corpus), exam, parent, a.limit_runs, parse_ascensions(getattr(a, "ascensions", "10"))):
             chunk.append(line)
             if len(chunk) >= a.chunk_runs:
-                job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events),
+                job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events), "map_grid": bool(a.map_grid),
                        "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
                 chunks[ix] = job
                 pending.append((ix, job))
@@ -1365,7 +1408,7 @@ def cmd_build(a: argparse.Namespace) -> int:
                 submit_ready()
                 drain()
         if chunk:
-            job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events),
+            job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events), "map_grid": bool(a.map_grid),
                     "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
             chunks[ix] = job
             pending.append((ix, job))
@@ -1387,6 +1430,8 @@ def cmd_build(a: argparse.Namespace) -> int:
     if ref and not a.limit_runs:
         summary["contract"] = contract_report(summary, ref)
     summary["seconds"] = round(time.time() - t0, 1)
+    if a.map_grid:
+        summary["map_grid"] = True
     (dec_dir / "counts.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(json.dumps({k: summary[k] for k in ("built", "drops", "shop_price_check", "seconds")}, indent=1))
     return 0
@@ -1446,13 +1491,25 @@ class Dataset:
     """The shards' decisions of some fifths, in memory: the rows (dense part, counts), the decisions and, per kind, the padded
     matrix of each decision's row indices (-1 pads), the roles of the rows and the donor keys."""
 
-    def __init__(self, dec: np.ndarray, dense: np.ndarray, counts: np.ndarray, role: np.ndarray, ident: np.ndarray, run_ids: list[str]):
+    def __init__(self, dec: np.ndarray, dense: np.ndarray, counts: np.ndarray, role: np.ndarray, ident: np.ndarray, run_ids: list[str],
+                 grid: np.ndarray | None = None, grid_ix: np.ndarray | None = None):
         self.dec, self.dense, self.counts, self.role, self.ident, self.run_ids = dec, dense, counts, role, ident, run_ids
+        # v2 shards (`build --truth --map-grid`): block M as a table of distinct int8 grids and each row's entry in it
+        self.grid, self.grid_ix = grid, grid_ix
+        if (grid is None) != (grid_ix is None) or (grid_ix is not None and len(grid_ix) != len(dense)):
+            raise ValueError("Dataset: the grid table and the rows' index come together, one entry a row")
         self.kind_idx: dict[str, np.ndarray] = {}
         self.rows_mat: dict[str, np.ndarray] = {}
         self.dkey: np.ndarray | None = None
         self.coverage: Counter = Counter()
         self.has_map = dense.shape[1] == N_DENSE_V1  # v1 shards carry the true map block with every row; v0's come from a donor
+        self.has_grid = grid is not None
+
+    def grid_rows(self, rows: np.ndarray) -> np.ndarray:
+        """Block M, int8 (len(rows), features.MAP_GRID_SIZE), of the rows `rows` (indices)."""
+        if self.grid is None:
+            raise ValueError("this dataset has no map grid (v2 shards: build --truth --map-grid)")
+        return self.grid[self.grid_ix[rows]]
 
     @classmethod
     def load(cls, dec_dir: Path | Iterable[tuple[Path, bool]], fifths: Iterable[int], donors: dict | None = None, kinds: Iterable[str] | None = None):
@@ -1463,6 +1520,8 @@ class Dataset:
         kind_ids = [KIND[k] for k in kinds] if kinds is not None else None
         parts = [(Path(dec_dir), False)] if isinstance(dec_dir, (str, Path)) else [(Path(d), bool(w)) for d, w in dec_dir]
         decs, denses, counts_, roles, idents = [], [], [], [], []
+        grids, grid_ixs = [], []
+        grid_off = 0
         run_ids: list[str] = []
         row_off = 0
         shards = [(p, won_only) for d, won_only in parts for p in sorted(d.glob("shard-*.npz"))]
@@ -1488,12 +1547,20 @@ class Dataset:
                 counts_.append(z["counts"][sel])
                 roles.append(z["role"][sel])
                 idents.append(z["ident"][sel])
+                if "grid" in z.files:  # keep only the distinct grids the kept rows use, renumbered after the shards before
+                    used, inverse = np.unique(z["grid_ix"][sel], return_inverse=True)
+                    grids.append(z["grid"][used])
+                    grid_ixs.append(inverse.reshape(-1).astype(np.int32) + grid_off)
+                    grid_off += len(used)
                 row_off += len(sel)
         if not decs:
             raise SystemExit(f"human_prior: no shard in {[str(d) for d, _ in parts]} holds fifths {sorted(fifths)}")
         if len({d.shape[1] for d in denses}) != 1:
             raise SystemExit(f"human_prior: the shards of {dec_dir} mix the v0 and the v1 layout")
-        ds = cls(np.concatenate(decs), np.concatenate(denses), np.concatenate(counts_), np.concatenate(roles), np.concatenate(idents), run_ids)
+        if grids and len(grids) != len(decs):
+            raise SystemExit(f"human_prior: some shards of {dec_dir} hold the map grid and some do not")
+        ds = cls(np.concatenate(decs), np.concatenate(denses), np.concatenate(counts_), np.concatenate(roles), np.concatenate(idents), run_ids,
+                 np.concatenate(grids) if grids else None, np.concatenate(grid_ixs) if grids else None)
         ds._index(donors)
         return ds
 
@@ -1563,9 +1630,15 @@ def row_donors(ds: Dataset, donors: dict, didx: np.ndarray, rows_per_dec: np.nda
     return np.repeat(a15, rows_per_dec), np.repeat(c, rows_per_dec, axis=0)
 
 
-def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000, extra: np.ndarray | None = None) -> np.ndarray:
+def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000, extra: np.ndarray | None = None, grid: bool | None = None) -> np.ndarray:
     """Score every row of the dataset with `score_fn(dense350, counts_f32) -> (n,)`: with each decision's fixed donor (a v0 dataset), or
-    with the row's own true map (a v1 one). `extra` (one number per row) is passed on as a third argument, for a prior with an extra input."""
+    with the row's own true map (a v1 one). `extra` (one number per row) is passed on as a third argument, for a prior with an extra input.
+    `grid` (default: whether `score_fn` has a `map_grid` attribute) passes each row's block M as the keyword `grid` (a v2 dataset), for a
+    prior with the map tower."""
+    if grid is None:
+        grid = bool(getattr(score_fn, "map_grid", False))
+    if grid and not ds.has_grid:
+        raise ValueError("row_scores_np: the scorer has a map tower and the dataset no map grid")
     out = np.zeros(len(ds.dense), dtype=np.float32)
     n_dec = len(ds.dec)
     # rows are decision-contiguous in decision order
@@ -1576,7 +1649,8 @@ def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000
         e = min(s + chunk, len(ds.dense))
         x = assemble_np_v1(ds.dense[s:e]) if ds.has_map else assemble_np(ds.dense[s:e], a15_all[s:e], c_all[s:e])
         cnt = ds.counts[s:e].astype(np.float32)
-        out[s:e] = score_fn(x, cnt) if extra is None else score_fn(x, cnt, extra[s:e])
+        kw = {"grid": ds.grid_rows(np.arange(s, e))} if grid else {}
+        out[s:e] = score_fn(x, cnt, **kw) if extra is None else score_fn(x, cnt, extra[s:e], **kw)
     return out
 
 
@@ -1680,11 +1754,55 @@ def score_total(m: dict) -> float:
 # ------------------------------------------------------------------------------------------------------------------- the net
 
 
-def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False):
+MAP_ROWS, MAP_COLS, MAP_CHANNELS = 17, 7, 13  # features.MAP_GRID_SHAPE (a test holds them equal)
+MAP_CONV1, MAP_CONV2, MAP_OUT = 16, 32, 64  # the tower: two 3x3 convolutions (padding 1, ReLU), a linear layer to 64, ReLU
+
+
+MIRROR_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7, 10, 9, 8, 11, 12]  # a left-right mirror swaps the edge bits of column -1 and +1
+
+
+def mirror_grid(grid):
+    """Block M of the map seen in a mirror (column c -> 6 - c, the edges to column -1 and +1 swapped): `grid` a (n, 17 * 7 * 13) tensor or array, the same type back.
+    A training-time augmentation (`fit --map-flip`): the map generator has no preferred side, and a net that can tell a map by its exact shape can tell the run."""
+    g = grid.reshape(-1, MAP_ROWS, MAP_COLS, MAP_CHANNELS)
+    flipped = g.flip(2) if hasattr(g, "flip") else g[:, :, ::-1, :]
+    return flipped[..., MIRROR_CHANNELS].reshape(len(grid), -1)
+
+
+def map_tower_module(dropout: float = 0.0):
+    """The map tower's torch module (parameter names `conv1`, `conv2`, `fc`; in a net it is `map`, so the exported arrays are `map.conv1.weight`, ...):
+    block M's flat int8 (B, 17 * 7 * 13), laid out [row][column][channel], goes in as (B, 13, 17, 7); out comes (B, 64). `dropout` acts on those
+    64 numbers in training only (a plain tower, the default, is the one the numpy scorer runs)."""
+    import torch  # noqa: PLC0415
+    from torch import nn  # noqa: PLC0415
+
+    class MapTower(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.conv1 = nn.Conv2d(MAP_CHANNELS, MAP_CONV1, 3, padding=1)
+            self.conv2 = nn.Conv2d(MAP_CONV1, MAP_CONV2, 3, padding=1)
+            self.fc = nn.Linear(MAP_CONV2 * MAP_ROWS * MAP_COLS, MAP_OUT)
+            self.drop = nn.Dropout(dropout)
+
+        def forward(self, grid):  # noqa: ANN001
+            x = grid.reshape(-1, MAP_ROWS, MAP_COLS, MAP_CHANNELS).permute(0, 3, 1, 2).float()
+            x = torch.relu(self.conv1(x))
+            x = torch.relu(self.conv2(x))
+            return self.drop(torch.relu(self.fc(x.flatten(1))))
+
+    MapTower.__qualname__ = MapTower.__name__
+    return MapTower()
+
+
+def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_grid: bool = False, map_dropout: float = 0.0):
     """The run judgement's trunk (RunValueNet's embeddings and two layers) with one logit in place of its floor and end-HP heads.
 
     With `win` the net takes one more input per row, "this run won" (1 or 0): a column of weights added to the first layer's
-    pre-activation (`won_w`), which starts at zero so the net starts as the plain one. At play the input is 1."""
+    pre-activation (`won_w`), which starts at zero so the net starts as the plain one. At play the input is 1.
+
+    With `map_grid` (v2) the net also reads each row's block M through a map tower (`map_tower_module`): its 64 outputs are concatenated after the
+    judgement's 454 inputs, so the first layer is 518 wide (`init_from_judge` and `init_from_prior` give the 64 new columns zeros: the net
+    starts as the plain one)."""
     import torch  # noqa: PLC0415
     from torch import nn  # noqa: PLC0415
 
@@ -1692,6 +1810,7 @@ def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False):
 
     class PriorNet(base):  # type: ignore[valid-type,misc]
         uses_win = bool(win)
+        uses_map = bool(map_grid)
 
         def __init__(self) -> None:
             super().__init__(hidden, dropout)
@@ -1699,9 +1818,17 @@ def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False):
             self.score = nn.Linear(hidden, 1)
             if win:
                 self.won_w = nn.Parameter(torch.zeros(hidden))
+            if map_grid:
+                self.map = map_tower_module(map_dropout)
+                self.hidden1 = nn.Linear(self.hidden1.in_features + MAP_OUT, hidden)
 
-        def forward(self, dense, counts, won=None):  # noqa: ANN001
-            joined = torch.cat([dense, self.embed(counts)], dim=1)
+        def forward(self, dense, counts, won=None, grid=None):  # noqa: ANN001
+            parts = [dense, self.embed(counts)]
+            if map_grid:
+                if grid is None:
+                    raise ValueError("this prior takes the map grid")
+                parts.append(self.map(grid))
+            joined = torch.cat(parts, dim=1)
             pre = self.hidden1(joined)
             if win:
                 if won is None:
@@ -1722,18 +1849,42 @@ def init_from_judge(net, npz: Path) -> None:
     with np.load(npz, allow_pickle=False) as z:
         state = {k.removeprefix("value/"): torch.from_numpy(z[k]) for k in z.files if k.startswith("value/")}
     state = {k: v for k, v in state.items() if not k.startswith(("floor_head", "end_hp_head"))}
+    tower = getattr(net, "uses_map", False)
+    if tower:
+        state = _widen_hidden1(state, net)
     missing, unexpected = net.load_state_dict(state, strict=False)
-    if unexpected or set(missing) - {"won_w"} != {"score.weight", "score.bias"}:
+    own = {k for k in missing if k.startswith("map.")} if tower else set()
+    if unexpected or set(missing) - {"won_w"} - own != {"score.weight", "score.bias"} or (tower and own != {k for k in net.state_dict() if k.startswith("map.")}):
         raise ValueError(f"the judge's trunk does not fit: missing {missing}, unexpected {unexpected}")
 
 
+def _widen_hidden1(state: dict, net) -> dict:
+    """`state` (a tower-less net's tensors) with `hidden1.weight` given the map tower's 64 extra input columns as zeros, so a net with the tower starts as the
+    plain one; the tower's own tensors stay at their fresh initialisation (the caller loads with strict=False)."""
+    import torch  # noqa: PLC0415
+
+    w = state["hidden1.weight"]
+    want = net.hidden1.in_features
+    if w.shape[1] == want:
+        return state
+    if w.shape[1] + MAP_OUT != want:
+        raise ValueError(f"hidden1 reads {w.shape[1]} numbers, the map net's {want} are not that plus {MAP_OUT}")
+    out = dict(state)
+    out["hidden1.weight"] = torch.cat([w, torch.zeros(w.shape[0], MAP_OUT, dtype=w.dtype)], dim=1)
+    return out
+
+
 def init_from_prior(net, npz: Path) -> None:
-    """Start from a fitted prior's exported weights (`export_net`'s `weights.npz`: the layers by their torch names): every tensor of `net`."""
+    """Start from a fitted prior's exported weights (`export_net`'s `weights.npz`: the layers by their torch names): every tensor of `net`. A net with
+    the map tower started from a prior without one keeps the tower's fresh weights and zero columns for it in `hidden1`."""
     import torch  # noqa: PLC0415
 
     with np.load(npz, allow_pickle=False) as z:
         state = {k: torch.from_numpy(z[k]) for k in z.files if k != "meta"}
     state.pop("extra.won.weight", None)
+    if getattr(net, "uses_map", False) and "map.conv1.weight" not in state:
+        net.load_state_dict(_widen_hidden1(state, net), strict=False)
+        return
     net.load_state_dict(state, strict=True)
 
 
@@ -1750,12 +1901,20 @@ class NumpyPrior:
             self.p = {k: z[k] for k in z.files if k != "meta"}
             self.meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
         self.extra_inputs = list(self.meta.get("extra_inputs") or [])
+        self.map_grid = "map.conv1.weight" in self.p  # a v2 prior: the map tower reads each row's block M (`grid=`)
 
-    def __call__(self, dense: np.ndarray, counts: np.ndarray, extra: np.ndarray | None = None) -> np.ndarray:
+    def __call__(self, dense: np.ndarray, counts: np.ndarray, extra: np.ndarray | None = None, grid: np.ndarray | None = None) -> np.ndarray:
         p = self.p
         e = np.concatenate([counts[:, :1154] @ p["embed.deck.weight"].T, counts[:, 1154:1450] @ p["embed.relics.weight"].T,
                             counts[:, 1450:] @ p["embed.potions.weight"].T], axis=1)
-        pre = np.concatenate([dense, e], axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"]
+        parts = [dense, e]
+        if self.map_grid:
+            if grid is None:
+                raise ValueError("this prior has a map tower: it needs the rows' map grids")
+            from human_prior_infer import map_tower  # noqa: PLC0415
+
+            parts.append(map_tower(p, grid))
+        pre = np.concatenate(parts, axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"]
         if extra is not None and self.extra_inputs:
             for spec in self.extra_inputs:
                 pre = pre + (np.asarray(extra, dtype=np.float32) - np.float32(spec["folded_at"]))[:, None] * p[spec["weight_key"]][None, :]
@@ -1773,6 +1932,8 @@ def export_net(net, path: Path, meta: dict) -> None:
     vector as `extra.won.weight` and folds it into `hidden1.bias` at the play setting (input 1), so a loader that ignores `extra_inputs`
     scores at play; `meta["extra_inputs"]` documents the one addition."""
     arrays = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in net.state_dict().items()}
+    if "map.conv1.weight" in arrays:
+        meta = dict(meta, map_grid=True)  # the weights carry the map tower (`human_prior_infer.MAP_KEYS`); the first layer reads 518 numbers
     if "won_w" in arrays:
         w = arrays.pop("won_w")
         arrays["hidden1.bias"] = (arrays["hidden1.bias"] + w * np.float32(WON_INPUT["folded_at"])).astype(np.float32)
@@ -1800,6 +1961,11 @@ class Gpu:
         self.has_map = ds.has_map
         self.dense = torch.from_numpy(ds.dense).to(dev)
         self.counts = torch.from_numpy(ds.counts).to(dev)
+        self.grid = self.grid_ix = None
+        self.flip_p = 0.0
+        if ds.has_grid:  # v2: the distinct grids (int8) and each row's entry
+            self.grid = torch.from_numpy(ds.grid).to(dev)
+            self.grid_ix = torch.from_numpy(ds.grid_ix.astype(np.int64)).to(dev)
         if not self.has_map:
             self.dc = torch.from_numpy(donors["c"]).to(dev)
             self.da = torch.from_numpy(donors["a15"]).to(dev)
@@ -1855,11 +2021,20 @@ class Gpu:
             x[:, 15] = a15[owner]
         x[:, 0:4] = t.minimum(x[:, 0:4], self.caps)
         cnt = self.counts[rows].float()
+        kw = {}
+        if getattr(net, "uses_map", False):
+            if self.grid is None:
+                raise ValueError("this net reads the map grid and the dataset has none (v2 shards)")
+            g = self.grid[self.grid_ix[rows]]
+            if self.flip_p > 0 and not fixed:  # a mirrored map for a decision's every row, or none (training only)
+                mirrored = t.rand(len(didx), device=self.dev) < self.flip_p
+                g = t.where(mirrored[owner][:, None], mirror_grid(g), g)
+            kw["grid"] = g
         if getattr(net, "uses_win", False):
             flag = self.won[didx][owner] if win is None else t.full((len(rows),), float(win), device=self.dev)
-            z = net(x, cnt, flag)
+            z = net(x, cnt, flag, **kw)
         else:
-            z = net(x, cnt)
+            z = net(x, cnt, **kw)
         out = t.full(m.shape, -1e9, device=self.dev)
         out[valid] = z
         return out, m, valid
@@ -1904,15 +2079,17 @@ class Gpu:
         return out
 
 
-def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Namespace, kinds: list[str], judge: Path, win: bool = False) -> dict:
+def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Namespace, kinds: list[str], judge: Path, win: bool = False,
+            map_grid: bool = False) -> dict:
     """One variant: train with early stopping on the validation fifth. Returns its state, history and best metrics. `win` gives the net
-    the won input (validated with each decision's own run outcome as the input)."""
+    the won input (validated with each decision's own run outcome as the input); `map_grid` the map tower (the datasets must hold block M)."""
     import torch  # noqa: PLC0415
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
-    net = make_net(win=win).to(dev)
+    net = make_net(win=win, map_grid=map_grid, map_dropout=float(getattr(a, "map_dropout", 0.0))).to(dev)
+    gt.flip_p = float(getattr(a, "map_flip", 0.0))  # training-time mirror augmentation of the map grids (validation never flips)
     if init == "gen11":
         init_from_judge(net, judge)
         net.to(dev)
@@ -1952,7 +2129,7 @@ def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Names
                         "val_card_top1": m["card"]["top1"], "val_rest_kind_top1": m.get("rest_kind", {}).get("top1"),
                         "val_ancient_top1": m.get("ancient", {}).get("top1"), "val_route_top1": m.get("route", {}).get("top1"),
                         "val_shop_nll": m.get("shop", {}).get("nll"), "seconds": round(time.time() - t0, 1)})
-        print(f"  [{init} x{winner_weight:g}{' win' if win else ''}] epoch {epoch + 1}: train {total / max(nb, 1):.4f} val score {sc:.4f} "
+        print(f"  [{init} x{winner_weight:g}{' win' if win else ''}{' map' if map_grid else ''}] epoch {epoch + 1}: train {total / max(nb, 1):.4f} val score {sc:.4f} "
               f"card top1 {m['card']['top1']:.4f} route top1 {m.get('route', {}).get('top1', float('nan')):.4f} ({time.time() - t0:.0f} s)", flush=True)
         if best is None or sc < best["score"] - 1e-4:
             best = {"score": sc, "epoch": epoch + 1, "metrics": m}
@@ -1963,7 +2140,7 @@ def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Names
             if since >= a.patience:
                 break
     net.load_state_dict(best_state)
-    return {"net": net, "init": init, "winner_weight": winner_weight, "win": win, "best": best, "history": history,
+    return {"net": net, "init": init, "winner_weight": winner_weight, "win": win, "map_grid": map_grid, "best": best, "history": history,
             "epochs_run": len(history), "seconds": round(time.time() - t0, 1)}
 
 
@@ -1979,13 +2156,15 @@ def cmd_fit(a: argparse.Namespace) -> int:
 
     t0 = time.time()
     out_root = Path(a.out_dir)
-    dec_dir = out_root / (a.decisions or "decisions")
+    dec_dir = out_root / (a.decisions or ("decisions-v2" if a.map_grid else "decisions"))
     counts = read_counts_file(dec_dir)
     donors = load_donors(out_root / "donors.npz") if (out_root / "donors.npz").is_file() else None
     ds_tr = Dataset.load(dec_dir, TRAIN_FIFTHS, donors)
     ds_va = Dataset.load(dec_dir, [VAL_FIFTH], donors)
     if donors is None and not ds_tr.has_map:
         raise SystemExit("human_prior fit: a v0 dataset needs donors.npz")
+    if a.map_grid and not (ds_tr.has_grid and ds_va.has_grid):
+        raise SystemExit(f"human_prior fit: --map-grid needs shards with block M ({dec_dir.name} has none): build --truth --map-grid")
     shops_ok = bool(a.with_shops or ds_tr.has_map or counts.get("shop_price_check", {}).get("verified") is True)
     kinds = ["card", "ancient", "rest"] + (["shop"] if shops_ok else []) + (["route"] if len(ds_tr.kind_idx["route"]) else [])
     print(f"human_prior fit: {dec_dir.name}, {'true' if ds_tr.has_map else 'donor'} maps, kinds {kinds}", flush=True)
@@ -2001,20 +2180,22 @@ def cmd_fit(a: argparse.Namespace) -> int:
     results = []
     for init in a.variants.split(","):
         for ww in [float(x) for x in a.winner_weights.split(",")]:
-            results.append(fit_one(gt, gv, init, ww, a, kinds, Path(a.judge), win=bool(a.win_input)))
+            results.append(fit_one(gt, gv, init, ww, a, kinds, Path(a.judge), win=bool(a.win_input), map_grid=bool(a.map_grid)))
     best = min(results, key=lambda r: r["best"]["score"])
     out = out_root / a.name
     out.mkdir(parents=True, exist_ok=True)
     verified_only = not a.with_shops
     base_meta = {"kinds": kinds, "feature_version": stack().F.FEATURE_VERSION, "map": "true" if ds_tr.has_map else "donor", "source": SPIRE_CODEX}
+    if a.map_grid:
+        base_meta["map_grid"] = True
     variants = []
     for r in results:
-        name = f"{r['init']}-w{r['winner_weight']:g}" + ("-win" if r["win"] else "")
+        name = f"{r['init']}-w{r['winner_weight']:g}" + ("-win" if r["win"] else "") + ("-map" if r["map_grid"] else "")
         export_net(r["net"], out / f"weights-{name}.npz", dict(base_meta, variant=name))
         variants.append({"name": name, "init": r["init"], "winner_weight": r["winner_weight"], "win_input": r["win"], "best_epoch": r["best"]["epoch"],
                          "epochs_run": r["epochs_run"], "val_score": r["best"]["score"], "val_metrics": r["best"]["metrics"],
                          "history": r["history"], "seconds": r["seconds"]})
-    chosen = f"{best['init']}-w{best['winner_weight']:g}" + ("-win" if best["win"] else "")
+    chosen = f"{best['init']}-w{best['winner_weight']:g}" + ("-win" if best["win"] else "") + ("-map" if best["map_grid"] else "")
     export_net(best["net"], out / "weights.npz", dict(base_meta, variant=chosen, judge=str(a.judge), inputs="judge dense 350 + counts 1513; one logit per option"))
     valid_tr = ~_bool_unavailable(ds_tr, shops_ok, True, verified_only)
     valid_va = ~_bool_unavailable(ds_va, shops_ok, True, verified_only)
@@ -2023,7 +2204,8 @@ def cmd_fit(a: argparse.Namespace) -> int:
     mismatch = int(((ds_tr.dec[:, C["flags"]] & F_REPLAY_MISMATCH) != 0).sum())
     fit_doc = {"written_by": "rl/human_prior.py fit (aggregates only)", "source": SPIRE_CODEX, "decisions_folder": dec_dir.name, "chosen_variant": chosen,
                "chosen_reason": "lowest validation score (sum of the mean NLL of the kinds fitted) on fifth 4", "map": base_meta["map"],
-               "win_input": bool(a.win_input), "kinds_fitted": kinds, "shops_in_fit": shops_ok,
+               "win_input": bool(a.win_input), "map_grid": bool(a.map_grid), "map_dropout": float(a.map_dropout), "map_flip": float(a.map_flip),
+               "kinds_fitted": kinds, "shops_in_fit": shops_ok,
                "shops_in_fit_rule": "verified rows only" if (shops_ok and verified_only) else ("all rows" if shops_ok else "none"),
                "train_fifths": list(TRAIN_FIFTHS), "validation_fifth": VAL_FIFTH,
                "trained_on_decisions": trained, "in_training_fifths": present,
@@ -2109,7 +2291,7 @@ def cmd_agreement(a: argparse.Namespace) -> int:
     import human_starts as hs  # noqa: PLC0415
 
     out_root = Path(a.out_dir)
-    dec_dir = out_root / (a.decisions or "decisions")
+    dec_dir = out_root / (a.decisions or ("decisions-v2" if a.map_grid else "decisions"))
     donors = load_donors(out_root / "donors.npz") if (out_root / "donors.npz").is_file() else None
     counts = read_counts_file(dec_dir)
     ds = Dataset.load(dec_dir, [VAL_FIFTH], donors)
@@ -2191,7 +2373,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--events", action="store_true", help="also build event rows (kind 4) from the option table; the fit does not train them yet")
     b.add_argument("--truth", default="", help="v1: the folder of truth-NNNNN.json.gz chunks (rl/human_prior_replay.py); the true map, the "
                    "route decisions and the replay's shop prices replace the donors")
-    b.add_argument("--decisions", default="", help="the shard folder under --out-dir (default decisions, or decisions-v1 with --truth)")
+    b.add_argument("--decisions", default="", help="the shard folder under --out-dir (default decisions, or decisions-v1 with --truth, decisions-v2 with --map-grid)")
+    b.add_argument("--map-grid", action="store_true", help="v2: also write block M (the whole act map) of every row, as `grid` and `grid_ix` beside the row, in decisions-v2; needs --truth")
     f = sub.add_parser("fit")
     f.add_argument("--out-dir", default=str(OUT_DIR))
     f.add_argument("--judge", default=str(GEN11))
@@ -2205,6 +2388,9 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--with-shops", action="store_true", help="fit on shop rows even when their prices are unverified (a v0 dataset's all are)")
     f.add_argument("--decisions", default="", help="the shard folder under --out-dir (default decisions; v1: decisions-v1)")
     f.add_argument("--win-input", action="store_true", help="give the net the extra input 'this run won' (1 for the rows of winning runs)")
+    f.add_argument("--map-grid", action="store_true", help="v2: give the net the map tower over block M (reads decisions-v2 unless --decisions says otherwise)")
+    f.add_argument("--map-dropout", type=float, default=0.0, help="with --map-grid: dropout on the tower's 64 outputs in training")
+    f.add_argument("--map-flip", type=float, default=0.0, help="with --map-grid: the chance a training decision's maps are mirrored left to right")
     g = sub.add_parser("agreement")
     g.add_argument("--model", default="", help="a fitted prior folder (weights.npz) or file; optional when --baseline is given")
     g.add_argument("--out-dir", default=str(OUT_DIR))
@@ -2213,6 +2399,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--decisions", default="", help="the shard folder under --out-dir (default decisions; v1: decisions-v1)")
     g.add_argument("--with-shops", action="store_true", help="score the shop rows whose prices are not verified too")
     g.add_argument("--no-train-baseline", action="store_true", help="skip the type-frequency route baseline (it reads the training fifths)")
+    g.add_argument("--map-grid", action="store_true", help="read decisions-v2 (block M in every row) unless --decisions says otherwise: a prior with the map tower needs it")
     a = ap.parse_args(argv)
     if a.cmd == "donors":
         return cmd_donors(a)
