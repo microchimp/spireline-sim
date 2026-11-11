@@ -279,7 +279,7 @@ def calibrate_search(a: dict[str, np.ndarray], bins: int = 100, min_rows: int = 
         ok = sel_fit & ~np.isnan(x) & a["has_teacher"]
         if ok.sum() < min_rows:
             return False
-        kx, ky = monotone_map(x[ok], y[ok], bins)
+        kx, ky = monotone_map(x[ok], y[ok], max(8, min(bins, int(ok.sum()) // 40)))  # at least about 40 rows a bin
         ap = sel_apply & ~np.isnan(x)
         mapped = np.interp(x[ap], kx, ky)
         dest[ap] = (1.0 - mapped if invert else mapped).astype(np.float32)
@@ -804,7 +804,7 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--pause", type=float, default=0.5)
     ap.add_argument("--weights", choices=jc.WEIGHT_MODES, default="pool")
-    ap.add_argument("--wclip", type=float, default=20.0, help="a weight is cut at this many times the mean (0: not cut)")
+    ap.add_argument("--wclip", type=float, default=4.0, help="a weight is cut at this many times the mean (0: not cut); 4 is the design lane's clip")
     ap.add_argument("--human-mult", type=float, default=1.0, help="human rows' weights are multiplied by this before the clip")
     ap.add_argument("--w-teacher", type=float, default=LossCfg.w_teacher)
     ap.add_argument("--w-human", type=float, default=LossCfg.w_human)
