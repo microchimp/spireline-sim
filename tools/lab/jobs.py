@@ -11,6 +11,7 @@ score-real are on but only ever ready when their marker file exists (LAB/train/r
 Priority ladder (lower number first; what the runner's choose() does with it is in runner.py):
 
   1 presort   1.5 nightly-real   2 score-real   3 train   4 aimed fights   5 runs / rank   6 selfplay   7 the rest, bench-* nightly
+  8 teacher (the run-level teacher, the filler's slot: the last thing the machine does; section "the teacher job" below)
 
 The real-game checks come first (owner, 2026-11-06: the real-game check is the bottleneck): when LAB/nightly/pending is written (by
 hand, by the orchestrator, after a promotion; no code writes it) the next pick after the running job is the nightly block, then the
@@ -39,13 +40,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "bench-emu")
+NEW_KINDS = ("selfplay", "train", "score-real", "nightly-real", "bench-env", "bench-emu", "teacher")
 BENCHES = ("bench-env", "bench-emu")
 # The kinds that exist only because self-play does: self-play, the training (and the promotion it runs) of what it recorded, and the
 # real-game score of what training promoted. `selfplay.share` is judged on their CPU together (mix.loop_cpu), not on self-play alone.
 LOOP_KINDS = ("selfplay", "train", "score-real")  # nightly-real is outside the loop share: it scores the incumbent whether or not self-play ran (D29 accounting)
 PRIORITY = {"presort": 1, "nightly-real": 1.5, "score-real": 2, "train": 3, "fights-aimed": 4, "runs": 5, "selfplay": 6, "rest": 7,
-            "bench-env": 7, "bench-emu": 7}
+            "bench-env": 7, "bench-emu": 7, "teacher": 8}
 SCORE_WINDOW_H = 4.0  # the longest a score-real window may run
 ACTIVE_STALE_H = SCORE_WINDOW_H + 1.0  # an `active` marker older than this is a crash's leftover
 NIGHTLY_WINDOW_H = 15.0  # the longest a nightly block may run (all agents): the job's 900-minute cap (2026-11-06; a 2,000-run block of the x16 player is about 7.6 h)
@@ -71,6 +72,13 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                   "timeout_min": 40, "procs": 12, "every_h": 20.0, "needs": []},
     "bench-emu": {"enabled": False, "cmd": ["{python}", "rl/bench_emu.py"], "cwd": "{tree}", "timeout_min": 30, "every_h": 20.0,
                   "needs": ["{tree}/rl/bench_emu.py"]},
+    # The run-level teacher (D56, D57 part 3; docs/lab/TEACHER_JOB.md). Off until LAB/jobs.json switches it on.
+    "teacher": {"enabled": False, "cwd": "{tree}", "timeout_min": 150, "procs": 4, "cores": 4, "core_hours_per_day": 24.0, "block_min": 60,
+                "presort_horizon_min": 60.0, "quiet_ignore": ["gym-loop", "lab-score"], "store": "D:/spireline/referee/run-teacher",
+                "cmd": ["{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
+                        "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
+                        "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"],
+                "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]},
 }
 BENCH_KEY = {"bench-env": "env", "bench-emu": "emu"}
 
@@ -274,6 +282,8 @@ def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
         return nightly_blocked(lab)
     if kind in BENCHES:
         return None if due(lab, kind, float(cfg.get("every_h", 20.0))) else "ran within the last night"
+    if kind == TEACHER:
+        return teacher_hold(lab, cfg, starting=True)
     return f"unknown kind {kind}"
 
 
@@ -403,4 +413,187 @@ def rank_score_real(job_dir: Path) -> str | None:
         _atomic(job_dir / "result.json", json.dumps(res, indent=1))
     except (OSError, ValueError, KeyError) as e:
         return f"score-real: ranking failed ({type(e).__name__})"
+    return None
+
+
+# ---------------------------------------------------------------- the teacher job (D56, D57 part 3; rl/run_teacher.py `job`)
+
+TEACHER = "teacher"
+TEACHER_FORK = "D:/spireline/fork/sts2"  # the checkout whose local main the presort rule looks at (the runner's own --fork)
+TEACHER_RESERVE_H = 2.0  # a run that started and wrote no end line (its job was killed) still counts its estimate for this long
+TEACHER_EST_CPU_S = 1100.0  # a teacher run's CPU seconds when the ledger has no finished run to average (2026-11-11 measurement: 1,090 to 1,700)
+TEACHER_MAIN_CACHE_S = 20.0
+_main_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def teacher_ledger(store: Path | str) -> Path:
+    """The job's CPU ledger: one JSON line per event (a run starting, a run ending with its CPU seconds, a job ending), all generations."""
+    return Path(store) / "ledger.jsonl"
+
+
+def read_ledger(path: Path | str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        try:
+            r = json.loads(line)  # a line cut by a kill does not parse and is dropped
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            rows.append(r)
+    return rows
+
+
+def append_ledger(path: Path | str, row: dict[str, Any]) -> None:
+    """One event line, written in one call (the job's worker processes append to the same file)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    row = {"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **row}
+    with open(p, "a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def _stamp(s: Any) -> float | None:
+    try:
+        import calendar  # noqa: PLC0415
+
+        return float(calendar.timegm(time.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ")))
+    except (ValueError, TypeError):
+        return None
+
+
+def teacher_spent_s(rows: list[dict[str, Any]], day: str, now: float, est_s: float | None = None, reserve_h: float = TEACHER_RESERVE_H) -> float:
+    """CPU seconds the teacher job has spent on the UTC day `day` ("YYYY-MM-DD"): the CPU of the runs whose end line is dated that day,
+    plus an estimate (`est_s`, else the mean of the finished runs on the ledger, else TEACHER_EST_CPU_S) for each run that has started and
+    has no end line, unless its job wrote its own end line or it started more than `reserve_h` ago. A run in flight is therefore paid
+    for before it ends, so a day's budget is not overspent by the runs that were running when it ran out."""
+    ends = [r for r in rows if r.get("ev") == "end" and isinstance(r.get("cpu"), (int, float))]
+    spent = sum(float(r["cpu"]) for r in ends if str(r.get("t", ""))[:10] == day)
+    if est_s is None:
+        est_s = sum(float(r["cpu"]) for r in ends) / len(ends) if ends else TEACHER_EST_CPU_S
+    ended = {(r.get("job"), r.get("seed")) for r in rows if r.get("ev") == "end"}
+    job_over = {r.get("job") for r in rows if r.get("ev") == "job_end"}
+    open_runs: dict[tuple, float] = {}
+    for r in rows:
+        if r.get("ev") != "start":
+            continue
+        key = (r.get("job"), r.get("seed"))
+        t = _stamp(r.get("t"))
+        if key in ended or r.get("job") in job_over or t is None or now - t > reserve_h * 3600 or str(r.get("t", ""))[:10] != day:
+            continue
+        open_runs[key] = float(r.get("est") or est_s)
+    return spent + sum(open_runs.values())
+
+
+def teacher_budget_left_h(cfg: dict[str, Any], rows: list[dict[str, Any]], now: float | None = None) -> float:
+    """Core-hours the day's budget (`core_hours_per_day`, default 24) has left, never below 0."""
+    now = time.time() if now is None else now
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    return max(0.0, float(cfg.get("core_hours_per_day", 24.0)) - teacher_spent_s(rows, day, now) / 3600.0)
+
+
+def _git_main(fork: str, branch: str = "main") -> str | None:
+    import subprocess  # noqa: PLC0415
+
+    now = time.time()
+    got = _main_cache.get(fork)
+    if got is not None and now - got[0] < TEACHER_MAIN_CACHE_S:
+        return got[1]
+    sha = None
+    try:
+        r = subprocess.run(["git", "-C", fork, "rev-parse", "--verify", f"refs/heads/{branch}"], capture_output=True, text=True, timeout=20, check=False)
+        if r.returncode == 0:
+            sha = r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        sha = None
+    _main_cache[fork] = (now, sha)
+    return sha
+
+
+def presort_due_soon(state: dict[str, Any] | None, main_sha: str | None, now: float, horizon_s: float, gap_min: float = 60.0,
+                     last_end: float | None = None) -> str | None:
+    """Why a block must not start: the runner would choose a presort within `horizon_s` (the filler's rule, D55 addendum 18). That is when
+    the fork's local main (`main_sha`) has moved past the presorted tree and the last presort ended `gap_min` minutes ago or more, or will
+    have by then (a build that failed waits out its retry first). `state` is the runner's LAB/state.json; `last_end` the end of the last
+    presort when the state does not say."""
+    st = state or {}
+    if not main_sha or (st.get("last_presorted_sha") == main_sha and st.get("tree_sha") == main_sha):
+        return None
+    ended = st.get("last_presort_end") or last_end or 0.0
+    due = float(ended) + max(0.0, gap_min) * 60
+    bad = (st.get("bad_shas") or {}).get(main_sha)
+    if isinstance(bad, dict):
+        due = max(due, float(bad.get("retry_after", 0)))
+    if due - now > horizon_s:
+        return None
+    return f"a presort of {main_sha[:7]} is due within {horizon_s / 60:g} min (main moved past the presorted tree)"
+
+
+def _last_presort_end(lab: Path) -> float | None:
+    ends = []
+    try:
+        for d in (Path(lab) / "runs").glob("*-presort"):
+            try:
+                ends.append((d / "done.rc").stat().st_mtime)
+            except OSError:
+                continue
+    except OSError:
+        return None
+    return max(ends, default=None)
+
+
+def teacher_hold(lab: Path | str, cfg: dict[str, Any] | None = None, *, starting: bool = True, now: float | None = None,
+                 quiet_path: Path | str | None = None, state: dict[str, Any] | None = None, main_sha: str | None = "",
+                 ledger_rows: list[dict[str, Any]] | None = None) -> str | None:
+    """Why the teacher job may not start (`starting`) or must stop now (a running block); None when it may run. The filler's rules, kept
+    here as one function of the lab folder so the runner's pick (`unready`) and the job's own poll (`rl/run_teacher.py job`) agree:
+
+      HALT or PAUSE up; a night running or due (`cores.night_hold`: none within `night_margin_min` of the night's due time, a running
+      block stops two minutes before it); a live QUIET.lock line that is not in `quiet_ignore` (default: the loop's and the daytime
+      score's; `lab-train`, `w3-blocks` and every other tag make the job yield); judgement first: a train marker or a score-real
+      pending marker that is waiting for the machine, a presort due within `presort_horizon_min`, and the day's core-hour budget spent (these three
+      only when starting: a block running when a marker is written or the budget runs out ends within its `block_min`, its workers start no
+      run the budget has no room for).
+
+    `main_sha` "" means look (the fork's local main, cached 20 s); None means unknown (no presort rule)."""
+    from tools.lab import cores  # noqa: PLC0415 -- cores imports this module
+
+    lab = Path(lab)
+    cfg = cfg if cfg is not None else config_from(read_lenient(lab / "jobs.json"))[TEACHER]
+    now = time.time() if now is None else now
+    doc = cores.load_doc(lab)
+    if (lab / "HALT").exists():
+        return "LAB/HALT is up"
+    if (lab / "PAUSE").exists():
+        return "LAB/PAUSE is up"
+    why = cores.night_hold(lab, doc, now, starting=starting)
+    if why:
+        return why
+    qp = Path(quiet_path) if quiet_path else lab.parent / "QUIET.lock"
+    ignore = cfg.get("quiet_ignore")
+    ignore = list(ignore) if isinstance(ignore, (list, tuple)) else list(cores.DEFAULT_QUIET_IGNORE)
+    tag = cores.quiet_blocker(qp, {"selfplay": {"quiet_ignore": ignore}}, now)
+    if tag:
+        return f"QUIET.lock is held by {tag}"
+    if starting:
+        full = config_from(doc)
+        if full["train"].get("enabled") and train_markers(lab):
+            return f"judgement first: {train_markers(lab)[0].name} is waiting"
+        if full["score-real"].get("enabled") and (lab / "score" / "pending").exists():
+            return "judgement first: LAB/score/pending is waiting"
+        if state is None:
+            state = read_lenient(lab / "state.json")
+        sha = _git_main(str(cfg.get("fork") or TEACHER_FORK)) if main_sha == "" else main_sha
+        st = state if isinstance(state, dict) else {}
+        why = presort_due_soon(st, sha, now, float(cfg.get("presort_horizon_min", 60.0)) * 60, float(cfg.get("presort_gap_min", 60.0)),
+                               None if st.get("last_presort_end") else _last_presort_end(lab))
+        if why:
+            return why
+        rows = ledger_rows if ledger_rows is not None else read_ledger(teacher_ledger(cfg.get("store") or "D:/spireline/referee/run-teacher"))
+        if teacher_budget_left_h(cfg, rows, now) <= 0.0:  # a running block is never cut for it: its workers start no run the budget has no room for
+            return (f"the day's budget is spent ({float(cfg.get('core_hours_per_day', 24.0)):g} core-hours, "
+                    f"UTC day {time.strftime('%Y-%m-%d', time.gmtime(now))})")
     return None
