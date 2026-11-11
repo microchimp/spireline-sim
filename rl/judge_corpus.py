@@ -83,8 +83,11 @@ BAND_EDGES = (1 / 3, 2 / 3)  # HP fraction below the first: critical; below the 
 ARCHETYPES = ("starter", "power", "exhaust", "block", "attack", "mixed")
 ORDER_BLOCK = 500  # the plan's order is cells in turn, this many fights of each at a time
 CELLS = ("act2-boss", "act2-elite", "act1-boss", "act1-elite", "act2-hallway", "act1-hallway")  # the order the plan draws from
-# fights to build in each cell (human starts): bosses and elites carry 20,000 turns each at three turns a fight, a hallway cell 5,000+ turns
-QUOTA = {"act2-boss": 3900, "act1-boss": 3000, "act2-elite": 3350, "act1-elite": 3350, "act2-hallway": 1800, "act1-hallway": 1800}
+# fights to build in each cell (human starts): four labelled positions a boss or elite fight (the door and three turns) give 20,000 boss turns from
+# 5,100 fights and 20,000 elite turns from 5,000; a hallway fight gives about 3.7 positions, so 2,800 give 10,000 (measured: an Act 2 boss fight costs
+# about 60 to 100 CPU-s, so the quotas are cut to the counts the brief asks for; raise them to extend)
+QUOTA = {"act2-boss": 3900, "act1-boss": 1400, "act2-elite": 2500, "act1-elite": 2500, "act2-hallway": 1400, "act1-hallway": 1400}
+SAMPLE_RATE = {"boss": 0.5, "elite": 0.2, "hallway": 0.65}  # the share of a kind's pool the plan aims at; fixed, so a longer quota extends the same order
 MIN_SUPPORT_STARTS = 200  # a relic, card or enemy asks for this many starts in the sample (`boost_weights`, with the sampling rate); measured: 50 to 100 are reached
 BOOST_CAP = 1000.0
 LADDER_RELS = (2, 4)  # rungs searched after the game's own: x32 then x64 at a boss, x8 then x16 at an elite (the cap is the last)
