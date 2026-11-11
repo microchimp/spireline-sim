@@ -5,6 +5,7 @@ public run export for v0.107.1. Aggregates only: no run is named, no cell under 
 The shards, donor maps and fitted weights are in the referee's `human-prior` folder, not in any repository.
 
 **v1 (2026-11-05) extends this file**: the real map of each run replaces the donors, routes are a fifth kind, and shop prices the copy vouches for are in the fit; see the section "v1" at the end. The text below is v0 as it was written.
+**v2 (2026-11-11)** gives the net the whole act map as a grid and a map tower (section "v2: the map grid", the last section): it matches v1 on every kind with the regularisation it needs, and does not beat it.
 
 ## What the record teaches
 
@@ -582,3 +583,101 @@ python rl/strong_sets.py candidate [--set NAME]                        # only wh
 `donors.npz` is copied beside each build's `decisions` folder. `tests/python/test_strong_sets.py` (35 tests, under a second) pins the filter's
 rules and counts, the scrubbing, the build's level option, the loader's parts and the disjoint held-out fifth, the per-decision measures
 against `metrics_from_scores`, the cell suppression, the bootstrap, the selection rule's cases, the halves and the candidate copy.
+
+## v2: the map grid (2026-11-11, D58 addendum 13; branch `feat/map-grid`)
+
+Source of the record: Spire Codex public run export for v0.107.1. Aggregates only: no run is named, no cell under 20 decisions is shown, the exam fifth is never
+read (`assert_no_exam` on every shard, fit and agreement); the shards and fits stay in the referee's `human-prior` folder, never in a repository.
+
+**Why.** The prior and the student saw the map ahead of the position as 25 numbers (block C: per room type the fewest, mean and most on the paths to the boss, and the
+nearest one; the log of the path count). That loses the order of rooms along a path, which paths merge and whether one path gives an elite and then a rest before the
+boss. The whole act map is already in the run view (every node, its type and its children, and the position); v2 gives the net all of it, as strong players read it.
+Nothing new is read from the game.
+
+### Block M, the encoding (`features.map_grid`; fixed)
+
+An int8 array of 17 x 7 x 13 = 1,547 numbers, laid out [row][column][channel], one cell per map coordinate (row 0 the start, up to row 16, Act 1's boss row; a later act's
+boss is on an earlier row and the rows below it are empty; seven columns). Per cell, in this order:
+
+| channels | what |
+|---|---|
+| 0 to 7 | the node type, one-hot (monster, elite, rest, shop, treasure, boss, unknown, ancient: `vocab.NODE_*` 1 to 8); an empty cell is all zero |
+| 8, 9, 10 | the node has a child at column -1, 0, +1 of the next row |
+| 11 | reachable: the cell is on some path from the position to the boss, the position included |
+| 12 | here: the position |
+
+The start node's fan (its children are all of row 1) and the last row's fan into the boss are the only edges that reach more than one column over; they carry no route and are
+not drawn past column +-1 (the reachable bit says what a position can still reach). Every other edge of a real map is one row on and at most one column over (a test draws the
+maps of all three acts on the engine and checks every edge). `BASE_SIZE` stays 1,855 and every row of the run judgement, including its value net's input, is byte for byte
+unchanged (a digest of a view's row, taken on main before block M, is pinned in a test): block M is appended only where the prior and the student read it.
+
+### The tower and the format
+
+`PriorNet` gains a map tower (`human_prior.map_tower_module`): block M reshaped to 13 channels over 17 x 7, two 3x3 convolutions (padding 1, ReLU; 16 then 32 channels), flatten, a
+linear layer to 64, ReLU, concatenated after the judgement's 454 inputs before `hidden1` (which then reads 518 numbers). The 64 new first-layer columns start at zero, so the net
+starts as generation 11's trunk. `export_net` writes the six arrays (`map.conv1.weight`, ..., `map.fc.bias`) beside the nine of v0 and v1 and `map_grid: true` in the meta; a file
+without them is a v0 or v1 file and scores as it always did. `human_prior_infer.map_tower` runs the tower in numpy (equal to the torch tower to 1e-5 on random grids, a test);
+`PriorScorer` and `StudentScorer` carry it and refuse to score without the grids; `option_rows(nets, view, options, with_grid=True)` returns `(rows, grid)`, the grids as a
+second int8 array of each option's afterstate (a map step moves the position; any other option leaves it), never a wider row.
+
+### The shards (`build --truth --map-grid`, `decisions-v2`)
+
+`python rl/human_prior.py build --truth <out>/truth --map-grid --procs 4 --clean` writes `decisions-v2` beside `decisions-v1` (it refuses to write over `decisions-v1`): each shard
+holds every array of the v1 shard **byte for byte** (checked on all 300 shards: dec, dense, counts, role, ident, run ids) plus `grid` (the distinct grids, int8) and `grid_ix`
+(each row's entry). 1,987,020 rows, 391,134 distinct grids (0.20 a row), 156 MB against v1's 136 MB; 428 s on 4 processes at BelowNormal (the machine shared).
+
+### The fits (`fit --decisions decisions-v2 --map-grid`)
+
+The v1 recipe on the same decisions and fifths as v1 (generation 11's trunk, winners 1x, AdamW 3e-4, batches of 256 decisions of mixed kinds, early stopping at patience 3 on the sum of
+the mean validation NLLs, fifth 4 validating; 105,624 card, 14,774 ancient, 37,413 rest, 48,452 shop and 74,988 route decisions trained on, 34,323 / 4,775 / 12,090 / 15,630 / 24,298
+validated on), one run each on one RTX 3080:
+
+| | v1 | **v2** (the tower, the v1 recipe) | **v2b** (the tower, dropout 0.5 on its 64 outputs and a left-right mirror of a decision's maps with chance 0.5 in training) |
+|---|---|---|---|
+| best epoch (of the epochs run) | 13 (16) | 9 (12) | 12 (15) |
+| validation score | 4.917 | 4.983 | 4.918 |
+| wall time | 171 s | 657 s | 1,511 s (the machine shared with the Python gate) |
+
+The plain tower overfits: the training loss falls (1.34 to 1.11) while the validation score stops at 4.98 and the route top-1 falls from 75.4 (epoch 3) to 73.8. A net that sees the whole map
+sees a fingerprint of the run (every run's maps are its own). The two aids (`--map-dropout`, `--map-flip`; the mirror turns column c into 6 - c and swaps the edge bits, a test checks that
+it is the grid of the mirrored map) take that away: v2b is as good as v1 on every kind. Neither aid changes the encoding or the numpy side (dropout is off at inference; the mirror is
+never applied to validation).
+
+### Agreement with the human choice on the validation fifth (`agreement --decisions decisions-v2 --map-grid`, fifth 4)
+
+Top-1 in 100 and the mean negative log-likelihood, v1 as `docs/rl/HUMAN_PRIOR.md` section "v1" reports it, on the same decisions:
+
+| kind | n | v1 | v2 | **v2b** |
+|---|---|---|---|---|
+| **route, all** | 24,298 | 76.0 / 0.540 | 73.8 / 0.591 | **75.9 / 0.539** |
+| ... Act 1 / Act 2 / Act 3 | 14,135 / 6,707 / 3,456 | 75.4 / 76.7 / 76.6 | 73.6 / 74.7 / 73.3 | 75.3 / 76.8 / 76.5 |
+| ... rooms differ in type | 17,371 | 79.1 / 0.473 | 77.5 / 0.515 | 79.0 / 0.472 |
+| ... winning runs / other runs | | 78.0 / 75.5 | 75.7 / 73.4 | 77.7 / 75.5 |
+| **card reward, all** | 34,323 | 50.7 / 1.128 | 50.0 / 1.142 | **51.0 / 1.128** |
+| ... Act 1 / Act 2 / Act 3 | 20,587 / 9,523 / 4,213 | 49.8 / 49.9 / 57.0 | 49.3 / 49.0 / 55.3 | 50.3 / 50.1 / 56.8 |
+| ... human took a card / skipped | 26,087 / 8,236 | 48.8 / 56.7 | 48.2 / 55.7 | 49.5 / 55.9 |
+| ancient | 4,775 | 54.5 / 0.941 | 54.3 / 0.938 | 54.3 / 0.939 |
+| rest kind (heal / smith / other) | 12,090 | 75.8 / 0.467 | 76.4 / 0.477 | 75.5 / 0.471 |
+| smith target | 6,751 | 48.7 / 1.437 | 48.3 / 1.429 | 49.0 / 1.434 |
+| shop, buy or leave (verified rows) | 15,630 | 83.6 / 0.404 | 83.9 / 0.405 | 83.4 / 0.406 |
+
+Skip rate of the card prior: 27.2 (v1), 27.3 (v2), 26.4 (v2b) against the humans' 24.0.
+
+**What it says.** Seeing the whole map does not beat the 25-number summary on what the humans did: with the aids the tower ties v1 on every kind (route 75.9 against 76.0, the
+differences on the other kinds are within 0.6 of a point, the size of the run-to-run noise of these fits, which was not measured) and without them it is worse on routes by 2.2 points. The route
+kind is where the order of rooms along a path should show, and it did not. Two readings: the humans' route choice is mostly which kind of room they want next and what they carry (HP, gold, deck, the
+nearest elite or rest), which block C already has; or the tower needs more than 8,900 training runs' maps to learn path shapes. This is not a verdict on the student: its inputs are the teacher's
+labels on the copy's own play, where the map's effect is measured on what wins, not on what a human picks (`RUN_STUDENT.md`, "The map rows").
+
+### Rerun (v2)
+
+```
+python rl/human_prior.py build --truth <out>/truth --map-grid --procs 4 --clean                                   # decisions-v2 (428 s)
+python rl/human_prior.py fit --decisions decisions-v2 --map-grid --name pi_h-v2  --variants gen11 --winner-weights 1               # GPU, 657 s
+python rl/human_prior.py fit --decisions decisions-v2 --map-grid --name pi_h-v2b --variants gen11 --winner-weights 1 --map-dropout 0.5 --map-flip 0.5   # GPU, 1,511 s
+python rl/human_prior.py agreement --decisions decisions-v2 --map-grid --model <out>/pi_h-v2b --out <out>/pi_h-v2b/agreement.json
+```
+
+`tests/python/test_features_map_grid.py` (the grid on a hand-built map and on real maps), `tests/python/test_human_prior_map.py` (numpy tower equal to the torch tower, the v2 shard equal to the v1
+shard plus the grid, a route option's grid, the zero columns, a fit step reaching the tower, the refusals, the mirror and the dropout) and `tests/python/test_human_prior_infer.py` (`option_rows` with
+and without the grid, the tower scorers and the file format, the blended chooser) pin it.
