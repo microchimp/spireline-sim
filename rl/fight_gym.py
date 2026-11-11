@@ -636,6 +636,13 @@ def _play(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: bool =
                               extra.get("prior_fn"))
 
 
+def position_info(start: dict, world) -> dict:
+    """The run info a fight started from a document gives `search_configs.position_of`: the start's node type and floor, the world's max HP
+    (the HP is read off the world). A run's own fight reads the same keys off `RunSession.info`, so a door played in the run and from its
+    document resolves to the same search kwargs (tests/python/test_doc_start.py)."""
+    return {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
+
+
 def moves_sha(moves: list) -> str:
     """A short hash of the moves a game played, (action, target, kind) in order: two games with the same hash played alike."""
     return hashlib.sha256(";".join(f"{a},{t},{kd}" for a, t, kd in moves).encode()).hexdigest()[:16]
@@ -666,7 +673,7 @@ def play_steps(world, start: dict, j: int, cfg, extra: dict, ns: str, capture: b
     grades: list = []
     positions: list = []
     while not world.done and k < DECISION_CAP and (deadline is None or clock() - t0 < deadline):
-        info = {"node_type": start["node_type"], "floor": start["floor"], "max_hp": world.max_hp()}
+        info = position_info(start, world)
         pos = search_configs.position_of(world, info)
         kw = cfg.search_kwargs(pos, env_prior=False)
         kw.update(extra)
