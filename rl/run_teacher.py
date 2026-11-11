@@ -575,7 +575,8 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
     """The player's own reading of a screen: its lambda there, the screen the blend decides (None: V alone), the prior's
     log-probabilities and logits over the options, the rest groups, and the player's score of each option (V + lambda log pi_h on a
     blended screen, V elsewhere; None for an option V cannot score). With `rows` also the judgement's input rows of every option
-    (`human_prior_infer.option_rows`, float32 (n, 1863)): what the decision shard stores for the student."""
+    (`human_prior_infer.option_rows`, float32 (n, 1863)): what the decision shard stores for the student. An option the judgement cannot score
+    has no row: `row_options` lists the options that have one (all of them, unless some option is the rules policy's to decide)."""
     import numpy as np  # noqa: PLC0415
 
     import imitation_chooser as ic  # noqa: PLC0415
@@ -588,7 +589,7 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
     screen = ic.screen_of(decision) if lam > 0 else None
     options = list(decision.options)
     out: dict[str, Any] = {"lam": lam, "screen": screen, "logp": None, "logits": None, "groups": None, "scores": [None] * len(options),
-                           "v": [None] * len(options), "rows": None}
+                           "v": [None] * len(options), "rows": None, "row_options": list(range(len(options)))}
     idx = [i for i, o in enumerate(options) if o.scorable]
     if idx:
         probs = run_policy.floor_probs(policy.nets, view, [options[i] for i in idx])
@@ -596,7 +597,13 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
             out["v"][i] = float(v)
             out["scores"][i] = float(v)
     if screen is not None or rows:
-        mat = option_rows(policy.nets, view, options)
+        if screen is None and len(idx) < len(options):
+            # the judgement cannot value an option the rules policy decides (`select.enchant`, ...): it has no row, and a screen with one is
+            # not learned from (the student's loader counts it as incomplete); the rows of the others are kept
+            mat = option_rows(policy.nets, view, [options[i] for i in idx]) if idx else np.zeros((0, ROWS_WIDTH), dtype=np.float32)
+            out["row_options"] = list(idx)
+        else:
+            mat = option_rows(policy.nets, view, options)
         if rows:
             out["rows"] = np.ascontiguousarray(mat, dtype=np.float32)
         if screen is not None:
@@ -657,6 +664,8 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
                            "p_death": {str(o): [d["p_death"] for d in rows] for o, rows in draws.items()},
                            "door_hp": {str(o): [d["door_hp"] for d in rows] for o, rows in draws.items()},
                            "options": [o.kind for o in decision.options]}
+    if rows_out is not None and len(rd["row_options"]) < len(decision.options):
+        rec["_ro"] = rd["row_options"]  # the options that have a row (stored with the screen, taken out when the shard is built)
     if not ok:
         rec.update(teacher=int(pick.index), refused="no_return")
     elif int(pick.index) not in g:
@@ -1013,7 +1022,7 @@ class RunFiles:
         end = 0
         for r in read_jsonl(self.recs):
             if r.get("row0") is not None:
-                last = int(r["row0"]) + int(r["n_options"])
+                last = int(r["row0"]) + self.n_row_of(r)
                 if int(r["row0"]) != end or last > have:
                     break
                 end = last
@@ -1028,16 +1037,22 @@ class RunFiles:
         self.by_ordinal = {int(r["ordinal"]): r for r in keep}
         return self.by_ordinal
 
+    @staticmethod
+    def n_row_of(rec: dict) -> int:
+        """The rows a stored record has: one per option, or one per option in its `_ro` when only some options could be scored."""
+        return len(rec["_ro"]) if rec.get("_ro") is not None else int(rec["n_options"])
+
     def append(self, rec: dict, rows: Any) -> dict:
-        """Store a decision record with its rows (a float32 array (n_options, 1863), or None when none could be built); returns the stored record."""
+        """Store a decision record with its rows (a float32 array (rows, 1863): one per option, or one per option of the record's `_ro`; None
+        when none could be built); returns the stored record."""
         import numpy as np  # noqa: PLC0415
 
         self.recs.parent.mkdir(parents=True, exist_ok=True)
         r = dict(rec)
-        if rows is not None:
+        if rows is not None and self.n_row_of(r):
             arr = np.ascontiguousarray(rows, dtype="<f4")
-            if arr.shape != (int(rec["n_options"]), ROWS_WIDTH):
-                raise ValueError(f"rows {arr.shape} for {rec['n_options']} options")
+            if arr.shape != (self.n_row_of(r), ROWS_WIDTH):
+                raise ValueError(f"rows {arr.shape} for {self.n_row_of(r)} options")
             with open(self.rows, "ab") as fh:
                 fh.write(arr.tobytes())
             r["row0"] = self.n_rows
@@ -1052,7 +1067,7 @@ class RunFiles:
     def drop_from(self, ordinal: int) -> None:
         """Forget the records of this decision and after (a replay that left them: they are computed again)."""
         keep = [r for o, r in sorted(self.by_ordinal.items()) if o < ordinal]
-        end = max((int(r["row0"]) + int(r["n_options"]) for r in keep if r.get("row0") is not None), default=0)
+        end = max((int(r["row0"]) + self.n_row_of(r) for r in keep if r.get("row0") is not None), default=0)
         self.recs.write_text("".join(json.dumps(r) + "\n" for r in keep), encoding="utf-8", newline="\n")
         if self.rows.is_file():
             with open(self.rows, "r+b") as fh:
@@ -1097,12 +1112,13 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
         for ordinal in sorted(recs):
             r = dict(recs[ordinal])
             local = r.pop("row0", None)
+            options = r.pop("_ro", None)
             line = len(recs_out)
             if local is not None:
-                n = int(r["n_options"])
+                n = RunFiles.n_row_of({"n_options": r["n_options"], "_ro": options})
                 rows_parts.append(mat[int(local) : int(local) + n])
                 dec_parts.append(np.full(n, line, dtype=np.int32))
-                opt_parts.append(np.arange(n, dtype=np.int16))
+                opt_parts.append(np.array(options if options is not None else range(n), dtype=np.int16))
                 r["row0"] = n_rows
                 n_rows += n
             else:
@@ -1287,6 +1303,14 @@ def _reusable(have: dict | None, seed: str, d: Any, view: Any, pick: Any) -> boo
             and int(have.get("n_options", -1)) == len(d.options) and int(have.get("player", -1)) == int(pick.index))
 
 
+def refused_record(d: Any, view: Any, pick: Any, seed: str, ordinal: int, why: str) -> dict:
+    """The record of a screen the teacher could not read: the player's own pick stands, `refused` says why; the student's loader drops it."""
+    view = d.view or view
+    return {"v": VERSION, "seed": seed, "ordinal": ordinal, "type": d.type, "kind": KIND_OF_TYPE.get(d.type), "act": int(view.act_index),
+            "floor": int(view.floor), "hp": int(view.hp), "max_hp": int(view.max_hp), "n_options": len(d.options), "played": [], "player": int(pick.index),
+            "k": 0, "teacher": int(pick.index), "refused": why, "options": [o.kind for o in d.options], "cpu": 0.0}
+
+
 def _screen(files: RunFiles, ordinal: int, d: Any, view: Any, pick: Any, s: Any, seed: str, counters: dict) -> dict:
     """The teacher's record of this screen: the stored one when the run is being replayed past it, else played (K draws, adaptive) and stored."""
     have = files.by_ordinal.get(ordinal)
@@ -1297,8 +1321,11 @@ def _screen(files: RunFiles, ordinal: int, d: Any, view: Any, pick: Any, s: Any,
     if have is not None or any(o >= ordinal for o in files.by_ordinal):
         files.drop_from(ordinal)  # the replay left what was stored: from here on it is played again
     rows_out: list = []
-    rec = decide(s, d, view, pick, _J["player"], seed=seed, ordinal=ordinal, k=_J["k"], max_options=_J["max_options"], k_max=_J["k_max"],
-                 rows_out=rows_out, cal=_J["cal_map"])
+    try:
+        rec = decide(s, d, view, pick, _J["player"], seed=seed, ordinal=ordinal, k=_J["k"], max_options=_J["max_options"], k_max=_J["k_max"],
+                     rows_out=rows_out, cal=_J["cal_map"])
+    except Exception as e:  # noqa: BLE001 -- a screen the teacher cannot read is the player's, said by reason: it never costs the run (a retry would meet it again)
+        return files.append(refused_record(d, view, pick, seed, ordinal, f"error:{type(e).__name__}"), None)
     return files.append(rec, rows_out[0] if rows_out else None)
 
 
@@ -1548,6 +1575,8 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
         tasks = (stored_tasks(stored_rows, done, a.max_runs, a.stored_from, a.stored_to) if mode == "stored"
                  else new_tasks(generation, done, a.max_runs))
         res.update(source=mode, tasks=len(tasks))
+        if not tasks:
+            res["idle"] = "no run to play" + (" (no stored run of this generation is left to replay)" if mode == "stored" else "")
         lib = str(a.lib or ROOT / "out")
         worker_cfg = {"agent_dir": str(agent_dir), "replay_agent": str(a.replay_agent or agent_dir), "judge": a.judge, "lib": lib, "gen_dir": str(gen_dir),
                       "ledger": str(ledger), "job": name, "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal": cal_doc,

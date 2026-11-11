@@ -72,7 +72,7 @@ above, which keeps to the same rules by itself.
   "block_min": 60,
   "procs": 4,
   "cores": 4,
-  "timeout_min": 150,
+  "timeout_min": 240,
   "presort_horizon_min": 60,
   "quiet_ignore": ["gym-loop", "lab-score"],
   "store": "D:/spireline/referee/run-teacher",
@@ -111,8 +111,11 @@ start (the run is a function of its seed, the player and the teacher's picks, al
   p_death, door_hp, options, cpu`, and `v`, `gain_se_own`, `refused`) plus `row0`, the screen's first row in `rows.npz`. `k` is the draws
   taken at that screen (2 or 4 under adaptive K); `p_death` is the judge's own number at the door, `g` the returns under the recalibrated
   one.
-* `rows.npz`: `rows` float32 (sum of options, 1863) as `human_prior_infer.option_rows` builds them at play, for **every** option of every
-  screen (a screen the player does not blend included), `decision` int32 the record's line, `option` int16 the option's index.
+* `rows.npz`: `rows` float32 (sum of options, 1863) as `human_prior_infer.option_rows` builds them at play, for every option the judgement can
+  score, on every screen (a screen the player does not blend included), `decision` int32 the record's line, `option` int16 the option's
+  index. An option the rules policy decides (`select.enchant`, ...) has no row; a screen with one is in the shard for its marks (`q`, `g`)
+  but the student's loader counts it incomplete and does not learn from it. A screen the teacher could not read (an error in its play-out)
+  is a record with `refused` set and the player's own pick, so it never costs the run.
 * `manifest.json`: the agent (`agent`, `agent_sha256` over the combat prior's, the run head's and the human prior's sha256s and the recipe),
   the judge and engine (`judge`, `judge_sha256`, `engine`, `engine_sha256` of the native library), `k`, `k_max`, `m`, the leaf's B
   (`beyond`: 30.93 and 42.30), the guard's Z, NU0 and priors, the door's recalibration (`recal`), the namespace of the seeds, `seeds` (the

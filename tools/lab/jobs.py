@@ -73,7 +73,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "bench-emu": {"enabled": False, "cmd": ["{python}", "rl/bench_emu.py"], "cwd": "{tree}", "timeout_min": 30, "every_h": 20.0,
                   "needs": ["{tree}/rl/bench_emu.py"]},
     # The run-level teacher (D56, D57 part 3; docs/lab/TEACHER_JOB.md). Off until LAB/jobs.json switches it on.
-    "teacher": {"enabled": False, "cwd": "{tree}", "timeout_min": 150, "procs": 4, "cores": 4, "core_hours_per_day": 24.0, "block_min": 60,
+    "teacher": {"enabled": False, "cwd": "{tree}", "timeout_min": 240, "procs": 4, "cores": 4, "core_hours_per_day": 24.0, "block_min": 60,
                 "presort_horizon_min": 60.0, "quiet_ignore": ["gym-loop", "lab-score"], "store": "D:/spireline/referee/run-teacher",
                 "cmd": ["{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
                         "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",

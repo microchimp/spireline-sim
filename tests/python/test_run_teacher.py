@@ -432,7 +432,7 @@ class AdaptiveKTests(unittest.TestCase):
             calls.append((option.i, seed, ordinal, k))
             return {"k": k, "G": table[option.i][k], "end": "door", "floor": 17, "p_death": 0.3, "door_hp": 50, "fights": 1, "cpu": 0.0, "seconds": 0.0}
 
-        rd = {"lam": 0.0, "screen": None, "logp": None, "logits": None, "groups": None, "scores": [None] * 3, "v": [None] * 3,
+        rd = {"lam": 0.0, "screen": None, "logp": None, "logits": None, "groups": None, "scores": [None] * 3, "v": [None] * 3, "row_options": [0, 1, 2],
               "rows": __import__("numpy").arange(3 * 4, dtype="float32").reshape(3, 4)}
         rows_out: list = []
         with mock.patch.object(rt, "continuation", cont), mock.patch.object(rt, "screen_inputs", return_value=rd):
@@ -495,20 +495,59 @@ class AdaptiveKTests(unittest.TestCase):
 
 
 class ScreenRowsTests(unittest.TestCase):
+    @staticmethod
+    def patches():
+        import numpy as np
+
+        return (mock.patch("run_train.policy.floor_probs", side_effect=lambda nets, view, options: np.ones((len(options), 3)) / 3),
+                mock.patch("run_train.models.expected_floors", side_effect=lambda probs, W: np.arange(len(probs), dtype=float) + 20.0))
+
     def test_the_rows_of_a_screen_are_option_rows_as_built_at_play(self):
         import numpy as np
 
         want = np.random.default_rng(1).normal(size=(3, rt.ROWS_WIDTH)).astype("float64")
-        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.0)
-        with mock.patch("human_prior_infer.option_rows", return_value=want) as orows:
-            rd = rt.screen_inputs(policy, VIEW, fake_decision(), rows=True)
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.0, W=53.0)
+        d = fake_decision()
+        for o in d.options:
+            o.scorable = True
+        a, b = self.patches()
+        with mock.patch("human_prior_infer.option_rows", return_value=want) as orows, a, b:
+            rd = rt.screen_inputs(policy, VIEW, d, rows=True)
             orows.assert_called_once()
         self.assertEqual(np.float32, rd["rows"].dtype)
         np.testing.assert_array_equal(rd["rows"], want.astype("float32"))
+        self.assertEqual([20.0, 21.0, 22.0], rd["v"])
         self.assertIsNone(rd["logp"])  # the player does not blend the prior at lambda 0
-        with mock.patch("human_prior_infer.option_rows", return_value=want) as orows:
-            self.assertIsNone(rt.screen_inputs(policy, VIEW, fake_decision())["rows"])  # not asked for: not built
+        self.assertEqual([0, 1, 2], rd["row_options"])
+        with mock.patch("human_prior_infer.option_rows", return_value=want) as orows, a, b:
+            self.assertIsNone(rt.screen_inputs(policy, VIEW, d)["rows"])  # not asked for: not built
             orows.assert_not_called()
+
+    def test_an_option_the_judgement_cannot_score_has_no_row_and_the_others_keep_theirs(self):
+        import numpy as np
+
+        d = fake_decision()
+        d.options[0].scorable = False  # the rules policy decides this one
+        d.options[1].scorable = d.options[2].scorable = True
+        built = []
+
+        def option_rows(nets, view, options):
+            built.append([o.i for o in options])
+            return np.ones((len(options), rt.ROWS_WIDTH))
+
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.0, W=53.0)
+        a, b = self.patches()
+        with mock.patch("human_prior_infer.option_rows", option_rows), a, b:
+            rd = rt.screen_inputs(policy, VIEW, d, rows=True)
+        self.assertEqual([[1, 2]], built)  # the unscorable option is not encoded
+        self.assertEqual([1, 2], rd["row_options"])
+        self.assertEqual((2, rt.ROWS_WIDTH), rd["rows"].shape)
+        self.assertEqual([None, 20.0, 21.0], rd["v"])
+        d2 = fake_decision()  # none scorable: no rows at all
+        with mock.patch("human_prior_infer.option_rows", option_rows), a, b:
+            rd = rt.screen_inputs(policy, VIEW, d2, rows=True)
+        self.assertEqual([], rd["row_options"])
+        self.assertEqual((0, rt.ROWS_WIDTH), rd["rows"].shape)
 
 
 def synthetic_record(seed: str, ordinal: int, n: int = 3, kind: str = "card", k: int = 2, **over) -> dict:
@@ -577,6 +616,39 @@ class StoreTests(unittest.TestCase):
         rf.drop_from(2)
         self.assertEqual([0], sorted(rt.RunFiles(self.tmp, "CCC").load()))
         self.assertEqual(3 * rt.ROWS_WIDTH * 4, rf.rows.stat().st_size)
+
+    def test_a_screen_with_rows_for_some_options_only(self):
+        import numpy as np
+
+        rf = rt.RunFiles(self.tmp, "PPP")
+        rf.load()
+        rf.append(synthetic_record("PPP", 0, n=4, _ro=[1, 3]), rows_for(2, 1.0))  # options 0 and 2 could not be scored
+        rf.append(synthetic_record("PPP", 2, n=3), rows_for(3, 2.0))
+        rf.append(synthetic_record("PPP", 4, n=3, _ro=[]), np.zeros((0, rt.ROWS_WIDTH), dtype="float32"))  # none scorable
+        again = rt.RunFiles(self.tmp, "PPP")
+        got = again.load()
+        self.assertEqual([0, 2, None], [got[o]["row0"] for o in (0, 2, 4)])
+        self.assertEqual(5, again.n_rows)
+        with self.assertRaises(ValueError):
+            rf.append(synthetic_record("PPP", 6, n=4, _ro=[0, 1]), rows_for(4, 0.0))
+        doc = rt.build_shard(self.tmp, "JP", ["PPP"], self.manifest())
+        d = self.tmp / "shards" / "JP"
+        recs = [json.loads(x) for x in (d / "decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+        z = np.load(d / "rows.npz")
+        self.assertEqual(5, doc["counts"]["rows"])
+        self.assertEqual([0, 0, 1, 1, 1], z["decision"].tolist())
+        self.assertEqual([1, 3, 0, 1, 2], z["option"].tolist())
+        self.assertEqual([0, 2, None], [r["row0"] for r in recs])
+        self.assertTrue(all("_ro" not in r for r in recs))  # the bookkeeping key is not in the shard
+        try:
+            import run_student as rs
+        except ImportError:  # pragma: no cover
+            return
+        sh = rs.read_shard(d)  # the loader reads it; a screen with an option missing a row is dropped from the fit, counted
+        self.assertEqual(3, len(sh["records"]))
+        ts = rs.load_shards(self.tmp)
+        self.assertEqual(1, len(ts))
+        self.assertEqual(2, ts.stats["dropped"]["incomplete_rows"])
 
     def test_rows_must_match_the_options(self):
         rf = rt.RunFiles(self.tmp, "DDD")
@@ -805,6 +877,19 @@ class WorkerGateTests(unittest.TestCase):
         again = rt.RunFiles(self.tmp, "S1")
         self.assertEqual([4], sorted(again.load()))
         self.assertEqual(0, counters["reused"])
+
+    def test_a_screen_the_teacher_cannot_read_is_the_players_and_never_costs_the_run(self):
+        rf = rt.RunFiles(self.tmp, "S9")
+        rf.load()
+        d, view, pick = fake_decision(), SimpleNamespace(floor=5, act_index=0, hp=60, max_hp=80), SimpleNamespace(index=2)
+        counters = {"reused": 0, "reused_cpu": 0.0}
+        with mock.patch.object(rt, "decide", side_effect=ValueError("select.enchant is not scorable")):
+            got = rt._screen(rf, 3, d, view, pick, None, "S9", counters)
+        self.assertEqual("error:ValueError", got["refused"])
+        self.assertEqual(2, got["teacher"])  # the player's pick stands
+        self.assertEqual((3, "S9", None), (got["ordinal"], got["seed"], got["row0"]))
+        self.assertEqual(rt.VERSION, got["v"])
+        self.assertEqual([3], sorted(rt.RunFiles(self.tmp, "S9").load()))  # kept, so a replay does not meet the screen again
 
     def test_reusing_needs_the_same_run_type_floor_options_and_player_pick(self):
         have = synthetic_record("S1", 4, n=3, floor=5, player=1)
