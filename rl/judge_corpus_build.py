@@ -10,6 +10,7 @@ are `judge_corpus.py` (read its docstring first); this file is the part that pla
     python rl/judge_corpus_build.py selfplay  [--store DIR]
     python rl/judge_corpus_build.py coverage  [--store DIR]
     python rl/judge_corpus_build.py status    [--store DIR]
+    python rl/judge_corpus_build.py hold      --pid PID           # the `judge-corpus` QUIET.lock line while the supervisor PID lives
     python rl/judge_corpus_build.py stop      [--store DIR]       # a STOP file: the work processes end after their fight
 
 `plan` reads the human starts (`human_starts.py`'s `starts/human-starts.*`), leaves out the fight exam's runs and starts (`exam/exclude_runs.json`)
@@ -20,7 +21,9 @@ boundaries while another job's QUIET.lock line stands or a night block runs; the
 three turns and the door are kept with their tokens and labels (`build_fight`), and the result is one file under `work/fights/`. `compact` turns
 the files into shards (it can run while `work` runs). A fight that raises is recorded with its traceback and not retried by itself.
 
-Nothing here takes a QUIET.lock line (the brief for this lane keeps the practice loop running beside it); it waits on the others' lines.
+`run` and `work` take no QUIET.lock line themselves; `hold --pid <the supervisor's pid>` writes the `judge-corpus` line for as long as that process lives
+(the loop and the gate script play beside a builder's line, D58 addendum 3). The work processes wait on every other line but `gym-loop`, `lab-score`,
+`w3-blocks`, their own and the tags given with `--allow-quiet`.
 """
 
 from __future__ import annotations
@@ -453,6 +456,23 @@ def cmd_run(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hold(a: argparse.Namespace) -> int:
+    """The `judge-corpus` QUIET.lock line while process `--pid` (the supervisor) lives: written now, rewritten every 15 minutes, removed when
+    the process ends. The loop, the gate script and the lab's measurement lines play beside a builder's line (D58 addendum 3)."""
+    from quiet_lock import QuietLock  # noqa: PLC0415
+    from sts2_gym import procutil  # noqa: PLC0415
+
+    lock = QuietLock(jc.REFEREE / "QUIET.lock", TAG)
+    lock.announce()
+    lock.start_heartbeat()
+    try:
+        while procutil.pid_alive(int(a.pid)) and not (work_dir(Path(a.store)) / STOP_NAME).exists():
+            time.sleep(20)
+    finally:
+        lock.release()
+    return 0
+
+
 def cmd_stop(a: argparse.Namespace) -> int:
     (work_dir(Path(a.store)) / STOP_NAME).write_text(utc(), encoding="utf-8")
     return 0
@@ -849,7 +869,7 @@ def cmd_coverage(a: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("plan", "work", "run", "compact", "finalize", "selfplay", "coverage", "status", "stop"))
+    ap.add_argument("cmd", choices=("plan", "work", "run", "hold", "compact", "finalize", "selfplay", "coverage", "status", "stop"))
     ap.add_argument("--store", default=str(STORE))
     ap.add_argument("--loop", default=str(jc.LOOP))
     ap.add_argument("--player", default=PLAYER_DEFAULT)
@@ -857,12 +877,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--shard", default="0")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--cells", default="")
+    ap.add_argument("--pid", type=int, default=0, help="hold: the Windows pid of the supervisor whose life the line follows")
     ap.add_argument("--allow-quiet", default="", help="work, run: QUIET.lock tags to go on beside (comma list); gym-loop, lab-score, w3-blocks and our own never hold it")
     ap.add_argument("--support", type=int, default=jc.MIN_SUPPORT_STARTS)
     a = ap.parse_args(argv)
     if a.procs > 8:
         raise SystemExit("at most 8 processes")
-    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "compact": cmd_compact, "finalize": cmd_finalize, "selfplay": cmd_selfplay, "coverage": cmd_coverage,
+    return {"plan": cmd_plan, "work": cmd_work, "run": cmd_run, "hold": cmd_hold, "compact": cmd_compact, "finalize": cmd_finalize, "selfplay": cmd_selfplay, "coverage": cmd_coverage,
             "status": cmd_status, "stop": cmd_stop}[a.cmd](a)
 
 

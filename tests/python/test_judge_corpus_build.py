@@ -436,6 +436,29 @@ class WorkTests(unittest.TestCase):
             self.assertIn("died", jb.read_fights(store)[0]["error"])
 
 
+class HoldTests(unittest.TestCase):
+    def test_the_line_is_written_while_the_pid_lives_refreshed_and_removed_after(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "QUIET.lock").write_text("lab-train 2999-01-01T00:00:00Z pid=1" + chr(10), encoding="utf-8")
+            alive = [True, True, False]
+            seen: list[str] = []
+
+            def pid_alive(_pid):
+                seen.append((root / "QUIET.lock").read_text(encoding="utf-8"))
+                return alive.pop(0)
+
+            from sts2_gym import procutil
+
+            with mock.patch.object(jc, "REFEREE", root), mock.patch.object(procutil, "pid_alive", side_effect=pid_alive), mock.patch.object(jb.time, "sleep"):
+                self.assertEqual(jb.cmd_hold(mock.Mock(pid=4242, store=str(root / "store"))), 0)
+            self.assertTrue(all(any(x.startswith("judge-corpus ") for x in s.splitlines()) for s in seen))
+            self.assertTrue(all("lab-train" in s for s in seen))  # another's line is kept
+            after = (root / "QUIET.lock").read_text(encoding="utf-8")
+            self.assertNotIn("judge-corpus", after)
+            self.assertIn("lab-train", after)
+
+
 class CompactTests(unittest.TestCase):
     def fight(self, store: Path, run: str, n_pos: int = 3, kind: str = "boss", act: int = 2) -> str:
         sid = f"human:{run}|f33"
