@@ -75,7 +75,7 @@ order, but a feature the pool lacks cannot be made up.
 
 **Sampling of the human starts** (`plan`, `boost_weights`, `order_key`, `inclusion`). A cell (act and kind) is drawn by sequential Poisson sampling: each
 start has a **boost**, the largest over its relics, cards, enemy and deck type of 200 / (the sampling rate of its kind times the starts of its kind that have the feature), at least 1; its place
-in the cell's order is `u / boost` (u a fixed uniform of the start id); the plan's work order takes 500 fights of each cell in turn, up to the cell's quota
+in the cell's order is `u / boost` (u a fixed uniform of the start id); the plan's work order takes 100 fights of each cell in turn, up to the cell's quota
 (`QUOTA`: Act 2 boss 3,900 (the pool has fewer: all), Act 1 boss 3,000, elites 3,350 each act, hallways 1,800 each act), Act 2 first. Any prefix is a
 balanced sample, so the corpus is usable while it is still being built. **The weight** of a start is 1 / its inclusion probability given the fights built
 in its cell (`inclusion`: `min(1, lam * boost)` adding up to the cell's built count), stored as `w` on every row of the start; `w_cell` is the same divided by

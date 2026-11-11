@@ -81,7 +81,7 @@ STAGES = ("early", "middle", "late")
 BANDS = ("healthy", "hurt", "critical")
 BAND_EDGES = (1 / 3, 2 / 3)  # HP fraction below the first: critical; below the second: hurt
 ARCHETYPES = ("starter", "power", "exhaust", "block", "attack", "mixed")
-ORDER_BLOCK = 500  # the plan's order is cells in turn, this many fights of each at a time
+ORDER_BLOCK = 100  # the plan's order is cells in turn, this many fights of each at a time (the cells run side by side, so the first hours give all four of the dear cells)
 CELLS = ("act2-boss", "act2-elite", "act1-boss", "act1-elite", "act2-hallway", "act1-hallway")  # the order the plan draws from
 # fights to build in each cell (human starts): four labelled positions a boss or elite fight (the door and three turns) give 20,000 boss turns from
 # 5,100 fights and 20,000 elite turns from 5,000; a hallway fight gives about 3.7 positions, so 2,800 give 10,000 (measured: an Act 2 boss fight costs
