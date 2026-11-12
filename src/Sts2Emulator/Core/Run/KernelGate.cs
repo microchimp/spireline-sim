@@ -70,7 +70,29 @@ public static class KernelGate
     }
 
     /// <summary>The queue run of one step on <paramref name="host" /> (only with a switch on).</summary>
+    /// <remarks>
+    /// An answer to a screen whose replay is refused (<see cref="StoppedStepMismatch" />) gave no answer: the combat goes back
+    /// on its screen (<c>CombatEngine.Step</c>), and its kernel state goes back with it, as it stood at the screen -- the
+    /// action still gathering the player's choice under its own id, the id counter where it was. The old engine's restore
+    /// alone put back the copy it took inside the action's body, where the executor had already resumed the action under a
+    /// new id and started it: the queue's front stayed Executing, and the next step's executor refused it ("... at the front
+    /// of queue 0 is in an invalid state"), a crash in every caller that went on after the refusal.
+    /// </remarks>
     internal static void Run(CombatState combat, Core2.KernelState k, Host host, int action, int target)
+    {
+        var atScreen = combat.PendingSelection is not null ? k.CopyTo(combat, null, null) : null;
+        try
+        {
+            RunQueue(combat, k, host, action, target);
+        }
+        catch (StoppedStepMismatch) when (atScreen is not null)
+        {
+            combat.Kernel = atScreen.CopyTo(combat, null, combat.Kernel);
+            throw;
+        }
+    }
+
+    private static void RunQueue(CombatState combat, Core2.KernelState k, Host host, int action, int target)
     {
         var q = k.Queue!;
         Core2.GameActionRec? fresh = null;
