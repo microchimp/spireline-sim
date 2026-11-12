@@ -18,6 +18,11 @@ A prior or student fitted with the map grid (D58 addendum 13; `map_grid: true` i
 before `hidden1`. `PriorScorer` runs it in numpy (`map_tower`); `option_rows(..., with_grid=True)` returns each option's grid beside the rows (a second
 array, never a wider row) and `row_logits(rows, grid)` / `log_probs` score with it. A file without a tower scores as it always did.
 
+A prior or student fitted with the state gaps (D58 addenda 14 and 16; `state_gaps: true` in its meta) reads block G (`features.gaps_block`: relic counters, the
+"?" rooms' state, the merchant's removals, three known bits; `GAPS_SIZE` numbers) as the last columns of its first layer, after the map tower's when there is one.
+`option_gaps(view, options)` returns each option's block G (a third array beside the rows and the grids), `row_logits(rows, grid, gaps)` / `log_probs` score with
+it; the view's `gaps` come from the engine (`features.gaps_from_engine`) and a view without them (the live coach's) writes zeros and known bits 0.
+
 The weights are not fitted here and nothing here imports torch or the fit module. `sha256` of the file names the prior in a candidate's
 macro (`imitation_chooser.macro_name`).
 
@@ -47,6 +52,7 @@ MAP_KEYS = ("map.conv1.weight", "map.conv1.bias", "map.conv2.weight", "map.conv2
 MAP_ROWS, MAP_COLS, MAP_CHANNELS = 17, 7, 13  # features.MAP_GRID_SHAPE (a test holds them equal)
 MAP_CONV1, MAP_CONV2, MAP_OUT = 16, 32, 64
 MAP_GRID_SIZE = MAP_ROWS * MAP_COLS * MAP_CHANNELS
+GAPS_SIZE = 36  # features.GAPS_SIZE: block G of one row, float32 (a test holds them equal)
 
 
 def file_sha256(path: Path | str) -> str:
@@ -130,6 +136,7 @@ class PriorScorer:
         self.meta = meta or {}
         if bool(self.meta.get("map_grid")) != self.map_grid:
             raise ValueError(f"the file's meta says map_grid={bool(self.meta.get('map_grid'))} but its weights {'hold' if self.map_grid else 'lack'} the map tower")
+        self.state_gaps = bool(self.meta.get("state_gaps"))  # block G's columns close the first layer's input
         self.sha256 = sha256
         want = (self.p["embed.deck.weight"].shape[1], self.p["embed.relics.weight"].shape[1], self.p["embed.potions.weight"].shape[1])
         if want != (E_SIZE, F_SIZE, G_SIZE):
@@ -142,6 +149,10 @@ class PriorScorer:
             if wrong:
                 raise ValueError(f"the map tower's arrays have the wrong shapes (this build reads a {MAP_ROWS}x{MAP_COLS}x{MAP_CHANNELS} grid): {wrong}")
             width += MAP_OUT
+        if self.state_gaps:
+            if int(self.meta.get("gaps_version", 1)) != 1:
+                raise ValueError(f"the prior reads block G version {self.meta.get('gaps_version')}, this build writes version 1")
+            width += GAPS_SIZE
         if self.p["hidden1.weight"].shape[1] != width:
             raise ValueError(f"the prior's first layer reads {self.p['hidden1.weight'].shape[1]} numbers, the judgement's input is {width}")
 
@@ -153,9 +164,10 @@ class PriorScorer:
             meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
         return cls(params, meta, file_sha256(path))
 
-    def logits(self, dense: np.ndarray, counts: np.ndarray, grid: np.ndarray | None = None) -> np.ndarray:
+    def logits(self, dense: np.ndarray, counts: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None) -> np.ndarray:
         """The logit of each row of the judgement's assembled inputs (`models.value_inputs`): `dense` (n, 350), `counts` (n, 1513). A prior with
-        the map tower needs each row's block M `grid` (n, MAP_GRID_SIZE) and refuses to score without it; one without ignores `grid`."""
+        the map tower needs each row's block M `grid` (n, MAP_GRID_SIZE) and refuses to score without it; one without ignores `grid`. A prior with the
+        state gaps likewise needs each row's block G `gaps` (n, GAPS_SIZE) and ignores it otherwise."""
         p = self.p
         counts = np.asarray(counts, dtype=np.float32)
         emb = np.concatenate([counts[:, :E_SIZE] @ p["embed.deck.weight"].T,
@@ -166,24 +178,28 @@ class PriorScorer:
             if grid is None or len(grid) != len(counts):
                 raise ValueError("this prior has a map tower: score its rows with their block M grids (option_rows(..., with_grid=True))")
             parts.append(map_tower(p, grid))
+        if self.state_gaps:
+            if gaps is None or len(gaps) != len(counts):
+                raise ValueError("this prior reads the state gaps: score its rows with their block G (option_gaps)")
+            parts.append(np.asarray(gaps, dtype=np.float32))
         h = np.maximum(np.concatenate(parts, axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"], 0.0)
         h = np.maximum(h @ p["hidden2.weight"].T + p["hidden2.bias"], 0.0)
         return (h @ p["score.weight"].T + p["score.bias"])[:, 0]
 
-    def row_logits(self, rows: np.ndarray, grid: np.ndarray | None = None) -> np.ndarray:
+    def row_logits(self, rows: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None) -> np.ndarray:
         """The logits of rows of the judgement's 1,863-wide vector (the base vector and H): the shared input of V and the prior. `grid`: the
-        rows' block M grids, which a prior with the map tower needs."""
+        rows' block M grids, which a prior with the map tower needs; `gaps`: their block G, which a prior with the state gaps needs."""
         from run_train import models  # noqa: PLC0415 -- numpy only
 
         dense, counts = models.value_inputs(rows)
-        return self.logits(dense, counts, grid)
+        return self.logits(dense, counts, grid, gaps)
 
     def log_probs(self, view: Any, options: Sequence[Any], nets: Any) -> np.ndarray:
         """Log-probabilities of a decision's options: the softmax over their logits."""
-        if self.map_grid:
-            rows, grid = option_rows(nets, view, options, with_grid=True)
-            return log_softmax(self.row_logits(rows, grid))
-        return log_softmax(self.row_logits(option_rows(nets, view, options)))
+        rows = option_rows(nets, view, options)
+        grid = option_grids(view, options) if self.map_grid else None
+        gaps = option_gaps(view, options) if self.state_gaps else None
+        return log_softmax(self.row_logits(rows, grid, gaps))
 
 
 class StudentScorer(PriorScorer):
@@ -224,7 +240,7 @@ def student_kinds_of(path: Path | str) -> tuple[str, ...]:
 
 
 def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Sequence[str], prior_sha256: str, fit: dict[str, Any] | None = None,
-                  extra_meta: dict[str, Any] | None = None) -> str:
+                  extra_meta: dict[str, Any] | None = None, state_gaps: bool = False) -> str:
     """Write a student file (the prior's nine arrays and a meta block naming the kinds, the prior it started from and the fit's record),
     tmp then rename. Returns the file's sha256."""
     import os  # noqa: PLC0415
@@ -239,6 +255,9 @@ def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Seq
                                                   "fit": fit or {}}}
     if tower:
         meta["map_grid"] = True
+    if state_gaps:  # the first layer's last GAPS_SIZE columns read block G (no array of its own)
+        meta["state_gaps"] = True
+        meta["gaps_version"] = 1
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as fh:
@@ -274,3 +293,15 @@ def option_grids(view: Any, options: Sequence[Any]) -> np.ndarray:
     if not len(options):
         return np.zeros((0, MAP_GRID_SIZE), dtype=np.int8)
     return np.stack([features.afterstate_map_grid(view, option) for option in options])
+
+
+def option_gaps(view: Any, options: Sequence[Any]) -> np.ndarray:
+    """Block G of each option's afterstate, float32 (n, GAPS_SIZE) (`features.afterstate_gaps`): the view's relic counters, "?" rooms and removals, with what
+    each option changes of them (a merchant's removal, a relic's starting counter)."""
+    from run_train import features  # noqa: PLC0415 -- numpy only
+
+    if features.GAPS_SIZE != GAPS_SIZE:
+        raise ValueError("the prior's block G and the features' differ in size")
+    if not len(options):
+        return np.zeros((0, GAPS_SIZE), dtype=np.float32)
+    return np.stack([features.afterstate_gaps(view, option) for option in options])

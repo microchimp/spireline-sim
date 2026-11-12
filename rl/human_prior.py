@@ -373,7 +373,21 @@ def _floor_state(r: dict, f: int, gains: dict, removed: dict, deck: list, potion
     return relic_ids, refs, [t.potions[p] for p in potions if p in t.potions]
 
 
-def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats: Counter, events: bool = False, truth: dict | None = None) -> list[dict]:
+# a "?" room's resolved room type in the record (`rooms[0].room_type`) as the vocab's node type; an event is the "?" itself
+UNKNOWN_ROOM = {"monster": 1, "elite": 2, "treasure": 5, "shop": 4, "event": 7}
+# a point's room type, for the room entered before a "?" (a shop before it takes the shop out of the roll)
+POINT_ROOM = {"monster": 1, "elite": 2, "rest_site": 3, "shop": 4, "treasure": 5, "boss": 6, "unknown": 7, "ancient": 8}
+
+
+def _gaps_spec(visits: list | None, removals: int) -> dict:
+    """The state-gaps part of a spec (`features.StateGaps` less the counters, which a human record cannot give): the "?" rooms' state after `visits`
+    (None: unknown), and the merchant's removals bought (none owed: a fight's power that grants one is not in the record)."""
+    F = stack().F
+    return {"rooms": [int(x) for x in F.unknown_room_odds(visits)] if visits is not None else None, "removals": [int(removals), 0]}
+
+
+def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats: Counter, events: bool = False, truth: dict | None = None,
+                  gaps: bool = False) -> list[dict]:
     """Every card reward, ancient, rest-site and shop decision of one run as plain-data specs: the state the human stood in and the
     options with the chosen one. `stats` counts the drops by reason, `seen` the screens the corpus holds (counts.json's definitions),
     `price_stats` the shop price check.
@@ -383,7 +397,13 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
     route decision is built at every step with more than one room to go to. A run whose true map cannot stand is left out whole.
 
     With `events`, also one decision per option page of each event visit whose choice the option table resolves (`rl/event_keys.py`);
-    the others are dropped and counted."""
+    the others are dropped and counted.
+
+    With `gaps` (v3, needs `truth`) every spec also carries the state gaps a human record gives (`features.StateGaps`): the "?" rooms' state, which is
+    `features.unknown_room_odds` over the "?" rooms the run entered this act before the decision (the room each turned out to be is the record's
+    `rooms[0].room_type`; what the roll could not pick comes from the room before it and the rooms the "?" leads to on the true map, and Juzu Bracelet), and
+    the merchant's removals bought before it. Where a "?" node's position is ambiguous the rest of the act's "?" state is unknown (counted). The relic
+    counters cannot be known from a record."""
     import human_starts as hs  # noqa: PLC0415
 
     rid = hs.run_id(r)
@@ -424,10 +444,41 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
     specs: list[dict] = []
     prev: dict = {}
     removals = 0
+    cur_act, act_visits, rooms_ok, last_room = -1, [], True, 0
     for f, (a, i, pt) in enumerate(flat, 1):
         ps = (pt.get("player_stats") or [{}])[0]
         ptype = pt.get("map_point_type")
         act = min(a, 2)
+        gaps_before = gaps_after = None
+        if gaps and truth is not None and not exclusion and a < len(truth["acts"]):
+            if a != cur_act:
+                cur_act, act_visits, rooms_ok, last_room = a, [], True, 0
+            if a not in maps:
+                maps[a] = act_map(truth["acts"][a])
+            gaps_before = _gaps_spec(act_visits if rooms_ok else None, removals)
+            if ptype == "unknown":
+                room = UNKNOWN_ROOM.get(str(((pt.get("rooms") or [{}])[0]).get("room_type")))
+                pos = _truth_position(truth, a, i)
+                if room is None or pos is None:
+                    rooms_ok = False
+                    stats["gaps|visits_unplaced"] += 1
+                else:
+                    kids = [maps[a]["type"][c] for c in maps[a]["kids"].get(pos, []) if c in maps[a]["type"]]
+                    juzu = "JUZU_BRACELET" in hs.relics_at(r, f, gains, removed)
+                    monster_ok, shop_ok = stack().F.unknown_visit_allows(last_room, kids, juzu)
+                    if rooms_ok:  # the model against the humans: how often each room came up at the odds the rule says it was rolled at (aggregates in counts.json)
+                        _, m_odds, t_odds, s_odds = stack().F.unknown_room_odds(act_visits)
+                        tag = f"gaps|check|v{min(len(act_visits) + 1, 6)}"
+                        stats[f"{tag}|n"] += 1
+                        for name, node, odds, ok in (("monster", 1, m_odds, monster_ok), ("treasure", 5, t_odds, True), ("shop", 4, s_odds, shop_ok)):
+                            stats[f"{tag}|{name}|observed"] += int(room == node)
+                            stats[f"{tag}|{name}|expected_per_mille"] += odds if ok else 0
+                    act_visits.append(stack().F.UnknownVisit(room, monster_ok, shop_ok))
+                    stats["gaps|visits"] += 1
+            gaps_after = _gaps_spec(act_visits if rooms_ok else None, removals)
+            last_room = POINT_ROOM.get(str(ptype), 0)
+            if ptype == "unknown":
+                last_room = UNKNOWN_ROOM.get(str(((pt.get("rooms") or [{}])[0]).get("room_type")), 0)
         region = REGION.get(names_of_acts[a]) if a < len(names_of_acts) else None
         want: list[str] = []
         cc = ps.get("card_choices") or []
@@ -461,7 +512,8 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
                 maps[a] = act_map(truth["acts"][a])
             amap = maps[a]
         if truth is not None and i >= 1 and region is not None and prev:
-            _route_decision(specs, r, t, stats, truth, amap, a, i, f, act, region, boss, guessed, won, final, fifth, rid, prev, gains, removed, deck, potions)
+            _route_decision(specs, r, t, stats, truth, amap, a, i, f, act, region, boss, guessed, won, final, fifth, rid, prev, gains, removed, deck, potions,
+                            gaps=gaps_before)
         if want and region is not None:
             try:
                 relic_ids, refs, pot_ids = _floor_state(r, f, gains, removed, deck, potions, t)
@@ -492,6 +544,8 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
                     if pos is None:
                         raise Drop("map position ambiguous (several paths of the same room types)")
                     base.update(map_nodes=amap["nodes"], position=pos)
+                if gaps_after is not None:
+                    base["gaps"] = gaps_after
                 walk_in = base
                 if "event" in want:  # an event's state is the one walking in (the floor before's), whatever else the point holds
                     h2, m2, g2 = prev.get("current_hp", ps.get("current_hp")), prev.get("max_hp", ps.get("max_hp")), prev.get("current_gold", ps.get("current_gold"))
@@ -521,11 +575,16 @@ def run_decisions(r: dict, t: Tables, stats: Counter, seen: Counter, price_stats
         stats["runs_replay_mismatch"] += 1
         for sp in specs:
             sp["flags"] |= F_REPLAY_MISMATCH
+    for sp in specs:
+        if sp.get("gaps") is not None:
+            stats[f"gaps|decisions|{sp['kind']}"] += 1
+            stats[f"gaps|decisions|{sp['kind']}|rooms_known"] += int(sp["gaps"]["rooms"] is not None)
     return specs
 
 
 def _route_decision(specs: list, r: dict, t: Tables, stats: Counter, truth: dict, amap: dict, a: int, i: int, f: int, act: int, region: int, boss: int,
-                    guessed: bool, won: bool, final: int, fifth: int, rid: str, prev: dict, gains: dict, removed: dict, deck: list, potions: list) -> None:
+                    guessed: bool, won: bool, final: int, fifth: int, rid: str, prev: dict, gains: dict, removed: dict, deck: list, potions: list,
+                    gaps: dict | None = None) -> None:
     """The route decision before floor `f` (point `i` of act `a`): which room to go to from the node the human stood on. The state is the
     one after floor `f - 1` (the HP, gold, deck, relics and potions walking out of it); the options are the rooms the node leads to
     (the afterstate is the step: the room's type pending, one floor on, the position moved). A step with one room to go to is not a
@@ -557,6 +616,8 @@ def _route_decision(specs: list, r: dict, t: Tables, stats: Counter, truth: dict
     base = {"run": rid, "fifth": fifth, "act": act, "floor": f - 1, "region": region, "row": min(i - 1, 16), "boss": boss, "won": won, "final": final,
             "hp": int(min(hp, mx)), "max_hp": int(mx), "gold": int(gold), "deck": [(x.card_id, int(x.upgraded), x.enchantment, x.enchant_amount) for x in refs],
             "relics": relic_ids, "potions": pot_ids, "flags": F_BOSS_GUESSED if guessed else 0, "map_nodes": amap["nodes"], "position": prev_pos}
+    if gaps is not None:
+        base["gaps"] = gaps
     specs.append(dict(base, kind="route", options=options, chosen=chosen, aux=int(amap["boss"][0]) if amap["boss"] else 0, aux2=0, offer=0, price=0))
 
 
@@ -893,8 +954,12 @@ def spec_view(sp: dict):
     """The run view of a spec. A v1 spec carries the act's true map (`map_nodes`) and the node the human stood on (`position`); a v0
     spec has an empty map (the map block and the distance to the boss come from a donor at fit time)."""
     F = stack().F
+    g = sp.get("gaps")
+    gaps = None if g is None else F.StateGaps(None, tuple(g["rooms"]) if g.get("rooms") is not None else None,
+                                              tuple(g["removals"]) if g.get("removals") is not None else None)
     return F.RunView(**_view_args(sp), deck=tuple(F.CardRef(c[0], bool(c[1]), c[2], c[3]) for c in sp["deck"]),
-                     max_potion_slots=F.max_potion_slots(10, sp["relics"]), map_nodes=sp.get("map_nodes", ()), position=sp.get("position", (0, 0)))
+                     max_potion_slots=F.max_potion_slots(10, sp["relics"]), map_nodes=sp.get("map_nodes", ()), position=sp.get("position", (0, 0)),
+                     gaps=gaps)
 
 
 def spec_rows(sp: dict) -> list[np.ndarray]:
@@ -924,6 +989,13 @@ def spec_grids(sp: dict) -> list[np.ndarray]:
                 here = F.map_grid(view)
             out.append(here)
     return out
+
+
+def spec_gaps(sp: dict) -> list[np.ndarray]:
+    """Block G (float32, `features.GAPS_SIZE`) of every option's afterstate of a spec built with state gaps (`build --state-gaps`)."""
+    F = stack().F
+    view = spec_view(sp)
+    return [F.afterstate_gaps(view, _option(o, view, j)) for j, o in enumerate(sp["options"])]
 
 
 def pack_dense(bases: np.ndarray, h: np.ndarray) -> np.ndarray:
@@ -1016,7 +1088,8 @@ def build_chunk(job: dict) -> dict:
             raise AssertionError(f"human_prior: run {rid} belongs to the exam fifth and may not be read")
         if truth_by_id is not None and rid not in truth_by_id:
             raise AssertionError(f"human_prior: run {rid} has no record in the truth chunk {job['truth']}")
-        got = run_decisions(r, t, stats, seen, price_stats, bool(job.get("events")), truth_by_id[rid] if truth_by_id is not None else None)
+        got = run_decisions(r, t, stats, seen, price_stats, bool(job.get("events")), truth_by_id[rid] if truth_by_id is not None else None,
+                            gaps=bool(job.get("state_gaps")))
         if got:
             run_ids.append(rid)
             for sp in got:
@@ -1024,27 +1097,34 @@ def build_chunk(job: dict) -> dict:
             specs.extend(got)
     hs.assert_no_exam(run_ids, exam)
     path = Path(job["out"])
-    n = write_shard(path, specs, run_ids, judge, dindex, donors, map_grid=bool(job.get("map_grid")))
+    n = write_shard(path, specs, run_ids, judge, dindex, donors, map_grid=bool(job.get("map_grid")), state_gaps=bool(job.get("state_gaps")))
     stats["decisions"] = len(specs)
     stats["rows"] = n
     return {"stats": dict(stats), "seen": dict(seen), "price": dict(price_stats), "runs": len(run_ids), "path": str(path)}
 
 
-def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex: dict, donors: dict | None, map_grid: bool = False) -> int:
+def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex: dict, donors: dict | None, map_grid: bool = False,
+                state_gaps: bool = False) -> int:
     """Featurize `specs` and write them as one npz shard (atomically). Returns the number of rows. Specs with a true map (`map_nodes`)
     make a v1 shard: the map block is stored with the row and the fight block is computed from the true map; the others make a v0
     shard (no map block, a donor's at fit time). With `map_grid` (v1 specs only) the shard also holds block M of every row: `grid` int8
-    (distinct grids, `features.MAP_GRID_SIZE` wide) and `grid_ix` int32 (the row's entry), nothing else changed."""
+    (distinct grids, `features.MAP_GRID_SIZE` wide) and `grid_ix` int32 (the row's entry), nothing else changed. With `state_gaps` (v1 specs only, each
+    carrying its `gaps`) the shard also holds block G of every row: `gaps` float32 (distinct vectors, `features.GAPS_SIZE` wide) and `gaps_ix` int32."""
     F = stack().F
     v1 = bool(specs) and all("map_nodes" in sp for sp in specs)
     if any("map_nodes" in sp for sp in specs) and not v1:
         raise ValueError("write_shard: some specs carry a true map and some do not")
     if map_grid and specs and not v1:
         raise ValueError("write_shard: the map grid is the true map's: build with --truth")
+    if state_gaps and specs and not (v1 and all("gaps" in sp for sp in specs)):
+        raise ValueError("write_shard: block G needs the true map and a gaps entry on every spec: build with --truth --state-gaps")
     all_rows: list[np.ndarray] = []
     grid_table: list[np.ndarray] = []
     grid_ix: list[int] = []
     grid_seen: dict[bytes, int] = {}
+    gaps_table: list[np.ndarray] = []
+    gaps_ix: list[int] = []
+    gaps_seen: dict[bytes, int] = {}
     dec = np.zeros((len(specs), len(COLS)), dtype=np.int32)
     role: list[int] = []
     ident: list[int] = []
@@ -1059,6 +1139,13 @@ def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex
                     grid_seen[key] = len(grid_table)
                     grid_table.append(g)
                 grid_ix.append(grid_seen[key])
+        if state_gaps:
+            for g in spec_gaps(sp):
+                key = g.tobytes()
+                if key not in gaps_seen:
+                    gaps_seen[key] = len(gaps_table)
+                    gaps_table.append(g)
+                gaps_ix.append(gaps_seen[key])
         dec[d, C["kind"]] = KIND[sp["kind"]]
         dec[d, C["fifth"]] = sp["fifth"]
         dec[d, C["act"]] = sp["act"]
@@ -1122,6 +1209,9 @@ def write_shard(path: Path, specs: list[dict], run_ids: list[str], judge, dindex
     if map_grid:
         extra = {"grid": np.stack(grid_table).astype(np.int8) if grid_table else np.zeros((0, F.MAP_GRID_SIZE), dtype=np.int8),
                  "grid_ix": np.array(grid_ix, dtype=np.int32)}
+    if state_gaps:
+        extra.update(gaps=np.stack(gaps_table).astype(np.float32) if gaps_table else np.zeros((0, F.GAPS_SIZE), dtype=np.float32),
+                     gaps_ix=np.array(gaps_ix, dtype=np.int32))
     tmp = Path(str(path) + ".tmp")
     with open(tmp, "wb") as fh:
         np.savez_compressed(fh, dec=dec, dense=dense, counts=counts, role=np.array(role, dtype=np.int8), ident=np.array(ident, dtype=np.int32),
@@ -1255,7 +1345,28 @@ def summarize(out_dir: Path, results: list[dict], parent: Counter) -> dict:
            "cells_runs": {f"{k[0]}|act{k[1]}": (len(v) if len(v) >= MIN_CELL else f"<{MIN_CELL}") for k, v in sorted(run_sets.items())}}
     if stats.get("runs_read"):
         doc["true_map"] = truth_summary(stats)
+    gaps_stats = {k.removeprefix("gaps|"): v for k, v in sorted(stats.items()) if k.startswith("gaps|") and not k.startswith("gaps|check|")}
+    if gaps_stats:
+        doc["state_gaps"] = gaps_stats
+        doc["state_gaps_check"] = gaps_check_table(stats)
     return doc
+
+
+def gaps_check_table(stats: Counter) -> dict:
+    """The "?" rooms' rule against what the humans' "?" rooms turned out to be: per visit of an act (the sixth and later together) how many were read, and for a
+    fight, a treasure room and a shop the share that came up beside the mean odds the rule gave it (a room the roll could not pick counts 0 odds). A cell under
+    `MIN_CELL` visits is hidden."""
+    out: dict = {}
+    for v in range(1, 7):
+        n = int(stats.get(f"gaps|check|v{v}|n", 0))
+        key = f"visit {v}" + ("+" if v == 6 else "")
+        if n < MIN_CELL:
+            out[key] = f"<{MIN_CELL}"
+            continue
+        out[key] = {"n": n, **{name: {"observed": round(stats.get(f"gaps|check|v{v}|{name}|observed", 0) / n, 4),
+                                      "expected": round(stats.get(f"gaps|check|v{v}|{name}|expected_per_mille", 0) / 1000 / n, 4)}
+                               for name in ("monster", "treasure", "shop")}}
+    return out
 
 
 def truth_summary(stats: Counter) -> dict:
@@ -1329,6 +1440,16 @@ def parse_ascensions(text: str) -> tuple[int, ...]:
     return tuple(out)
 
 
+def default_decisions(a: argparse.Namespace) -> str:
+    """The shard folder a command reads or writes when `--decisions` says nothing: decisions-v3 with the state gaps (block G; with the map grid when asked too),
+    decisions-v2 with the map grid, decisions-v1 with the true map (`build --truth`), else decisions."""
+    if getattr(a, "state_gaps", False):
+        return "decisions-v3"
+    if getattr(a, "map_grid", False):
+        return "decisions-v2"
+    return "decisions-v1" if getattr(a, "truth", "") else "decisions"
+
+
 def cmd_build(a: argparse.Namespace) -> int:
     import multiprocessing as mp  # noqa: PLC0415
 
@@ -1341,9 +1462,11 @@ def cmd_build(a: argparse.Namespace) -> int:
     out_dir = Path(a.out_dir)
     if a.map_grid and not a.truth:
         raise SystemExit("human_prior build: --map-grid is the true map's block M: it needs --truth")
-    dec_dir = out_dir / (a.decisions or ("decisions-v2" if a.map_grid else "decisions-v1" if a.truth else "decisions"))
-    if a.map_grid and dec_dir.name == "decisions-v1":
-        raise SystemExit("human_prior build: decisions-v1 is never overwritten; the map-grid shards go beside it (decisions-v2)")
+    if a.state_gaps and not a.truth:
+        raise SystemExit("human_prior build: --state-gaps is derived from the true map's route: it needs --truth")
+    dec_dir = out_dir / (a.decisions or default_decisions(a))
+    if (a.map_grid or a.state_gaps) and dec_dir.name in ("decisions-v1", "decisions") or (a.state_gaps and dec_dir.name == "decisions-v2"):
+        raise SystemExit(f"human_prior build: {dec_dir.name} is never overwritten; the map-grid shards go beside it (decisions-v2), the state-gaps ones in decisions-v3")
     if a.clean and dec_dir.is_dir():
         for p in dec_dir.glob("shard-*.npz*"):
             p.unlink()
@@ -1396,7 +1519,7 @@ def cmd_build(a: argparse.Namespace) -> int:
             chunk.append(line)
             if len(chunk) >= a.chunk_runs:
                 job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events), "map_grid": bool(a.map_grid),
-                       "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
+                       "state_gaps": bool(a.state_gaps), "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
                 chunks[ix] = job
                 pending.append((ix, job))
                 ix += 1
@@ -1409,7 +1532,7 @@ def cmd_build(a: argparse.Namespace) -> int:
                 drain()
         if chunk:
             job = {"lines": chunk, "out": str(dec_dir / f"shard-{ix:05d}.npz"), "events": bool(a.events), "map_grid": bool(a.map_grid),
-                    "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
+                   "state_gaps": bool(a.state_gaps), "truth": str(truth_dir / f"truth-{ix:05d}.json.gz") if truth_dir else ""}
             chunks[ix] = job
             pending.append((ix, job))
         while pending or pool.inflight():
@@ -1432,6 +1555,8 @@ def cmd_build(a: argparse.Namespace) -> int:
     summary["seconds"] = round(time.time() - t0, 1)
     if a.map_grid:
         summary["map_grid"] = True
+    if a.state_gaps:
+        summary["state_gaps"] = True
     (dec_dir / "counts.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(json.dumps({k: summary[k] for k in ("built", "drops", "shop_price_check", "seconds")}, indent=1))
     return 0
@@ -1492,8 +1617,13 @@ class Dataset:
     matrix of each decision's row indices (-1 pads), the roles of the rows and the donor keys."""
 
     def __init__(self, dec: np.ndarray, dense: np.ndarray, counts: np.ndarray, role: np.ndarray, ident: np.ndarray, run_ids: list[str],
-                 grid: np.ndarray | None = None, grid_ix: np.ndarray | None = None):
+                 grid: np.ndarray | None = None, grid_ix: np.ndarray | None = None, gaps: np.ndarray | None = None, gaps_ix: np.ndarray | None = None):
         self.dec, self.dense, self.counts, self.role, self.ident, self.run_ids = dec, dense, counts, role, ident, run_ids
+        # v3 shards (`build --truth --state-gaps`): block G as a table of distinct float32 vectors and each row's entry in it
+        self.gaps, self.gaps_ix = gaps, gaps_ix
+        if (gaps is None) != (gaps_ix is None) or (gaps_ix is not None and len(gaps_ix) != len(dense)):
+            raise ValueError("Dataset: the state-gaps table and the rows' index come together, one entry a row")
+        self.has_gaps = gaps is not None
         # v2 shards (`build --truth --map-grid`): block M as a table of distinct int8 grids and each row's entry in it
         self.grid, self.grid_ix = grid, grid_ix
         if (grid is None) != (grid_ix is None) or (grid_ix is not None and len(grid_ix) != len(dense)):
@@ -1504,6 +1634,12 @@ class Dataset:
         self.coverage: Counter = Counter()
         self.has_map = dense.shape[1] == N_DENSE_V1  # v1 shards carry the true map block with every row; v0's come from a donor
         self.has_grid = grid is not None
+
+    def gaps_rows(self, rows: np.ndarray) -> np.ndarray:
+        """Block G, float32 (len(rows), features.GAPS_SIZE), of the rows `rows` (indices)."""
+        if self.gaps is None:
+            raise ValueError("this dataset has no state gaps (v3 shards: build --truth --state-gaps)")
+        return self.gaps[self.gaps_ix[rows]]
 
     def grid_rows(self, rows: np.ndarray) -> np.ndarray:
         """Block M, int8 (len(rows), features.MAP_GRID_SIZE), of the rows `rows` (indices)."""
@@ -1522,6 +1658,8 @@ class Dataset:
         decs, denses, counts_, roles, idents = [], [], [], [], []
         grids, grid_ixs = [], []
         grid_off = 0
+        gapss, gaps_ixs = [], []
+        gaps_off = 0
         run_ids: list[str] = []
         row_off = 0
         shards = [(p, won_only) for d, won_only in parts for p in sorted(d.glob("shard-*.npz"))]
@@ -1552,6 +1690,11 @@ class Dataset:
                     grids.append(z["grid"][used])
                     grid_ixs.append(inverse.reshape(-1).astype(np.int32) + grid_off)
                     grid_off += len(used)
+                if "gaps" in z.files:  # the same for block G
+                    used, inverse = np.unique(z["gaps_ix"][sel], return_inverse=True)
+                    gapss.append(z["gaps"][used])
+                    gaps_ixs.append(inverse.reshape(-1).astype(np.int32) + gaps_off)
+                    gaps_off += len(used)
                 row_off += len(sel)
         if not decs:
             raise SystemExit(f"human_prior: no shard in {[str(d) for d, _ in parts]} holds fifths {sorted(fifths)}")
@@ -1559,8 +1702,11 @@ class Dataset:
             raise SystemExit(f"human_prior: the shards of {dec_dir} mix the v0 and the v1 layout")
         if grids and len(grids) != len(decs):
             raise SystemExit(f"human_prior: some shards of {dec_dir} hold the map grid and some do not")
+        if gapss and len(gapss) != len(decs):
+            raise SystemExit(f"human_prior: some shards of {dec_dir} hold the state gaps and some do not")
         ds = cls(np.concatenate(decs), np.concatenate(denses), np.concatenate(counts_), np.concatenate(roles), np.concatenate(idents), run_ids,
-                 np.concatenate(grids) if grids else None, np.concatenate(grid_ixs) if grids else None)
+                 np.concatenate(grids) if grids else None, np.concatenate(grid_ixs) if grids else None,
+                 np.concatenate(gapss) if gapss else None, np.concatenate(gaps_ixs) if gapss else None)
         ds._index(donors)
         return ds
 
@@ -1630,15 +1776,21 @@ def row_donors(ds: Dataset, donors: dict, didx: np.ndarray, rows_per_dec: np.nda
     return np.repeat(a15, rows_per_dec), np.repeat(c, rows_per_dec, axis=0)
 
 
-def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000, extra: np.ndarray | None = None, grid: bool | None = None) -> np.ndarray:
+def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000, extra: np.ndarray | None = None, grid: bool | None = None,
+                  gaps: bool | None = None) -> np.ndarray:
     """Score every row of the dataset with `score_fn(dense350, counts_f32) -> (n,)`: with each decision's fixed donor (a v0 dataset), or
     with the row's own true map (a v1 one). `extra` (one number per row) is passed on as a third argument, for a prior with an extra input.
     `grid` (default: whether `score_fn` has a `map_grid` attribute) passes each row's block M as the keyword `grid` (a v2 dataset), for a
-    prior with the map tower."""
+    prior with the map tower. `gaps` (default: whether `score_fn` has a `state_gaps` attribute) passes each row's block G as the keyword `gaps` (a v3
+    dataset), for a prior that reads the state gaps."""
     if grid is None:
         grid = bool(getattr(score_fn, "map_grid", False))
+    if gaps is None:
+        gaps = bool(getattr(score_fn, "state_gaps", False))
     if grid and not ds.has_grid:
         raise ValueError("row_scores_np: the scorer has a map tower and the dataset no map grid")
+    if gaps and not ds.has_gaps:
+        raise ValueError("row_scores_np: the scorer reads the state gaps and the dataset has none")
     out = np.zeros(len(ds.dense), dtype=np.float32)
     n_dec = len(ds.dec)
     # rows are decision-contiguous in decision order
@@ -1650,6 +1802,8 @@ def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000
         x = assemble_np_v1(ds.dense[s:e]) if ds.has_map else assemble_np(ds.dense[s:e], a15_all[s:e], c_all[s:e])
         cnt = ds.counts[s:e].astype(np.float32)
         kw = {"grid": ds.grid_rows(np.arange(s, e))} if grid else {}
+        if gaps:
+            kw["gaps"] = ds.gaps_rows(np.arange(s, e))
         out[s:e] = score_fn(x, cnt, **kw) if extra is None else score_fn(x, cnt, extra[s:e], **kw)
     return out
 
@@ -1794,7 +1948,7 @@ def map_tower_module(dropout: float = 0.0):
     return MapTower()
 
 
-def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_grid: bool = False, map_dropout: float = 0.0):
+def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_grid: bool = False, map_dropout: float = 0.0, state_gaps: bool = False):
     """The run judgement's trunk (RunValueNet's embeddings and two layers) with one logit in place of its floor and end-HP heads.
 
     With `win` the net takes one more input per row, "this run won" (1 or 0): a column of weights added to the first layer's
@@ -1802,7 +1956,11 @@ def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_gri
 
     With `map_grid` (v2) the net also reads each row's block M through a map tower (`map_tower_module`): its 64 outputs are concatenated after the
     judgement's 454 inputs, so the first layer is 518 wide (`init_from_judge` and `init_from_prior` give the 64 new columns zeros: the net
-    starts as the plain one)."""
+    starts as the plain one).
+
+    With `state_gaps` (v3) the net also reads each row's block G (`features.GAPS_SIZE` numbers: relic counters, the "?" rooms' state, removals, three
+    known bits) directly, concatenated last (after the map tower's 64 when there is one), so the first layer is that many columns wider; they start at zero
+    as well."""
     import torch  # noqa: PLC0415
     from torch import nn  # noqa: PLC0415
 
@@ -1811,6 +1969,7 @@ def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_gri
     class PriorNet(base):  # type: ignore[valid-type,misc]
         uses_win = bool(win)
         uses_map = bool(map_grid)
+        uses_gaps = bool(state_gaps)
 
         def __init__(self) -> None:
             super().__init__(hidden, dropout)
@@ -1818,16 +1977,22 @@ def make_net(hidden: int = 256, dropout: float = 0.1, win: bool = False, map_gri
             self.score = nn.Linear(hidden, 1)
             if win:
                 self.won_w = nn.Parameter(torch.zeros(hidden))
+            extra_in = (MAP_OUT if map_grid else 0) + (stack().F.GAPS_SIZE if state_gaps else 0)
             if map_grid:
                 self.map = map_tower_module(map_dropout)
-                self.hidden1 = nn.Linear(self.hidden1.in_features + MAP_OUT, hidden)
+            if extra_in:
+                self.hidden1 = nn.Linear(self.hidden1.in_features + extra_in, hidden)
 
-        def forward(self, dense, counts, won=None, grid=None):  # noqa: ANN001
+        def forward(self, dense, counts, won=None, grid=None, gaps=None):  # noqa: ANN001
             parts = [dense, self.embed(counts)]
             if map_grid:
                 if grid is None:
                     raise ValueError("this prior takes the map grid")
                 parts.append(self.map(grid))
+            if state_gaps:
+                if gaps is None:
+                    raise ValueError("this prior takes the state gaps")
+                parts.append(gaps.float())
             joined = torch.cat(parts, dim=1)
             pre = self.hidden1(joined)
             if win:
@@ -1850,8 +2015,7 @@ def init_from_judge(net, npz: Path) -> None:
         state = {k.removeprefix("value/"): torch.from_numpy(z[k]) for k in z.files if k.startswith("value/")}
     state = {k: v for k, v in state.items() if not k.startswith(("floor_head", "end_hp_head"))}
     tower = getattr(net, "uses_map", False)
-    if tower:
-        state = _widen_hidden1(state, net)
+    state = _widen_hidden1(state, net)
     missing, unexpected = net.load_state_dict(state, strict=False)
     own = {k for k in missing if k.startswith("map.")} if tower else set()
     if unexpected or set(missing) - {"won_w"} - own != {"score.weight", "score.bias"} or (tower and own != {k for k in net.state_dict() if k.startswith("map.")}):
@@ -1859,18 +2023,24 @@ def init_from_judge(net, npz: Path) -> None:
 
 
 def _widen_hidden1(state: dict, net) -> dict:
-    """`state` (a tower-less net's tensors) with `hidden1.weight` given the map tower's 64 extra input columns as zeros, so a net with the tower starts as the
-    plain one; the tower's own tensors stay at their fresh initialisation (the caller loads with strict=False)."""
+    """`state` (a plainer net's tensors) with `hidden1.weight` given the map tower's 64 and block G's extra input columns as zeros, so a net with them starts
+    as the plain one; the tower's own tensors stay at their fresh initialisation (the caller loads with strict=False). The columns the net adds are the
+    ones its own first layer is wider by, which must be a combination of the tower's and block G's widths."""
     import torch  # noqa: PLC0415
 
     w = state["hidden1.weight"]
     want = net.hidden1.in_features
     if w.shape[1] == want:
         return state
-    if w.shape[1] + MAP_OUT != want:
-        raise ValueError(f"hidden1 reads {w.shape[1]} numbers, the map net's {want} are not that plus {MAP_OUT}")
+    added = want - w.shape[1]
+    gaps = stack().F.GAPS_SIZE
+    allowed = {MAP_OUT * int(getattr(net, "uses_map", False)) + gaps * int(getattr(net, "uses_gaps", False))}
+    if getattr(net, "uses_map", False) and getattr(net, "uses_gaps", False):
+        allowed.add(gaps)  # a start that already has the tower, this net adds block G only
+    if added not in allowed:
+        raise ValueError(f"hidden1 reads {w.shape[1]} numbers, the net's {want} are not that plus {sorted(allowed)}")
     out = dict(state)
-    out["hidden1.weight"] = torch.cat([w, torch.zeros(w.shape[0], MAP_OUT, dtype=w.dtype)], dim=1)
+    out["hidden1.weight"] = torch.cat([w, torch.zeros(w.shape[0], added, dtype=w.dtype)], dim=1)
     return out
 
 
@@ -1882,10 +2052,11 @@ def init_from_prior(net, npz: Path) -> None:
     with np.load(npz, allow_pickle=False) as z:
         state = {k: torch.from_numpy(z[k]) for k in z.files if k != "meta"}
     state.pop("extra.won.weight", None)
+    widened = _widen_hidden1(state, net)
     if getattr(net, "uses_map", False) and "map.conv1.weight" not in state:
-        net.load_state_dict(_widen_hidden1(state, net), strict=False)
+        net.load_state_dict(widened, strict=False)
         return
-    net.load_state_dict(state, strict=True)
+    net.load_state_dict(widened, strict=True)
 
 
 class NumpyPrior:
@@ -1902,8 +2073,10 @@ class NumpyPrior:
             self.meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
         self.extra_inputs = list(self.meta.get("extra_inputs") or [])
         self.map_grid = "map.conv1.weight" in self.p  # a v2 prior: the map tower reads each row's block M (`grid=`)
+        self.state_gaps = bool(self.meta.get("state_gaps"))  # a v3 prior: block G's columns close the first layer's input (`gaps=`)
 
-    def __call__(self, dense: np.ndarray, counts: np.ndarray, extra: np.ndarray | None = None, grid: np.ndarray | None = None) -> np.ndarray:
+    def __call__(self, dense: np.ndarray, counts: np.ndarray, extra: np.ndarray | None = None, grid: np.ndarray | None = None,
+                 gaps: np.ndarray | None = None) -> np.ndarray:
         p = self.p
         e = np.concatenate([counts[:, :1154] @ p["embed.deck.weight"].T, counts[:, 1154:1450] @ p["embed.relics.weight"].T,
                             counts[:, 1450:] @ p["embed.potions.weight"].T], axis=1)
@@ -1914,6 +2087,10 @@ class NumpyPrior:
             from human_prior_infer import map_tower  # noqa: PLC0415
 
             parts.append(map_tower(p, grid))
+        if self.state_gaps:
+            if gaps is None:
+                raise ValueError("this prior reads the state gaps: it needs the rows' block G")
+            parts.append(np.asarray(gaps, dtype=np.float32))
         pre = np.concatenate(parts, axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"]
         if extra is not None and self.extra_inputs:
             for spec in self.extra_inputs:
@@ -1934,6 +2111,8 @@ def export_net(net, path: Path, meta: dict) -> None:
     arrays = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in net.state_dict().items()}
     if "map.conv1.weight" in arrays:
         meta = dict(meta, map_grid=True)  # the weights carry the map tower (`human_prior_infer.MAP_KEYS`); the first layer reads 518 numbers
+    if getattr(net, "uses_gaps", False):  # the first layer's last `features.GAPS_SIZE` columns read block G (no array of its own)
+        meta = dict(meta, state_gaps=True, gaps_version=stack().F.GAPS_VERSION)
     if "won_w" in arrays:
         w = arrays.pop("won_w")
         arrays["hidden1.bias"] = (arrays["hidden1.bias"] + w * np.float32(WON_INPUT["folded_at"])).astype(np.float32)
@@ -1962,7 +2141,11 @@ class Gpu:
         self.dense = torch.from_numpy(ds.dense).to(dev)
         self.counts = torch.from_numpy(ds.counts).to(dev)
         self.grid = self.grid_ix = None
+        self.gaps = self.gaps_ix = None
         self.flip_p = 0.0
+        if ds.has_gaps:  # v3: the distinct block G vectors and each row's entry
+            self.gaps = torch.from_numpy(ds.gaps).to(dev)
+            self.gaps_ix = torch.from_numpy(ds.gaps_ix.astype(np.int64)).to(dev)
         if ds.has_grid:  # v2: the distinct grids (int8) and each row's entry
             self.grid = torch.from_numpy(ds.grid).to(dev)
             self.grid_ix = torch.from_numpy(ds.grid_ix.astype(np.int64)).to(dev)
@@ -2030,6 +2213,10 @@ class Gpu:
                 mirrored = t.rand(len(didx), device=self.dev) < self.flip_p
                 g = t.where(mirrored[owner][:, None], mirror_grid(g), g)
             kw["grid"] = g
+        if getattr(net, "uses_gaps", False):
+            if self.gaps is None:
+                raise ValueError("this net reads the state gaps and the dataset has none (v3 shards)")
+            kw["gaps"] = self.gaps[self.gaps_ix[rows]]
         if getattr(net, "uses_win", False):
             flag = self.won[didx][owner] if win is None else t.full((len(rows),), float(win), device=self.dev)
             z = net(x, cnt, flag, **kw)
@@ -2080,15 +2267,16 @@ class Gpu:
 
 
 def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Namespace, kinds: list[str], judge: Path, win: bool = False,
-            map_grid: bool = False) -> dict:
+            map_grid: bool = False, state_gaps: bool = False) -> dict:
     """One variant: train with early stopping on the validation fifth. Returns its state, history and best metrics. `win` gives the net
-    the won input (validated with each decision's own run outcome as the input); `map_grid` the map tower (the datasets must hold block M)."""
+    the won input (validated with each decision's own run outcome as the input); `map_grid` the map tower (the datasets must hold block M);
+    `state_gaps` block G's columns (the datasets must hold block G)."""
     import torch  # noqa: PLC0415
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
-    net = make_net(win=win, map_grid=map_grid, map_dropout=float(getattr(a, "map_dropout", 0.0))).to(dev)
+    net = make_net(win=win, map_grid=map_grid, map_dropout=float(getattr(a, "map_dropout", 0.0)), state_gaps=state_gaps).to(dev)
     gt.flip_p = float(getattr(a, "map_flip", 0.0))  # training-time mirror augmentation of the map grids (validation never flips)
     if init == "gen11":
         init_from_judge(net, judge)
@@ -2129,7 +2317,7 @@ def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Names
                         "val_card_top1": m["card"]["top1"], "val_rest_kind_top1": m.get("rest_kind", {}).get("top1"),
                         "val_ancient_top1": m.get("ancient", {}).get("top1"), "val_route_top1": m.get("route", {}).get("top1"),
                         "val_shop_nll": m.get("shop", {}).get("nll"), "seconds": round(time.time() - t0, 1)})
-        print(f"  [{init} x{winner_weight:g}{' win' if win else ''}{' map' if map_grid else ''}] epoch {epoch + 1}: train {total / max(nb, 1):.4f} val score {sc:.4f} "
+        print(f"  [{init} x{winner_weight:g}{' win' if win else ''}{' map' if map_grid else ''}{' gaps' if state_gaps else ''}] epoch {epoch + 1}: train {total / max(nb, 1):.4f} val score {sc:.4f} "
               f"card top1 {m['card']['top1']:.4f} route top1 {m.get('route', {}).get('top1', float('nan')):.4f} ({time.time() - t0:.0f} s)", flush=True)
         if best is None or sc < best["score"] - 1e-4:
             best = {"score": sc, "epoch": epoch + 1, "metrics": m}
@@ -2140,7 +2328,7 @@ def fit_one(gt: Gpu, gv: Gpu, init: str, winner_weight: float, a: argparse.Names
             if since >= a.patience:
                 break
     net.load_state_dict(best_state)
-    return {"net": net, "init": init, "winner_weight": winner_weight, "win": win, "map_grid": map_grid, "best": best, "history": history,
+    return {"net": net, "init": init, "winner_weight": winner_weight, "win": win, "map_grid": map_grid, "state_gaps": state_gaps, "best": best, "history": history,
             "epochs_run": len(history), "seconds": round(time.time() - t0, 1)}
 
 
@@ -2156,7 +2344,7 @@ def cmd_fit(a: argparse.Namespace) -> int:
 
     t0 = time.time()
     out_root = Path(a.out_dir)
-    dec_dir = out_root / (a.decisions or ("decisions-v2" if a.map_grid else "decisions"))
+    dec_dir = out_root / (a.decisions or default_decisions(a))
     counts = read_counts_file(dec_dir)
     donors = load_donors(out_root / "donors.npz") if (out_root / "donors.npz").is_file() else None
     ds_tr = Dataset.load(dec_dir, TRAIN_FIFTHS, donors)
@@ -2165,6 +2353,8 @@ def cmd_fit(a: argparse.Namespace) -> int:
         raise SystemExit("human_prior fit: a v0 dataset needs donors.npz")
     if a.map_grid and not (ds_tr.has_grid and ds_va.has_grid):
         raise SystemExit(f"human_prior fit: --map-grid needs shards with block M ({dec_dir.name} has none): build --truth --map-grid")
+    if a.state_gaps and not (ds_tr.has_gaps and ds_va.has_gaps):
+        raise SystemExit(f"human_prior fit: --state-gaps needs shards with block G ({dec_dir.name} has none): build --truth --state-gaps")
     shops_ok = bool(a.with_shops or ds_tr.has_map or counts.get("shop_price_check", {}).get("verified") is True)
     kinds = ["card", "ancient", "rest"] + (["shop"] if shops_ok else []) + (["route"] if len(ds_tr.kind_idx["route"]) else [])
     print(f"human_prior fit: {dec_dir.name}, {'true' if ds_tr.has_map else 'donor'} maps, kinds {kinds}", flush=True)
@@ -2180,7 +2370,7 @@ def cmd_fit(a: argparse.Namespace) -> int:
     results = []
     for init in a.variants.split(","):
         for ww in [float(x) for x in a.winner_weights.split(",")]:
-            results.append(fit_one(gt, gv, init, ww, a, kinds, Path(a.judge), win=bool(a.win_input), map_grid=bool(a.map_grid)))
+            results.append(fit_one(gt, gv, init, ww, a, kinds, Path(a.judge), win=bool(a.win_input), map_grid=bool(a.map_grid), state_gaps=bool(a.state_gaps)))
     best = min(results, key=lambda r: r["best"]["score"])
     out = out_root / a.name
     out.mkdir(parents=True, exist_ok=True)
@@ -2190,12 +2380,12 @@ def cmd_fit(a: argparse.Namespace) -> int:
         base_meta["map_grid"] = True
     variants = []
     for r in results:
-        name = f"{r['init']}-w{r['winner_weight']:g}" + ("-win" if r["win"] else "") + ("-map" if r["map_grid"] else "")
+        name = f"{r['init']}-w{r['winner_weight']:g}" + ("-win" if r["win"] else "") + ("-map" if r["map_grid"] else "") + ("-gaps" if r["state_gaps"] else "")
         export_net(r["net"], out / f"weights-{name}.npz", dict(base_meta, variant=name))
         variants.append({"name": name, "init": r["init"], "winner_weight": r["winner_weight"], "win_input": r["win"], "best_epoch": r["best"]["epoch"],
                          "epochs_run": r["epochs_run"], "val_score": r["best"]["score"], "val_metrics": r["best"]["metrics"],
                          "history": r["history"], "seconds": r["seconds"]})
-    chosen = f"{best['init']}-w{best['winner_weight']:g}" + ("-win" if best["win"] else "") + ("-map" if best["map_grid"] else "")
+    chosen = f"{best['init']}-w{best['winner_weight']:g}" + ("-win" if best["win"] else "") + ("-map" if best["map_grid"] else "") + ("-gaps" if best["state_gaps"] else "")
     export_net(best["net"], out / "weights.npz", dict(base_meta, variant=chosen, judge=str(a.judge), inputs="judge dense 350 + counts 1513; one logit per option"))
     valid_tr = ~_bool_unavailable(ds_tr, shops_ok, True, verified_only)
     valid_va = ~_bool_unavailable(ds_va, shops_ok, True, verified_only)
@@ -2204,7 +2394,8 @@ def cmd_fit(a: argparse.Namespace) -> int:
     mismatch = int(((ds_tr.dec[:, C["flags"]] & F_REPLAY_MISMATCH) != 0).sum())
     fit_doc = {"written_by": "rl/human_prior.py fit (aggregates only)", "source": SPIRE_CODEX, "decisions_folder": dec_dir.name, "chosen_variant": chosen,
                "chosen_reason": "lowest validation score (sum of the mean NLL of the kinds fitted) on fifth 4", "map": base_meta["map"],
-               "win_input": bool(a.win_input), "map_grid": bool(a.map_grid), "map_dropout": float(a.map_dropout), "map_flip": float(a.map_flip),
+               "win_input": bool(a.win_input), "map_grid": bool(a.map_grid), "state_gaps": bool(a.state_gaps), "map_dropout": float(a.map_dropout),
+               "map_flip": float(a.map_flip),
                "kinds_fitted": kinds, "shops_in_fit": shops_ok,
                "shops_in_fit_rule": "verified rows only" if (shops_ok and verified_only) else ("all rows" if shops_ok else "none"),
                "train_fifths": list(TRAIN_FIFTHS), "validation_fifth": VAL_FIFTH,
@@ -2291,7 +2482,7 @@ def cmd_agreement(a: argparse.Namespace) -> int:
     import human_starts as hs  # noqa: PLC0415
 
     out_root = Path(a.out_dir)
-    dec_dir = out_root / (a.decisions or ("decisions-v2" if a.map_grid else "decisions"))
+    dec_dir = out_root / (a.decisions or default_decisions(a))
     donors = load_donors(out_root / "donors.npz") if (out_root / "donors.npz").is_file() else None
     counts = read_counts_file(dec_dir)
     ds = Dataset.load(dec_dir, [VAL_FIFTH], donors)
@@ -2375,6 +2566,8 @@ def main(argv: list[str] | None = None) -> int:
                    "route decisions and the replay's shop prices replace the donors")
     b.add_argument("--decisions", default="", help="the shard folder under --out-dir (default decisions, or decisions-v1 with --truth, decisions-v2 with --map-grid)")
     b.add_argument("--map-grid", action="store_true", help="v2: also write block M (the whole act map) of every row, as `grid` and `grid_ix` beside the row, in decisions-v2; needs --truth")
+    b.add_argument("--state-gaps", action="store_true", help="v3: also write block G (the \"?\" rooms' state and the removals bought, derived from the record's route and purges; the relic "
+                   "counters are unknown on a human row) of every row, as `gaps` and `gaps_ix`, in decisions-v3 (with --map-grid also block M); needs --truth")
     f = sub.add_parser("fit")
     f.add_argument("--out-dir", default=str(OUT_DIR))
     f.add_argument("--judge", default=str(GEN11))
@@ -2391,6 +2584,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--map-grid", action="store_true", help="v2: give the net the map tower over block M (reads decisions-v2 unless --decisions says otherwise)")
     f.add_argument("--map-dropout", type=float, default=0.0, help="with --map-grid: dropout on the tower's 64 outputs in training")
     f.add_argument("--map-flip", type=float, default=0.0, help="with --map-grid: the chance a training decision's maps are mirrored left to right")
+    f.add_argument("--state-gaps", action="store_true", help="v3: give the net block G's columns (relic counters, the \"?\" rooms, removals, known bits); reads decisions-v3 unless --decisions says otherwise")
     g = sub.add_parser("agreement")
     g.add_argument("--model", default="", help="a fitted prior folder (weights.npz) or file; optional when --baseline is given")
     g.add_argument("--out-dir", default=str(OUT_DIR))
@@ -2400,6 +2594,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--with-shops", action="store_true", help="score the shop rows whose prices are not verified too")
     g.add_argument("--no-train-baseline", action="store_true", help="skip the type-frequency route baseline (it reads the training fifths)")
     g.add_argument("--map-grid", action="store_true", help="read decisions-v2 (block M in every row) unless --decisions says otherwise: a prior with the map tower needs it")
+    g.add_argument("--state-gaps", action="store_true", help="read decisions-v3 (block G in every row) unless --decisions says otherwise: a prior with the state gaps needs it")
     a = ap.parse_args(argv)
     if a.cmd == "donors":
         return cmd_donors(a)
