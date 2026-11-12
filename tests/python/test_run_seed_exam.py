@@ -337,6 +337,46 @@ class AggregateTests(Base):
         self.assertEqual(text.strip(), buf.getvalue().strip())
 
 
+class WeightedTests(Base):
+    def block(self, win, floor, reach1, kill1, reach2=None, kill2=None, runs=40):
+        acts = {"1": {"reached_share": reach1, "kill_rate": kill1}, "2": None if reach2 is None else {"reached_share": reach2, "kill_rate": kill2}}
+        return {"runs": runs, "win_rate": win, "floor": {"mean": floor}, "acts": acts}
+
+    def test_the_splits_are_mixed_at_the_fifths_own_share_and_kill_rates_are_ratios_of_mixed_shares(self):
+        won = self.block(1.0, 50.0, 1.0, 1.0, 1.0, 1.0)
+        lost = self.block(0.0, 20.0, 0.5, 0.4, 0.25, 0.2)
+        m = rse.weighted_cells(won, lost, 0.1)
+        self.assertAlmostEqual(0.1, m["win"])
+        self.assertAlmostEqual(0.1 * 50 + 0.9 * 20, m["floor"])
+        self.assertAlmostEqual(0.1 * 1.0 + 0.9 * 0.5, m["reach1"])
+        self.assertAlmostEqual((0.1 * 1.0 * 1.0 + 0.9 * 0.5 * 0.4) / (0.1 + 0.9 * 0.5), m["kill1"])
+        self.assertAlmostEqual((0.1 * 1.0 + 0.9 * 0.25 * 0.2) / (0.1 + 0.9 * 0.25), m["kill2"])
+
+    def test_a_hidden_split_or_act_cell_hides_the_mix(self):
+        won = self.block(1.0, 50.0, 1.0, 1.0, 1.0, 1.0)
+        self.assertIsNone(rse.weighted_cells(won, self.block(0, 0, 0, 0, runs=None), 0.1))
+        m = rse.weighted_cells(won, self.block(0.0, 20.0, 0.5, 0.4), 0.1)  # nobody lost reached Act 2: that act's cells are hidden, the rest shown
+        self.assertIsNone(m["reach2"])
+        self.assertIsNone(m["kill2"])
+        self.assertAlmostEqual(0.1 * 50 + 0.9 * 20, m["floor"])
+
+    def test_the_share_is_the_fifths_usable_won_over_all(self):
+        self.assertAlmostEqual(323 / 2901, rse.won_share({"available_won": 323, "available_lost": 2578}))
+        self.assertIsNone(rse.won_share({}))
+        self.assertIsNone(rse.won_share(None))
+
+    def test_the_table_carries_the_weighted_block_and_it_matches_the_splits(self):
+        fx = Fixture(self.tmp, n_won=30, n_lost=90)  # a fifth that is a quarter won
+        play(fx, self.tmp / "o", "--seeds", "80", "--draws", "1")
+        doc = json.loads((self.tmp / "o" / "summary.json").read_text(encoding="utf-8"))
+        self.assertAlmostEqual(0.25, rse.won_share(doc["picked"]))
+        text = (self.tmp / "o" / "table.md").read_text(encoding="utf-8")
+        self.assertIn("Weighted to the fifth's own mix (25.0 in 100", text)
+        want = 0.25 * doc["human"]["won"]["floor"]["mean"] + 0.75 * doc["human"]["lost"]["floor"]["mean"]
+        self.assertAlmostEqual(want, rse.weighted_cells(doc["human"]["won"], doc["human"]["lost"], 0.25)["floor"])
+        self.assertIn("| mean floor reached |", text)
+
+
 class HiddenCellTests(Base):
     def test_a_cell_under_twenty_runs_is_hidden_in_the_table_and_the_files(self):
         fx = Fixture(self.tmp)

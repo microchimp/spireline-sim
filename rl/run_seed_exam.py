@@ -349,6 +349,32 @@ def _col(block: Mapping[str, Any] | None) -> dict[str, str]:
     return cell
 
 
+def weighted_cells(won: Mapping[str, Any] | None, lost: Mapping[str, Any] | None, w: float) -> dict[str, Any] | None:
+    """The figures of the two splits mixed at weight `w` on the seeds the human won (the fifth's own share of won runs, which the 200 + 200 pick is not):
+    win rate, mean floor, and per act the boss reached share and the kill rate of those reaching it (a ratio of the mixed killed and reached shares).
+    None when either split is hidden; an act's cells are None when either split's act cell is."""
+    a, b = won or {}, lost or {}
+    if a.get("runs") is None or b.get("runs") is None:
+        return None
+    out: dict[str, Any] = {"win": w * a["win_rate"] + (1 - w) * b["win_rate"], "floor": w * a["floor"]["mean"] + (1 - w) * b["floor"]["mean"]}
+    for act in ACTS:
+        aw, al = (a.get("acts") or {}).get(str(act)), (b.get("acts") or {}).get(str(act))
+        if aw is None or al is None:
+            out[f"reach{act}"] = out[f"kill{act}"] = None
+            continue
+        reach = w * aw["reached_share"] + (1 - w) * al["reached_share"]
+        out[f"reach{act}"] = reach
+        out[f"kill{act}"] = (w * aw["reached_share"] * aw["kill_rate"] + (1 - w) * al["reached_share"] * al["kill_rate"]) / reach if reach else None
+    return out
+
+
+def won_share(picked: Mapping[str, Any] | None) -> float | None:
+    """The share of the fifth's usable runs the human won (the picks' `available` counts); None without them."""
+    p = picked or {}
+    n = (p.get("available_won") or 0) + (p.get("available_lost") or 0)
+    return p["available_won"] / n if n else None
+
+
 def table_text(doc: Mapping[str, Any]) -> str:
     """The exam's table from `summary.json`-shaped `doc`: the player and the humans on the same seeds (all, seeds the human won, seeds the human lost),
     the copy on its own seeds, then the paired figures. A cell under 20 runs shows '-'."""
@@ -370,6 +396,15 @@ def table_text(doc: Mapping[str, Any]) -> str:
     lines += ["", "Ours: runs that ran to their end; brackets are 95% intervals over seeds (two draws of a seed are not independent). The humans' columns are the "
               "records of the same seeds, so by construction their win rate is 100 in 100 on the seeds the human won and 0 on the ones it lost; the "
               "'all' columns are half and half. The copy's own seeds are the lab's judgement blocks of the same agent (no HP at the door there)."]
+    w = won_share(doc.get("picked"))
+    if w is not None:
+        wo, wh = weighted_cells(ours.get("won"), ours.get("lost"), w), weighted_cells(hum.get("won"), hum.get("lost"), w)
+        lines += ["", f"Weighted to the fifth's own mix ({100 * w:.1f} in 100 of its usable runs were won by the human; the pick is half and half), "
+                      "the two splits of each side mixed at that share:", "", "| figure | our player | humans |", "|---|---|---|"]
+        for name, k, fmt in (("win rate", "win", _p), ("mean floor reached", "floor", _f), ("Act 1 boss reached (of runs)", "reach1", _p),
+                             ("Act 1 boss killed (of those reaching it)", "kill1", _p), ("Act 2 boss reached (of runs)", "reach2", _p),
+                             ("Act 2 boss killed (of those reaching it)", "kill2", _p)):
+            lines.append(f"| {name} | {fmt((wo or {}).get(k))} | {fmt((wh or {}).get(k))} |")
     paired = doc.get("paired") or {}
     if paired:
         lines += ["", "On the same seed (our draws against the human's run, aggregates):", "",
