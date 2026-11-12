@@ -292,6 +292,17 @@ _STATE: dict[str, Any] = {
             },
             "additionalProperties": False,
         },
+        # block G's source (features.StateGaps), only the parts the view knows: the held relics' (id, counter) pairs, the "?" rooms'
+        # (visited, fight, treasure, shop odds in thousandths) and the merchant's (removals bought, owed)
+        "gaps": {
+            "type": "object",
+            "properties": {
+                "counters": {"type": "array", "items": {"type": "array", "items": _INT, "minItems": 2, "maxItems": 2}},
+                "rooms": {"type": "array", "items": _INT, "minItems": 4, "maxItems": 4},
+                "removals": {"type": "array", "items": _INT, "minItems": 2, "maxItems": 2},
+            },
+            "additionalProperties": False,
+        },
     },
     "additionalProperties": False,
 }

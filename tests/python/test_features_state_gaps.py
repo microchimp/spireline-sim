@@ -221,6 +221,12 @@ class BlockTests(unittest.TestCase):
         back = shards.view_from_json(state, maps)
         self.assertEqual(back.gaps, view.gaps)
         self.assertEqual(back, view)
+        import jsonschema  # noqa: PLC0415
+
+        validator = jsonschema.Draft202012Validator(shards._STATE)  # noqa: SLF001 -- the record's schema for a state
+        validator.validate(state)  # the run record's schema allows the part it now holds
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate({**state, "gaps": {"rooms": [1, 2, 3]}})  # ... and holds it to its shape
         partial = make_view(gaps=StateGaps(rooms=(0, 100, 20, 30)))
         self.assertEqual(shards.view_from_json(shards.view_to_json(partial, 0), [shards.map_to_json(partial)]).gaps, partial.gaps)
         plain = make_view()
