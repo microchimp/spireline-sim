@@ -386,6 +386,91 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual([(0, 0.7, 1), (0, 0.2, 0)], rt.label_door_pairs([label, {"refused": "x", "act": 0, "continuations": [{}]}]))
 
 
+class CalibrationPerJudgeTests(unittest.TestCase):
+    """The door's recalibration is fitted on pairs recorded under the judge the job runs with, never on another judge's (D58 addendum 24):
+    a map fitted on v0's P(death) is not v2b's. A row with no `judge_sha256` is v0's (every row written before the field existed)."""
+
+    V2B = "62bc" + "0" * 60
+    OTHER = "ffff" + "0" * 60
+
+    @staticmethod
+    def run_rows(pairs, judge=None, job="J"):
+        """One store row per (act, p, died); `judge` None writes no field at all (the rows of before)."""
+        rows = []
+        for i, (act, p, died) in enumerate(pairs):
+            row = {"job": job, "seed": f"S{i}", "bosses": [{"act": act, "floor": 17 + 16 * act, "hp": 50, "max_hp": 80, "p_death": p, "won": not died}]}
+            if judge is not None:
+                row["judge_sha256"] = judge
+            rows.append(row)
+        return rows
+
+    def test_the_pairs_of_one_judge_ignore_the_pairs_of_another(self):
+        v0 = CalibrationTests.doors(300, a=-1.5, b=0.4, act=0, seed=3)  # v0's door risk is far too high
+        new = CalibrationTests.doors(80, a=0.0, b=1.0, act=0, seed=4)  # v2b's is right
+        rows = self.run_rows(v0) + self.run_rows(new, judge=self.V2B) + self.run_rows(CalibrationTests.doors(70, a=2.0, b=1.0, act=0, seed=6), judge=self.OTHER)
+        under_new = rt.door_pairs(rows, judge_sha256=self.V2B)
+        self.assertEqual(80, len(under_new))
+        self.assertEqual(new, under_new)
+        self.assertEqual(300, len(rt.door_pairs(rows, judge_sha256=rt.V0_JUDGE_SHA256)))  # the rows without the field are v0's
+        self.assertEqual(450, len(rt.door_pairs(rows)))  # no judge named: every pair (the reader of old)
+        cal_new = rt.fit_door_calibration(under_new)
+        self.assertEqual(rt.fit_door_calibration(new), cal_new)  # the same fit as on its own pairs alone
+        self.assertAlmostEqual(cal_new[0]["a"], 0.0, delta=0.5)  # not pulled towards v0's a of -1.5
+        cal_v0 = rt.fit_door_calibration(rt.door_pairs(rows, judge_sha256=rt.V0_JUDGE_SHA256))
+        self.assertLess(cal_v0[0]["a"], -0.8)
+
+    def test_a_judge_with_too_few_doors_of_an_act_starts_from_the_ridge_alone(self):
+        rows = self.run_rows(CalibrationTests.doors(500, a=-2.0, b=0.3, act=1, seed=7)) + self.run_rows(
+            CalibrationTests.doors(rt.CAL_MIN_DOORS - 1, a=-2.0, b=0.3, act=1, seed=8), judge=self.V2B)
+        self.assertEqual({}, rt.fit_door_calibration(rt.door_pairs(rows, judge_sha256=self.V2B)))  # 59 doors under v2b: the judge's own number
+        self.assertEqual([1], list(rt.fit_door_calibration(rt.door_pairs(rows, judge_sha256=rt.V0_JUDGE_SHA256))))
+        self.assertEqual(0.4, rt.recalibrate(0.4, 1, rt.calibration_map({})))
+
+    def test_doors_are_counted_by_act_and_by_judge(self):
+        rows = self.run_rows([(0, 0.3, 0)] * 5 + [(1, 0.6, 1)] * 3) + self.run_rows([(0, 0.2, 0)] * 2, judge=self.V2B) + self.run_rows([(1, 0.5, 0)], judge=self.OTHER)
+        self.assertEqual({"used": {0: 2}, "other_judges": 9}, rt.door_counts(rows, self.V2B))
+        self.assertEqual({"used": {0: 5, 1: 3}, "other_judges": 3}, rt.door_counts(rows, rt.V0_JUDGE_SHA256))
+
+    def test_stored_labels_seed_the_pairs_only_under_the_judge_that_made_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(rt.labels_judge_sha256(Path(tmp)))  # no manifest
+            (Path(tmp) / "manifest.json").write_text(json.dumps({"policy": {"judge": {"file": "judge.pt", "sha256": self.V2B}}}), encoding="utf-8")
+            self.assertEqual(self.V2B, rt.labels_judge_sha256(Path(tmp)))
+            (Path(tmp) / "manifest.json").write_text(json.dumps({"policy": {"judge": None}}), encoding="utf-8")
+            self.assertIsNone(rt.labels_judge_sha256(Path(tmp)))
+
+    def test_the_job_fits_on_its_own_judges_pairs_and_says_how_many_doors_it_used(self):
+        agent = SimpleNamespace(generation=13, search_config=lambda name: SimpleNamespace(sims=4, c=0.1, name="x"), describe=lambda: {"generation": 13},
+                                recipe=lambda: "r", macro_npz=None, human_prior=None)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            judge = tmp / "judge-new.pt"
+            judge.write_bytes(b"a judge of the new kind")
+            new_sha = rt.file_digest(judge)
+            store = tmp / "store"
+            gen_dir = store / "13"
+            gen_dir.mkdir(parents=True)
+            rows = (self.run_rows(CalibrationTests.doors(300, a=-1.5, b=0.4, act=0, seed=3)) + self.run_rows(CalibrationTests.doors(80, a=0.0, b=1.0, act=0, seed=4), judge=new_sha)
+                    + self.run_rows(CalibrationTests.doors(20, a=0.0, b=1.0, act=1, seed=5), judge=new_sha))
+            for i, r in enumerate(rows):
+                r.update({"seed": f"S{i}", "_task": ["rt-new", f"S{i}", 1], "arm": "teacher", "source": "new", "ix": 1, "end": "death", "floor": 17, "decisions": 1,
+                          "cpu": 1.0, "wall": 1.0, "teacher_cpu": 0.5, "teacher_screens": 0, "screens": {}})
+            (gen_dir / "runs.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in rows), encoding="utf-8")
+            a = rt.build_parser().parse_args(["job", "--source", "new", "--max-runs", "0", "--judge", str(judge), "--lib", str(tmp / "nolib")])
+            with mock.patch("gen_loop.load_agent", return_value=agent), mock.patch.object(rt, "agent_identity", return_value={"agent": "gen13/x", "agent_sha256": "0" * 64}), \
+                    mock.patch.object(rt, "_git_head", return_value="abc"):
+                res = rt.job_block(a, {"core_hours_per_day": 24.0}, hold_fn=lambda starting: None, store=store, generation=13, agent_dir="D:/nowhere/gen13/x", name="J2")
+            doc = json.loads((gen_dir / "calibration.json").read_text(encoding="utf-8"))
+            self.assertEqual(new_sha, doc["judge_sha256"])
+            self.assertEqual(100, doc["doors"])  # the 300 of the other judge are not here
+            self.assertEqual(300, doc["doors_other_judges"])
+            self.assertEqual(["0"], list(doc["acts"]))  # Act 1 has 80 doors under this judge, Act 2 only 20: its judge's own number
+            self.assertAlmostEqual(doc["acts"]["0"]["a"], 0.0, delta=0.5)
+            self.assertEqual({"0": 80, "1": 20}, {str(k): v for k, v in res["recal"]["doors_by_act"].items()})
+            self.assertEqual(300, res["recal"]["doors_other_judges"])
+            self.assertEqual(new_sha, res["recal"]["judge_sha256"])
+
+
 def fake_decision(kinds=("card.take", "card.take", "card.skip"), typ="card_reward"):
     return SimpleNamespace(type=typ, view=None, options=[SimpleNamespace(kind=k, scorable=False, i=i) for i, k in enumerate(kinds)])
 
@@ -1437,6 +1522,14 @@ class NativeJobTests(unittest.TestCase):
         self.assertEqual(0, again["counts"]["decisions"])  # a finished run is in one shard only
         self.assertEqual([], again["seeds"])
         self.assertEqual(doc["counts"]["decisions"], rt.store_manifest(self.tmp, ctx)["totals"]["decisions"])
+
+    def test_a_runs_row_names_the_judge_its_doors_came_from(self):
+        rt._J["judge_sha256"] = "ab" * 32
+        row = self.play("RTJOB0012", kinds=())
+        self.assertEqual("ab" * 32, row["judge_sha256"])  # the recalibration reads only the rows of its own judge
+        self.assertTrue(all(b["p_death"] == 0.5 for b in row["bosses"]))
+        self.assertEqual(0, len(rt.door_pairs([row], judge_sha256="cd" * 32)))
+        self.assertEqual(len(row["bosses"]), len(rt.door_pairs([row], judge_sha256="ab" * 32)))
 
     def test_the_stop_floor_ends_a_smoke_run_without_a_record(self):
         rt._J["stop_floor"] = 4

@@ -103,6 +103,8 @@ MAIN_LOCK = REF / "backlog" / "main.lock"
 ACTIVE = REF / "LAB" / "nightly" / "active"
 DEFAULT_AGENT = "D:/spireline/referee/agent/gen13/candidate-stakes"
 DEFAULT_JUDGE = "D:/spireline/referee/agent/judge/v0/judge.pt"
+# The sha256 of `agent/judge/v0/judge.pt`, the judge every store row was written under before a row named its judge: a row with no `judge_sha256` is v0's.
+V0_JUDGE_SHA256 = "b5ecf90386c894a9d6e4f56632104757fbef19e8d24e01a32fd72ae3ff79ffc0"
 DEFAULT_SEEDS_FROM = "D:/spireline/referee/agent/gen13/candidate-stakes/arms/E14-2026-11-08-a3-v1/runs.jsonl"
 NEG = -1e9  # the value of an option the teacher did not play (never taken)
 # The guard on what the teacher plays (`guarded`): it takes its own pick over the player's only when the measured gain exceeds Z standard
@@ -263,17 +265,42 @@ def calibration_map(doc: dict[Any, dict[str, Any]] | None) -> dict[int, tuple[fl
     return {int(a): (float(v["a"]), float(v["b"])) for a, v in (doc or {}).items() if isinstance(v, dict) and "a" in v and "b" in v}
 
 
-def door_pairs(runs: Iterable[dict]) -> list[tuple[int, float, int]]:
+def row_judge_sha256(row: dict) -> str | None:
+    """The judge a store row's P(death) at the door came from: the row's own `judge_sha256` (written by every job since D58 addendum 24), and for a row
+    with no such field v0's, the only judge the store had been written under before. A job with no judge writes the field as None."""
+    return row["judge_sha256"] if "judge_sha256" in row else V0_JUDGE_SHA256
+
+
+def door_pairs(runs: Iterable[dict], judge_sha256: str | None = None) -> list[tuple[int, float, int]]:
     """The player's own door outcomes of a store's run rows: for each boss the run reached, (act, the judge's P(death) at the door,
-    1 if the run lost that fight)."""
+    1 if the run lost that fight). With `judge_sha256` only the rows written under that judge count (`row_judge_sha256`): a P(death) is that judge's own
+    number, so a recalibration of one judge's must not be fitted on another's pairs. Without it, every row (the reader of before)."""
     out = []
     for r in runs:
         if r.get("capped"):
+            continue
+        if judge_sha256 is not None and row_judge_sha256(r) != judge_sha256:
             continue
         for b in r.get("bosses") or []:
             if b.get("p_death") is not None and "won" in b:
                 out.append((int(b["act"]), float(b["p_death"]), 0 if b["won"] else 1))
     return out
+
+
+def door_counts(runs: Iterable[dict], judge_sha256: str | None) -> dict[str, Any]:
+    """How many doors of each act a recalibration under `judge_sha256` uses (`used`, by act) and how many doors of the store were recorded under another
+    judge and so are left out (`other_judges`), for the job's start line and result."""
+    rows = list(runs)
+    used = Counter(a for a, _, _ in door_pairs(rows, judge_sha256))
+    return {"used": dict(sorted(used.items())), "other_judges": len(door_pairs(rows)) - sum(used.values())}
+
+
+def labels_judge_sha256(out: Path | str) -> str | None:
+    """The sha256 of the judge a hindsight labels folder recorded its door estimates with (its manifest's `policy.judge.sha256`); None for a folder with no
+    manifest or no judge. The labels seed a recalibration only under the judge that made them."""
+    doc = read_json_file(Path(out) / "manifest.json")
+    judge = (((doc or {}).get("policy") or {}).get("judge")) if isinstance(doc, dict) else None
+    return judge.get("sha256") if isinstance(judge, dict) else None
 
 
 def label_door_pairs(labels: Iterable[dict]) -> list[tuple[int, float, int]]:
@@ -1484,7 +1511,8 @@ def new_run(task: tuple) -> dict:
     cfg = player.agent.search_config("a3-v1")
     rec = gen_loop.RunRecorder(seed, player.agent.generation, policy.describe(), cfg.sims, cfg.c, hindsight.ASCENSION)
     s = hindsight.session_for(seed, player.agent, "a3-v1", own_schedule=True)
-    row: dict[str, Any] = {"_task": list(task[:3]), "arm": "teacher", "source": "new", "job": _J["job"], "seed": seed, "ix": int(ix), "end": "?",
+    row: dict[str, Any] = {"_task": list(task[:3]), "arm": "teacher", "source": "new", "job": _J["job"], "judge_sha256": _J.get("judge_sha256"),
+                           "seed": seed, "ix": int(ix), "end": "?",
                            "floor": 0, "decisions": 0, "screens": Counter(), "teacher_screens": 0, "changed": 0, "teacher_cpu": 0.0, "bosses": [],
                            "k_extended": 0}
     counters = {"reused": 0, "reused_cpu": 0.0}
@@ -1690,13 +1718,26 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
     res: dict[str, Any] = {"job": name, "generation": generation, "started_utc": utc().strftime("%Y-%m-%dT%H:%M:%SZ"), "runs": 0, "decisions": 0}
     jobs.append_ledger(ledger, {"ev": "job_start", "job": name})
     try:
-        # the door's recalibration on the player's own door outcomes so far
-        pairs = door_pairs(done_rows(gen_dir))
-        if a.labels_calibration and Path(a.labels_calibration).is_dir():
-            pairs += label_door_pairs(hindsight.read_labels(Path(a.labels_calibration)))
+        # the door's recalibration on the player's own door outcomes so far, recorded under the judge this job runs with and no other (a map fitted on
+        # one judge's P(death) is not another's: an act with fewer than CAL_MIN_DOORS doors under this judge keeps the judge's own number)
+        judge_sha = file_digest(a.judge)
+        rows_done = done_rows(gen_dir)
+        pairs = door_pairs(rows_done, judge_sha) if judge_sha else []
+        counts = door_counts(rows_done, judge_sha) if judge_sha else {"used": {}, "other_judges": len(door_pairs(rows_done))}
+        if judge_sha and a.labels_calibration and Path(a.labels_calibration).is_dir():
+            if labels_judge_sha256(a.labels_calibration) == judge_sha:
+                pairs += label_door_pairs(hindsight.read_labels(Path(a.labels_calibration)))
+            else:
+                print("run-teacher job: --labels-calibration labels were made under another judge: not used", flush=True)
         cal_doc = fit_door_calibration(pairs)
         write_json(gen_dir / "calibration.json", {"version": VERSION, "fit_utc": res["started_utc"], "min_doors": CAL_MIN_DOORS, "ridge": CAL_RIDGE,
-                                                  "doors": len(pairs), "acts": {str(k): v for k, v in cal_doc.items()}})
+                                                  "judge": "/".join(Path(a.judge).parts[-2:]) if a.judge else None, "judge_sha256": judge_sha,
+                                                  "doors": len(pairs), "doors_other_judges": counts["other_judges"],
+                                                  "acts": {str(k): v for k, v in cal_doc.items()}})
+        res["recal"] = {"judge_sha256": judge_sha, "doors_by_act": counts["used"], "doors_other_judges": counts["other_judges"], "fitted_acts": sorted(cal_doc)}
+        print("run-teacher job: door recalibration under judge %s (%s): doors used by act %s, %d doors recorded under other judges left out, acts fitted %s (of at least %d doors)"
+              % ("/".join(Path(a.judge).parts[-2:]) if a.judge else "none", (judge_sha or "-")[:8], counts["used"] or "none", counts["other_judges"],
+                 sorted(cal_doc) or "none (the judge's own number)", CAL_MIN_DOORS), flush=True)
         done = {r["seed"] for r in done_rows(gen_dir)} | fault_seeds(gen_dir)
         mode = a.source
         stored_rows: list[dict] = []
@@ -1709,7 +1750,7 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
         if not tasks:
             res["idle"] = "no run to play" + (" (no stored run of this generation is left to replay)" if mode == "stored" else "")
         lib = str(a.lib or ROOT / "out")
-        worker_cfg = {"agent_dir": str(agent_dir), "replay_agent": str(a.replay_agent or agent_dir), "judge": a.judge, "lib": lib, "gen_dir": str(gen_dir),
+        worker_cfg = {"agent_dir": str(agent_dir), "replay_agent": str(a.replay_agent or agent_dir), "judge": a.judge, "judge_sha256": judge_sha, "lib": lib, "gen_dir": str(gen_dir),
                       "ledger": str(ledger), "job": name, "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal": cal_doc,
                       "deadline": t_start + a.block_min * 60.0, "budget_h": float(cfg.get("core_hours_per_day", 24.0)),
                       "stop_file": str(job_dir / "STOP"), "stop_floor": a.stop_floor, "label_rate": a.label_rate, "per_run": a.per_run,

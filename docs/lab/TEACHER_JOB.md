@@ -116,7 +116,8 @@ shards/<job>/               the decision shard: decisions.jsonl, rows.npz, rows_
 reencode.d/<seed>.npz       `reencode`'s per-run results (rows, grids and options built again), kept so a stopped reencode resumes;
                             <seed>.gaps.npz the same for block G (rows, gaps, options)
 jobs/<job>/                 job.json, shards/ (the RunRecords of the job's runs in the lab's own run-shard layout)
-calibration.json            the door's recalibration, refitted at every job start
+calibration.json            the door's recalibration, refitted at every job start on the pairs recorded under the judge the job runs with
+                            (`judge_sha256`, `doors` used, `doors_other_judges` left out, the fitted `acts`)
 manifest.json, report.json  the store's index and totals; the measurement's report over every decision in the store
 ```
 
@@ -204,7 +205,17 @@ many that is.
 outcome. At every job start the pairs of the store (act, judge's P, died) fit, per act, `P' = sigmoid(a + b logit P)` with a ridge of 20
 pseudo-observations towards the judge as it stands, and only from 60 doors of that act; the leaf `G = P' x boss floor + (1 - P') x B[act]`
 uses it from then on, and the shard's manifest says which map played. `--labels-calibration DIR` seeds the pairs from the hindsight
-labels' door outcomes for the first days. Plain player runs (`--kinds none`, about 20 to 40 CPU-s a run) are a cheap source of doors.
+labels' door outcomes for the first days, only when the labels' own manifest names the judge the job runs with. Plain player runs (`--kinds none`,
+about 20 to 40 CPU-s a run) are a cheap source of doors.
+
+**The recalibration is per judge** (D58 addendum 24). A P(death) is one judge's own number, so a map `(a, b)` fitted on v0's pairs says nothing about
+v2b's, and the fit reads only the pairs recorded under the judge the job runs with. Every run row now carries `judge_sha256`, the sha256 of the judge
+file that made its door numbers (`None` for a job with no judge); a row with no such field was written before the field existed and is v0's
+(`run_teacher.V0_JUDGE_SHA256`: every shard manifest of the store to that day names v0). A judge with fewer than 60 doors of an act in the store
+starts from the ridge alone, that is, keeps its own number at that act until it has them. A job's start line says what it used, for example
+`door recalibration under judge v2b/judge-board.pt (62bcaf0d): doors used by act none, 58 doors recorded under other judges left out`, and
+the block's `result.json` carries the same as `recal` (`judge_sha256`, `doors_by_act`, `doors_other_judges`, `fitted_acts`). Two files that read
+identically (v2b's `judge.pt` and `judge-board.pt`) are two judges here, by hash: their pairs are kept apart.
 
 ## Cost (the measurement's figures, and the first smoke's)
 
