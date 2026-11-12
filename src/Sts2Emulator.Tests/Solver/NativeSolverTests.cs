@@ -20,9 +20,9 @@ public unsafe class NativeSolverTests(ITestOutputHelper output)
     [Fact]
     public void TheApiVersionSaysTheSolverExportsAreThere()
     {
-        Assert.Equal(39, NativeExports.NATIVE_API_VERSION);
+        Assert.Equal(40, NativeExports.NATIVE_API_VERSION);
         var info = JsonNode.Parse(NativeSolverCalls.Info())!.AsObject();
-        Assert.Equal(39, (int)info["native_api_version"]!);
+        Assert.Equal(40, (int)info["native_api_version"]!);
         Assert.Equal(SolverService.Version, (string)info["solver_version"]!);
         Assert.Equal((int)Pruning.All, (int)info["prune_all"]!);
         Assert.Equal(6, info["prunings"]!.AsObject().Count);

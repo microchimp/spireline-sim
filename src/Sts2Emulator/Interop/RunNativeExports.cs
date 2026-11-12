@@ -47,7 +47,10 @@ public static class RunNativeExports
     // v32: Sts2Run_DebugSetPlayerEx, Sts2Run_DebugSetPlayer with two more lists: Mad Science's Tinker Time type and rider
     //      per card, and (relic id, counter) pairs. The lockstep's re-anchor passes the game's per-card and per-relic state
     //      (referee/lockstep.py, the driver's anchor_state). Sts2Run_DebugSetPlayer itself is unchanged.
-    public const int RUN_NATIVE_API_VERSION = 32;
+    // v33: an exception that escapes the engine's step no longer ends the process (docs/ENGINE_FAULTS.md): Sts2Run_Step
+    //      returns -2 (EngineFault.Code) with the exception's class, top engine frame and message in Sts2_GetLastError,
+    //      and the run refuses every later step with the same -2 until a reset (it is part way through the step).
+    public const int RUN_NATIVE_API_VERSION = 33;
     private static readonly RunEngine?[] _pool = new RunEngine?[256];
 
     public static int Sts2Run_NativeApiVersion() => RUN_NATIVE_API_VERSION;
@@ -210,6 +213,7 @@ public static class RunNativeExports
         }
 
         string seed = Encoding.UTF8.GetString(new ReadOnlySpan<byte>(seedPtr, seedLen));
+        _faulted.Remove(run);
         run.Reset(seed, ascension);
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return 0;
@@ -246,6 +250,7 @@ public static class RunNativeExports
         }
 
         string seed = Encoding.UTF8.GetString(new ReadOnlySpan<byte>(seedPtr, seedLen));
+        _faulted.Remove(run);
         run.Reset(seed, ascension, (PlayerCharacter)character);
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         return 0;
@@ -340,18 +345,54 @@ public static class RunNativeExports
             return -1;
         }
 
-        int status = run.Step(
-            action,
-            targetEnemyIndex,
-            out float reward,
-            out bool terminal,
-            out bool truncated
-        );
+        // An exception out of the step is an engine fault (docs/ENGINE_FAULTS.md), as for a combat handle: counted, kept
+        // for the run, which refuses every later step with it (the run is part way through the step), and returned as
+        // EngineFault.Code with its class, frame and message in Sts2_GetLastError. It used to end the process.
+        if (_faulted.TryGetValue(run, out var faulted))
+        {
+            return RefuseFault(run, faulted, obsBuf, rewardOut, terminalOut, truncatedOut);
+        }
+
+        int status;
+        float reward;
+        bool terminal, truncated;
+        try
+        {
+            status = run.Step(action, targetEnemyIndex, out reward, out terminal, out truncated);
+        }
+        catch (Exception e)
+        {
+            var fault = NativeExports.Fault(e);
+            _faulted.AddOrUpdate(run, fault);
+            return RefuseFault(run, fault, obsBuf, rewardOut, terminalOut, truncatedOut);
+        }
+
         run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
         *rewardOut = reward;
         *terminalOut = terminal ? 1 : 0;
         *truncatedOut = truncated ? 1 : 0;
         return status;
+    }
+
+    /// <summary>The runs an engine fault stopped part way through a step (<see cref="Sts2Run_Step" />); a reset clears one.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<RunEngine, EngineFault> _faulted = new();
+
+    private static unsafe int RefuseFault(RunEngine run, EngineFault fault, int* obsBuf, float* rewardOut, int* terminalOut, int* truncatedOut)
+    {
+        NativeExports.Refuse(fault.Text);
+        try
+        {
+            run.WriteObservation(new Span<int>(obsBuf, RunConstants.RunObsSize));
+        }
+        catch (Exception)
+        {
+            new Span<int>(obsBuf, RunConstants.RunObsSize).Clear();
+        }
+
+        *rewardOut = 0f;
+        *terminalOut = 0;
+        *truncatedOut = 0;
+        return EngineFault.Code;
     }
 
     public static unsafe int Sts2Run_StartCombat(

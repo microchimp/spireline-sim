@@ -100,7 +100,12 @@ public static class NativeExports
     //      Sts2_SolveHindsight (the hindsight bound, a separate call with a separate result type, refused unless the
     //      solver was made with allowHindsight and the handle carries the record's own streams), Sts2_SolvePotionCurve
     //      and Sts2_SolverInfo. Nothing else changed.
-    public const int NATIVE_API_VERSION = 39;
+    // v40: an exception that escapes the engine's step no longer ends the process (docs/ENGINE_FAULTS.md): Sts2_Step and
+    //      Sts2_StepTargeted return -2 (EngineFault.Code), Sts2_GetLastError carries the exception's class, the top engine
+    //      frame and its message (tab-separated), and the handle refuses every later step with the same -2 (its combat is
+    //      left part way through the step); a clone of it carries the fault, a reset clears it. Sts2_EngineFaults counts
+    //      the faults this process has met. A library from before ended the process (fail-fast) at the throw.
+    public const int NATIVE_API_VERSION = 40;
 
     /// <summary>
     /// The plain resets' deck: the start of a run at the default level, from the one
@@ -155,6 +160,7 @@ public static class NativeExports
             State = source.State.Clone(resampleSeed);
             Rng = source.Rng.Reseeded(resampleSeed)!;
             LastPlayerWon = source.LastPlayerWon;
+            Fault = source.Fault;
             TrueStreams = source.TrueStreams && resampleSeed is null;
             if (resampleSeed is not null)
             {
@@ -164,6 +170,12 @@ public static class NativeExports
         }
 
         public bool LastPlayerWon { get; set; }
+
+        /// <summary>
+        /// The engine fault a step of this handle met (docs/ENGINE_FAULTS.md), or null: a faulted handle refuses every later
+        /// step with it, since its combat is wherever the exception left it. A clone carries it; a reset clears it.
+        /// </summary>
+        public EngineFault? Fault { get; set; }
 
         /// <summary>
         /// Whether the streams are the fight's own (the hindsight bound's precondition, FIGHT_SOLVER.md section 9): true for a
@@ -289,6 +301,7 @@ public static class NativeExports
                 new Sts2Emulator.Core.Rng.GameRng((uint)Seed, "combat_potion_generation").RawSeed
             );
             LastPlayerWon = false;
+            Fault = null;
             TrueStreams = true;  // a reset deals its own fight: the snapshot constructor clears this after the call
         }
 
@@ -1313,7 +1326,7 @@ public static class NativeExports
             : 0;
 
     /// <returns>1 when the fight is over, 0 when it goes on, -1 when the answer to a stopped step's
-    /// screen was refused (<see cref="StepOrRefuse" />).</returns>
+    /// screen was refused, -2 for an engine fault (<see cref="StepOrRefuse" />).</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_Step")]
     public static unsafe int Sts2_Step(int handle, int action, int* obsBuf, float* rewardOut)
     {
@@ -1328,8 +1341,19 @@ public static class NativeExports
     /// place (<c>StoppedStepMismatch</c>). The combat is then on its screen as it was, the
     /// observation is written, and <c>Sts2_GetLastError</c> says why.
     /// </summary>
+    /// <remarks>
+    /// Any other exception out of the step is an engine fault (docs/ENGINE_FAULTS.md): it is counted, recorded on the handle
+    /// and refused with <see cref="EngineFault.Code" />, its class, top engine frame and message in <c>Sts2_GetLastError</c>,
+    /// where it used to end the process. The combat is left where the exception found it, part way through the step, so the
+    /// handle refuses every later step with the same fault: the caller ends the fight.
+    /// </remarks>
     private static unsafe int StepOrRefuse(NativeCombat combat, int action, int target, int* obsBuf, float* rewardOut)
     {
+        if (combat.Fault is { } faulted)
+        {
+            return RefuseFault(combat.State, faulted, obsBuf, rewardOut);
+        }
+
         StepResult result;
         try
         {
@@ -1352,6 +1376,11 @@ public static class NativeExports
             *rewardOut = 0f;
             return -1;
         }
+        catch (Exception e)
+        {
+            combat.Fault = Fault(e);
+            return RefuseFault(combat.State, combat.Fault, obsBuf, rewardOut);
+        }
 
         combat.LastPlayerWon = result.Terminal && result.PlayerWon;
         WriteObs(combat.State, obsBuf);
@@ -1359,7 +1388,41 @@ public static class NativeExports
         return result.Terminal ? 1 : 0;
     }
 
-    /// <returns>As <c>Sts2_Step</c>: 1, 0, or -1 for a refused answer.</returns>
+    /// <summary>An exception out of an engine step, as the fault it is recorded as, and counted.</summary>
+    internal static EngineFault Fault(Exception e)
+    {
+        Interlocked.Increment(ref _engineFaults);
+        return EngineFault.Of(e);
+    }
+
+    /// <summary>
+    /// The refusal of a step that met <paramref name="fault" />: its text in the last error, the observation written as far
+    /// as the combat allows (zeros when even that throws), no reward, <see cref="EngineFault.Code" />.
+    /// </summary>
+    private static unsafe int RefuseFault(CombatState state, EngineFault fault, int* obsBuf, float* rewardOut)
+    {
+        _lastLoadError = Encoding.UTF8.GetBytes(fault.Text);
+        try
+        {
+            WriteObs(state, obsBuf);
+        }
+        catch (Exception)
+        {
+            new Span<int>(obsBuf, OBS_SIZE).Clear();
+        }
+
+        *rewardOut = 0f;
+        return EngineFault.Code;
+    }
+
+    /// <summary>The engine faults this process has met, every handle and export together (<see cref="Fault" />).</summary>
+    private static int _engineFaults;
+
+    /// <summary>How many engine faults this process has met (docs/ENGINE_FAULTS.md).</summary>
+    [UnmanagedCallersOnly(EntryPoint = "Sts2_EngineFaults")]
+    public static int Sts2_EngineFaults() => Volatile.Read(ref _engineFaults);
+
+    /// <returns>As <c>Sts2_Step</c>: 1, 0, -1 for a refused answer, or -2 for an engine fault.</returns>
     [UnmanagedCallersOnly(EntryPoint = "Sts2_StepTargeted")]
     public static unsafe int Sts2_StepTargeted(
         int handle,

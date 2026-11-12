@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_utility_gains.py; do not edit. Every site that can raise the solver's utility within a combat (heal, HP, max HP, potion, generation), classed in utility_gain_classes.json; the holders turn the tight bound off while present (FIGHT_SOLVER.md section 19).",
- "sources_sha256": "b3fb57ce2477e804c93da2994bb23e45f7a6c896fd011fa37548ec38e3e5bcc3",
+ "sources_sha256": "3055f9e80559a8caadce393a30089cc23d8b56c142532a648136a0368c570fd4",
  "holders": [
   "buff:CalamityPower",
   "buff:CallOfTheVoid",

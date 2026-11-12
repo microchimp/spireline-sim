@@ -10,14 +10,26 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+# What Sts2_Step, Sts2_StepTargeted and Sts2Run_Step return when an exception escaped the engine's step, raised here as
+# EngineFault (docs/ENGINE_FAULTS.md); a refused answer to a stopped step's screen is -1 (StepRefused). Re-exported.
+try:
+    from .faults import ENGINE_FAULT_CODE, EngineFault, engine_fault_counts  # noqa: F401
+except ImportError:  # this file loaded by its path, outside the package (a test's stand-in library): the sibling by its path
+    import importlib.util as _faults_util
+
+    _faults_spec = _faults_util.spec_from_file_location("sts2_gym_faults", Path(__file__).with_name("faults.py"))
+    _faults = _faults_util.module_from_spec(_faults_spec)
+    _faults_spec.loader.exec_module(_faults)
+    ENGINE_FAULT_CODE, EngineFault, engine_fault_counts = _faults.ENGINE_FAULT_CODE, _faults.EngineFault, _faults.engine_fault_counts
+
 _LIB_NAMES = {
     "win32": "Sts2Emulator.dll",
     "linux": "Sts2Emulator.so",
     "darwin": "Sts2Emulator.dylib",
 }
 _ALLOW_STALE_ENV = "STS2_ALLOW_STALE_NATIVE"
-_REQUIRED_NATIVE_API_VERSION = 39
-_REQUIRED_RUN_NATIVE_API_VERSION = 32
+_REQUIRED_NATIVE_API_VERSION = 40
+_REQUIRED_RUN_NATIVE_API_VERSION = 33
 # The engine this process runs (docs/rebuild/NATIVE_KERNEL.md section 3): read once, when the library loads, and passed
 # to Sts2_SetEngine before any handle exists. Unset or "old": the old engine. "core2": the Tier 1 kernel of
 # tools/fidelity/migrated_families.json. Inherited by every spawn worker, so one flag on the parent reaches them all.
@@ -449,6 +461,9 @@ _lib.Sts2_StartingMaxHp.argtypes = []
 _lib.Sts2_StartingPotionSlots.restype = ctypes.c_int
 _lib.Sts2_StartingPotionSlots.argtypes = [ctypes.c_int]
 
+_lib.Sts2_EngineFaults.restype = ctypes.c_int
+_lib.Sts2_EngineFaults.argtypes = []
+
 _lib.Sts2_Step.restype = ctypes.c_int
 _lib.Sts2_Step.argtypes = [
     ctypes.c_int,
@@ -878,6 +893,11 @@ class StepRefused(RuntimeError):
     """
 
 
+def engine_faults_seen() -> int:
+    """How many engine faults this process has met (`Sts2_EngineFaults`, docs/ENGINE_FAULTS.md): every handle and export."""
+    return int(_lib.Sts2_EngineFaults())
+
+
 def _get_last_error() -> str:
     """`Sts2_GetLastError`'s text (size-and-retry): why the last load, export or answer was refused."""
     capacity = 256
@@ -1261,6 +1281,8 @@ def step(
         StepRefused: if the action answers a screen raised in the middle of a step and the
             step's replay went another way than the step did (a loaded document in a world
             where it does not reach its screen). The combat stays on its screen as it was.
+        EngineFault: if the step's engine code threw (docs/ENGINE_FAULTS.md); the handle
+            refuses every later step with the same fault.
 
     """
     if target_enemy_index >= 0:
@@ -1273,6 +1295,8 @@ def step(
         )
     else:
         terminal = _lib.Sts2_Step(handle, action, obs_buf, reward_buf)
+    if terminal == ENGINE_FAULT_CODE:
+        raise EngineFault(_get_last_error())
     if terminal < 0:
         raise StepRefused(_get_last_error())
     return bool(terminal)
@@ -1636,7 +1660,14 @@ def run_step(
     terminal_buf: ctypes.Array,
     truncated_buf: ctypes.Array,
 ) -> int:
-    return int(
+    """One action on a run: 0, or -1 for an action the run refuses (the caller's to handle).
+
+    Raises:
+        EngineFault: if the step's engine code threw (docs/ENGINE_FAULTS.md); the run's handle
+            refuses every later step with the same fault.
+
+    """
+    status = int(
         _lib.Sts2Run_Step(
             handle,
             action,
@@ -1647,6 +1678,9 @@ def run_step(
             truncated_buf,
         ),
     )
+    if status == ENGINE_FAULT_CODE:
+        raise EngineFault(_get_last_error())
+    return status
 
 
 def run_start_combat(

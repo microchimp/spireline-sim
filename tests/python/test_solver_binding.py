@@ -58,9 +58,9 @@ class SolverBindingTests(unittest.TestCase):
     def setUpClass(cls):
         cls.native, cls.lib = load_native_without_a_library()
 
-    def test_the_version_is_39(self):
-        self.assertEqual(self.native._REQUIRED_NATIVE_API_VERSION, 39)
-        self.assertEqual(self.native._REQUIRED_RUN_NATIVE_API_VERSION, 32)
+    def test_the_version_is_40(self):
+        self.assertEqual(self.native._REQUIRED_NATIVE_API_VERSION, 40)
+        self.assertEqual(self.native._REQUIRED_RUN_NATIVE_API_VERSION, 33)
 
     def test_every_structure_is_the_csharp_one_field_for_field(self):
         n = self.native
@@ -238,7 +238,7 @@ class SolverBindingLiveTests(unittest.TestCase):
             self.assertTrue(0.0 <= e.value <= 1.0)
             self.assertIn((e.best_action, e.best_target), e.q)
             self.assertEqual(native.solve_hindsight(s, h).outcome, -3)  # made without the flag
-            self.assertEqual(native.solver_info()["native_api_version"], 39)
+            self.assertEqual(native.solver_info()["native_api_version"], 40)
             # With the flag, a handle from create() and reset() is still refused: some of its streams are unset.
             with native.open_solver(h, allow_hindsight=True) as flagged:
                 b = native.solve_hindsight(flagged, h, node_budget=2_000)
