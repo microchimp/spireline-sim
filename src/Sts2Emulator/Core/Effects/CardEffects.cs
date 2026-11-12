@@ -6666,13 +6666,11 @@ public static class CardEffects
 
                 DealDamageToEnemy(state, coilTarget, Dmg(state, def, upgraded, card));
                 int coilTimes = upgraded ? 2 : 1;
-                foreach (var orb in state.Orbs)
+                // The Lightning orbs as the passives begin: the game walks a copy of the list taken there, so
+                // nothing a passive's hit sets off changes what is walked.
+                int lightning = state.Orbs.Count(orb => orb.Type == OrbType.Lightning);
+                for (int orbIndex = 0; orbIndex < lightning; orbIndex++)
                 {
-                    if (orb.Type != OrbType.Lightning)
-                    {
-                        continue;
-                    }
-
                     for (int i = 0; i < coilTimes && coilTarget.Hp > 0; i++)
                     {
                         DealUnpoweredDamageToEnemy(state, coilTarget, LightningPassiveValue(state));
@@ -6887,12 +6885,20 @@ public static class CardEffects
 
                 return true;
             case "Chill":
-                foreach (var _ in state.Enemies.Where(e => e.Hp > 0))
+            {
+                // One Frost for each hittable enemy as the card is played: the game walks a copy of its
+                // hittable enemies taken there. The copy enumerated the live enemy list,
+                // and a channel that evokes a Lightning into a kill takes the corpse out of that list (the
+                // kernel's damage command removes it at once): "Collection was modified", a crash; the
+                // old engine's lazy filter skipped the dead and channelled one Frost short.
+                int frost = state.Enemies.Count(EnemyAI.IsTargetable);
+                for (int i = 0; i < frost; i++)
                 {
                     ChannelOrb(state, OrbType.Frost);
                 }
 
                 return true;
+            }
             case "Fusion":
             case "Ignition":
                 ChannelOrb(state, OrbType.Plasma);

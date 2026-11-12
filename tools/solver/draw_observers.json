@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners) and every take off the draw pile, each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
- "sources_sha256": "0bdb429251d802994c36beebf0084c59f6a874c9f70a1d9c33e01c7fc9861160",
+ "sources_sha256": "5dc7c2711c1cc81703bdee8411045dbe8e9aee7e2a16a0e15f9aaa0100d9863e",
  "observers": [
   "ChainsOfBinding",
   "Hellraiser",
