@@ -112,6 +112,7 @@ public static class CombatEngine
 
         var outer = _running;
         _running = run;
+        var outerGates = (_cardOrPotionEffects, _outsidePlayPhases);
         try
         {
             var result = StepCore(state, action, rng, targetEnemyIndex);
@@ -147,6 +148,9 @@ public static class CombatEngine
         finally
         {
             _running = outer;
+            // A step that stops on a screen or throws leaves its plays and its turn end where they stood: the gates go back
+            // to the caller's (a replay runs the step again from its start).
+            (_cardOrPotionEffects, _outsidePlayPhases) = outerGates;
             if (recorded)
             {
                 Sts2Emulator.Solver.RecordedChance.Remove(state, rng);
@@ -203,6 +207,8 @@ public static class CombatEngine
 
         var outer = _running;
         _running = run;
+        var outerGates = (_cardOrPotionEffects, _outsidePlayPhases);
+        (_cardOrPotionEffects, _outsidePlayPhases) = (0, false);
         using var quiet = CombatTrace.Quiet();
         try
         {
@@ -221,6 +227,7 @@ public static class CombatEngine
         finally
         {
             _running = outer;
+            (_cardOrPotionEffects, _outsidePlayPhases) = outerGates;
         }
     }
 
@@ -278,6 +285,39 @@ public static class CombatEngine
     /// <summary>The step running on this thread, if it can be replayed (see <see cref="Step" />).</summary>
     [ThreadStatic]
     private static StepInProgress? _running;
+
+    /// <summary>
+    /// game: CombatManager's card-or-potion effect depth: the plays (auto-plays included, from the result pile's choice to
+    /// the last AfterCardPlayed) and potion uses in progress on this thread. The empty-hand check after a play or a potion
+    /// runs only when no other card's or potion's effect is still running (<see cref="CheckForEmptyHand" />): a Strike
+    /// Hellraiser plays out of Pillage's draw, or a card Havoc or Distilled Chaos plays, does not ask.
+    /// </summary>
+    [ThreadStatic]
+    private static int _cardOrPotionEffects;
+
+    /// <summary>
+    /// True while <see cref="EndTurn" /> runs the turn's end, the enemies' turn and the next turn's setup up to its
+    /// auto-pre-play passes: the game's End, None and Start phases, where Unceasing Top does not draw (a Strike Hellraiser
+    /// plays out of the hand draw leaves the hand empty, and the relic is written not to answer that). Turn one's setup
+    /// plays no card, so it needs no mark.
+    /// </summary>
+    [ThreadStatic]
+    private static bool _outsidePlayPhases;
+
+    /// <summary>
+    /// game: CombatManager.CheckForEmptyHand, after a card's play (the card on its pile) or a potion's use: AfterHandEmptied
+    /// when no card's or potion's effect is still running and the hand is empty. Unceasing Top, the one listener, draws
+    /// only in the AutoPrePlay, Play and AutoPostPlay phases. The copy asked after every play, nested or not, and in the
+    /// turn's start: its extra draw took back the Strike a Hellraiser auto-play had just filed on the draw pile, and the
+    /// draw that had played it found an empty pile where it looked for the card (engine fault class 1).
+    /// </summary>
+    private static void CheckForEmptyHand(CombatState state, Random rng)
+    {
+        if (_cardOrPotionEffects == 0 && !_outsidePlayPhases)
+        {
+            Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
+        }
+    }
 
     /// <summary>The step running on this thread (the kernel reads its keyed answers), or null.</summary>
     internal static StepInProgress? Running => _running;
@@ -722,6 +762,9 @@ public static class CombatEngine
         int starsToSpend = request.StarsToSpend;
         int handIndex = request.HandIndex;
         bool autoPlay = request.IsAutoPlay;
+        // game: BeginCardOrPotionEffect; its end is the empty-hand check's (ResolvePlayRepetition) and the return below. A
+        // step that stops or throws inside puts the depth back itself (Step).
+        _cardOrPotionEffects++;
         // A play nested in another stretch that answers its own deaths (an auto-play) sweeps
         // only the corpses it answered: the enclosing card's own kills are its to answer.
         var sweep = autoPlay ? CorpseSweep.Answered : CorpseSweep.All;
@@ -820,6 +863,7 @@ public static class CombatEngine
             );
         }
 
+        _cardOrPotionEffects--;
         return restsOn;
     }
 
@@ -1230,10 +1274,12 @@ public static class CombatEngine
         Effects.RelicEffects.ApplyAfterCardPlayedRares(state, def, rng);
         // The Lamp's latch closes when the card that claimed it finishes resolving.
         Effects.RelicEffects.FinishUnsettlingLampCard(state);
-        // `CheckForEmptyHand`, after the loop: once, with the card on its pile.
+        // `CheckForEmptyHand`, after the loop: once, with the card on its pile, this play's effect over.
         if (isLast)
         {
-            Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
+            _cardOrPotionEffects--;
+            CheckForEmptyHand(state, rng);
+            _cardOrPotionEffects++;
         }
 
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
@@ -1589,6 +1635,8 @@ public static class CombatEngine
         AutoPlayStampedeAttacks(state, rng);
         AutoPlayIAmInvincible(state, rng);
         AutoPlayHowlsFromExhaust(state, rng);
+        // The End phase from here, then None and the next turn's Start: no Unceasing Top draw until the auto-pre-play passes.
+        _outsidePlayPhases = true;
 
         // `Hook.BeforeTurnEnd` comes next, a gated dispatch that asks as it starts: a kill in
         // the pass above (each play answers its own deaths) shuts every BeforeSideTurnEnd hook
@@ -2916,6 +2964,7 @@ public static class CombatEngine
         // `Bombardment.AfterAutoPrePlayPhaseEnteredEarly` -- EARLY, so ahead of Mayhem's
         // hook, which is the plain `AfterAutoPrePlayPhaseEntered`. Each card's kills are
         // answered as it is played.
+        _outsidePlayPhases = false;
         AutoPlayBombardmentsFromExhaust(state, rng);
         AutoPlayMayhemCards(state, rng);
         AutoPlayHistoryCourseDupe(state, rng);
@@ -3425,15 +3474,20 @@ public static class CombatEngine
         // `Hook.BeforePotionUsed`, between `RemoveBeforeUse` and `OnUse`: SurroundedPower turns the
         // player toward the potion's target, which is an enemy only for an AnyEnemy potion.
         TurnPlayerTowardPotionTarget(state, potionId);
+        _cardOrPotionEffects++;
         Effects.PotionEffects.Apply(potionId, state, rng);
         // The potion's kills -- Fire Potion, Explosive Ampoule, Potion-Shaped Rock, Foul
         // Potion, an orb Essence of Darkness evicts, a card Distilled Chaos plays -- are
         // answered inside its `OnUse`, before `AfterPotionUsed` (PotionModel.cs:291-342).
         AnswerDeathsSince(state, beforeUse, rng);
+        _cardOrPotionEffects--;
         // `ReptileTrinket.AfterPotionUsed`, and it is AFTER: a potion that grants Strength
         // of its own has already landed, so the two stack rather than one replacing it.
         Effects.RelicEffects.ApplyAfterPotionUsed(state);
         Effects.RelicEffects.RefreshBeltBuckle(state);
+        // `CheckForEmptyHand` closes a potion's use as it closes a play: a potion that empties the hand draws Unceasing
+        // Top's card (the copy asked only after plays).
+        CheckForEmptyHand(state, rng);
         Effects.RelicEffects.ApplyAfterPlayerHpChanged(state);
 
         // `UsePotionAction` is an ordinary action, so `ActionExecutor` checks the win
@@ -7586,30 +7640,75 @@ public static class CombatEngine
                 return;
             }
 
-            // On top of the draw pile (Rebound) or last on the discard or exhaust pile.
-            int at =
-                restsOn is null ? -1
-                : restsOn == state.DrawPile ? (IsCopyOf(restsOn[0], card) ? 0 : -1)
-                : restsOn.FindLastIndex(pileCard => IsCopyOf(pileCard, card));
-            if (at < 0)
+            // The card itself, wherever it is now (the game repeats on the one card): on top of the draw pile (Rebound),
+            // last on the discard or exhaust pile, or wherever the play's own hooks moved it. A card with no uid (a test's,
+            // on the old engine) is looked for where it was filed, by copy, on a pile that still holds a card there.
+            var (pile, at) = WhereNow(state, restsOn, card) ?? (
+                restsOn is null || restsOn.Count == 0 || card.Uid != 0 ? (null, -1)
+                : restsOn == state.DrawPile ? (IsCopyOf(restsOn[0], card) ? (restsOn, 0) : (null, -1))
+                : (restsOn, restsOn.FindLastIndex(pileCard => IsCopyOf(pileCard, card))));
+            if (pile is null || at < 0)
             {
                 return;
             }
 
-            if (restsOn == state.DrawPile)
+            if (pile == state.DrawPile)
             {
                 card = state.RemoveFromDrawPileAt(at);
             }
             else
             {
-                card = restsOn![at];
-                restsOn.RemoveAt(at);
+                card = pile[at];
+                pile.RemoveAt(at);
             }
         }
     }
 
     private static bool IsCopyOf(CardInstance pileCard, CardInstance card) =>
         pileCard.DefId == card.DefId && pileCard.Upgraded == card.Upgraded;
+
+    /// <summary>
+    /// Where <paramref name="card" /> is now, after a play that filed it on <paramref name="restsOn" />: the pile and index of
+    /// the card with its uid, on that pile first and then on the hand, draw, discard and exhaust piles, for what the play set
+    /// off may have moved it since (Unceasing Top's draw takes it back off the draw pile, a shuffle out of the discard). The
+    /// game's later steps act on the card itself, wherever it is. Null when it has no uid (a card a test built by hand, on
+    /// the old engine) or is in no pile (it left the combat).
+    /// </summary>
+    internal static (List<CardInstance> Pile, int Index)? WhereNow(CombatState state, List<CardInstance>? restsOn, CardInstance card)
+    {
+        if (card.Uid == 0)
+        {
+            return null;
+        }
+
+        if (restsOn is not null && IndexOfUid(restsOn, card.Uid) is var onRest and >= 0)
+        {
+            return (restsOn, onRest);
+        }
+
+        foreach (var pile in (ReadOnlySpan<List<CardInstance>>)[state.Hand, state.DrawPile, state.DiscardPile, state.ExhaustPile])
+        {
+            if (!ReferenceEquals(pile, restsOn) && IndexOfUid(pile, card.Uid) is var at and >= 0)
+            {
+                return (pile, at);
+            }
+        }
+
+        return null;
+    }
+
+    private static int IndexOfUid(List<CardInstance> pile, int uid)
+    {
+        for (int i = 0; i < pile.Count; i++)
+        {
+            if (pile[i].Uid == uid)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
 
     /// <summary>
     /// `CardPileCmd.AutoPlayFromDrawPile(count, Top, forceExhaust)`, which Havoc (1, forced),

@@ -2770,13 +2770,9 @@ public static class CardEffects
                 // all the same (Pillage reads it).
                 drawn?.Add(card);
                 var restsOn = CombatEngine.AutoPlayDrawnCard(state, card, rng);
-                int at =
-                    restsOn is null ? -1
-                    : ReferenceEquals(restsOn, state.DrawPile) ? 0
-                    : restsOn.Count - 1;
-                if (at >= 0 && restsOn![at].DefId == card.DefId)
+                if (RestOfDrawnCard(state, restsOn, card) is { } rest)
                 {
-                    restsOn[at] = BindOnDraw(state, ConfuseCostOnDraw(state, restsOn[at]));
+                    rest.Pile[rest.Index] = BindOnDraw(state, ConfuseCostOnDraw(state, rest.Pile[rest.Index]));
                 }
             }
 
@@ -2800,6 +2796,25 @@ public static class CardEffects
             // the extra cards into the wrong place in the order.
             DrawForPagestorm(state, card, rng);
         }
+    }
+
+    /// <summary>
+    /// Where a drawn card Hellraiser played (<see cref="CombatEngine.AutoPlayDrawnCard" />, filed on
+    /// <paramref name="restsOn" />) is now, for the draw's later hooks, which act on the card itself wherever it is: the
+    /// play's own hooks can move it after filing it (Unceasing Top's draw took a Strike back off the draw pile, and the
+    /// copy then read the top of an empty pile: engine fault class 1). A card with no uid (a test's, on the old engine) is
+    /// looked for where it was filed: the top of the draw pile or the end of another pile, if that pile still holds a
+    /// card there. Null when the card is not found, or what is found there is another card.
+    /// </summary>
+    private static (List<CardInstance> Pile, int Index)? RestOfDrawnCard(CombatState state, List<CardInstance>? restsOn, CardInstance card)
+    {
+        var rest = CombatEngine.WhereNow(state, restsOn, card);
+        if (rest is null && card.Uid == 0 && restsOn is { Count: > 0 })
+        {
+            rest = (restsOn, ReferenceEquals(restsOn, state.DrawPile) ? 0 : restsOn.Count - 1);
+        }
+
+        return rest is { } r && r.Pile[r.Index].DefId == card.DefId ? r : null;
     }
 
     /// <summary>

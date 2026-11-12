@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_utility_gains.py; do not edit. Every site that can raise the solver's utility within a combat (heal, HP, max HP, potion, generation), classed in utility_gain_classes.json; the holders turn the tight bound off while present (FIGHT_SOLVER.md section 19).",
- "sources_sha256": "ebb80c40193ea1698c8e66cc63860bf9199081be56274ecaa0958456f0514054",
+ "sources_sha256": "628957d009b207dd388038cc6a6bdd7eca22c861bff2bbb4302974cd6a3a3c22",
  "holders": [
   "buff:CalamityPower",
   "buff:CallOfTheVoid",
@@ -87,7 +87,7 @@
     "card:Calamity"
    ],
    "unlabeled_lines": [
-    "CombatEngine:1087"
+    "CombatEngine:1131"
    ]
   },
   "applies:buff:CallOfTheVoid": {
@@ -95,7 +95,7 @@
     "card:CallOfTheVoid"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2797"
+    "CombatEngine:2845"
    ]
   },
   "applies:buff:HelloWorld": {
@@ -105,7 +105,7 @@
     "card:HelloWorld"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2743"
+    "CombatEngine:2791"
    ]
   },
   "applies:buff:PaperCuts": {
@@ -119,11 +119,11 @@
     "potion:RegenPotion"
    ],
    "unlabeled_lines": [
-    "CombatEngine:1770",
-    "CombatEngine:1774",
-    "CombatEngine:1994",
-    "CombatEngine:2006",
-    "CombatEngine:2009"
+    "CombatEngine:1818",
+    "CombatEngine:1822",
+    "CombatEngine:2042",
+    "CombatEngine:2054",
+    "CombatEngine:2057"
    ]
   },
   "applies:buff:SpectrumShift": {
@@ -131,7 +131,7 @@
     "card:SpectrumShift"
    ],
    "unlabeled_lines": [
-    "CombatEngine:2787"
+    "CombatEngine:2835"
    ]
   }
  },
@@ -149,7 +149,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddCardToDiscardPileRandomly",
    "kind": "generate",
-   "line": 4372,
+   "line": 4387,
    "holders": [
     "engine"
    ],
@@ -164,7 +164,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddCardToDrawPileRandomly",
    "kind": "generate",
-   "line": 4394,
+   "line": 4409,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -766,7 +766,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddColorlessCardsToHand",
    "kind": "generate",
-   "line": 3202,
+   "line": 3217,
    "holders": [
     "card:BundleOfJoy",
     "card:Largesse",
@@ -783,7 +783,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddDistinctCommonCardsToHand",
    "kind": "generate",
-   "line": 3363,
+   "line": 3378,
    "holders": [
     "buff:HelloWorld"
    ],
@@ -795,7 +795,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddDistinctEtherealCardsToHandFromPool",
    "kind": "generate",
-   "line": 3426,
+   "line": 3441,
    "holders": [
     "relic:BigHat"
    ],
@@ -807,7 +807,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddDistinctPoolCardToHand",
    "kind": "generate",
-   "line": 12025,
+   "line": 12040,
    "holders": [
     "card:Distraction"
    ],
@@ -819,7 +819,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddDistinctPoolCardsToDrawPile",
    "kind": "generate",
-   "line": 12056,
+   "line": 12071,
    "holders": [
     "card:Metamorphosis"
    ],
@@ -831,7 +831,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddEtherealPoolCardToHand",
    "kind": "generate",
-   "line": 10715,
+   "line": 10730,
    "holders": [
     "buff:CallOfTheVoid"
    ],
@@ -843,7 +843,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddFreeAttackCardToHandFromPool",
    "kind": "generate",
-   "line": 3475,
+   "line": 3490,
    "holders": [
     "relic:Crossbow"
    ],
@@ -855,7 +855,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddGeneratedCardToHand",
    "kind": "generate",
-   "line": 10589,
+   "line": 10604,
    "holders": [
     "buff:Furnace",
     "card:BeatIntoShape",
@@ -886,7 +886,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddGeneratedCardsToHand",
    "kind": "generate",
-   "line": 11864,
+   "line": 11879,
    "holders": [
     "card:BladeDance",
     "card:BladeOfInk",
@@ -914,7 +914,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddGeneratedStatusToDiscard",
    "kind": "generate",
-   "line": 10285,
+   "line": 10300,
    "holders": [
     "card:BoostAway",
     "card:BootSequence",
@@ -945,7 +945,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddRandomAttackCardsToHand",
    "kind": "generate",
-   "line": 11729,
+   "line": 11744,
    "holders": [
     "buff:CalamityPower"
    ],
@@ -957,7 +957,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddRandomClassCardToHand",
    "kind": "generate",
-   "line": 12080,
+   "line": 12095,
    "holders": [
     "card:Dirge",
     "card:LegionOfBone"
@@ -970,7 +970,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddRandomInfernalBladeAttack",
    "kind": "generate",
-   "line": 11038,
+   "line": 11053,
    "holders": [
     "card:InfernalBlade"
    ],
@@ -982,7 +982,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddRandomPoolCardToHand",
    "kind": "generate",
-   "line": 6612,
+   "line": 6627,
    "holders": [
     "relic:VexingPuzzlebox"
    ],
@@ -994,7 +994,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddRandomPowerCardsToHand",
    "kind": "generate",
-   "line": 6634,
+   "line": 6649,
    "holders": [
     "card:WhiteNoise"
    ],
@@ -1006,7 +1006,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddSoulToDiscard",
    "kind": "generate",
-   "line": 10729,
+   "line": 10744,
    "holders": [
     "card:Severance"
    ],
@@ -1021,7 +1021,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddSoulToHand",
    "kind": "generate",
-   "line": 10723,
+   "line": 10738,
    "holders": [
     "card:Severance"
    ],
@@ -1036,7 +1036,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddSoulsToDrawPile",
    "kind": "generate",
-   "line": 10746,
+   "line": 10761,
    "holders": [
     "card:CaptureSpirit",
     "card:Dirge",
@@ -1056,7 +1056,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "AddZeroCostCardsToHand",
    "kind": "generate",
-   "line": 4872,
+   "line": 4887,
    "holders": [
     "card:Jackpot"
    ],
@@ -1146,7 +1146,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "ApplyDefectCard",
    "kind": "generate",
-   "line": 6695,
+   "line": 6710,
    "holders": [
     "card:AdaptiveStrike",
     "card:MomentumStrike",
@@ -1161,7 +1161,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "ApplyGeneratedCardApproximation",
    "kind": "generate",
-   "line": 9409,
+   "line": 9424,
    "holders": [
     "card:Overclock"
    ],
@@ -1176,7 +1176,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "ApplyGeneratedCardApproximation",
    "kind": "max-hp",
-   "line": 9033,
+   "line": 9048,
    "holders": [
     "card:BrightestFlame"
    ],
@@ -1188,7 +1188,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "ApplyNecrobinderCard",
    "kind": "generate",
-   "line": 7364,
+   "line": 7379,
    "holders": [
     "card:Undeath"
    ],
@@ -1200,7 +1200,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "ApplyNecrobinderCard",
    "kind": "heal",
-   "line": 7431,
+   "line": 7446,
    "holders": [
     "card:Spur"
    ],
@@ -1212,7 +1212,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "GainMaxHp",
    "kind": "heal",
-   "line": 6279,
+   "line": 6294,
    "holders": [
     "buff:SicEm",
     "buff:SummonNextTurn",
@@ -1246,7 +1246,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "GainMaxHp",
    "kind": "max-hp",
-   "line": 6273,
+   "line": 6288,
    "holders": [
     "buff:SicEm",
     "buff:SummonNextTurn",
@@ -1280,7 +1280,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "GainMaxHp",
    "kind": "max-hp",
-   "line": 6277,
+   "line": 6292,
    "holders": [
     "buff:SicEm",
     "buff:SummonNextTurn",
@@ -1314,7 +1314,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "HealPlayer",
    "kind": "heal",
-   "line": 6252,
+   "line": 6267,
    "holders": [
     "buff:CrimsonMantleSelfDamage",
     "buff:Inferno",
@@ -1368,7 +1368,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "HealPlayer",
    "kind": "hp",
-   "line": 6257,
+   "line": 6272,
    "holders": [
     "buff:CrimsonMantleSelfDamage",
     "buff:Inferno",
@@ -1422,7 +1422,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "LoseMaxHp",
    "kind": "hp",
-   "line": 6313,
+   "line": 6328,
    "holders": [
     "buff:PaperCuts",
     "card:BrightestFlame",
@@ -1436,7 +1436,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "LoseMaxHp",
    "kind": "max-hp",
-   "line": 6300,
+   "line": 6315,
    "holders": [
     "buff:PaperCuts",
     "card:BrightestFlame",
@@ -1450,7 +1450,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "LoseMaxHp",
    "kind": "max-hp",
-   "line": 6312,
+   "line": 6327,
    "holders": [
     "buff:PaperCuts",
     "card:BrightestFlame",
@@ -1464,7 +1464,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "LosePlayerHp",
    "kind": "hp",
-   "line": 4257,
+   "line": 4272,
    "holders": [
     "buff:Countdown",
     "buff:CrimsonMantleSelfDamage",
@@ -1691,7 +1691,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "OpenChoicesParadoxOffer",
    "kind": "generate",
-   "line": 10686,
+   "line": 10701,
    "holders": [
     "relic:ChoicesParadox"
    ],
@@ -1703,7 +1703,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "OpenColorlessOffer",
    "kind": "generate",
-   "line": 6595,
+   "line": 6610,
    "holders": [
     "card:Quasar"
    ],
@@ -1715,7 +1715,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "OpenGeneratedCardSelection",
    "kind": "generate",
-   "line": 5063,
+   "line": 5078,
    "holders": [
     "card:Discovery"
    ],
@@ -1727,7 +1727,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "OpenSplashSelection",
    "kind": "generate",
-   "line": 5032,
+   "line": 5047,
    "holders": [
     "card:Splash"
    ],
@@ -1739,7 +1739,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "OpenToolboxSelection",
    "kind": "generate",
-   "line": 6566,
+   "line": 6581,
    "holders": [
     "relic:Toolbox"
    ],
@@ -1751,7 +1751,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "PlayMadScience",
    "kind": "generate",
-   "line": 4611,
+   "line": 4626,
    "holders": [
     "card:MadScience"
    ],
@@ -1775,7 +1775,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "SummonOsty",
    "kind": "hp",
-   "line": 10396,
+   "line": 10411,
    "holders": [
     "buff:SicEm",
     "buff:SummonNextTurn",
@@ -1806,7 +1806,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "SummonOsty",
    "kind": "max-hp",
-   "line": 10392,
+   "line": 10407,
    "holders": [
     "buff:SicEm",
     "buff:SummonNextTurn",
@@ -1850,7 +1850,7 @@
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "method": "TransformStatusesInHandToFuel",
    "kind": "generate",
-   "line": 10229,
+   "line": 10244,
    "holders": [
     "card:Compact"
    ],
@@ -1877,7 +1877,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "?",
    "kind": "hp",
-   "line": 5140,
+   "line": 5194,
    "holders": [
     "engine"
    ],
@@ -1889,7 +1889,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ApplyAfterCardPlayedPowers",
    "kind": "generate",
-   "line": 6825,
+   "line": 6879,
    "holders": [
     "engine"
    ],
@@ -1904,7 +1904,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "DoomThePlayerAtTurnEnd",
    "kind": "hp",
-   "line": 5437,
+   "line": 5491,
    "holders": [
     "buff:Doom"
    ],
@@ -1916,7 +1916,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "heal",
-   "line": 2008,
+   "line": 2056,
    "holders": [
     "buff:Regen"
    ],
@@ -1928,7 +1928,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 1773,
+   "line": 1821,
    "holders": [
     "buff:Regen"
    ],
@@ -1940,7 +1940,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 2167,
+   "line": 2215,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -2600,7 +2600,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "EndTurn",
    "kind": "hp",
-   "line": 2249,
+   "line": 2297,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -3260,7 +3260,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "heal",
-   "line": 3460,
+   "line": 3514,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3272,7 +3272,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "hp",
-   "line": 3464,
+   "line": 3518,
    "holders": [
     "potion:FairyInABottle"
    ],
@@ -3284,7 +3284,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "FairyInABottle_AfterPreventingDeath",
    "kind": "potion",
-   "line": 3456,
+   "line": 3510,
    "holders": [
     "buff:Poison",
     "card:Havoc",
@@ -3300,7 +3300,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4154,
+   "line": 4208,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -3963,7 +3963,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4429,
+   "line": 4483,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -4626,7 +4626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4438,
+   "line": 4492,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -5289,7 +5289,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolveCardSelection",
    "kind": "generate",
-   "line": 4471,
+   "line": 4525,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -5952,7 +5952,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "ResolvePlayRepetition",
    "kind": "generate",
-   "line": 1075,
+   "line": 1119,
    "holders": [
     "buff:Asleep",
     "buff:Buffer",
@@ -6614,7 +6614,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 6030,
+   "line": 6084,
    "holders": [
     "engine"
    ],
@@ -6626,7 +6626,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "RespawnTestSubject",
    "kind": "hp",
-   "line": 6047,
+   "line": 6101,
    "holders": [
     "engine"
    ],
@@ -6638,7 +6638,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "TryRespawnAxebot",
    "kind": "hp",
-   "line": 5911,
+   "line": 5965,
    "holders": [
     "engine"
    ],
@@ -6650,7 +6650,7 @@
    "file": "src/Sts2Emulator/Core/CombatEngine.cs",
    "method": "UsePotion",
    "kind": "potion",
-   "line": 3424,
+   "line": 3473,
    "holders": [
     "engine"
    ],

@@ -1,6 +1,6 @@
 {
  "about": "Written by tools/solver/scan_draw_observers.py; do not edit. Everything that acts on drawn cards (the draw loop's per-card calls, the draw-result readers, the AfterCardDrawn listeners) and every take off the draw pile, each classed in draw_observer_classes.json: an observer turns the macro draw off while its test in DrawObservers.All holds (FIGHT_SOLVER.md section 17).",
- "sources_sha256": "5dc7c2711c1cc81703bdee8411045dbe8e9aee7e2a16a0e15f9aaa0100d9863e",
+ "sources_sha256": "4c5d4f3fec7658e538c4c81cef8de98716cf30b7a992316ed35fd9d0473c5f0d",
  "observers": [
   "ChainsOfBinding",
   "Hellraiser",
@@ -125,19 +125,19 @@
    "class": "safe",
    "why": "Corrosive Wave poisons every hittable enemy per card drawn: the same total for any order; poison does not hit until it ticks"
   },
-  "draw-loop:ReferenceEquals": {
-   "kind": "draw-loop",
-   "holder": "ReferenceEquals",
-   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
-   "class": "safe",
-   "why": "where a Hellraiser-played card came to rest (the Hellraiser path, an observer)"
-  },
   "draw-loop:RemoveFromDrawPileAt": {
    "kind": "draw-loop",
    "holder": "RemoveFromDrawPileAt",
    "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
    "class": "safe",
    "why": "the take off the top: the draw itself, which the solver watches"
+  },
+  "draw-loop:RestOfDrawnCard": {
+   "kind": "draw-loop",
+   "holder": "RestOfDrawnCard",
+   "file": "src/Sts2Emulator/Core/Effects/CardEffects.cs",
+   "class": "safe",
+   "why": "where a Hellraiser-played card is now, found by its uid, for the draw's later hooks (the Hellraiser path, an observer)"
   },
   "draw-loop:RollSlitherCost": {
    "kind": "draw-loop",

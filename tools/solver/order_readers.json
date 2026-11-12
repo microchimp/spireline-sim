@@ -822,6 +822,18 @@
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"
   },
+  "CombatEngine:WhereNow:foreach DiscardPile": {
+   "class": "free",
+   "why": "finds one card by its uid, which no other card holds: the same card for any order of the pile, and the caller acts on that card where it is (a Hellraiser-played card's draw hooks, Decisions Decisions' next repeat)"
+  },
+  "CombatEngine:WhereNow:foreach ExhaustPile": {
+   "class": "free",
+   "why": "finds one card by its uid, which no other card holds: the same card for any order of the pile, and the caller acts on that card where it is (a Hellraiser-played card's draw hooks, Decisions Decisions' next repeat)"
+  },
+  "CombatEngine:WhereNow:foreach Hand": {
+   "class": "free",
+   "why": "finds one card by its uid, which no other card holds: the same card for any order of the pile, and the caller acts on that card where it is (a Hellraiser-played card's draw hooks, Decisions Decisions' next repeat)"
+  },
   "EnemyAI:StealDrawOrDiscardCard:DiscardPile[c.Index]": {
    "class": "roll",
    "why": "an index from a roll over the pile or a list filtered from it: in expected mode every position is equally likely, so permuting the pile moves no probability (hindsight mode keeps the pile ordered)"
