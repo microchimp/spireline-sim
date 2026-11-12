@@ -76,11 +76,14 @@ order, but a feature the pool lacks cannot be made up.
 **Sampling of the human starts** (`plan`, `boost_weights`, `order_key`, `inclusion`). A cell (act and kind) is drawn by sequential Poisson sampling: each
 start has a **boost**, the largest over its relics, cards, enemy and deck type of 200 / (the sampling rate of its kind times the starts of its kind that have the feature), at least 1; its place
 in the cell's order is `u / boost` (u a fixed uniform of the start id); the plan's work order takes 100 fights of each cell in turn, up to the cell's quota
-(`QUOTA`: Act 2 boss 3,900 (the pool has fewer: all), Act 1 boss 3,000, elites 3,350 each act, hallways 1,800 each act), Act 2 first. Any prefix is a
+(`QUOTA`: Act 2 boss 3,900 (the pool has 3,701: all of them), Act 1 boss 1,500, elites 2,700 each act, hallways 1,400 each act; a fixed sampling rate a kind, `SAMPLE_RATE`: boss 0.5, elite 0.2,
+hallway 0.65, so a longer quota extends the same order), Act 2 first. Any prefix is a
 balanced sample, so the corpus is usable while it is still being built. **The weight** of a start is 1 / its inclusion probability given the fights built
 in its cell (`inclusion`: `min(1, lam * boost)` adding up to the cell's built count), stored as `w` on every row of the start; `w_cell` is the same divided by
 the cell's mean. The loader's `weight="pool"` (the default) brings the oversampled strata back to the human pool's mix and its cell sizes; `"cell"` brings
-back the oversampling only; `"none"` keeps the sample as drawn. Self-play rows weigh 1.
+back the oversampling only; `"none"` keeps the sample as drawn. Self-play rows weigh 1. **The weights in the finished corpus** (`w`: min / mean / max): Act 1 boss 1.0 / 5.1 / 22.5, Act 1 elite 1.0 / 7.2 / 36.7, Act 1 hallway 1.0 / 1.6 / 5.3,
+Act 2 boss 1.0 / 1.0 / 1.7 (the whole pool is in), Act 2 elite 1.0 / 3.2 / 23.4, Act 2 hallway 1.0 / 1.7 / 9.0. A weight of 20 or more is a rare start standing for twenty like it; a loss
+weighted that way is noisy, so clip it or use `weight="cell"` (mean 1 in each cell) or `"balanced"` (every kind-and-act cell of the selection the same total).
 
 ## 5. Coverage and counts
 
@@ -115,7 +118,7 @@ attack 11,509, mixed 24,255 (all over their 300 minimum). By health band: health
 
 **Relics and cards.** 220 relics appear in the human positions and **214 of them in at least 150 positions and 20 runs** (the other six are in fewer than 20 runs: the
 pool does not have them); of the 465 cards that appear, **222 are in at least 150 positions** and 229 in at least 20 positions and 20 runs; the other 236 are in fewer than 20 runs of
-the pool (event cards, other classes' cards a run picked up, transformed cards, a card seen in a handful of runs). Self-play: 204 relics and 198 cards in at least 150
+the pool (a long tail of cards seen in a handful of runs). Self-play: 204 relics and 198 cards in at least 150
 positions. The sampling put the rare features first (section 4): on the plan, the share of the pool's relics and cards that reach 50 starts in the sample rose from 175 to 189
 of 210 relics and from 126 to 157 of 187 cards at elites against a plain draw of the same size (bosses: cards 131 to 143 of 143); measured on the plan before the sampling
 rates were fixed, so approximate. **What the sampling cannot do**: a start has many features and the cells' quotas are fixed, so a feature of 100 to 200 pool starts reaches
