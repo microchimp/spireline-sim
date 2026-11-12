@@ -21,7 +21,7 @@ with the player at every screen is the player's run exactly.
     python rl/run_teacher.py relabel --labels DIR     # stored hindsight labels rescored with the door leaf (no play)
     python rl/run_teacher.py job     --lab LAB --store DIR --agent-root DIR [--source auto|new|stored] [--procs 4] [--block-min 60]
     python rl/run_teacher.py label   --lab LAB --store DIR --agent-root DIR   # `job --source stored`: round 0 from the stored exploring runs
-    python rl/run_teacher.py reencode --store DIR --generation N              # add rows_map.npz (block M of every row) to shards that lack it
+    python rl/run_teacher.py reencode --store DIR --generation N              # add rows_map.npz and rows_gaps.npz (blocks M and G of every row) to shards that lack them
 
 `play` is the measurement (D56): it holds its own QUIET.lock line (`run-teacher`), stops on another live line (not the always-on loop's
 `gym-loop`), on main.lock and while a night runs, and resumes where it stopped (a run with a row is never played again).
@@ -41,6 +41,13 @@ such run exactly (the stored exploring runs: `hindsight.replay_run`, the run's o
 holds every state and option list), builds the rows of the labelled screens again, refuses the shard unless they equal the stored `rows.npz` rows exactly, and
 only then writes `rows_map.npz` (no search is run: the replay's fights are the stored run's; about 5 to 20 CPU-s a run). It holds the store's job lock, resumes
 where it stopped (`reencode.d/`) and does nothing on a shard that has the file.
+
+**The state gaps** (D58 addenda 14 and 16): every shard written from now on also holds `rows_gaps.npz` (`gaps` float32 (rows, 36): block G of each row's afterstate,
+`features.afterstate_gaps`: the relic counters, the "?" rooms' odds and the merchant's removals the engine holds at the decision, with three known bits; aligned with
+`rows`), and its manifest says `state_gaps: true, gaps_version: 1`. They are read off the engine's own state (state lists 25, 26 and 27), so an older shard gets them
+only from a replay: `reencode` replays each run once for whatever side file a shard lacks (the map grid, the state gaps, or both), builds the rows again, refuses
+the shard unless they equal `rows.npz` exactly, and writes the file(s). The per-run results are `reencode.d/<seed>.npz` (rows, grid) and `reencode.d/<seed>.gaps.npz`
+(rows, gaps): a run whose grid result stands is replayed again only for its gaps.
 
 Lab code: nothing here changes the engine, the search, the lab's self-play, the loop or the night. No human record is read anywhere in this
 file.
@@ -119,6 +126,9 @@ STORED_FROM, STORED_TO = "20261105", "20261108"  # the stored runs of round 0: j
 ROWS_WIDTH = 1863  # human_prior_infer.option_rows
 GRID_WIDTH = 17 * 7 * 13  # features.MAP_GRID_SIZE (a test holds them equal): block M of one row, int8
 SHARD_DECISIONS, SHARD_ROWS, SHARD_MANIFEST = "decisions.jsonl", "rows.npz", "manifest.json"
+GAPS_WIDTH = 36  # features.GAPS_SIZE (a test holds them equal): block G of one row, float32
+GAPS_VERSION = 1  # features.GAPS_VERSION: the layout of block G a shard's rows_gaps.npz holds
+SHARD_ROWS_GAPS = "rows_gaps.npz"  # block G of every row of rows.npz, in its order (`gaps` float32 (rows, GAPS_WIDTH))
 SHARD_ROWS_MAP = "rows_map.npz"  # the map grid of every row of rows.npz, in its order (`grid` int8 (rows, GRID_WIDTH))
 REENCODE_DIR = "reencode.d"  # `reencode`'s per-run results (resumable)
 DEFAULT_LAB = "D:/spireline/referee/LAB"
@@ -592,13 +602,14 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
     log-probabilities and logits over the options, the rest groups, and the player's score of each option (V + lambda log pi_h on a
     blended screen, V elsewhere; None for an option V cannot score). With `rows` also the judgement's input rows of every option
     (`human_prior_infer.option_rows`, float32 (n, 1863)): what the decision shard stores for the student, and beside them `grid`, block M of
-    each row's afterstate (`human_prior_infer.option_grids`, int8 (n, 1547)): what `rows_map.npz` stores. A human prior with the map tower is
-    scored with the grid. An option the judgement cannot score has no row: `row_options` lists the options that have one (all of them, unless
+    each row's afterstate (`human_prior_infer.option_grids`, int8 (n, 1547)) and `gaps`, block G of each row's afterstate
+    (`human_prior_infer.option_gaps`, float32 (n, 36)): what `rows_map.npz` and `rows_gaps.npz` store. A human prior with the map tower is
+    scored with the grid, one with the state gaps with block G. An option the judgement cannot score has no row: `row_options` lists the options that have one (all of them, unless
     some option is the rules policy's to decide)."""
     import numpy as np  # noqa: PLC0415
 
     import imitation_chooser as ic  # noqa: PLC0415
-    from human_prior_infer import log_softmax, option_grids, option_rows  # noqa: PLC0415
+    from human_prior_infer import log_softmax, option_gaps, option_grids, option_rows  # noqa: PLC0415
     from run_train import models  # noqa: PLC0415
     from run_train import policy as run_policy  # noqa: PLC0415
 
@@ -607,8 +618,9 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
     screen = ic.screen_of(decision) if lam > 0 else None
     options = list(decision.options)
     out: dict[str, Any] = {"lam": lam, "screen": screen, "logp": None, "logits": None, "groups": None, "scores": [None] * len(options),
-                           "v": [None] * len(options), "rows": None, "grid": None, "row_options": list(range(len(options)))}
+                           "v": [None] * len(options), "rows": None, "grid": None, "gaps": None, "row_options": list(range(len(options)))}
     tower = bool(getattr(getattr(policy, "prior", None), "map_grid", False))  # a human prior with the map tower is scored with each row's grid
+    gapped = bool(getattr(getattr(policy, "prior", None), "state_gaps", False))  # one with the state gaps with each row's block G
     idx = [i for i, o in enumerate(options) if o.scorable]
     if idx:
         probs = run_policy.floor_probs(policy.nets, view, [options[i] for i in idx])
@@ -626,11 +638,14 @@ def screen_inputs(policy: Any, view: Any, decision: Any, rows: bool = False) -> 
             mat = option_rows(policy.nets, view, options)
             graded = options
         grid = option_grids(view, graded) if rows or (tower and screen is not None) else None
+        gaps = option_gaps(view, graded) if rows or (gapped and screen is not None) else None
         if rows:
             out["rows"] = np.ascontiguousarray(mat, dtype=np.float32)
             out["grid"] = np.ascontiguousarray(grid, dtype=np.int8)
+            out["gaps"] = np.ascontiguousarray(gaps, dtype=np.float32)
         if screen is not None:
-            logits = [float(x) for x in (policy.prior.row_logits(mat, grid) if tower else policy.prior.row_logits(mat))]
+            scored = policy.prior.row_logits(mat, grid, gaps) if gapped else (policy.prior.row_logits(mat, grid) if tower else policy.prior.row_logits(mat))
+            logits = [float(x) for x in scored]
             logp = [float(x) for x in log_softmax(logits)]
             out.update(logp=logp, logits=logits, groups=[ic.rest_group(o) for o in options] if screen == "rest" else None)
             if not math.isinf(lam):
@@ -648,11 +663,12 @@ def prior_extra(rd: dict[str, Any], options: Iterable[int]) -> dict[int, float]:
 
 def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: str, ordinal: int, k: int, max_options: int,
            k_max: int | None = None, k_step: int = JOB_K_STEP, rows_out: list | None = None,
-           cal: dict[int, tuple[float, float]] | None = None, grid_out: list | None = None) -> dict:
+           cal: dict[int, tuple[float, float]] | None = None, grid_out: list | None = None, gaps_out: list | None = None) -> dict:
     """Play the screen's shortlisted options K times each to the door and return the decision's record: the teacher's index,
     the player's, each draw's G and what the screen's reading was. With `k_max` above `k` the draws are taken adaptively: `k` first, then
     `k_step` more at a time while the top two options are within Z standard errors (`wants_more_draws`), up to `k_max`; the record's `k` is
-    the number of draws taken. With `rows_out` the screen's option rows (`screen_inputs`) are appended to it, and with `grid_out` their map grids."""
+    the number of draws taken. With `rows_out` the screen's option rows (`screen_inputs`) are appended to it, with `grid_out` their map grids and with `gaps_out`
+    their block G."""
     t0, c0 = time.perf_counter(), time.process_time()
     view = decision.view or view
     rd = screen_inputs(player.policy, view, decision, rows=rows_out is not None)
@@ -660,6 +676,8 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
         rows_out.append(rd["rows"])
     if grid_out is not None:
         grid_out.append(rd["grid"])
+    if gaps_out is not None:
+        gaps_out.append(rd["gaps"])
     chosen = shortlist(decision.options, rd["scores"], max_options, pick.index)
     kind = KIND_OF_TYPE.get(decision.type)
     extra = prior_extra(rd, chosen)
@@ -1033,13 +1051,16 @@ class RunFiles:
     screens: a record is appended after its rows, `row0` its first row in the run's own row file. `load` reads back the records whose rows
     are all there (in order) and cuts both files to that prefix. Beside the rows (`<seed>.rows_map.i8`) go their map grids (int8, `GRID_WIDTH` a
     row), written first, so a kill leaves at least as many grids as rows and `load` cuts them back too. A run whose rows have no grid (played by an
-    earlier build, or a screen stored without one) is `grid_ok == False` for good: its shard gets no `rows_map.npz` until `reencode` writes it."""
+    earlier build, or a screen stored without one) is `grid_ok == False` for good: its shard gets no `rows_map.npz` until `reencode` writes it. Block G goes
+    the same way (`<seed>.rows_gaps.f32`, float32, `GAPS_WIDTH` a row; `gaps_ok`; `rows_gaps.npz`)."""
 
     def __init__(self, gen_dir: Path | str, seed: str) -> None:
         d = Path(gen_dir) / "decisions.d"
         self.recs, self.rows, self.record = d / f"{seed}.jsonl", d / f"{seed}.rows.f32", d / f"{seed}.record.json"
         self.grid = d / f"{seed}.rows_map.i8"
         self.grid_ok = True
+        self.gaps = d / f"{seed}.rows_gaps.f32"
+        self.gaps_ok = True
         self.n_rows = 0
         self.by_ordinal: dict[int, dict] = {}
 
@@ -1068,6 +1089,12 @@ class RunFiles:
         if self.grid_ok and gsize != end * GRID_WIDTH:
             with open(self.grid, "r+b") as fh:
                 fh.truncate(end * GRID_WIDTH)
+        gwidth = GAPS_WIDTH * 4
+        zsize = self.gaps.stat().st_size if self.gaps.is_file() else 0
+        self.gaps_ok = zsize >= end * gwidth
+        if self.gaps_ok and zsize != end * gwidth:
+            with open(self.gaps, "r+b") as fh:
+                fh.truncate(end * gwidth)
         self.by_ordinal = {int(r["ordinal"]): r for r in keep}
         return self.by_ordinal
 
@@ -1076,10 +1103,10 @@ class RunFiles:
         """The rows a stored record has: one per option, or one per option in its `_ro` when only some options could be scored."""
         return len(rec["_ro"]) if rec.get("_ro") is not None else int(rec["n_options"])
 
-    def append(self, rec: dict, rows: Any, grid: Any = None) -> dict:
+    def append(self, rec: dict, rows: Any, grid: Any = None, gaps: Any = None) -> dict:
         """Store a decision record with its rows (a float32 array (rows, 1863): one per option, or one per option of the record's `_ro`; None
-        when none could be built) and, with `grid`, their block M (int8 (rows, 1547)); returns the stored record. Rows stored without a grid
-        end the run's grids (`grid_ok` False): a grid file shorter than the rows would not line up."""
+        when none could be built) and, with `grid`, their block M (int8 (rows, 1547)) and, with `gaps`, their block G (float32 (rows, 36)); returns the stored
+        record. Rows stored without a grid (or without gaps) end the run's grids (`grid_ok` False; `gaps_ok`): a file shorter than the rows would not line up."""
         import numpy as np  # noqa: PLC0415
 
         self.recs.parent.mkdir(parents=True, exist_ok=True)
@@ -1097,6 +1124,15 @@ class RunFiles:
                 if self.grid_ok:
                     with open(self.grid, "ab") as fh:
                         fh.write(g.tobytes())
+            if gaps is None:
+                self.gaps_ok = False
+            else:
+                z = np.ascontiguousarray(gaps, dtype="<f4")
+                if z.shape != (len(arr), GAPS_WIDTH):
+                    raise ValueError(f"gaps {z.shape} for {len(arr)} rows")
+                if self.gaps_ok:
+                    with open(self.gaps, "ab") as fh:
+                        fh.write(z.tobytes())
             with open(self.rows, "ab") as fh:
                 fh.write(arr.tobytes())
             r["row0"] = self.n_rows
@@ -1119,6 +1155,9 @@ class RunFiles:
         if self.grid_ok and self.grid.is_file():
             with open(self.grid, "r+b") as fh:
                 fh.truncate(end * GRID_WIDTH)
+        if self.gaps_ok and self.gaps.is_file():
+            with open(self.gaps, "r+b") as fh:
+                fh.truncate(end * GAPS_WIDTH * 4)
         self.n_rows, self.by_ordinal = end, {int(r["ordinal"]): r for r in keep}
 
 
@@ -1143,15 +1182,17 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
     exactly as the teacher made it plus `row0` (the screen's first row in `rows.npz`), `rows.npz` (`rows` float32 (rows, 1863) as
     `human_prior_infer.option_rows` built them at play, `decision` int32 the record's line, `option` int16 the option's index),
     `rows_map.npz` (`grid` int8 (rows, 1547), block M of each row, in `rows`' order; only when every run of the shard stored its grids: else the
-    manifest says `map_grid: false` and `reencode` adds the file) and `manifest.json` (`manifest` plus the counts and the runs). Rebuilt whole
+    manifest says `map_grid: false` and `reencode` adds the file), `rows_gaps.npz` (`gaps` float32 (rows, 36), block G of each row, the same way: manifest
+    `state_gaps`, `gaps_version`) and `manifest.json` (`manifest` plus the counts and the runs). Rebuilt whole
     when it exists; returns the manifest written."""
 
     import numpy as np  # noqa: PLC0415
 
     gen_dir = Path(gen_dir)
     recs_out: list[dict] = []
-    rows_parts, dec_parts, opt_parts, grid_parts = [], [], [], []
+    rows_parts, dec_parts, opt_parts, grid_parts, gaps_parts = [], [], [], [], []
     grid_all = True
+    gaps_all = True
     n_rows = 0
     by_kind: Counter = Counter()
     refused: Counter = Counter()
@@ -1161,11 +1202,16 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
         recs = rf.load()
         mat = np.fromfile(rf.rows, dtype="<f4").reshape(-1, ROWS_WIDTH) if rf.rows.is_file() and rf.n_rows else np.zeros((0, ROWS_WIDTH), dtype="<f4")
         gmat = np.zeros((0, GRID_WIDTH), dtype=np.int8)
+        zmat = np.zeros((0, GAPS_WIDTH), dtype="<f4")
         if rf.n_rows:
             if rf.grid_ok:
                 gmat = np.fromfile(rf.grid, dtype=np.int8).reshape(-1, GRID_WIDTH)
             else:
                 grid_all = False
+            if rf.gaps_ok:
+                zmat = np.fromfile(rf.gaps, dtype="<f4").reshape(-1, GAPS_WIDTH)
+            else:
+                gaps_all = False
         for ordinal in sorted(recs):
             r = dict(recs[ordinal])
             local = r.pop("row0", None)
@@ -1176,6 +1222,8 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
                 rows_parts.append(mat[int(local) : int(local) + n])
                 if grid_all:
                     grid_parts.append(gmat[int(local) : int(local) + n])
+                if gaps_all:
+                    gaps_parts.append(zmat[int(local) : int(local) + n])
                 dec_parts.append(np.full(n, line, dtype=np.int32))
                 opt_parts.append(np.array(options if options is not None else range(n), dtype=np.int16))
                 r["row0"] = n_rows
@@ -1201,7 +1249,12 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
     if grid_all:
         np.savez_compressed(tmp / "rows_map.tmp.npz", grid=np.concatenate(grid_parts).astype(np.int8) if grid_parts else np.zeros((0, GRID_WIDTH), dtype=np.int8))
         os.replace(tmp / "rows_map.tmp.npz", tmp / SHARD_ROWS_MAP)
-    manifest = {**manifest, "map_grid": bool(grid_all)}
+    if gaps_all:
+        np.savez_compressed(tmp / "rows_gaps.tmp.npz", gaps=np.concatenate(gaps_parts).astype(np.float32) if gaps_parts else np.zeros((0, GAPS_WIDTH), dtype=np.float32))
+        os.replace(tmp / "rows_gaps.tmp.npz", tmp / SHARD_ROWS_GAPS)
+    manifest = {**manifest, "map_grid": bool(grid_all), "state_gaps": bool(gaps_all)}
+    if gaps_all:
+        manifest["gaps_version"] = GAPS_VERSION
     doc = {**manifest, "seeds": list(seeds), "runs": len(seeds),
            "counts": {"decisions": len(recs_out), "rows": n_rows, "runs": len(seeds), "refused": int(sum(refused.values())),
                       "k_extended": extended, "by_kind_act": dict(sorted(by_kind.items()))}}
@@ -1387,12 +1440,13 @@ def _screen(files: RunFiles, ordinal: int, d: Any, view: Any, pick: Any, s: Any,
         files.drop_from(ordinal)  # the replay left what was stored: from here on it is played again
     rows_out: list = []
     grid_out: list = []
+    gaps_out: list = []
     try:
         rec = decide(s, d, view, pick, _J["player"], seed=seed, ordinal=ordinal, k=_J["k"], max_options=_J["max_options"], k_max=_J["k_max"],
-                     rows_out=rows_out, cal=_J["cal_map"], grid_out=grid_out)
+                     rows_out=rows_out, cal=_J["cal_map"], grid_out=grid_out, gaps_out=gaps_out)
     except Exception as e:  # noqa: BLE001 -- a screen the teacher cannot read is the player's, said by reason: it never costs the run (a retry would meet it again)
         return files.append(refused_record(d, view, pick, seed, ordinal, f"error:{type(e).__name__}"), None)
-    return files.append(rec, rows_out[0] if rows_out else None, grid_out[0] if grid_out else None)
+    return files.append(rec, rows_out[0] if rows_out else None, grid_out[0] if grid_out else None, gaps_out[0] if gaps_out else None)
 
 
 def new_run(task: tuple) -> dict:
@@ -1733,6 +1787,21 @@ def shard_has_grid(d: Path) -> bool:
     return bool(isinstance(doc, dict) and doc.get("map_grid"))
 
 
+def shard_has_gaps(d: Path) -> bool:
+    """Whether the shard has its `rows_gaps.npz`, its manifest says so and names the block G layout this build reads."""
+    if not (d / SHARD_ROWS_GAPS).is_file():
+        return False
+    doc = read_json_file(d / SHARD_MANIFEST)
+    return bool(isinstance(doc, dict) and doc.get("state_gaps") and doc.get("gaps_version") == GAPS_VERSION)
+
+
+# what `reencode` can add to a shard: the side file, the array in it and in a run's result, the per-run result's suffix, the width and dtype, the manifest key
+SIDES: dict[str, dict[str, Any]] = {
+    "grid": {"file": SHARD_ROWS_MAP, "key": "grid", "suffix": ".npz", "width": GRID_WIDTH, "dtype": "int8", "manifest": "map_grid", "has": shard_has_grid},
+    "gaps": {"file": SHARD_ROWS_GAPS, "key": "gaps", "suffix": ".gaps.npz", "width": GAPS_WIDTH, "dtype": "float32", "manifest": "state_gaps", "has": shard_has_gaps},
+}
+
+
 def reencode_needs(d: Path) -> dict[str, dict[int, int]]:
     """For a shard: seed -> {ordinal: the record's line in decisions.jsonl} of every screen that has rows."""
     needs: dict[str, dict[int, int]] = defaultdict(dict)
@@ -1743,37 +1812,47 @@ def reencode_needs(d: Path) -> dict[str, dict[int, int]]:
 
 
 def reencode_run(task: tuple) -> dict:
-    """One run's screens built again: `task` = ("rt-reencode", seed, ix, source, record, ordinals). A stored exploring run (`source` stored, `record` its
+    """One run's screens built again: `task` = ("rt-reencode", seed, ix, source, record, ordinals[, sides]). A stored exploring run (`source` stored, `record` its
     row of the lab's runs) is replayed exactly (`hindsight.replay_run`: its streams, checked against its record) and the rows of the named screens built
     at their points (the replay stops after the last); a run the teacher played (`source` new) has its RunRecord, which holds every state and option
-    list, so no game is played. The rows, their grids and options go to `reencode.d/<seed>.npz`; the row returned says whether they all came."""
+    list, so no game is played. `sides` (default the map grid alone) names the side files wanted: the rows and their grids go to `reencode.d/<seed>.npz`, the
+    rows and their block G to `reencode.d/<seed>.gaps.npz`; the row returned says whether they all came."""
     import numpy as np  # noqa: PLC0415
 
     t0, c0 = time.perf_counter(), time.process_time()
-    _, seed, ix, source, record, ordinals = task
+    _, seed, ix, source, record, ordinals, *rest = task
+    sides = tuple(rest[0]) if rest else ("grid",)
     out = _J["gen_dir"] / REENCODE_DIR
     out.mkdir(parents=True, exist_ok=True)
     policy = _J["player"].policy
     left = {int(o) for o in ordinals}
     got: dict[int, dict] = {}
-    row: dict[str, Any] = {"_task": ["rt-reencode", seed, int(ix)], "arm": "reencode", "seed": seed, "source": source, "ok": False, "screens": len(left)}
+    row: dict[str, Any] = {"_task": ["rt-reencode", seed, int(ix)], "arm": "reencode", "seed": seed, "source": source, "ok": False, "screens": len(left), "sides": list(sides)}
 
-    def take(ordinal: int, view: Any, decision: Any) -> None:
+    def take(ordinal: int, view: Any, decision: Any) -> bool:
+        """Build the screen's rows; False (and `why`) when block G is wanted and the view does not hold all of it (a library without state lists 26 and 27: its
+        unknown parts would be written as zeros that pass for known)."""
+        v = decision.view or view
+        g = getattr(v, "gaps", None)
+        if "gaps" in sides and (g is None or g.counters is None or g.rooms is None or g.removals is None):
+            row["why"] = f"decision {ordinal}: the engine view holds no state gaps (a native library older than state lists 26 and 27? give --lib)"
+            return False
         r = screen_inputs(policy, view, decision, rows=True)
         got[ordinal] = r
         left.discard(ordinal)
+        return True
 
     if source == "stored":
         import hindsight  # noqa: PLC0415
 
         def hook(pt: Any) -> bool:
-            if pt.ordinal in left:
-                take(pt.ordinal, pt.view, pt.decision)
+            if pt.ordinal in left and not take(pt.ordinal, pt.view, pt.decision):
+                return True
             return not left
 
         res = hindsight.replay_run(seed, int(ix), _replayer(tuple(record["_explore"])), record, hook, config="a3-v1", own_schedule=True)
         row["replay"] = res
-        if left:
+        if left and "why" not in row:
             row["why"] = f"the replay ended ({res.get('end')}) before {len(left)} of the screens"
     else:
         from run_train import shards  # noqa: PLC0415
@@ -1788,41 +1867,51 @@ def reencode_run(task: tuple) -> dict:
                 if entry is None or int(entry["i"]) != ordinal:
                     row["why"] = f"the run record has no decision {ordinal}"
                     break
-                take(ordinal, shards.state_view(rec, entry), shards.entry_decision(entry))
+                view = shards.state_view(rec, entry)
+                if "gaps" in sides and view.gaps is None:  # a record of an earlier build holds no engine state beyond the view: zeros would pass for unknown parts
+                    row["why"] = f"the run record holds no state gaps for decision {ordinal} (the run was played by an earlier build, and a teacher-played run cannot be replayed)"
+                    break
+                if not take(ordinal, view, shards.entry_decision(entry)):
+                    break
     if not left and "why" not in row:
         ords = sorted(got)
         rows = [got[o]["rows"] for o in ords]
-        grids = [got[o]["grid"] for o in ords]
         opts = [np.array(got[o]["row_options"], dtype=np.int16) for o in ords]
-        tmp = out / f"{seed}.tmp.npz"
-        np.savez_compressed(tmp, ordinal=np.array(ords, dtype=np.int32), n=np.array([len(x) for x in rows], dtype=np.int32),
-                            rows=np.concatenate(rows).astype(np.float32), grid=np.concatenate(grids).astype(np.int8), option=np.concatenate(opts))
-        os.replace(tmp, out / f"{seed}.npz")
+        common = {"ordinal": np.array(ords, dtype=np.int32), "n": np.array([len(x) for x in rows], dtype=np.int32),
+                  "rows": np.concatenate(rows).astype(np.float32), "option": np.concatenate(opts)}
+        for side in sides:
+            spec = SIDES[side]
+            arrays = [got[o][spec["key"]] for o in ords]
+            tmp = out / f"{seed}.tmp{spec['suffix']}"
+            np.savez_compressed(tmp, **common, **{spec["key"]: np.concatenate(arrays).astype(spec["dtype"])})
+            os.replace(tmp, out / f"{seed}{spec['suffix']}")
         row["ok"] = True
     row["cpu"] = round(time.process_time() - c0, 2)
     row["wall"] = round(time.perf_counter() - t0, 2)
     return row
 
 
-def reencode_assemble(gen_dir: Path | str, d: Path) -> dict:
-    """Write the shard `d`'s `rows_map.npz` from the runs' results in `reencode.d/`: every screen's rows built again must equal the stored rows (the same
-    options, the same float32 numbers, exactly) or `ReencodeError` says where and nothing is written. The manifest gains `map_grid: true`. Returns the counts."""
+def reencode_assemble(gen_dir: Path | str, d: Path, side: str = "grid") -> dict:
+    """Write the shard `d`'s side file (`side` "grid": `rows_map.npz`, "gaps": `rows_gaps.npz`) from the runs' results in `reencode.d/`: every screen's rows built again
+    must equal the stored rows (the same options, the same float32 numbers, exactly) or `ReencodeError` says where and nothing is written. The manifest gains
+    `map_grid: true` (or `state_gaps: true` and `gaps_version`). Returns the counts."""
     import numpy as np  # noqa: PLC0415
 
+    spec = SIDES[side]
     gen_dir, d = Path(gen_dir), Path(d)
     recs = read_jsonl(d / SHARD_DECISIONS)
     with np.load(d / SHARD_ROWS, allow_pickle=False) as z:
         rows, decision, option = z["rows"], z["decision"], z["option"]
-    grid = np.zeros((len(rows), GRID_WIDTH), dtype=np.int8)
+    side_all = np.zeros((len(rows), spec["width"]), dtype=spec["dtype"])
     covered = np.zeros(len(rows), dtype=bool)
     order = np.argsort(decision, kind="stable")  # the rows of a decision, in row order
     sd = decision[order]
     for seed, ords in reencode_needs(d).items():
-        res = gen_dir / REENCODE_DIR / f"{seed}.npz"
+        res = gen_dir / REENCODE_DIR / f"{seed}{spec['suffix']}"
         if not res.is_file():
             raise ReencodeError(f"{d.name}: run {seed} has no result (reencode it)")
         with np.load(res, allow_pickle=False) as z:
-            r_ord, r_n, r_rows, r_grid, r_opt = z["ordinal"], z["n"], z["rows"], z["grid"], z["option"]
+            r_ord, r_n, r_rows, r_side, r_opt = z["ordinal"], z["n"], z["rows"], z[spec["key"]], z["option"]
         start = np.concatenate([[0], np.cumsum(r_n)])
         have = {int(o): i for i, o in enumerate(r_ord)}
         for ordinal, line in ords.items():
@@ -1838,22 +1927,27 @@ def reencode_assemble(gen_dir: Path | str, d: Path) -> dict:
             if not np.array_equal(rows[idx], got_rows):
                 worst = float(np.max(np.abs(rows[idx].astype(np.float64) - got_rows.astype(np.float64))))
                 raise ReencodeError(f"{d.name}: run {seed} screen {ordinal}: the rows built again are not the stored rows (largest difference {worst:.3g}); "
-                                    "no grid is written for this shard")
-            grid[idx] = r_grid[start[i]:start[i + 1]]
+                                    f"no {side} file is written for this shard")
+            side_all[idx] = r_side[start[i]:start[i + 1]]
             covered[idx] = True
     if not covered.all():
         raise ReencodeError(f"{d.name}: {int((~covered).sum())} of {len(rows)} rows have no run to build them again")
-    tmp = d / "rows_map.tmp.npz"
-    np.savez_compressed(tmp, grid=grid)
-    os.replace(tmp, d / SHARD_ROWS_MAP)
+    tmp = d / f"{Path(spec['file']).stem}.tmp.npz"
+    np.savez_compressed(tmp, **{spec["key"]: side_all})
+    os.replace(tmp, d / spec["file"])
     doc = read_json_file(d / SHARD_MANIFEST) or {}
-    doc.update(map_grid=True, map_grid_reencoded_utc=utc().strftime("%Y-%m-%dT%H:%M:%SZ"))
+    stamp = utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    if side == "grid":
+        doc.update(map_grid=True, map_grid_reencoded_utc=stamp)
+    else:
+        doc.update(state_gaps=True, gaps_version=GAPS_VERSION, state_gaps_reencoded_utc=stamp)
     write_json(d / SHARD_MANIFEST, doc)
-    return {"shard": d.name, "rows": int(len(rows)), "decisions": int(len(recs)), "runs": len(reencode_needs(d))}
+    return {"shard": d.name, "side": side, "rows": int(len(rows)), "decisions": int(len(recs)), "runs": len(reencode_needs(d))}
 
 
 def reencode_cmd(a: argparse.Namespace) -> int:
-    """Add `rows_map.npz` to the shards of `<store>/<generation>` that lack it (idempotent; resumes; holds the store's job lock). See the module docstring."""
+    """Add `rows_map.npz` and `rows_gaps.npz` to the shards of `<store>/<generation>` that lack them (idempotent; resumes; holds the store's job lock). `--sides`
+    limits it to one. See the module docstring."""
     import fight_gym  # noqa: PLC0415
     import gen_loop  # noqa: PLC0415
     import hindsight  # noqa: PLC0415
@@ -1864,9 +1958,11 @@ def reencode_cmd(a: argparse.Namespace) -> int:
         procutil.lower_priority()
     store = Path(a.store)
     gen_dir = store / str(a.generation)
-    todo = [d for d in shard_folders(gen_dir, a.shard or None) if not shard_has_grid(d)]
+    wanted = tuple(x for x in SIDES if x in {y.strip() for y in str(getattr(a, "sides", "grid,gaps")).split(",")})
+    lacking = {d.name: tuple(x for x in wanted if not SIDES[x]["has"](d)) for d in shard_folders(gen_dir, a.shard or None)}
+    todo = [d for d in shard_folders(gen_dir, a.shard or None) if lacking[d.name]]
     if not todo:
-        print("run-teacher reencode: every shard has its map grid", flush=True)
+        print(f"run-teacher reencode: every shard has its {' and '.join(wanted)} file(s)", flush=True)
         return 0
     why = take_store_lock(store)
     if why:
@@ -1894,14 +1990,15 @@ def reencode_cmd(a: argparse.Namespace) -> int:
             needs = reencode_needs(d)
             plans[d.name] = needs
             for seed, ords in needs.items():
-                if (gen_dir / REENCODE_DIR / f"{seed}.npz").is_file():
-                    continue  # a result of an earlier, stopped reencode
+                sides = tuple(x for x in lacking[d.name] if not (gen_dir / REENCODE_DIR / f"{seed}{SIDES[x]['suffix']}").is_file())  # a result of an earlier, stopped reencode
+                if not sides:
+                    continue
                 row = rows_by_seed.get(seed)
                 src = (row or {}).get("source")
                 if row is None or src not in ("stored", "new") or (src == "stored" and seed not in stored):
                     missing.append(seed)
                     continue
-                tasks.append(("rt-reencode", seed, int(row["ix"]), src, stored.get(seed) if src == "stored" else None, sorted(ords)))
+                tasks.append(("rt-reencode", seed, int(row["ix"]), src, stored.get(seed) if src == "stored" else None, sorted(ords), sides))
         if a.limit_runs:
             tasks = tasks[: a.limit_runs]
         print(f"run-teacher reencode: {len(todo)} shards, {len(tasks)} runs to replay ({len(missing)} with no row or stored record), {a.procs} processes", flush=True)
@@ -1920,11 +2017,12 @@ def reencode_cmd(a: argparse.Namespace) -> int:
                     print(f"run-teacher reencode: run {r.get('seed')} not built again: {r.get('why')}", flush=True)
         done, refused = [], []
         for d in todo:
-            try:
-                done.append(reencode_assemble(gen_dir, d))
-            except ReencodeError as e:
-                refused.append(str(e))
-                print(f"run-teacher reencode: {e}", flush=True)
+            for side in lacking[d.name]:
+                try:
+                    done.append(reencode_assemble(gen_dir, d, side))
+                except ReencodeError as e:
+                    refused.append(str(e))
+                    print(f"run-teacher reencode: {e}", flush=True)
         res = {"shards_done": len(done), "rows": sum(x["rows"] for x in done), "runs": sum(x["runs"] for x in done), "refused": refused,
                "runs_not_built": sorted(set(failed))[:20]}
         print("run-teacher reencode: " + json.dumps(clean_path(res)), flush=True)
@@ -2142,7 +2240,7 @@ def build_parser() -> argparse.ArgumentParser:
     rl = sub.add_parser("relabel", help="stored hindsight labels rescored with the door leaf")
     rl.add_argument("--labels", required=True)
     rl.add_argument("--write", default="")
-    re_ = sub.add_parser("reencode", help="add rows_map.npz (the map grid of every row) to the shards of a store that lack it")
+    re_ = sub.add_parser("reencode", help="add rows_map.npz and rows_gaps.npz (the map grid and the state gaps of every row) to the shards of a store that lack them")
     re_.add_argument("--store", default=DEFAULT_STORE)
     re_.add_argument("--generation", type=int, required=True)
     re_.add_argument("--agent-root", default=DEFAULT_AGENT_ROOT, help="where agent/current.json names the player that made the shards")
@@ -2153,6 +2251,7 @@ def build_parser() -> argparse.ArgumentParser:
     re_.add_argument("--stored-config", default=STORED_CONFIG)
     re_.add_argument("--procs", type=int, default=4)
     re_.add_argument("--shard", action="append", default=[], help="only this shard (repeatable)")
+    re_.add_argument("--sides", default="grid,gaps", help="which side files to add: grid (rows_map.npz), gaps (rows_gaps.npz), or both (default)")
     re_.add_argument("--limit-runs", type=int, default=0, help="replay at most this many runs (a smoke test; the shards that are not complete are left)")
     for name, help_ in (("job", "the teacher as a lab job: shards in the store, under the filler's rules"),
                         ("label", "round 0: replay the stored exploring runs and label their screens (job --source stored)")):

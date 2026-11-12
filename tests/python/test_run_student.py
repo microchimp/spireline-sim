@@ -1101,5 +1101,239 @@ class MapGridTests(unittest.TestCase):
         self.assertTrue(p.parse_args(["check", "--shards-root", "s", "--map-grid"]).map_grid)
 
 
+# ------------------------------------------------------------------------------------------------------------------ the state gaps (D58 addenda 14 and 16)
+
+
+def gaps_weights(seed: int = 5, scale: float = 0.05, tower: bool = False) -> dict[str, np.ndarray]:
+    """A v3 prior's weights: the plain prior's with the first layer's 36 extra columns for block G (after the tower's 64 when `tower`)."""
+    rng = np.random.default_rng(seed)
+    w = tower_weights(seed, scale) if tower else random_weights(seed, scale)
+    wide = 454 + (64 if tower else 0) + rs.GAPS_WIDTH
+    w["hidden1.weight"] = (rng.standard_normal((256, wide)) * scale).astype(np.float32)
+    return w
+
+
+def gaps_prior_file(path: Path, weights: dict[str, np.ndarray], tower: bool = False) -> Path:
+    meta = {"variant": "test-gaps", "state_gaps": True, "gaps_version": 1}
+    if tower:
+        meta["map_grid"] = True
+    np.savez(path, meta=np.array(json.dumps(meta)), **weights)
+    return path
+
+
+def add_rows_gaps(d: Path, seed: int = 13, bad: str | None = None, version: int | None = None) -> np.ndarray:
+    """Write `rows_gaps.npz` beside a shard's rows.npz: random block G, one row per row (the known bits 0 or 1)."""
+    with np.load(d / "rows.npz") as z:
+        n = len(z["rows"])
+    gaps = np.random.default_rng(seed).random((n, rs.GAPS_WIDTH)).astype(np.float32)
+    gaps[:, -3:] = (gaps[:, -3:] < 0.5).astype(np.float32)
+    if bad == "shape":
+        gaps = gaps[:, :-1]
+    elif bad == "rows":
+        gaps = gaps[:-1]
+    elif bad == "nan":
+        gaps[0, 0] = np.nan
+    elif bad == "dtype":
+        gaps = gaps.astype(np.float64)
+    np.savez_compressed(d / rs.ROWS_GAPS_FILE, gaps=gaps)
+    if version is not None:
+        man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        man.update(state_gaps=True, gaps_version=version)
+        (d / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+    return gaps
+
+
+def human_dataset_v3(runs_by_fifth: dict[int, list[str]], seed: int = 5, grid: bool = False, **kw) -> "hp.Dataset":
+    """`human_dataset` with block G: a table of 20 random vectors and each row's entry in it (and block M with `grid`)."""
+    ds = human_dataset(runs_by_fifth, seed=seed, **kw)
+    rng = np.random.default_rng(seed + 2)
+    table = rng.random((20, rs.GAPS_WIDTH)).astype(np.float32)
+    table[:, -3:] = (table[:, -3:] < 0.5).astype(np.float32)
+    ix = rng.integers(0, 20, len(ds.dense)).astype(np.int32)
+    if grid:
+        gtable = (rng.random((20, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+        out = hp.Dataset(ds.dec, ds.dense, ds.counts, ds.role, ds.ident, ds.run_ids, gtable, rng.integers(0, 20, len(ds.dense)).astype(np.int32), table, ix)
+    else:
+        out = hp.Dataset(ds.dec, ds.dense, ds.counts, ds.role, ds.ident, ds.run_ids, None, None, table, ix)
+    out._index(None)  # noqa: SLF001
+    return out
+
+
+class StateGapsTests(unittest.TestCase):
+    """A fit with block G: the shards' `rows_gaps.npz`, the v3 human shards, the refusals (a missing file, another version, another row count)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.plain = random_weights()  # the prior the teacher played with
+        cls.gaps = gaps_weights()  # the v3 prior the fit starts from
+        cls.plain_path = write_weights(cls.root / "pi_h.npz", cls.plain)
+        cls.gaps_path = gaps_prior_file(cls.root / "pi_h_v3.npz", cls.gaps)
+        cls.plain_prior = hpi.PriorScorer.load(cls.plain_path)
+        cls.gaps_prior = hpi.PriorScorer.load(cls.gaps_path)
+        cls.synth = Synth(cls.plain, seed=19)
+        cls.shards = synth_shards(cls.root, cls.synth, runs=60, kinds=("card", "route", "shop", "reward"), per_kind=2)
+        cls.block = add_rows_gaps(cls.shards, version=1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_constants_agree(self):
+        from run_train import features
+
+        self.assertEqual(features.GAPS_SIZE, rs.GAPS_WIDTH)
+        self.assertEqual(features.GAPS_VERSION, rs.GAPS_VERSION)
+
+    def test_a_shard_with_rows_gaps_loads_its_block_row_for_row_and_scores_with_it(self):
+        ts = rs.load_shards(self.shards, prior=self.gaps_prior, state_gaps=True, teacher_prior=self.plain_prior)
+        self.assertEqual((len(ts.q), rs.GAPS_WIDTH), ts.gaps.shape)
+        self.assertEqual(np.float32, ts.gaps.dtype)
+        self.assertTrue(rs.public_stats(ts)["state_gaps"])
+        n = int(ts.count[0])
+        np.testing.assert_array_equal(ts.gaps[:n], self.block[:n])
+        np.testing.assert_allclose(ts.zh[:50], self.gaps_prior.logits(ts.dense[:50], ts.counts[:50], None, ts.gaps[:50]), atol=1e-5)
+        # the block matters to the prior: other columns, other logits
+        self.assertFalse(np.allclose(ts.zh[:50], self.gaps_prior.logits(ts.dense[:50], ts.counts[:50], None, ts.gaps[:50][::-1].copy())))
+        plain_ts = rs.load_shards(self.shards, prior=self.plain_prior)
+        self.assertIsNone(plain_ts.gaps)
+        self.assertFalse(rs.public_stats(plain_ts)["state_gaps"])
+
+    def test_a_state_gaps_fit_refuses_what_has_none_and_the_flag_and_the_prior_must_agree(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        bare = synth_shards(Path(scratch.name), self.synth, runs=6, kinds=("card",), per_kind=1, name="bare")  # no rows_gaps.npz
+        with self.assertRaisesRegex(rs.ShardError, "reencode"):
+            rs.load_shards(bare, prior=self.gaps_prior, state_gaps=True, teacher_prior=self.plain_prior)
+        with self.assertRaisesRegex(rs.ShardError, "does not read the state gaps"):
+            rs.load_shards(self.shards, prior=self.plain_prior, state_gaps=True)
+        with self.assertRaisesRegex(rs.ShardError, "--state-gaps"):  # a fit without the flag refuses a prior that reads them
+            rs.load_shards(self.shards, prior=self.gaps_prior)
+        with self.assertRaisesRegex(rs.ShardError, "--state-gaps"):
+            rs.load_shards(self.shards, prior=self.plain_prior, teacher_prior=self.gaps_prior)
+        ts = rs.load_shards(bare, prior=self.plain_prior)  # a plain fit on shards without the file is as it was
+        self.assertEqual(6, len(ts))
+        with self.assertRaisesRegex(rs.ShardError, "state gaps"):
+            ts.logits_of(self.gaps_prior)
+
+    def test_a_malformed_or_foreign_rows_gaps_is_refused(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        for bad, why in (("shape", "row count differs"), ("rows", "row count differs"), ("nan", "not finite"), ("dtype", "float32")):
+            d = synth_shards(Path(scratch.name), self.synth, runs=3, kinds=("card",), per_kind=1, name=f"bad-{bad}")
+            add_rows_gaps(d, bad=bad)
+            with self.assertRaisesRegex(rs.ShardError, why):
+                rs.read_shard(d)
+        d = synth_shards(Path(scratch.name), self.synth, runs=3, kinds=("card",), per_kind=1, name="other-version")
+        add_rows_gaps(d, version=2)  # block G of another layout
+        with self.assertRaisesRegex(rs.ShardError, "version 2"):
+            rs.read_shard(d)
+        # a shard whose side file is for fewer rows than its rows.npz (written for another set of rows) is refused by name
+        d = synth_shards(Path(scratch.name), self.synth, runs=3, kinds=("card",), per_kind=1, name="short")
+        add_rows_gaps(d, bad="rows")
+        with self.assertRaisesRegex(rs.ShardError, "short"):
+            rs.read_shard(d)
+
+    def test_the_human_shards_need_block_g_for_a_state_gaps_fit(self):
+        ids = run_ids_by_bucket(25)
+        plain = human_dataset({1: ids[1][:4]})
+        d = self.root / "human-plain3"
+        d.mkdir(exist_ok=True)
+        np.savez(d / "shard-00000.npz", dec=plain.dec, dense=plain.dense, counts=plain.counts, role=plain.role, ident=plain.ident, run_ids=np.array(plain.run_ids))
+        with self.assertRaisesRegex(rs.ShardError, "no block G"):
+            rs.load_human(d, (1,), exam_ids=frozenset(), state_gaps=True)
+        v3 = human_dataset_v3({1: ids[1][:4]})
+        d3 = self.root / "human-v3"
+        d3.mkdir(exist_ok=True)
+        np.savez(d3 / "shard-00000.npz", dec=v3.dec, dense=v3.dense, counts=v3.counts, role=v3.role, ident=v3.ident, run_ids=np.array(v3.run_ids),
+                 gaps=v3.gaps, gaps_ix=v3.gaps_ix)
+        got = rs.load_human(d3, (1,), exam_ids=frozenset(), state_gaps=True)
+        self.assertTrue(got.has_gaps)
+        np.testing.assert_array_equal(got.gaps_rows(np.arange(len(got.dense))), v3.gaps_rows(np.arange(len(v3.dense))))
+        self.assertEqual(len(plain.dec), len(rs.load_human(d, (1,), exam_ids=frozenset()).dec))  # a plain fit reads shards without it as always
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_the_student_net_takes_the_columns_and_is_the_prior_logit_for_logit(self):
+        rows = np.random.default_rng(1).normal(0, 0.4, (30, rs.ROWS_WIDTH)).astype(np.float32)
+        dense, counts = models.value_inputs(rows)
+        block = np.random.default_rng(2).random((30, rs.GAPS_WIDTH)).astype(np.float32)
+        net = rs.make_net(self.gaps, 0.0, True).eval()
+        self.assertTrue(net.uses_gaps)
+        with torch.no_grad():
+            got = net(torch.from_numpy(dense), torch.from_numpy(counts), gaps=torch.from_numpy(block)).numpy()
+            with self.assertRaises(ValueError):
+                net(torch.from_numpy(dense), torch.from_numpy(counts))  # such a net never scores without block G
+        np.testing.assert_allclose(got, self.gaps_prior.logits(dense, counts, None, block), atol=2e-5)
+        self.assertEqual(set(self.gaps), set(rs.net_params(net)))  # no array of its own: the columns are hidden1's
+        self.assertFalse(rs.make_net(self.plain, 0.0).uses_gaps)
+        # with the tower as well: the columns come after the tower's 64
+        both = gaps_weights(tower=True)
+        both_prior = hpi.PriorScorer(both, {"map_grid": True, "state_gaps": True})
+        grid = (np.random.default_rng(3).random((30, rs.GRID_WIDTH)) < 0.2).astype(np.int8)
+        net2 = rs.make_net(both, 0.0, True).eval()
+        with torch.no_grad():
+            got2 = net2(torch.from_numpy(dense), torch.from_numpy(counts), torch.from_numpy(grid), torch.from_numpy(block)).numpy()
+        np.testing.assert_allclose(got2, both_prior.logits(dense, counts, grid, block), atol=2e-5)
+
+    def test_a_student_file_says_it_reads_the_state_gaps(self):
+        path = self.root / "s_gaps.npz"
+        hpi.write_student(path, self.gaps, kinds=("route", "card"), prior_sha256=hpi.file_sha256(self.gaps_path), fit={"test": True}, state_gaps=True)
+        with np.load(path) as z:
+            meta = json.loads(str(z["meta"]))
+        self.assertTrue(meta["state_gaps"])
+        self.assertEqual(1, meta["gaps_version"])
+        s = hpi.StudentScorer.load(path)
+        self.assertTrue(s.state_gaps)
+        rows = np.random.default_rng(3).normal(0, 0.4, (4, rs.ROWS_WIDTH)).astype(np.float32)
+        block = np.random.default_rng(4).random((4, rs.GAPS_WIDTH)).astype(np.float32)
+        np.testing.assert_allclose(s.row_logits(rows, None, block), self.gaps_prior.row_logits(rows, None, block), atol=1e-6)
+        with self.assertRaisesRegex(ValueError, "state gaps"):
+            s.row_logits(rows)
+        plain = student_file(self.root / "s_plain3.npz", self.plain, kinds=("card",))  # a plain student has no flag
+        with np.load(plain) as z:
+            self.assertNotIn("state_gaps", json.loads(str(z["meta"])))
+        self.assertFalse(hpi.StudentScorer.load(plain).state_gaps)
+        # a file whose first layer is not the width its meta promises is refused
+        with self.assertRaisesRegex(ValueError, "first layer"):
+            hpi.PriorScorer(self.gaps, {})
+        with self.assertRaisesRegex(ValueError, "first layer"):
+            hpi.PriorScorer(self.plain, {"state_gaps": True})
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_a_state_gaps_fit_and_both_legs_run_end_to_end_and_the_student_reads_the_columns(self):
+        ids = run_ids_by_bucket(30)
+        human = {1: human_dataset_v3({1: ids[1][:30]}, per_run=1), 4: human_dataset_v3({4: ids[4][:30]}, per_run=1)}
+        with mock.patch.object(rs, "BOOT_DRAWS", 100), mock.patch.object(rs, "LEG1_MIN_DECISIONS", 10), mock.patch.object(rs, "MIN_LAMBDA_DECISIONS", 10), \
+                mock.patch.object(rs, "load_human", side_effect=lambda d, fifths, **kw: human[1 if fifths == rs.HUMAN_TRAIN_FIFTHS else 4]) as lh:
+            legs = rs.run_fit(self.root, self.gaps_path, self.root / "out_gaps", human_dir=self.root, exam_ids=frozenset(),
+                              cfg=rs.FitConfig(epochs=2, patience=2, lr=1e-3, beta=0.5, kl=0.05, batch_teacher=64, batch_human=16, dropout=0.0),
+                              device="cpu", log=lambda *_: None, state_gaps=True, teacher_prior_path=self.plain_path)
+        self.assertTrue(all(c.kwargs.get("state_gaps") for c in lh.call_args_list))  # the human shards are read with their block G
+        out = self.root / "out_gaps"
+        with np.load(out / rs.STUDENT_OUT) as z:
+            self.assertTrue(json.loads(str(z["meta"]))["state_gaps"])
+            moved = float(np.abs(z["hidden1.weight"][:, -rs.GAPS_WIDTH:] - self.gaps["hidden1.weight"][:, -rs.GAPS_WIDTH:]).max())
+        self.assertGreater(moved, 0.0)  # the gradient reached the columns for block G
+        student = hpi.StudentScorer.load(out / rs.STUDENT_OUT)
+        self.assertTrue(student.state_gaps)
+        self.assertEqual(hpi.file_sha256(self.gaps_path), legs["baseline"]["sha256"])  # measured against the v3 prior
+        fit_doc = json.loads((out / rs.FIT_FILE).read_text())
+        self.assertTrue(fit_doc["state_gaps"])
+        self.assertTrue(fit_doc["data"]["state_gaps"])
+        self.assertIn("card", legs["leg1"]["kinds"])
+        self.assertIn("card", legs["leg2"]["kinds"])  # leg 2 scored the student and the prior with block G of the v3 human shards
+        with self.assertRaisesRegex(rs.ShardError, "block G"):  # on shards without it it refuses
+            rs.leg2(human_dataset({4: ids[4][:30]}, per_run=1), student, self.gaps_prior, exam_ids=frozenset())
+
+    def test_the_command_line_has_the_flag(self):
+        p = rs.build_parser()
+        a = p.parse_args(["fit", "--shards-root", "s", "--prior", "p", "--out", "o", "--state-gaps", "--map-grid", "--teacher-prior", "t"])
+        self.assertEqual((True, True, "t"), (a.state_gaps, a.map_grid, a.teacher_prior))
+        b = p.parse_args(["round", "--shards-root", "s", "--prior", "p", "--out", "o", "--base", "b", "--agent-root", "r", "--target", "9"])
+        self.assertFalse(b.state_gaps)
+        self.assertTrue(p.parse_args(["check", "--shards-root", "s", "--state-gaps"]).state_gaps)
+
+
 if __name__ == "__main__":
     unittest.main()

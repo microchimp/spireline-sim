@@ -1672,7 +1672,7 @@ class MapGridStoreTests(unittest.TestCase):
         self.assertFalse(rt.shard_has_grid(d))
         self.run_reencode(d, table)
         info = rt.reencode_assemble(self.tmp, d)
-        self.assertEqual({"shard": "J1", "rows": 19, "decisions": 6, "runs": 2}, info)
+        self.assertEqual({"shard": "J1", "side": "grid", "rows": 19, "decisions": 6, "runs": 2}, info)
         self.assertTrue(rt.shard_has_grid(d))
         self.assertTrue(json.loads((d / "manifest.json").read_text(encoding="utf-8"))["map_grid"])
         np.testing.assert_array_equal(np.load(d / "rows_map.npz")["grid"], np.load(io.BytesIO(fresh))["grid"])  # the same grid, row for row
@@ -1757,6 +1757,348 @@ class MapGridStoreTests(unittest.TestCase):
         self.assertEqual((13, 4, []), (a.generation, a.procs, a.shard))
         self.assertEqual(0, rt.reencode_cmd(a))  # no shard, nothing to give a grid to; and no lock was taken
         self.assertFalse((self.tmp / "job.lock").exists())
+
+
+class StateGapsStoreTests(unittest.TestCase):
+    """Block G beside the rows (D58 addenda 14 and 16): `rows_gaps.npz` in a new shard, the run files that carry it, `reencode` for the side files a shard lacks."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    @staticmethod
+    def grid_for(n: int, base: int):
+        import numpy as np
+
+        return (np.random.default_rng(base).random((n, rt.GRID_WIDTH)) < 0.2).astype("int8")
+
+    @staticmethod
+    def gaps_for(n: int, base: int):
+        import numpy as np
+
+        g = np.random.default_rng(base).random((n, rt.GAPS_WIDTH)).astype("float32")
+        g[:, -3:] = 1.0
+        return g
+
+    def make_run(self, seed, widths=(3, 4, 2), with_grid=True, with_gaps=True):
+        rf = rt.RunFiles(self.tmp, seed)
+        rf.load()
+        rows, grids, gaps = [], [], []
+        for i, n in enumerate(widths):
+            r, g, z = rows_for(n, i + sum(map(ord, seed)) % 7), self.grid_for(n, i + sum(map(ord, seed))), self.gaps_for(n, i + 3 + sum(map(ord, seed)))
+            rows.append(r)
+            grids.append(g)
+            gaps.append(z)
+            rf.append(synthetic_record(seed, i * 2, n=n), r, g if with_grid else None, z if with_gaps else None)
+        return rf, rows, grids, gaps
+
+    def manifest(self):
+        return rt.shard_manifest(job="J1", generation=13, identity={"agent": "gen13/x", "agent_sha256": "ab" * 32, "generation": 13, "recipe": "r",
+                                                                  "agent_files": {}}, judge=None, lib=None, tree="abc", k=2, k_max=4, max_options=4,
+                                 cal={}, sources={"new": 2})
+
+    def test_the_constants_are_the_features_block_g(self):
+        from run_train import features
+
+        self.assertEqual(features.GAPS_SIZE, rt.GAPS_WIDTH)
+        self.assertEqual(features.GAPS_VERSION, rt.GAPS_VERSION)
+
+    def test_a_screen_has_the_block_g_of_each_option_beside_its_rows(self):
+        import numpy as np
+
+        from run_train import features
+
+        gaps = features.StateGaps(((vocab_relic("Girya"), 1),), (2, 200, 60, 90), (1, 0))
+        view = SimpleNamespace(act_index=0, floor=5, hp=60, max_hp=80, map_nodes=(), position=(0, 0), gaps=gaps, ascension=10)
+        d = fake_decision(("card.take", "shop.remove", "card.skip"))
+        for o in d.options:
+            o.scorable = True
+        want = np.random.default_rng(1).normal(size=(3, rt.ROWS_WIDTH))
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.0, W=53.0)
+        a, b = ScreenRowsTests.patches()
+        with mock.patch("human_prior_infer.option_rows", return_value=want), mock.patch("human_prior_infer.option_grids", return_value=np.zeros((3, rt.GRID_WIDTH), "int8")), a, b:
+            rd = rt.screen_inputs(policy, view, d, rows=True)
+        self.assertEqual((3, rt.GAPS_WIDTH), rd["gaps"].shape)
+        self.assertEqual(np.float32, rd["gaps"].dtype)
+        np.testing.assert_array_equal(rd["gaps"][0], features.gaps_block(view))  # a card option leaves block G as it is
+        self.assertAlmostEqual(float(rd["gaps"][1][features.GAPS_REMOVALS_AT]), 2.0, places=6)  # a removal at the merchant: the next quote
+        with mock.patch("human_prior_infer.option_rows", return_value=want), a, b:
+            self.assertIsNone(rt.screen_inputs(policy, view, d)["gaps"])  # not asked for: not built
+
+    def test_a_prior_with_the_state_gaps_is_scored_with_block_g(self):
+        import numpy as np
+
+        seen = {}
+
+        def row_logits(mat, grid=None, gaps=None):
+            seen["grid"], seen["gaps"] = grid, gaps
+            return np.zeros(len(mat))
+
+        d = fake_decision()
+        for o in d.options:
+            o.scorable = True
+        policy = SimpleNamespace(nets=object(), lam_at=lambda floor: 0.5, W=53.0, prior=SimpleNamespace(map_grid=False, state_gaps=True, row_logits=row_logits))
+        a, b = ScreenRowsTests.patches()
+        with mock.patch("human_prior_infer.option_rows", return_value=np.ones((3, rt.ROWS_WIDTH))), a, b, mock.patch("imitation_chooser.screen_of", return_value="card"):
+            rt.screen_inputs(policy, VIEW, d)  # not stored: block G is built because the prior reads it
+        self.assertEqual((3, rt.GAPS_WIDTH), seen["gaps"].shape)
+        self.assertIsNone(seen["grid"])
+        policy.prior = SimpleNamespace(row_logits=lambda mat: np.zeros(len(mat)))  # a prior without them: nothing is built or passed
+        with mock.patch("human_prior_infer.option_rows", return_value=np.ones((3, rt.ROWS_WIDTH))), a, b, \
+                mock.patch("imitation_chooser.screen_of", return_value="card"), mock.patch("human_prior_infer.option_gaps") as built:
+            rt.screen_inputs(policy, VIEW, d)
+            built.assert_not_called()
+
+    def test_the_run_files_keep_block_g_in_step_with_the_rows(self):
+        import numpy as np
+
+        rf, rows, grids, gaps = self.make_run("GGG")
+        again = rt.RunFiles(self.tmp, "GGG")
+        again.load()
+        self.assertTrue(again.gaps_ok)
+        self.assertEqual(9 * rt.GAPS_WIDTH * 4, rf.gaps.stat().st_size)
+        np.testing.assert_array_equal(np.fromfile(rf.gaps, dtype="<f4").reshape(-1, rt.GAPS_WIDTH), np.concatenate(gaps))
+        # a kill after the block of a screen and before its rows: cut back to the rows with the record
+        with open(rf.gaps, "ab") as fh:
+            fh.write(self.gaps_for(2, 99).tobytes())
+        cut = rt.RunFiles(self.tmp, "GGG")
+        cut.load()
+        self.assertTrue(cut.gaps_ok)
+        self.assertEqual(9 * rt.GAPS_WIDTH * 4, rf.gaps.stat().st_size)
+        cut.drop_from(2)
+        self.assertEqual(3 * rt.GAPS_WIDTH * 4, rf.gaps.stat().st_size)
+        cut.append(synthetic_record("GGG", 2, n=2), rows_for(2, 5.0), self.grid_for(2, 7), self.gaps_for(2, 7))
+        self.assertEqual(5 * rt.GAPS_WIDTH * 4, rf.gaps.stat().st_size)
+        with self.assertRaises(ValueError):
+            cut.append(synthetic_record("GGG", 4, n=2), rows_for(2, 5.0), self.grid_for(2, 7), self.gaps_for(3, 7))
+        # a run played before block G has none and never half of it
+        old, _, _, _ = self.make_run("OLD", with_gaps=False)
+        again = rt.RunFiles(self.tmp, "OLD")
+        again.load()
+        self.assertFalse(again.gaps_ok)
+        self.assertFalse(old.gaps.exists())
+        again.append(synthetic_record("OLD", 6, n=2), rows_for(2, 5.0), self.grid_for(2, 7), self.gaps_for(2, 7))
+        self.assertFalse(old.gaps.exists())  # a later screen's block would not line up with the rows
+        self.assertTrue(again.grid_ok)  # the map grid is independent
+
+    def test_a_new_shard_has_rows_gaps_beside_rows_and_says_so(self):
+        import numpy as np
+
+        _, _, _, gaps_a = self.make_run("AAA")
+        _, _, _, gaps_b = self.make_run("BBB", widths=(2, 5, 3))
+        doc = rt.build_shard(self.tmp, "J1", ["AAA", "BBB"], self.manifest())
+        d = self.tmp / "shards" / "J1"
+        self.assertEqual({"decisions.jsonl", "rows.npz", "rows_map.npz", "rows_gaps.npz", "manifest.json"}, {p.name for p in d.iterdir()})
+        self.assertTrue(doc["state_gaps"])
+        man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((True, rt.GAPS_VERSION), (man["state_gaps"], man["gaps_version"]))
+        z, zg = np.load(d / "rows.npz"), np.load(d / "rows_gaps.npz")
+        self.assertEqual((np.float32, (len(z["rows"]), rt.GAPS_WIDTH)), (zg["gaps"].dtype, zg["gaps"].shape))
+        np.testing.assert_array_equal(zg["gaps"], np.concatenate(gaps_a + gaps_b))  # row for row the rows' order
+        self.assertTrue(rt.shard_has_gaps(d))
+        import run_student as rs
+
+        self.assertEqual(6, len(rs.read_shard(d)["records"]))  # the loader reads such a shard
+        self.assertEqual((18 + 0, rt.GAPS_WIDTH)[1], rs.read_shard(d)["gaps"].shape[1])
+
+    def test_a_shard_with_a_run_that_has_no_block_g_has_no_rows_gaps(self):
+        self.make_run("AAA")
+        self.make_run("LLL", with_gaps=False)
+        doc = rt.build_shard(self.tmp, "J1", ["AAA", "LLL"], self.manifest())
+        d = self.tmp / "shards" / "J1"
+        self.assertFalse(doc["state_gaps"])
+        self.assertTrue(doc["map_grid"])  # the two side files are independent
+        self.assertFalse((d / "rows_gaps.npz").exists())
+        self.assertNotIn("gaps_version", doc)
+        self.assertFalse(rt.shard_has_gaps(d))
+
+    # ------------------------------------------------------------------------------------------------------ reencode
+
+    def worker_state(self):
+        saved = dict(rt._J)
+        self.addCleanup(lambda: (rt._J.clear(), rt._J.update(saved)))
+        rt._J.clear()
+        rt._J.update(gen_dir=self.tmp, player=SimpleNamespace(policy=object()), replayers={}, replay_agent="x")
+
+    @staticmethod
+    def fake_screen_inputs(table, seed):
+        """A stand-in for `screen_inputs`: the rows, grid, block G and options the table holds for (seed, the point's ordinal)."""
+
+        def fake(policy, view, decision, rows=False):
+            rows_, grid, gaps, opts = table[(seed, int(view.ordinal))]
+            return {"rows": rows_, "grid": grid, "gaps": gaps, "row_options": opts}
+
+        return fake
+
+    @staticmethod
+    def whole_gaps():
+        from run_train import features
+
+        return features.StateGaps((), (0, 100, 20, 30), (0, 0))
+
+    def stored_replay(self, ordinals, gaps="whole"):
+        view_gaps = self.whole_gaps() if gaps == "whole" else gaps
+
+        def fake_replay(seed_, ix, replayer, record, hook, **kw):
+            res = {"end": "?", "decisions": 0, "floor": 0, "checked": 0}
+            for o in ordinals:
+                pt = SimpleNamespace(view=SimpleNamespace(ordinal=o, gaps=view_gaps), decision=fake_decision(), ordinal=o, session=None)
+                if hook(pt):
+                    res["end"] = "hooked"
+                    break
+            return res
+
+        return fake_replay
+
+    def old_shard(self, seeds=("AAA", "BBB"), widths=((3, 4, 2), (2, 5, 3)), lose=("gaps",)):
+        """A shard as an earlier build made it, without the side files named in `lose`; the table of rows, grids and blocks a fresh build had; the bytes of both files."""
+        table = {}
+        for seed, w in zip(seeds, widths):
+            _, rows, grids, gaps = self.make_run(seed, widths=w)
+            for i in range(len(w)):
+                table[(seed, i * 2)] = (rows[i], grids[i], gaps[i], list(range(w[i])))
+        rt.build_shard(self.tmp, "J1", list(seeds), self.manifest())
+        d = self.tmp / "shards" / "J1"
+        fresh = {"grid": (d / "rows_map.npz").read_bytes(), "gaps": (d / "rows_gaps.npz").read_bytes()}
+        doc = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        for side in lose:
+            (d / rt.SIDES[side]["file"]).unlink()
+            doc.pop(rt.SIDES[side]["manifest"])
+            doc.pop("gaps_version", None) if side == "gaps" else None
+        (d / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        return d, table, fresh
+
+    def run_reencode(self, d, table, sides=("gaps",), seeds=("AAA", "BBB"), mutate=None, gaps="whole"):
+        self.worker_state()
+        needs = rt.reencode_needs(d)
+        self.assertEqual(set(seeds), set(needs))
+        rows = []
+        for seed in seeds:
+            tab = mutate(dict(table), seed) if mutate else table
+            task = ("rt-reencode", seed, 3, "stored", {"_explore": (0.1, 0.02)}, sorted(needs[seed]), sides)
+            with mock.patch.object(rt, "_replayer", return_value=object()), mock.patch("hindsight.replay_run", self.stored_replay(sorted(needs[seed]), gaps)), \
+                    mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(tab, seed)):
+                rows.append(rt.reencode_run(task))
+        return rows
+
+    def test_reencode_gives_an_old_shard_the_block_a_fresh_one_has(self):
+        import io
+
+        import numpy as np
+
+        d, table, fresh = self.old_shard()
+        self.assertTrue(rt.shard_has_grid(d))
+        self.assertFalse(rt.shard_has_gaps(d))
+        for row in self.run_reencode(d, table):
+            self.assertTrue(row["ok"], row)
+            self.assertEqual(["gaps"], row["sides"])
+        info = rt.reencode_assemble(self.tmp, d, "gaps")
+        self.assertEqual({"shard": "J1", "side": "gaps", "rows": 19, "decisions": 6, "runs": 2}, info)
+        self.assertTrue(rt.shard_has_gaps(d))
+        man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((True, rt.GAPS_VERSION), (man["state_gaps"], man["gaps_version"]))
+        self.assertTrue(man["map_grid"])  # the other side file is untouched
+        np.testing.assert_array_equal(np.load(d / "rows_gaps.npz")["gaps"], np.load(io.BytesIO(fresh["gaps"]))["gaps"])  # the same block G, row for row
+        self.assertEqual(fresh["grid"], (d / "rows_map.npz").read_bytes())
+        # only the gaps result was written: the map grid's per-run result (an earlier reencode's) is not touched or needed
+        self.assertEqual({"AAA.gaps.npz", "BBB.gaps.npz"}, {p.name for p in (self.tmp / rt.REENCODE_DIR).iterdir()})
+
+    def test_one_replay_gives_both_side_files_to_a_shard_that_has_neither(self):
+        import io
+
+        import numpy as np
+
+        d, table, fresh = self.old_shard(lose=("grid", "gaps"))
+        for row in self.run_reencode(d, table, sides=("grid", "gaps")):
+            self.assertTrue(row["ok"], row)
+        rt.reencode_assemble(self.tmp, d, "grid")
+        rt.reencode_assemble(self.tmp, d, "gaps")
+        np.testing.assert_array_equal(np.load(d / "rows_map.npz")["grid"], np.load(io.BytesIO(fresh["grid"]))["grid"])
+        np.testing.assert_array_equal(np.load(d / "rows_gaps.npz")["gaps"], np.load(io.BytesIO(fresh["gaps"]))["gaps"])
+        self.assertTrue(rt.shard_has_grid(d) and rt.shard_has_gaps(d))
+        self.assertEqual({"AAA.npz", "AAA.gaps.npz", "BBB.npz", "BBB.gaps.npz"}, {p.name for p in (self.tmp / rt.REENCODE_DIR).iterdir()})
+
+    def test_reencode_refuses_a_shard_whose_rows_are_not_the_stored_ones(self):
+        d, table, _ = self.old_shard()
+
+        def one_number(tab, seed):
+            if seed == "BBB":
+                rows, grid, gaps, opts = tab[(seed, 2)]
+                rows = rows.copy()
+                rows[1, 5] += 1e-3  # one number of one row
+                tab[(seed, 2)] = (rows, grid, gaps, opts)
+            return tab
+
+        self.run_reencode(d, table, mutate=one_number)
+        with self.assertRaisesRegex(rt.ReencodeError, "not the stored rows"):
+            rt.reencode_assemble(self.tmp, d, "gaps")
+        self.assertFalse((d / "rows_gaps.npz").exists())  # nothing written
+        self.assertFalse(rt.shard_has_gaps(d))
+
+    def test_reencode_refuses_a_view_that_holds_no_block_g(self):
+        from run_train import features
+
+        d, table, _ = self.old_shard()
+        for gaps, why in ((None, "holds no state gaps"), (features.StateGaps((), None, None), "holds no state gaps"), (features.StateGaps((), (0, 100, 20, 30), None), "holds no state gaps")):
+            for f in (self.tmp / rt.REENCODE_DIR).glob("*") if (self.tmp / rt.REENCODE_DIR).exists() else []:
+                f.unlink()
+            rows = self.run_reencode(d, table, seeds=("AAA", "BBB"), gaps=gaps)
+            self.assertFalse(any(r["ok"] for r in rows), rows)
+            self.assertTrue(all(why in r["why"] for r in rows), rows)  # zeros would pass for unknown parts: nothing is written
+            with self.assertRaisesRegex(rt.ReencodeError, "no result"):
+                rt.reencode_assemble(self.tmp, d, "gaps")
+        # a map-grid reencode needs none of it
+        for f in (self.tmp / rt.REENCODE_DIR).glob("*"):
+            f.unlink()
+        ok = self.run_reencode(d, table, sides=("grid",), gaps=None)
+        self.assertTrue(all(r["ok"] for r in ok), ok)
+
+    def test_a_teachers_own_run_whose_record_has_no_state_gaps_cannot_be_built(self):
+        from run_train import features
+
+        d, table, _ = self.old_shard(seeds=("AAA",), widths=((3, 4, 2),))
+        self.worker_state()
+        record = {"decisions": [{"i": i, "state": {"x": i}, "type": "card_reward", "options": []} for i in range(5)], "maps": []}
+        (self.tmp / "decisions.d" / "AAA.record.json").write_text(json.dumps(record), encoding="utf-8")
+        needs = rt.reencode_needs(d)
+        views = {"with": self.whole_gaps(), "without": None}
+        for name, gaps in views.items():
+            with mock.patch("run_train.shards.state_view", lambda rec, entry, gaps=gaps: SimpleNamespace(ordinal=entry["i"], gaps=gaps)), \
+                    mock.patch("run_train.shards.entry_decision", lambda entry: fake_decision()), \
+                    mock.patch.object(rt, "screen_inputs", self.fake_screen_inputs(table, "AAA")), mock.patch("hindsight.replay_run") as replay:
+                row = rt.reencode_run(("rt-reencode", "AAA", 3, "new", None, sorted(needs["AAA"]), ("gaps",)))
+                replay.assert_not_called()
+            self.assertEqual(name == "with", row["ok"], row)
+            if name == "without":
+                self.assertIn("holds no state gaps", row["why"])
+        self.assertTrue(features.GAPS_SIZE)
+
+    def test_the_command_selects_the_shards_that_lack_a_side_file(self):
+        parser = rt.build_parser()
+        self.assertEqual("grid,gaps", parser.parse_args(["reencode", "--store", str(self.tmp), "--generation", "13"]).sides)
+        d, table, _ = self.old_shard()  # the state of round 0 after the map-grid reencode: the grid, no block G
+
+        def args(*extra):
+            a = parser.parse_args(["reencode", "--store", str(self.tmp.parent), "--generation", "13", *extra])
+            a.generation = self.tmp.name  # the store's generation folder is this scratch folder
+            return a
+
+        with mock.patch.object(rt, "take_store_lock", return_value="held by the test") as lock:
+            self.assertEqual(2, rt.reencode_cmd(args()))  # a shard lacks block G: there is work (and the lock is wanted)
+            lock.assert_called_once()
+            self.assertEqual(0, rt.reencode_cmd(args("--sides", "grid")))  # the map grid is there: nothing to do for that side
+            self.assertEqual(2, rt.reencode_cmd(args("--sides", "gaps")))
+            for row in self.run_reencode(d, table):
+                self.assertTrue(row["ok"], row)
+            rt.reencode_assemble(self.tmp, d, "gaps")
+            self.assertEqual(0, rt.reencode_cmd(args()))  # both side files: idempotent
+        self.assertFalse((self.tmp / "job.lock").exists())
+
+
+def vocab_relic(name: str) -> int:
+    from run_train import vocab
+
+    return vocab.relic_id_by_name(name)
 
 
 if __name__ == "__main__":
