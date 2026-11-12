@@ -431,6 +431,16 @@ class CalibrationPerJudgeTests(unittest.TestCase):
         self.assertEqual({"used": {0: 2}, "other_judges": 9}, rt.door_counts(rows, self.V2B))
         self.assertEqual({"used": {0: 5, 1: 3}, "other_judges": 3}, rt.door_counts(rows, rt.V0_JUDGE_SHA256))
 
+    def test_the_teacher_asks_judge_v2b_unless_told_otherwise(self):
+        from tools.lab import jobs
+
+        self.assertEqual("D:/spireline/referee/agent/judge/v2b/judge-board.pt", rt.DEFAULT_JUDGE)
+        for cmd in ("job", "label", "play"):
+            self.assertEqual(rt.DEFAULT_JUDGE, rt.build_parser().parse_args([cmd, "--out", "X"] if cmd == "play" else [cmd]).judge, cmd)
+        cmd = jobs.DEFAULTS["teacher"]["cmd"]
+        self.assertEqual(rt.DEFAULT_JUDGE, cmd[cmd.index("--judge") + 1])  # the lab's built-in teacher command names the same file
+        self.assertEqual(64, len(rt.V0_JUDGE_SHA256))
+
     def test_stored_labels_seed_the_pairs_only_under_the_judge_that_made_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(rt.labels_judge_sha256(Path(tmp)))  # no manifest

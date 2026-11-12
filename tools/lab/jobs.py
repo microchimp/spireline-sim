@@ -77,7 +77,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "teacher": {"enabled": False, "cwd": "{tree}", "timeout_min": 240, "procs": 4, "cores": 4, "core_hours_per_day": 24.0, "block_min": 60,
                 "presort_horizon_min": 60.0, "quiet_ignore": ["gym-loop", "lab-score"], "store": "D:/spireline/referee/run-teacher",
                 "cmd": ["{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
-                        "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
+                        "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v2b/judge-board.pt", "--lib", "{tree}/out",
                         "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"],
                 "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]},
     # The run student (D56, D57 part 3, D58 C4; docs/lab/RUN_LOOP.md). Off until LAB/jobs.json switches it on. `{student_*}` tokens are

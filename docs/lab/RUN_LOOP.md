@@ -128,7 +128,7 @@ orchestrator to merge into the live `LAB/jobs.json` (top level, beside `selfplay
   "cwd": "{tree}",
   "cmd": [
    "{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
-   "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
+   "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v2b/judge-board.pt", "--lib", "{tree}/out",
    "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"
   ],
   "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]

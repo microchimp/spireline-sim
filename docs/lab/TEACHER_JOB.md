@@ -20,8 +20,16 @@ From a tree that does not move under it (a worktree detached at the landed commi
 
 ```
 D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py job --lab D:/spireline/referee/LAB --store D:/spireline/referee/run-teacher \
-    --agent-root D:/spireline/referee/agent --judge D:/spireline/referee/agent/judge/v0/judge.pt --source new --procs 4 --loop
+    --agent-root D:/spireline/referee/agent --judge D:/spireline/referee/agent/judge/v2b/judge-board.pt --source new --procs 4 --loop
 ```
+
+**The judge** is the fight judge the teacher asks for P(death) at every boss door. It is **v2b** (`agent/judge/v2b/judge-board.pt`, the default of
+`--judge` since D58 addendum 24; before that v0, `agent/judge/v0/judge.pt`, and round 0's labels and the first blocks of round 1 were v0's). v2b reads human
+positions better than any judge before it and beats v0's arms on the boards (`docs/rl/JUDGE.md` section 8.1). Of v2b's two files the teacher uses
+`judge-board.pt`, the checkpoint without the source row (`src_emb`, the human-outcome input): the player's loader never feeds a source (None is the
+teacher, whose row 0 is zero), so `judge.pt` and `judge-board.pt` read identically (the same estimate, value, P(death) and end HP, on eight states built from the engine, and on 64 human boss positions, `docs/rl/JUDGE.md` section 8) and the board file
+also loads on any engine tree. The manifest of every shard names the judge (`judge`, `judge_sha256`), and the door's recalibration is kept per judge
+(section "P(death) recalibrated per act").
 
 **Round 0** (labelling the stored generation 13 exploring runs; a one-off, **not under the daily budget**, which applies from round 1, the daily
 job above) is the same program with `label`, which takes `--procs N` (a spawn pool, one engine per process, BelowNormal; the pool's usual cap of
@@ -30,6 +38,8 @@ six is lifted for this job; `--mem-gb 4` kills and retries a worker over that mu
 ```
 D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py label --lab D:/spireline/referee/LAB     --store D:/spireline/referee/run-teacher/gen13-r0 --agent-root D:/spireline/referee/agent     --judge D:/spireline/referee/agent/judge/v0/judge.pt --procs 12 --share
 ```
+
+(round 0 was run with v0, as written here; a `label` run today names `--judge` as it wants and defaults to v2b.)
 
 `--share` because the machine is shared by order (without it the job waits on any live QUIET.lock line, a corpus builder's included). It is one
 block of up to 12 hours over the stored runs in a fixed shuffle, 5 screens at most from each (`--per-run`), stopping new runs when the store holds
@@ -95,7 +105,7 @@ nothing above it is ready. The job can still be started by hand with the command
   "cwd": "{tree}",
   "cmd": [
    "{python}", "rl/run_teacher.py", "job", "--lab", "{lab}", "--store", "D:/spireline/referee/run-teacher",
-   "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v0/judge.pt", "--lib", "{tree}/out",
+   "--agent-root", "D:/spireline/referee/agent", "--judge", "D:/spireline/referee/agent/judge/v2b/judge-board.pt", "--lib", "{tree}/out",
    "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"
   ],
   "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]

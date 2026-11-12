@@ -102,7 +102,10 @@ QUIET = REF / "QUIET.lock"
 MAIN_LOCK = REF / "backlog" / "main.lock"
 ACTIVE = REF / "LAB" / "nightly" / "active"
 DEFAULT_AGENT = "D:/spireline/referee/agent/gen13/candidate-stakes"
-DEFAULT_JUDGE = "D:/spireline/referee/agent/judge/v0/judge.pt"
+# The judge the teacher asks for P(death) at the boss door: v2b (D58 addendum 24), the checkpoint `judge-board.pt`. It is `judge.pt` without the source row
+# (`src_emb`, the human-outcome input): the player never feeds a source (None is the teacher, row 0 is zero), so the two read identically, and the file
+# loads on any engine tree. v0 stays at `agent/judge/v0/judge.pt`.
+DEFAULT_JUDGE = "D:/spireline/referee/agent/judge/v2b/judge-board.pt"
 # The sha256 of `agent/judge/v0/judge.pt`, the judge every store row was written under before a row named its judge: a row with no `judge_sha256` is v0's.
 V0_JUDGE_SHA256 = "b5ecf90386c894a9d6e4f56632104757fbef19e8d24e01a32fd72ae3ff79ffc0"
 DEFAULT_SEEDS_FROM = "D:/spireline/referee/agent/gen13/candidate-stakes/arms/E14-2026-11-08-a3-v1/runs.jsonl"
