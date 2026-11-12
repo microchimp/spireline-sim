@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import vocab
-from .features import OPTION_KINDS, CardRef, Decision, MapNode, Option, Pending, RunView
+from .features import OPTION_KINDS, CardRef, Decision, MapNode, Option, Pending, RunView, StateGaps
 
 __all__ = [
     "RUN_RECORD_SCHEMA",
@@ -121,7 +121,29 @@ def view_to_json(view: RunView, map_index: int) -> dict[str, Any]:
     }
     if view.pending != Pending():
         state["pending"] = asdict(view.pending)
+    if view.gaps is not None:
+        state["gaps"] = gaps_to_json(view.gaps)
     return state
+
+
+def gaps_to_json(gaps: StateGaps) -> dict[str, Any]:
+    """Block G's source as JSON: only the parts the view knows (an absent key is an unknown part)."""
+    out: dict[str, Any] = {}
+    if gaps.counters is not None:
+        out["counters"] = [list(pair) for pair in gaps.counters]
+    if gaps.rooms is not None:
+        out["rooms"] = list(gaps.rooms)
+    if gaps.removals is not None:
+        out["removals"] = list(gaps.removals)
+    return out
+
+
+def gaps_from_json(data: dict[str, Any]) -> StateGaps:
+    return StateGaps(
+        counters=tuple((int(r), int(c)) for r, c in data["counters"]) if "counters" in data else None,
+        rooms=tuple(int(x) for x in data["rooms"]) if "rooms" in data else None,
+        removals=tuple(int(x) for x in data["removals"]) if "removals" in data else None,
+    )
 
 
 def view_from_json(state: dict[str, Any], maps: list[dict[str, Any]]) -> RunView:
@@ -142,6 +164,7 @@ def view_from_json(state: dict[str, Any], maps: list[dict[str, Any]]) -> RunView
         position=(state["position"][0], state["position"][1]),
         boss=state["boss"],
         pending=Pending(**state["pending"]) if "pending" in state else Pending(),
+        gaps=gaps_from_json(state["gaps"]) if "gaps" in state else None,
     )
 
 

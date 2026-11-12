@@ -869,8 +869,10 @@ class HiddenInformationTests(unittest.TestCase):
     # screen, map options, shop stock; 14-18: act summary, map nodes and edges, offer
     # grid, bundles; 20: card-select purpose; 21: map position; 22 and 23: the upgrade flags
     # of the shop's cards and of an open offer grid's cards, which the screen shows as a "+"
-    # on the card (RunNativeExports.cs).
-    VISIBLE_LISTS = frozenset({*range(1, 11), *range(14, 19), 20, 21, 22, 23})
+    # on the card (RunNativeExports.cs); 25: the held relics' counters (a relic shows its count); 26: the "?" rooms visited this act and the odds the next is
+    # a fight, a treasure room or a shop, which a player tracks from what each earlier "?" turned out to be; 27: the removals the merchant did (they set its
+    # quoted price) and the ones owed (block G, D58 addenda 14 and 16).
+    VISIBLE_LISTS = frozenset({*range(1, 11), *range(14, 19), 20, 21, 22, 23, 25, 26, 27})
     MODULES = ("features.py", "engine.py")
 
     @staticmethod

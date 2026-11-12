@@ -548,3 +548,75 @@ LAST_FLOOR = ACTS * FLOORS_PER_ACT + DOUBLE_BOSS_FLOORS
 # A won run counts as the last floor + 1: the value's W, and its own floor class.
 WON_FLOOR = LAST_FLOOR + 1
 FLOOR_CLASSES = WON_FLOOR  # floors 1..LAST_FLOOR, then "won"
+
+
+# --------------------------------------------------------------------------------------
+# Counter-bearing relics (block G of the feature contract, D58 addenda 14 and 16)
+# --------------------------------------------------------------------------------------
+
+# The relics whose `RelicInstance.Counter` the run engine reads and keeps in run state, read off the engine's sources
+# (`RunNonCombatEffects.cs`, `RunEngine.cs`, `RunMapGenerator.cs`, `RunRewardGenerator.cs` and `RelicEffects.CarryRunCountersBack`), each with the scale
+# its counter is read over and whether the stored count wraps. Block G writes one number per relic of this table: the counter over its scale (a relic
+# not held is 0). `wraps` marks a count the engine lets grow while only its remainder matters (Pael's Wing every second sacrifice, Fishing Rod every third
+# fight, Lasting Candy every second): those are written as the remainder over the scale. The others are written as the count over the scale, at most 1.
+# What a counter is, relic by relic (a test holds the scales to the engine's own constants):
+#   a spent flag: Maw Bank (1 once a purchase closed it), Venerable Tea Set and its fake (armed by a rest site, spent by the next fight);
+#   a count to a limit: Sword of Stone (elites killed, at 5 it turns into Sword of Jade), Wongo's Mystery Ticket (fights, 6 once it has paid), Silken Tress
+#   (card screens enchanted), Toy Box (fights, one wax relic melts every third, so twelve at most), Girya (lifts, 3), Winged Boots (free steps used, 3);
+#   a count down: Silver Crucible (upgraded card rewards left, from 3), the teas (fights left: Bone 1, Ember 5, Discourtesy 1), Pumpkin Candle (kindle, +5 on
+#   pickup, -1 a fight);
+#   a tally that wraps at its period: Book of Five Rings (cards added), Pen Nib / Nunchaku / Tuning Fork (10), Joss Paper (5), Iron Club (4), Happy Flower and
+#   Pendulum (3), Fake Happy Flower (5), Pollinous Core (turns to 4).
+COUNTER_RELICS: tuple[tuple[str, int, bool], ...] = (
+    ("MawBank", 1, False),
+    ("SwordOfStone", 5, False),
+    ("BookOfFiveRings", 5, False),
+    ("PumpkinCandle", 5, False),
+    ("ToyBox", 12, False),
+    ("PaelsWing", 2, True),
+    ("FishingRod", 3, True),
+    ("Girya", 3, False),
+    ("SilverCrucible", 3, False),
+    ("WingedBoots", 3, False),
+    ("WongosMysteryTicket", 6, False),
+    ("SilkenTress", 2, False),
+    ("LastingCandy", 2, True),
+    ("BoneTea", 1, False),
+    ("EmberTea", 5, False),
+    ("TeaOfDiscourtesy", 1, False),
+    ("VenerableTeaSet", 1, False),
+    ("FakeVenerableTeaSet", 1, False),
+    ("IronClub", 4, False),
+    ("PenNib", 10, False),
+    ("JossPaper", 5, False),
+    ("Nunchaku", 10, False),
+    ("TuningFork", 10, False),
+    ("HappyFlower", 3, False),
+    ("FakeHappyFlower", 5, False),
+    ("Pendulum", 3, False),
+    ("PollinousCore", 4, False),
+)
+
+# What a relic's counter is when the relic is picked up (`RunNonCombatEffects.StartingRelicCounter`, and the Pumpkin Candle's `Rekindle` on pickup).
+COUNTER_ON_PICKUP: dict[str, int] = {"SilverCrucible": 3, "BoneTea": 1, "EmberTea": 5, "TeaOfDiscourtesy": 1, "PumpkinCandle": 5}
+
+
+@cache
+def counter_relic_scales() -> tuple[tuple[int, int, bool], ...]:
+    """The counter table as (relic id, scale, wraps), in `COUNTER_RELICS` order (a name the id table lacks is an error: the table is read off the engine)."""
+    return tuple((relic_id_by_name(name), scale, wraps) for name, scale, wraps in COUNTER_RELICS)
+
+
+@cache
+def counter_relic_ids() -> tuple[int, ...]:
+    return tuple(relic_id for relic_id, _, _ in counter_relic_scales())
+
+
+@cache
+def counter_on_pickup() -> dict[int, int]:
+    return {relic_id_by_name(name): count for name, count in COUNTER_ON_PICKUP.items()}
+
+
+# The "?" room odds start each act at these thousandths (`RunMapGenerator.AdvanceToNextAct`): a fight, a treasure room, a shop. Elites start below zero and
+# never become a chance, so block G leaves them out.
+UNKNOWN_ODDS_BASE = (100, 20, 30)

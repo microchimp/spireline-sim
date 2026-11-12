@@ -19,11 +19,12 @@ state after an option, so training and serving share every line that touches a f
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 import numpy as np
 
@@ -96,6 +97,29 @@ class Pending:
 
 
 @dataclass(frozen=True)
+class StateGaps:
+    """What the state holds beyond the vector's base blocks (block G, D58 addenda 14 and 16): three parts, each None where its source cannot know it.
+
+    `counters`: (relic id, counter) of the held relics whose counter the engine reads (`vocab.COUNTER_RELICS`), sorted. `rooms`: the "?" rooms visited this act
+    and the odds, in thousandths, that the next one is a fight, a treasure room and a shop. `removals`: the merchant's removals bought this run (they set its
+    price) and the removals owed (granted by a fight's power, not yet taken). The engine front end fills all three (state lists 25, 26 and 27); a human record
+    gives the last two and cannot give counters; the live front end gives none.
+    """
+
+    counters: tuple[tuple[int, int], ...] | None = None
+    rooms: tuple[int, int, int, int] | None = None
+    removals: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.counters is not None:
+            object.__setattr__(self, "counters", tuple(sorted((int(r), int(c)) for r, c in self.counters)))
+        if self.rooms is not None:
+            object.__setattr__(self, "rooms", tuple(int(x) for x in self.rooms))
+        if self.removals is not None:
+            object.__setattr__(self, "removals", (int(self.removals[0]), int(self.removals[1])))
+
+
+@dataclass(frozen=True)
 class RunView:
     """The state both front ends build.
 
@@ -118,6 +142,7 @@ class RunView:
     position: tuple[int, int]  # (col, row) the run stands on
     boss: int  # emulator encounter id of the act boss
     pending: Pending = Pending()
+    gaps: StateGaps | None = None  # block G's source (None: nothing of it known); never read by `encode`
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "deck", tuple(sorted(self.deck)))
@@ -359,7 +384,7 @@ def view_from_engine(env, ascension: int) -> RunView:
     `ascension` is the argument because the engine does not report it; it must be the
     level the env plays. Reads the env's observation buffer (every step through the env,
     the session or `RunCombat` refreshes it), `Sts2Run_GetInfo`, and state lists 1 (relics),
-    2 (belt), 14 (boss), 15/16 (map) and 21 (position).
+    2 (belt), 14 (boss), 15/16 (map) and 21 (position); with block G's source (`gaps_from_engine`) lists 25, 26 and 27.
 
     Raises:
         ValueError: If `ascension` is not the level the env's engine plays.
@@ -400,6 +425,7 @@ def view_from_engine(env, ascension: int) -> RunView:
     act_summary = native.run_state_list(handle, 14, 3)
     region = int(info[2])
     return RunView(
+        gaps=gaps_from_engine(handle),
         ascension=ascension,
         # `RunState.CurrentActIndex` is not exported, but every act index has its own
         # regions (`ActCandidatesByIndex`), so the region names it.
@@ -743,6 +769,137 @@ def _map_grid(nodes: tuple[MapNode, ...], position: tuple[int, int]) -> np.ndarr
     flat = out.reshape(-1)
     flat.setflags(write=False)
     return flat
+
+
+
+# --------------------------------------------------------------------------------------
+# Block G: the state gaps (D58 addenda 14 and 16): what the player tracks that the base vector leaves out
+# --------------------------------------------------------------------------------------
+# Not part of `encode` (BASE_SIZE stays 1855, FEATURE_VERSION stays 2: every incumbent value net reads the base vector and refuses another width): only the
+# human prior's and the student's input beyond the judgement's reads it, as one more block of numbers per row beside block M's grid. In this order:
+#   one number per counter-bearing relic of `vocab.COUNTER_RELICS`: its counter over its scale (0 when the relic is not held);
+#   the "?" rooms visited this act over 10, then the odds that the next one is a fight, a treasure room and a shop (as fractions: 0.10, 0.02, 0.03 at the start);
+#   the merchant's removal price over 100 (75 + 25 a removal bought, 100 + 50 from Inflation, ascension 6) and the removals owed over 3;
+#   three known bits: counters, rooms, removals (0 where the source cannot know that part and its numbers are all 0).
+GAPS_VERSION = 1  # the layout of block G; a side file written for another version is refused
+GAPS_N_COUNTERS = len(vocab.COUNTER_RELICS)
+GAPS_ROOMS_AT = GAPS_N_COUNTERS
+GAPS_REMOVALS_AT = GAPS_ROOMS_AT + 4
+GAPS_KNOWN_AT = GAPS_REMOVALS_AT + 2
+GAPS_SIZE = GAPS_KNOWN_AT + 3
+INFLATION_ASCENSION = 6  # `Ascension.Inflation`: the merchant's removal costs more from this level
+_ROOMS_VISITED_SCALE, _REMOVALS_OWED_SCALE, _REMOVAL_PRICE_SCALE = 10.0, 3.0, 100.0
+
+
+def removal_price(removals_used: int, ascension: int) -> int:
+    """The merchant's quote for a card removal (`RunRewardGenerator`): 75 + 25 a removal already bought, 100 + 50 from the Inflation ascension. Before the
+    price-changing relics (Membership Card, Courier), which the relics block already shows."""
+    inflation = ascension >= INFLATION_ASCENSION
+    return (100 if inflation else 75) + (50 if inflation else 25) * int(removals_used)
+
+
+class UnknownVisit(NamedTuple):
+    """One "?" room entered, as the odds see it: what it turned out to be and what the roll could not pick.
+
+    `room`: `vocab.NODE_MONSTER`, `NODE_ELITE`, `NODE_TREASURE`, `NODE_SHOP`, or `NODE_UNKNOWN` for a room that stayed an event. `monster_ok`: a fight could
+    be rolled (False with Juzu Bracelet). `shop_ok`: a shop could be rolled (False when the room before was a shop, or every room this one leads to is).
+    `forced_event`: Golden Compass on its own act, where every "?" is an event and the odds do not move.
+    """
+
+    room: int
+    monster_ok: bool = True
+    shop_ok: bool = True
+    forced_event: bool = False
+
+
+def unknown_visit_allows(previous_room: int, next_room_types: Iterable[int], juzu_bracelet: bool = False) -> tuple[bool, bool]:
+    """(monster_ok, shop_ok) of a "?" visit, by the engine's rule (`RunEngine.IsUnknownShopBlacklisted`, `RollUnknownMapPointNodeType`): a shop is not rolled
+    straight after a shop, nor when every room the "?" leads to is a shop (a "?" that leads nowhere is not blacklisted); Juzu Bracelet takes fights out of the set.
+    `previous_room` is the last room entered (a vocab node type, 0 if none), `next_room_types` the node types of the "?" node's children."""
+    types = list(next_room_types)
+    shop_ok = previous_room != vocab.NODE_SHOP and not (types and all(t == vocab.NODE_SHOP for t in types))
+    return (not juzu_bracelet, shop_ok)
+
+
+def unknown_room_odds(visits: Iterable[UnknownVisit]) -> tuple[int, int, int, int]:
+    """The "?" rooms' state after `visits` (the "?" rooms entered so far this act, in order): (visited, fight, treasure, shop), the three odds in thousandths.
+
+    The one function the human derivation and the tests share, written from the engine's rule (`RunEngine.UpdateUnknownMapPointOdds`): each act starts at
+    (0, 100, 20, 30); a "?" that turned out to be one of the three resets that room's odds to its base, and every other of the three that the roll could
+    have picked grows by its base. A Golden Compass act's "?" rooms count as visited and move nothing. The elite odds start below zero and are never a chance.
+    """
+    visited = 0
+    odds = list(vocab.UNKNOWN_ODDS_BASE)
+    for visit in visits:
+        visited += 1
+        if visit.forced_event:
+            continue
+        for i, (room, allowed) in enumerate(((vocab.NODE_MONSTER, visit.monster_ok), (vocab.NODE_TREASURE, True), (vocab.NODE_SHOP, visit.shop_ok))):
+            if visit.room == room:
+                odds[i] = vocab.UNKNOWN_ODDS_BASE[i]
+            elif allowed:
+                odds[i] += vocab.UNKNOWN_ODDS_BASE[i]
+    return (visited, odds[0], odds[1], odds[2])
+
+
+def gaps_from_engine(handle: int) -> StateGaps:
+    """Block G's source from a run handle: list 25 (relic id, counter pairs, the run's own outside a fight), 26 (the "?" rooms) and 27 (removals). A library built
+    before lists 26 and 27 answers -3 for them: that part is then unknown (None), not an error."""
+    held = native.run_state_list(handle, 25, 128)
+    wanted = set(vocab.counter_relic_ids())
+    counters = tuple((held[i], held[i + 1]) for i in range(0, len(held) - 1, 2) if held[i] in wanted)
+    rooms = removals = None
+    with contextlib.suppress(RuntimeError):
+        r = native.run_state_list(handle, 26, 4)
+        rooms = (r[0], r[1], r[2], r[3]) if len(r) == 4 else None
+    with contextlib.suppress(RuntimeError):
+        m = native.run_state_list(handle, 27, 2)
+        removals = (m[0], m[1]) if len(m) == 2 else None
+    return StateGaps(counters, rooms, removals)
+
+
+def gaps_block(view: RunView) -> np.ndarray:
+    """Block G of `view`: `GAPS_SIZE` float32 numbers (see above); a view with no `gaps`, or a part of it None, writes zeros there and a 0 known bit."""
+    return _gaps_vector(getattr(view, "gaps", None), getattr(view, "ascension", 0))
+
+
+def _gaps_vector(gaps: StateGaps | None, ascension: int) -> np.ndarray:
+    x = np.zeros(GAPS_SIZE, dtype=np.float32)
+    if gaps is None:
+        return x
+    if gaps.counters is not None:
+        held = dict(gaps.counters)
+        for i, (relic_id, scale, wraps) in enumerate(vocab.counter_relic_scales()):
+            count = held.get(relic_id)
+            if count is None:
+                continue
+            x[i] = (count % scale) / scale if wraps else min(max(count, 0), scale) / scale
+        x[GAPS_KNOWN_AT] = 1.0
+    if gaps.rooms is not None:
+        visited, monster, treasure, shop = gaps.rooms
+        x[GAPS_ROOMS_AT : GAPS_ROOMS_AT + 4] = (visited / _ROOMS_VISITED_SCALE, monster / 1000.0, treasure / 1000.0, shop / 1000.0)
+        x[GAPS_KNOWN_AT + 1] = 1.0
+    if gaps.removals is not None:
+        used, owed = gaps.removals
+        x[GAPS_REMOVALS_AT : GAPS_REMOVALS_AT + 2] = (removal_price(used, ascension) / _REMOVAL_PRICE_SCALE, owed / _REMOVALS_OWED_SCALE)
+        x[GAPS_KNOWN_AT + 2] = 1.0
+    return x
+
+
+def afterstate_gaps(view: RunView, option: Option) -> np.ndarray:
+    """Block G of the state after `option`: what the option changes of it, and nothing else. A removal at the merchant counts (the next quote is 25 or 50
+    higher); a relic taken arrives with its starting counter (a tea its fights, the Crucible its upgrades). The "?" rooms are not moved by a map step (the room
+    is rolled when it is entered: the pending room carries that), and an event's effects are the pending input's."""
+    gaps = getattr(view, "gaps", None)  # a view-like object without block G (a test stub, an older record) knows nothing
+    if gaps is None:
+        return np.zeros(GAPS_SIZE, dtype=np.float32)
+    if option.kind == "shop.remove" and gaps.removals is not None:
+        gaps = replace(gaps, removals=(gaps.removals[0] + 1, gaps.removals[1]))
+    elif option.kind in {"shop.relic", "neow.relic", "reward.relic"} and gaps.counters is not None and option.relic is not None:
+        start = vocab.counter_on_pickup().get(option.relic)
+        if start is not None:
+            gaps = replace(gaps, counters=(*gaps.counters, (option.relic, start)))
+    return _gaps_vector(gaps, getattr(view, "ascension", 0))
 
 
 # --------------------------------------------------------------------------------------
