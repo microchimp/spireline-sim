@@ -556,6 +556,23 @@ public static class RunNativeExports
                 run.State.Phase == RunPhase.Combat && run.State.ActiveCombat is { } fight ? fight.Relics : run.State.Relics,
                 output
             ),
+            // 26: what the player can track about the "?" rooms: (the "?" rooms visited so far this act, then the odds that the
+            // next one is a fight, a treasure room and a shop, each a whole number of thousandths). The odds start at 100 /
+            // 20 / 30 each act and climb with every "?" that was not that room (RunEngine.RollUnknownMapPointNodeType). The
+            // elite odds are not listed: they start below zero and never become a chance. Additive: a library without the
+            // list answers -3.
+            26 => WriteIntArray(
+                [
+                    run.State.UnknownMapPointsVisited,
+                    (int)Math.Round(run.State.UnknownMapPointMonsterOdds * 1000.0),
+                    (int)Math.Round(run.State.UnknownMapPointTreasureOdds * 1000.0),
+                    (int)Math.Round(run.State.UnknownMapPointShopOdds * 1000.0),
+                ],
+                output
+            ),
+            // 27: the removals the merchant has done this run, which set its price (75 + 25 each, 100 + 50 each at the
+            // Inflation ascension), then the removals the run owes (granted by a fight's power and not taken yet).
+            27 => WriteIntArray([run.State.ShopRemovalsUsed, run.State.CardRemovalsOwed], output),
             _ => -3,
         };
     }
