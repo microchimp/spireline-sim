@@ -292,3 +292,117 @@ pooled (p 0.001). Seconds a boss fight (own clock, indicative: the machine was f
 marginal and comes from Act 1; the Act 2 boss, where v0 and v1 lost most, is still not won (v0 -5.2, v1 -3.8, v2 -2.8 for j480). The judge was trained on 599 human fights, 0.25% of its
 positions; the corpus has since grown to 4,680 fights (`complete` is not set), and the retrain as v2b on it is the one command above. Nothing is switched: the decision is the
 orchestrator's.
+
+### 8.1 Judge v2b: the same recipe on the complete corpus (2026-11-12)
+
+The corpus's human build finished (`manifest.json` `complete: true`, sha256 `96bc0bfcaa6c1ed18f43cc8a7912682aad7a5c3c231e87fd496c7b507ae5c9d2`; `JUDGE_CORPUS.md`), and addendum 10 of D58 asked for the retrain before any switch,
+read per act. v2b is the one command above with `--version judge-v2b`, `--out referee/agent/judge/v2b/judge.pt` and `--compare` naming v0, v1, v2-sp and v2 (the trainer takes any version string;
+the recipe, `--wclip 4`, the init network, the seed and every setting are v2's). Trained 2026-11-12 07:11Z to 07:22Z on the idle card (GPU venv, BelowNormal): **551 s** of training (the whole command 11 minutes with the 81 s corpus read and the scoring), 10 epochs, best validation
+loss 1.1271 (epoch 10; v2's 1.0886 was on another validation split and another mix, not comparable), win calibration scale 0.997, shift -0.085. `judge.pt` sha256
+`445f576cf54ec924131fbf76599f95903c9eddd321ceba6b2cb4177a5085d4ad`; `judge-board.pt` beside it (the same checkpoint without `src_emb.weight`, for the board's older engine tree), sha256
+`62bcaf0dbeaf8c42c846f074d289c882376f0aed7ae27849e4f61b2725aab643`; the two read identically on 64 human boss positions (largest difference 0.0). v0, v1, v2-sp and v2 are untouched.
+
+**What the trainer read** (positions; the corpus's split by run): 968,159 in all, 692,392 to train, 72,959 for the epoch and the calibration, 202,808 held out.
+
+| source | cell | train | validation | held out |
+|---|---|---|---|---|
+| human (13,371 fights of 6,418 runs: 9,571 / 1,088 / 2,712 fights by split) | boss | 14,443 | 1,640 | 4,060 |
+| | elite | 14,607 | 1,625 | 4,241 |
+| | hallway | 7,531 | 900 | 2,044 |
+| | all | 36,581 | 4,165 | 10,345 |
+| self-play | boss | 371,546 | 35,713 | 107,660 |
+| | elite | 94,923 | 10,152 | 28,966 |
+| | hallway | 189,342 | 22,929 | 55,837 |
+| | all | 655,811 | 68,794 | 192,463 |
+
+By act the human rows are Act 1 / Act 2 boss 4,154 / 10,289 train, 466 / 1,174 validation, 1,185 / 2,875 held out; elite 7,366 / 7,241, 791 / 834, 2,098 / 2,143; hallway 3,680 / 3,851, 459 / 441, 1,059 / 985. The human share of the
+rows is 5.3% (v2: 0.25%); labels by tier: 20,273 settled, 20,343 soft, 927,543 played. **The search calibration on the human rows** (training rows only; the search's root value and death share put on the outcomes'
+scale by a monotone map per tier and kind, `calibrate_search`): settled boss turns 7,950 rows, root value -70.9 before and -46.8 after against -46.7 realised, win share 0.235 to 0.431 against 0.432; settled elite 6,599 rows, -20.3 to +0.9 against +1.0, win share 0.616 to 0.771 against 0.772;
+soft boss 6,493 rows, -57.8 to +1.4 against +1.4, win share 0.343 to 0.814 against 0.814; soft elite 8,008 rows, -25.6 to +14.8 against +14.8, win share 0.587 to 0.891 against 0.891. The self-play rows' calibration is v2's (boss 300,654 rows,
+-65.9 to -36.8 against -36.7; elite 77,856, -13.5 to +9.8 against +9.9; hallway 166,997, +31.4 to +41.6 against +41.8).
+
+**Held-out, v2b against v2, v2-sp, v1 and v0** (Pearson / Spearman / win calibration error against the teacher's outcome of the game; all 202,808 positions by run; the held-out half is the corpus's: v2's 192,912 positions were 192,463 self-play and 449 human, these are the same 192,463 and 10,345 human, so v2, v2-sp, v1 and v0 are scored again here on the same positions):
+
+| cell | positions | v2b | v2 | v2-sp | v1 | v0 |
+|---|---|---|---|---|---|---|
+| all | 202,808 | 0.831 / 0.873 / 0.012 | 0.828 / 0.869 / 0.013 | 0.832 / 0.872 / 0.010 | 0.805 / 0.856 / 0.041 | 0.774 / 0.827 / 0.118 |
+| Act 1 boss | 90,719 | 0.730 / 0.735 / 0.017 | 0.731 / 0.735 / 0.016 | 0.737 / 0.740 / 0.012 | 0.684 / 0.694 / 0.048 | 0.649 / 0.670 / 0.135 |
+| Act 1 elite | 20,919 | 0.713 / 0.807 / 0.022 | 0.702 / 0.804 / 0.021 | 0.718 / 0.812 / 0.017 | 0.681 / 0.815 / 0.043 | 0.688 / 0.793 / 0.064 |
+| Act 1 hallway | 33,759 | 0.894 / 0.928 / 0.004 | 0.891 / 0.927 / 0.004 | 0.892 / 0.931 / 0.005 | 0.888 / 0.927 / 0.006 | 0.897 / 0.921 / 0.006 |
+| Act 2 boss | 21,001 | 0.703 / 0.696 / 0.018 | 0.677 / 0.669 / 0.036 | 0.680 / 0.672 / 0.029 | 0.604 / 0.613 / 0.102 | 0.417 / 0.416 / 0.309 |
+| Act 2 elite | 12,288 | 0.659 / 0.729 / 0.048 | 0.662 / 0.728 / 0.030 | 0.656 / 0.726 / 0.031 | 0.654 / 0.732 / 0.041 | 0.606 / 0.669 / 0.135 |
+| Act 2 hallway | 24,122 | 0.835 / 0.898 / 0.019 | 0.832 / 0.893 / 0.018 | 0.837 / 0.894 / 0.019 | 0.834 / 0.901 / 0.021 | 0.818 / 0.881 / 0.081 |
+
+On the whole held-out set (95% self-play positions) v2b is level with v2 and v2-sp (all 0.831 against 0.828 and 0.832, Act 1 boss 0.730 against 0.731 and 0.737; the loop's night-start positions alone 0.849 against 0.850 and 0.853:
+the human rows, 5% of the training rows, cost the loop's own positions at most 0.004) and well ahead of v1 and v0; **Act 2 boss is where it moves, Pearson 0.703 against v2's 0.677 and v2-sp's 0.680, win calibration error 0.018 against 0.036 and 0.029.** Act 2 elite's
+calibration error is the one cell that got worse (0.048 against 0.030; Pearson level at 0.659 against 0.662). The scores of v2 here differ from section 8's in the third place only because the human half of the held-out
+set grew.
+
+**The human held-out block** (positions from Spire Codex public run export for v0.107.1's training fifths, held out by run: **10,345 positions of 2,712 fights**; boss 4,060 (1,185 Act 1, 2,875 Act 2), elite 4,241, hallway 2,044;
+8,301 are boss and elite turns, every one with a settled or soft search value). The judge's V read with the human source input against **the human's own outcome of the fight** (L0; Pearson / Spearman / win calibration error):
+
+| cell | positions | v2b | v2 | v2-sp | v1 | v0 |
+|---|---|---|---|---|---|---|
+| all human positions | 10,345 | 0.663 / 0.726 / 0.014 | 0.628 / 0.700 / 0.054 | 0.608 / 0.662 / 0.122 | 0.573 / 0.652 / 0.150 | 0.523 / 0.593 / 0.286 |
+| Act 1 boss | 1,185 | 0.547 / 0.588 / 0.055 | 0.509 / 0.562 / 0.103 | 0.486 / 0.533 / 0.189 | 0.489 / 0.533 / 0.193 | 0.419 / 0.484 / 0.328 |
+| Act 2 boss | 2,875 | 0.515 / 0.522 / 0.029 | 0.451 / 0.463 / 0.093 | 0.433 / 0.438 / 0.261 | 0.360 / 0.392 / 0.372 | 0.253 / 0.344 / 0.629 |
+| Act 1 elite | 2,098 | 0.668 / 0.713 / 0.016 | 0.646 / 0.687 / 0.047 | 0.646 / 0.658 / 0.034 | 0.627 / 0.693 / 0.042 | 0.610 / 0.671 / 0.108 |
+| Act 2 elite | 2,143 | 0.658 / 0.685 / 0.015 | 0.634 / 0.663 / 0.037 | 0.615 / 0.630 / 0.091 | 0.600 / 0.638 / 0.072 | 0.535 / 0.576 / 0.212 |
+| Act 1 hallway | 1,059 | 0.796 / 0.859 / 0.015 | 0.788 / 0.854 / 0.027 | 0.793 / 0.850 / 0.020 | 0.786 / 0.852 / 0.023 | 0.805 / 0.847 / 0.014 |
+| Act 2 hallway | 985 | 0.734 / 0.770 / 0.027 | 0.726 / 0.747 / 0.016 | 0.704 / 0.736 / 0.043 | 0.721 / 0.749 / 0.032 | 0.685 / 0.735 / 0.096 |
+
+The human's win rate on these positions is 0.85 (0.74 Act 1 boss, 0.76 Act 2 boss); the mean win probability v2b gives is 0.84 (0.71, 0.74), v2's 0.87 (0.77, 0.76), v2-sp's 0.74, v1's 0.72, v0's 0.56 (Act 2 boss 0.14). The gain
+of v2b over v2 in Pearson against the human's outcome is **+0.035 over all 10,345 positions (95% interval by bootstrap over the 2,712 fights +0.026 to +0.043)**, +0.059 at the 4,060 boss positions (+0.044 to +0.074; 1,050 fights),
++0.064 at Act 2 boss (+0.046 to +0.083; 742 fights) and +0.038 at Act 1 boss (+0.009 to +0.069; 308 fights); against v1 +0.089 (+0.077 to +0.103) all, +0.155 at Act 2 boss (+0.126 to +0.183). The same positions read with the teacher
+reading (the one the search asks, against the teacher's outcome of the game the position was in; Pearson / Spearman / win calibration error):
+
+| cell | positions | v2b | v2 | v2-sp | v1 | v0 |
+|---|---|---|---|---|---|---|
+| all human positions | 10,345 | 0.770 / 0.804 / 0.023 | 0.746 / 0.783 / 0.047 | 0.753 / 0.789 / 0.038 | 0.718 / 0.771 / 0.075 | 0.654 / 0.710 / 0.211 |
+| Act 1 boss | 1,185 | 0.712 / 0.711 / 0.044 | 0.700 / 0.698 / 0.058 | 0.702 / 0.701 / 0.052 | 0.671 / 0.691 / 0.071 | 0.587 / 0.624 / 0.214 |
+| Act 2 boss | 2,875 | 0.668 / 0.678 / 0.064 | 0.618 / 0.626 / 0.111 | 0.630 / 0.637 / 0.091 | 0.576 / 0.604 / 0.203 | 0.395 / 0.469 / 0.468 |
+
+**V against the search's settled and soft root values** (HP units, raw: the search's level is low by the calibration above, so every judge but v0 sits 25 to 33 HP above; Pearson / Spearman / mean bias):
+
+| cell | positions | v2b | v2 | v2-sp | v1 | v0 |
+|---|---|---|---|---|---|---|
+| all human turns | 8,301 | 0.784 / 0.851 / +31.2 | 0.793 / 0.843 / +26.9 | 0.784 / 0.843 / +27.9 | 0.705 / 0.750 / +25.7 | 0.668 / 0.682 / +1.7 |
+| Act 1 boss | 1,185 | 0.730 / 0.831 / +32.5 | 0.749 / 0.831 / +30.3 | 0.747 / 0.833 / +30.3 | 0.624 / 0.719 / +30.1 | 0.672 / 0.698 / +10.8 |
+| Act 2 boss | 2,875 | 0.763 / 0.824 / +31.2 | 0.783 / 0.801 / +24.5 | 0.766 / 0.808 / +27.0 | 0.700 / 0.691 / +14.0 | 0.490 / 0.508 / -19.5 |
+| Act 1 elite | 2,098 | 0.749 / 0.795 / +28.4 | 0.743 / 0.779 / +25.6 | 0.726 / 0.769 / +27.1 | 0.598 / 0.617 / +32.5 | 0.676 / 0.686 / +15.2 |
+| Act 2 elite | 2,143 | 0.726 / 0.784 / +33.1 | 0.734 / 0.777 / +29.4 | 0.732 / 0.772 / +28.3 | 0.637 / 0.673 / +32.5 | 0.652 / 0.667 / +12.0 |
+
+Against the search's own values v2b is level with v2 and v2-sp (all 0.784 against 0.793 and 0.784; Act 2 boss 0.763 against 0.783 and 0.766: differences not tested; the bias is 2 to 7 HP higher than v2's, 31.2 against 26.9 over all turns): the human rows moved the judge toward what the humans
+achieved, not toward the search's settled moves. Against the loop's search as played (160,068 held-out positions, Pearson) v2b reads 0.858 against v2's 0.863, v2-sp's 0.868, v1's 0.823 and v0's 0.850.
+
+**The board, played 2026-11-12** (the per-act rule of D58 addendum 10; the same engine tree, starts, draws and arms as the v2 board: Act 1 boss the fight board's 200 starts x draws 0 and 1, Act 2 boss board A's 100 starts x draws 0 to 3,
+400 paired games an arm in each act, K 16, x16 is board A's own games, v2, v1 and v0 the earlier boards' rows on the same games). It played `judge-board.pt`; the driver is
+`D:/spireline/referee/backlog/scratch-board-a/v2b/board_v2b.py` (the v2 board's with two changes: the process count follows the brief's rule, 3 while the after-corpus measurement worker or a `lab-train` line ran and 6 otherwise,
+re-read every two minutes, and it stops for any foreign QUIET line but the lab's own `lab-*`, `run-teacher`, `gym-loop`, `lab-score`, `w3-blocks` and `judge-corpus`), with `analyze.py`, `analyze2.py`, `compare_prev.py` and `make_summary.py`; `summary.md` there has
+the tables; results `D:/spireline/referee/lab/results/fight-gym/2026-11-12-judge-v2b-board/`. A pilot of 16 games (4 starts, both acts, both arms; those games count in the board), then the main phase, Act 2 first: 07:23Z to 14:00Z with no QUIET line of its own, 3 processes to 09:50Z
+and 6 after (23,821 s of play in all; this job took about 27 core-hours, 26% of the machine on average; no game capped, no search hit the safety clock).
+
+| per 100, SE clustered by start | x16 | j480 (v2b) | j960 (v2b) |
+|---|---|---|---|
+| Act 1 boss (400 games an arm) | 48.8 +- 3.3 | 51.7 +- 3.3 | 53.2 +- 3.2 |
+| Act 2 boss (400 games an arm) | 19.5 +- 3.2 | 18.8 +- 3.0 | 19.5 +- 3.0 |
+
+Paired differences against x16, points per 100: diff (SE over starts); one-sided 95% lower bound; games only the arm won / only x16 won; one-sided McNemar p that the arm is better.
+
+| | Act 1 | Act 2 | both (800 pairs) |
+|---|---|---|---|
+| j480 - x16 | +3.0 (2.0); -0.3; 32/20; p 0.063 | -0.8 (2.4); -4.6; 27/30; p 0.702 | +1.1 (1.5); -1.4; 59/50; p 0.222 |
+| j960 - x16 | +4.5 (2.0); +1.2; 36/18; p 0.010 | +0.0 (2.2); -3.7; 28/28; p 0.553 | +2.2 (1.5); -0.2; 64/46; p 0.052 |
+
+v2b against v2 on the same games (diff; SE; v2b-only / v2-only; one-sided p that v2b is better): j480 +0.6 pooled (1.0; 34/29; p 0.307; Act 1 -0.8, Act 2 +2.0, p 0.100), j960 +0.8 pooled (1.0; 35/29; p 0.266; Act 1 +0.5, Act 2 +1.0).
+Against v1: j480 +3.0 pooled (1.2; 59/35; p 0.009; Act 1 +3.0, Act 2 +3.0), j960 +2.9 (1.3; 55/32; p 0.009); against v0: j480 +4.5 (1.4; p 0.001), j960 +4.8 (1.6; p 0.000). Seconds a boss fight (own clock, indicative: this board ran at 3 then 6 processes,
+the v2 board's on a full machine, board A's x16 at 12 processes with the lab paused, so only the ratio of the two judge arms is steady): Act 1 x16 66.5, j480 33.6, j960 71.5; Act 2 79.7, 55.1, 115.9; j960 costs 2.1 times j480 in both acts.
+
+**Verdict by rule 1.3, read per act (j960 if it beats x16 by 3 or more with one-sided McNemar p under 0.05; else j480 if its one-sided 95% lower bound against x16 is above -2; else keep x16): Act 1 boss, j960** (+4.5, p 0.010; j480 +3.0 has its bound at
+-0.3, so the rule passes it too, at half of x16's seconds); **Act 2 boss, keep x16** (j960 +0.0, p 0.553; j480 -0.8 with bound -4.6, short of -2); **pooled, for the record, j480** (j960 +2.2 with p 0.052 misses both of its tests by a hair; j480's lower bound -1.4 is above -2, by the
+start-clustered SE and by the pair SE alike). That is the v2 board's verdict in all three places (Act 1 j960, Act 2 x16, pooled j480), so **the per-act result replicates**, with the pooled j480 margin wider (-1.4 against -1.9) and j960 closer (+2.2 against +1.5). v2b's board games do not differ detectably
+from v2's (+0.6 and +0.8 pooled): the human fights, from 599 to 13,371, moved the judge's reading of human positions, clearly at Act 2 boss, and did not move the board's kill rates by more than the noise of 800 pairs. The Act 2 boss, where an Ascension 10 run is decided, is still not
+won by any judge arm (v0 -5.2, v1 -3.8, v2 -2.8, v2b -0.8 for j480; v2b +0.0 for j960), so a switch for the Act 2 boss has no support from this board; a switch for the Act 1 boss does. Nothing is switched: the decision is the orchestrator's.
+
+**Unverified / left:** one training seed (no second seed was trained, so a difference between v2b and v2 of this size, such as the held-out gain at Act 2 boss of +0.026 Pearson, cannot be told from seed noise); the human-block intervals are by fight and not by run (a run's fights share a deck); the seconds are indicative; the board's Act 2 starts are 100 starts
+(the exam's act2-boss cell), so the Act 2 verdict rests on 100 start clusters.
