@@ -76,6 +76,8 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from sts2_gym import faults  # noqa: E402 -- pure: loads no native code
+
 VERSION = 1
 NAMESPACE = "run-teacher-v1"  # the continuations' seeds: no game, agent or search seed of any other job comes from it
 TAG = "run-teacher"  # this job's QUIET.lock line
@@ -1166,6 +1168,13 @@ def done_rows(gen_dir: Path | str) -> list[dict]:
     return [r for r in read_jsonl(Path(gen_dir) / "runs.jsonl") if not r.get("capped")]
 
 
+def fault_seeds(gen_dir: Path | str) -> set[str]:
+    """The runs an engine fault ended (a capped row whose reason is `engine_fault:<class>`, docs/ENGINE_FAULTS.md): the fault is
+    the same each time, so they are not asked for again, as a finished run is not; they are counted in the job's result."""
+    return {str(r["seed"]) for r in read_jsonl(Path(gen_dir) / "runs.jsonl")
+            if r.get("capped") and str(r.get("cap_reason", "")).startswith("engine_fault:") and r.get("seed") is not None}
+
+
 def sharded_seeds(gen_dir: Path | str, but: str | None = None) -> set[str]:
     """The runs whose decisions an earlier job's shard already holds (the shard `but`, which is being rebuilt, aside)."""
     out: set[str] = set()
@@ -1688,7 +1697,7 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
         cal_doc = fit_door_calibration(pairs)
         write_json(gen_dir / "calibration.json", {"version": VERSION, "fit_utc": res["started_utc"], "min_doors": CAL_MIN_DOORS, "ridge": CAL_RIDGE,
                                                   "doors": len(pairs), "acts": {str(k): v for k, v in cal_doc.items()}})
-        done = {r["seed"] for r in done_rows(gen_dir)}
+        done = {r["seed"] for r in done_rows(gen_dir)} | fault_seeds(gen_dir)
         mode = a.source
         stored_rows: list[dict] = []
         if mode in ("auto", "stored"):
@@ -1739,6 +1748,9 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
                                          init=_init_job_worker, init_args=(worker_cfg,), mem_limit=a.mem_gb * 2**30 if a.mem_gb else None, stop=stop)
             drop_skips(target)
             res["capped"] = sum(1 for r in read_jsonl(target) if r.get("capped")) - capped0  # runs lost to a worker that died or ran too long
+            job_seeds = {t[1] for t in tasks}
+            res["engine_faults"] = faults.engine_fault_counts(  # of those, the runs an engine fault ended, by class (docs/ENGINE_FAULTS.md)
+                r for r in read_jsonl(target) if r.get("capped") and r.get("seed") in job_seeds)
             if reason:
                 res["stopped"] = reason
             done = {r["seed"] for r in done_rows(gen_dir)}

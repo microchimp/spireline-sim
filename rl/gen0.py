@@ -129,6 +129,9 @@ def engine_block(runs: list[dict]) -> dict:
            "ai_state_assumed": sum(r.get("ai_state_assumed") or 0 for r in runs)}
     if lost:
         out["lost"] = lost  # seeds whose worker died or timed out on every attempt: counted as losses on floor 0
+    engine_faults = dict(sorted(Counter(r["engine_fault"] for r in runs if r.get("engine_fault")).items()))
+    if engine_faults:
+        out["engine_faults"] = engine_faults  # runs ended by an engine fault, by class (docs/ENGINE_FAULTS.md): crashes, among them
     fields = run_fields.aggregate(runs)  # mean boss damage, card choices by floor, skip rate: only for rows that carry them
     if fields:
         out["run_fields"] = fields
@@ -410,9 +413,14 @@ def _run_safe(seed: str, ix: int, sims: int | str, ascension: int, agent=None, r
     try:
         return play_emu_run(seed, ix, sims, ascension, agent=agent, record=record, character=character)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run: a loss, reported
-        return {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "crash", "decisions": 0, "wall": round(time.perf_counter() - t0, 2),
-                "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300],
-                "boss_damage": 0.0}  # a crash is a loss on floor 0: the boss was not reached
+        row = {"seed": seed, "ix": ix, "win": False, "floor": 0, "end": "crash", "decisions": 0, "wall": round(time.perf_counter() - t0, 2),
+               "ai_state_assumed": 0, "crash": True, "error": f"{type(e).__name__}: {e}"[:300],
+               "boss_damage": 0.0}  # a crash is a loss on floor 0: the boss was not reached
+        from sts2_gym import faults  # noqa: PLC0415 -- pure; the run put src/ on the path
+
+        if (fault := faults.fault_of(e)) is not None:
+            row.update(end="engine_fault", **fault.row())  # the engine's step threw: the run ends here, counted by class, not run again
+        return row
 
 
 def lost_row(seed: str, ix: int, status: str, reason: str, attempts: int, wall: float) -> dict:

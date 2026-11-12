@@ -41,6 +41,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
         sys.path.insert(0, str(_p))
 
 import run_human_bar as hb  # noqa: E402
+from sts2_gym import faults  # noqa: E402 -- pure: loads no native code
 
 SPIRE_CODEX = hb.SPIRE_CODEX
 MIN_CELL = hb.MIN_CELL  # D13: a cell over fewer runs is not shown
@@ -510,6 +511,8 @@ def play_task(seed: str, key: str, draw: int, ix: int, config: str, ascension: i
         row = gen0.play_emu_run(seed, ix, config, ascension, agent=agent, hook=hook)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run, counted and left out of the means
         row = {"win": False, "floor": 0, "end": "crash", "decisions": 0, "crash": True, "error": scrub(f"{type(e).__name__}: {e}", [seed], seed_key)[:300]}
+        if (fault := faults.fault_of(e)) is not None:
+            row.update(end="engine_fault", **fault.row())  # the engine's step threw (docs/ENGINE_FAULTS.md): counted by class
     row = {k: v for k, v in row.items() if k not in ("seed", "ix", "prior_calls", "prior_latency_ms")}
     row.update(key=key, draw=draw, human_won=bool(human_won), door=doors, wall=round(time.perf_counter() - t0, 2), cpu=round(time.process_time() - c0, 2))
     return row
@@ -539,6 +542,7 @@ def run_block(picks: Sequence[Mapping[str, Any]], draws: int, *, procs: int, out
     t0 = time.time()
     log(f"seed-exam: {len(done)} of {total} runs held, {len(todo)} to play on {procs} processes")
     counts = Counter()
+    faults_by_class: Counter = Counter()  # the runs an engine fault ended, by class (docs/ENGINE_FAULTS.md)
     by_key = {p["key"]: p for p in picks}
 
     def lost(key: str, draw: int, why: str, wall: float) -> dict[str, Any]:
@@ -552,6 +556,8 @@ def run_block(picks: Sequence[Mapping[str, Any]], draws: int, *, procs: int, out
             fh.flush()
             counts["rows"] += 1
             counts[row.get("end", "?")] += 1
+            for cls, n in faults.engine_fault_counts([row]).items():
+                faults_by_class[cls] += n
             log(f"seed-exam: {len(done) + counts['rows']}/{total} key={row['key'][:8]} draw={row['draw']} end={row.get('end')} floor={row.get('floor')} "
                 f"wall={row.get('wall')}s elapsed={round((time.time() - t0) / 60, 1)}min")
 
@@ -589,7 +595,7 @@ def run_block(picks: Sequence[Mapping[str, Any]], draws: int, *, procs: int, out
             finally:
                 pool.terminate()
     return {"played": counts["rows"], "wall_s": round(time.time() - t0, 1), "ends": {k: v for k, v in counts.items() if k not in ("rows", "retried")},
-            "retried": counts["retried"]}
+            "retried": counts["retried"], "engine_faults": dict(sorted(faults_by_class.items()))}
 
 
 # ---------------------------------------------------------------------------------------------------------------------- summary

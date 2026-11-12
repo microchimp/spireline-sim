@@ -54,6 +54,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
 
 import judge_corpus as jc  # noqa: E402
 from judge_corpus import STORE, TAG  # noqa: E402
+from sts2_gym import faults  # noqa: E402 -- pure: loads no native code
 
 PLAYER_DEFAULT = "v3"
 MINIMUMS = {"cell": 3000, "enemy": 400, "arch": 300, "relic": 150, "card": 150}  # positions: the cell minimums the build aims at (coverage.md)
@@ -381,9 +382,12 @@ def cmd_work(a: argparse.Namespace) -> int:
         t0 = time.perf_counter()
         try:
             res = build_fight(item, ctx, say, pause)
-        except Exception:  # noqa: BLE001 -- a fight that raises is recorded, the process goes on
+        except Exception as e:  # noqa: BLE001 -- a fight that raises is recorded, the process goes on
             res = {"start": sid, "cell": item["cell"], "error": traceback.format_exc()[-3000:], "positions": []}
-            say(f"{item['cell']} {sid} FAILED")
+            fault = faults.fault_of(e)
+            if fault is not None:  # the engine's step threw (docs/ENGINE_FAULTS.md): the fight's row says which, and it is not built again
+                res.update(fault.row())
+            say(f"{item['cell']} {sid} FAILED" + (f" ({fault.reason} at {fault.frame})" if fault else ""))
         jc.write_atomic(fight_path(store, sid), res)
         done += 1
         failed_in_a_row = failed_in_a_row + 1 if res.get("error") else 0
@@ -504,6 +508,7 @@ def cmd_status(a: argparse.Namespace) -> int:
             pos[(p["kind"], p["act"], p["label"]["tier"])] += 1
     cpu = sum(f.get("cpu_s", 0.0) for f in ok)
     print(json.dumps({"plan_fights": len(plan["order"]), "done": len(ok), "failed": len(bad), "cpu_hours": round(cpu / 3600, 2),
+                      "engine_faults": faults.engine_fault_counts(bad),  # the failed fights an engine fault ended, by class
                       "by_cell": dict(by), "positions": {f"act{k[1]}-{k[0]}:{k[2]}": v for k, v in sorted(pos.items())}}, indent=1))
     return 0
 

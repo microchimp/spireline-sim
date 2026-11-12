@@ -52,6 +52,8 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from sts2_gym import faults  # noqa: E402 -- pure: loads no native code
+
 REF = Path(os.environ.get("FIGHT_GYM_REFEREE", "D:/spireline/referee"))
 QUIET = REF / "QUIET.lock"
 MAIN_LOCK = REF / "backlog" / "main.lock"
@@ -412,7 +414,9 @@ def _worker_main(conn, init, init_args: tuple, fn) -> None:
         try:
             res = fn(task)
         except Exception as error:  # noqa: BLE001 -- recorded as the task's capped row, never lost
-            conn.send(("error", f"{type(error).__name__}: {error}"[:300]))
+            fault = faults.fault_of(error)
+            # An engine fault's row says so by class (docs/ENGINE_FAULTS.md): `engine_fault:<class> at <frame>`.
+            conn.send(("error", f"{fault.reason} at {fault.frame}" if fault else f"{type(error).__name__}: {error}"[:300]))
             continue
         conn.send(("done", res))
 
@@ -474,7 +478,9 @@ def run_tasks(tasks: list, fn, target: Path, procs: int, *, init=None, init_args
                             if kind == "progress":
                                 s["prog"].update(msg)
                                 continue
-                            write(msg if kind == "done" else capped_of(s["task"], f"error: {msg}", time.perf_counter() - s["t0"], s["prog"]))
+                            # A task that raised: its capped row; an engine fault's reason leads with `engine_fault:<class>`.
+                            why = msg if kind == "error" and str(msg).startswith("engine_fault:") else f"error: {msg}"
+                            write(msg if kind == "done" else capped_of(s["task"], why, time.perf_counter() - s["t0"], s["prog"]))
                             s["task"] = None
                             break
                     except (EOFError, OSError):
@@ -535,8 +541,10 @@ def guarded_run(out: Path, what: str, tasks: list, fn, target: Path, procs: int,
         left = [t for t in left if json.dumps(_task_id(t)) not in gone]
         if stopped:
             _say(out, f"{what}: stopped ({stopped}); {len(left)} left")
-    capped = sum(1 for r in read_jsonl(target) if r.get("cap_reason"))
-    _say(out, f"{what}: done ({capped} rows of {target.name} capped by a guard)")
+    rows = read_jsonl(target)
+    capped = sum(1 for r in rows if r.get("cap_reason"))
+    engine_faults = faults.engine_fault_counts(rows)  # of those, the tasks an engine fault ended, by class (docs/ENGINE_FAULTS.md)
+    _say(out, f"{what}: done ({capped} rows of {target.name} capped by a guard" + (f"; engine faults {engine_faults}" if engine_faults else "") + ")")
 
 
 def _task_id(task: tuple) -> list:
