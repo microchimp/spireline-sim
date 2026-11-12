@@ -10186,10 +10186,20 @@ public static class CardEffects
     /// or when the fight ends. A Strike Hellraiser plays never reaches the hand, so against an
     /// enemy those Strikes cannot finish the hand fills only because Hellraiser stops playing
     /// them (<see cref="HellraiserPlaysDrawnStrike" />).
+    /// <para>
+    /// Where none of those can happen the game draws forever, and so did the copy, until the
+    /// step's record of its takes ran out of memory (engine fault class 2): every card left in
+    /// the draw and discard piles a Strike, and every Strike's auto-play refused (Sloth's,
+    /// Ringing's or Normality's limit reached, the Pillage itself counted), so each is filed in
+    /// the discard unplayed and drawn again after the next shuffle, with nothing changed. The
+    /// game's loop has the same exit test, and its refused auto-play files the card without a
+    /// play, so it hangs there. The copy stops and says so (<see cref="EndlessDraw" />).
+    /// </para>
     /// </remarks>
     private static void DrawUntilNonAttack(CombatState state, Random rng)
     {
         var drawn = new List<CardInstance>(1);
+        var endless = new EndlessDraw();
         while (state.Hand.Count < MaxCardsInHand)
         {
             drawn.Clear();
@@ -10203,6 +10213,68 @@ public static class CardEffects
             {
                 return;
             }
+
+            endless.After(state);
+        }
+    }
+
+    /// <summary>
+    /// The watch on Pillage's loop for the state the game never leaves (<see cref="DrawUntilNonAttack" />): it throws
+    /// <see cref="GameHangs" /> once a whole pass over the draw and discard piles, and at least
+    /// <see cref="StillDraws" /> draws, have changed nothing that could end the loop -- the hand's size, the piles' sizes,
+    /// the exhaust pile's, a play started, the player's or any enemy's HP and block, the enemies' count -- and once one
+    /// Pillage has drawn <see cref="MaxDraws" /> cards whatever the cause, more than a fight that ends could draw.
+    /// </summary>
+    private struct EndlessDraw
+    {
+        /// <summary>Draws with nothing changed before a hang is called, at the least: past any every-so-many-draws count.</summary>
+        internal const int StillDraws = 64;
+
+        /// <summary>The most one Pillage draws: each Strike a Hellraiser plays deals at least one damage, so this is past
+        /// the HP and block of any fight's enemies.</summary>
+        internal const int MaxDraws = 20_000;
+
+        private int _draws;
+        private int _still;
+        private long _last;
+
+        public void After(CombatState state)
+        {
+            long now = Signature(state);
+            _still = _draws > 0 && now == _last ? _still + 1 : 0;
+            _last = now;
+            _draws++;
+            int pass = 2 * (state.DrawPile.Count + state.DiscardPile.Count) + 2;
+            if (_still >= Math.Max(pass, StillDraws))
+            {
+                throw new GameHangs(
+                    $"Pillage draws forever: for {_still} draws every card drawn was an Attack that left the hand and nothing that could end the loop changed (the game's loop has no exit here)"
+                );
+            }
+
+            if (_draws >= MaxDraws)
+            {
+                throw new GameHangs($"Pillage drew {_draws} cards without its loop ending");
+            }
+        }
+
+        private static long Signature(CombatState s)
+        {
+            var h = new HashCode();
+            h.Add(s.Hand.Count);
+            h.Add(s.DrawPile.Count + s.DiscardPile.Count);
+            h.Add(s.ExhaustPile.Count);
+            h.Add(s.CardPlaysStartedThisTurn);
+            h.Add(s.PlayerHp);
+            h.Add(s.PlayerBlock);
+            h.Add(s.Enemies.Count);
+            foreach (var enemy in s.Enemies)
+            {
+                h.Add(enemy.Hp);
+                h.Add(enemy.Block);
+            }
+
+            return h.ToHashCode();
         }
     }
 

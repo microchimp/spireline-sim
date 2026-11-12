@@ -315,9 +315,32 @@ public static class CombatEngine
     {
         if (_cardOrPotionEffects == 0 && !_outsidePlayPhases)
         {
-            Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
+            // Each Strike Hellraiser plays out of Unceasing Top's draw empties the hand again, and its check draws again,
+            // one level deeper: the game's chain, which ends when the Strikes kill. Past MaxEmptyHandChain the copy stops
+            // rather than run out of stack, which no catch could answer.
+            if (_emptyHandChain >= MaxEmptyHandChain)
+            {
+                throw new EngineLimit($"Unceasing Top's draws chained {_emptyHandChain} deep, each a card played into an empty hand");
+            }
+
+            _emptyHandChain++;
+            try
+            {
+                Effects.RelicEffects.ApplyAfterHandEmptied(state, rng);
+            }
+            finally
+            {
+                _emptyHandChain--;
+            }
         }
     }
+
+    /// <summary>How deep the empty-hand checks nest on this thread (<see cref="CheckForEmptyHand" />).</summary>
+    [ThreadStatic]
+    private static int _emptyHandChain;
+
+    /// <summary>The deepest chain of empty-hand draws the copy follows (<see cref="CheckForEmptyHand" />).</summary>
+    internal const int MaxEmptyHandChain = 100;
 
     /// <summary>The step running on this thread (the kernel reads its keyed answers), or null.</summary>
     internal static StepInProgress? Running => _running;
