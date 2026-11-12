@@ -636,7 +636,7 @@ class RealFightTests(unittest.TestCase):
             self.assertEqual(r["sims"], 24)
             self.assertEqual(sum(c["n"] for c in r["children"]), 24)
             self.assertGreaterEqual(r["n_moves"], 2)
-            self.assertGreater(r["cpu_s"], 0.0)
+            self.assertGreaterEqual(r["cpu_s"], 0.0)  # process time ticks at about 15 ms on Windows: a 24-simulation search on a quiet machine can read 0.0
             json.dumps(r)
         strip = lambda r: {k: v for k, v in r.items() if k not in ("cpu_s", "load")}  # noqa: E731
         self.assertEqual(strip(r1), strip(r2))
