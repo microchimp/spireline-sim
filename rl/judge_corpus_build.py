@@ -801,6 +801,7 @@ def write_manifest(store: Path, loop: Path, plan: dict) -> dict:
         "cpu_hours": {"human_fights": round(sum(f.get("cpu_s", 0.0) for f in ok) / 3600, 2),
                       "fights_built": len(ok), "fights_failed": len(fights) - len(ok)},
     }
+    man["checks"] = contamination_checks(rows, runs, ids)
     old = read_json(store / "manifest.json") if (store / "manifest.json").is_file() else {}
     try:
         eta = eta_of(store, plan, fights)
@@ -809,6 +810,21 @@ def write_manifest(store: Path, loop: Path, plan: dict) -> dict:
     man.update(readiness(rows, old, plan, len(ok), len(fights) - len(ok), eta))
     jc.write_atomic(store / "manifest.json", man)
     return man
+
+
+def contamination_checks(rows: Sequence[dict], runs: set[str], ids: set[str]) -> dict:
+    """What the exclusions must have kept out, counted on the rows themselves (every figure must be 0): rows whose run or start is in the exam's and
+    the boards' lists, human rows of the exam fifth by the hash rule, rows whose split is not their run's, and rows of a run on both sides of the split."""
+    import human_starts as hs  # noqa: PLC0415
+
+    sides: dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        sides[r["run"]].add(r["split"])
+    return {"rows": len(rows), "rows_of_an_excluded_run": sum(1 for r in rows if r["run"] in runs or bare_run_of(r["start"]) in runs),
+            "rows_of_an_excluded_start": sum(1 for r in rows if r["start"] in ids),
+            "human_rows_of_the_exam_fifth": sum(1 for r in rows if r["src"] == "human" and hs.exam_bucket(r["run"]) == 0),
+            "rows_with_the_wrong_split": sum(1 for r in rows if r["split"] != jc.split_of(r["run"])),
+            "runs_on_both_sides": sum(1 for v in sides.values() if len(v) > 1)}
 
 
 def readiness(rows: Sequence[dict], old: dict, plan: dict, built: int, failed: int, eta: dict | None = None) -> dict:

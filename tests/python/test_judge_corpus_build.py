@@ -437,6 +437,24 @@ class WorkTests(unittest.TestCase):
             self.assertIn("died", jb.read_fights(store)[0]["error"])
 
 
+class ChecksTests(unittest.TestCase):
+    def test_every_exclusion_is_counted_on_the_rows(self):
+        import human_starts as hs
+
+        bad = next(f"x{i}" for i in range(1000) if hs.exam_bucket(f"x{i}") == 0)
+        ok = runs_outside_the_exam(3)
+        row = lambda run, start=None, split=None, src="human": {"run": run, "start": start or f"human:{run}|f33", "split": split or jc.split_of(run), "src": src}  # noqa: E731
+        rows = [row(ok[0]), row(ok[1], start="night/g9:" + ok[1] + "|f8", src="selfplay"), row(ok[2]), row(bad), row(ok[0], split="heldout" if jc.split_of(ok[0]) == "train" else "train")]
+        c = jb.contamination_checks(rows, {ok[1]}, {f"human:{ok[2]}|f33"})
+        self.assertEqual(c["rows"], 5)
+        self.assertEqual(c["rows_of_an_excluded_run"], 1)
+        self.assertEqual(c["rows_of_an_excluded_start"], 1)
+        self.assertEqual(c["human_rows_of_the_exam_fifth"], 1)
+        self.assertEqual(c["rows_with_the_wrong_split"], 1)
+        self.assertEqual(c["runs_on_both_sides"], 1)
+        self.assertTrue(all(v == 0 for k, v in jb.contamination_checks(rows[:1], set(), set()).items() if k != "rows"))
+
+
 class ReportTests(unittest.TestCase):
     def label(self, duel_mean: float, v2: float = 5.0) -> dict:
         """A ladder label: the game's rung, then x32 with the same move, a visit gap of 40 HP in the values and a duel of `duel_mean` +- 1."""
@@ -590,6 +608,10 @@ class CompactTests(unittest.TestCase):
             self.assertAlmostEqual(man["cpu_hours"]["human_fights"], 4 * 30.0 / 3600, places=2)
             self.assertEqual(set(man["shards"]), {"human-boss-act2-0000"})
             self.assertIn("attribution", man)
+            self.assertEqual(set(man["checks"]), {"rows", "rows_of_an_excluded_run", "rows_of_an_excluded_start", "human_rows_of_the_exam_fifth", "rows_with_the_wrong_split",
+                                                  "runs_on_both_sides"})
+            self.assertEqual(man["checks"]["rows"], 12)
+            self.assertTrue(all(v == 0 for k, v in man["checks"].items() if k != "rows"))
             self.assertNotIn("C:/Users", json.dumps(man))
 
     def test_a_second_compaction_after_more_fights_replaces_the_shards_and_a_failed_fight_is_left_out(self):
