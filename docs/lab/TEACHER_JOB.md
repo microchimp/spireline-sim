@@ -24,7 +24,7 @@ D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py job --lab D:/sp
 ```
 
 **The judge** is the fight judge the teacher asks for P(death) at every boss door. It is **v2b** (`agent/judge/v2b/judge-board.pt`, the default of
-`--judge` since D58 addendum 24; before that v0, `agent/judge/v0/judge.pt`, and round 0's labels and the first blocks of round 1 were v0's). v2b reads human
+`--judge` since D58 addendum 24, in the lab's `jobs.json` from 2026-11-12T15:48Z, the first block on it `20261112T1549-teacher`; before that v0, `agent/judge/v0/judge.pt`, and round 0's labels and the first blocks of round 1 were v0's). v2b reads human
 positions better than any judge before it and beats v0's arms on the boards (`docs/rl/JUDGE.md` section 8.1). Of v2b's two files the teacher uses
 `judge-board.pt`, the checkpoint without the source row (`src_emb`, the human-outcome input): the player's loader never feeds a source (None is the
 teacher, whose row 0 is zero), so `judge.pt` and `judge-board.pt` read identically (the same estimate, value, P(death) and end HP, on eight states built from the engine, and on 64 human boss positions, `docs/rl/JUDGE.md` section 8) and the board file

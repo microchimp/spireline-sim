@@ -406,3 +406,5 @@ won by any judge arm (v0 -5.2, v1 -3.8, v2 -2.8, v2b -0.8 for j480; v2b +0.0 for
 
 **Unverified / left:** one training seed (no second seed was trained, so a difference between v2b and v2 of this size, such as the held-out gain at Act 2 boss of +0.026 Pearson, cannot be told from seed noise); the human-block intervals are by fight and not by run (a run's fights share a deck); the seconds are indicative; the board's Act 2 starts are 100 starts
 (the exam's act2-boss cell), so the Act 2 verdict rests on 100 start clusters.
+
+**In the lab's teacher from 2026-11-12T15:48Z** (D58 addendum 24): the daily teacher job asks `judge-board.pt` for P(death) at every boss door (`docs/lab/TEACHER_JOB.md`, "The judge"); the door's recalibration is kept per judge, so v2b's starts from the judge's own number and is not fitted on v0's pairs. The player's loader never feeds the source row, so `judge.pt` and `judge-board.pt` read identically (the same value, P(death) and end HP on eight engine-built states).
