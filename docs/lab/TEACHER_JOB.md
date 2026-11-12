@@ -111,9 +111,10 @@ block's CPU, shard counts and the budget left.
 ```
 runs.jsonl                  one row per finished run (a run with a row is never played again; a capped row is not a finished run)
 decisions.d/<seed>.jsonl    a run's decision records as they are made; <seed>.rows.f32 their option rows, <seed>.rows_map.i8 their map grids
-                            (int8, 1,547 a row, written before the rows); <seed>.record.json the run's RunRecord
-shards/<job>/               the decision shard: decisions.jsonl, rows.npz, rows_map.npz, manifest.json
-reencode.d/<seed>.npz       `reencode`'s per-run results (rows, grids and options built again), kept so a stopped reencode resumes
+                            (int8, 1,547 a row, written before the rows), <seed>.rows_gaps.f32 their block G (float32, 36 a row); <seed>.record.json the run's RunRecord
+shards/<job>/               the decision shard: decisions.jsonl, rows.npz, rows_map.npz, rows_gaps.npz, manifest.json
+reencode.d/<seed>.npz       `reencode`'s per-run results (rows, grids and options built again), kept so a stopped reencode resumes;
+                            <seed>.gaps.npz the same for block G (rows, gaps, options)
 jobs/<job>/                 job.json, shards/ (the RunRecords of the job's runs in the lab's own run-shard layout)
 calibration.json            the door's recalibration, refitted at every job start
 manifest.json, report.json  the store's index and totals; the measurement's report over every decision in the store
@@ -138,6 +139,12 @@ start (the run is a function of its seed, the player and the teacher's picks, al
   map, 17 rows of 7 columns of 13 numbers, the position's reachable set and the position itself), row for row in `rows.npz`'s order; the
   manifest says `map_grid: true`. The student reads it with `run_student.py ... --map-grid` (`docs/rl/RUN_STUDENT.md`). A shard whose runs were
   played before the grid was stored has no such file (`map_grid: false`): `reencode` writes it (below).
+* `rows_gaps.npz` (from D58 addenda 14 and 16): `gaps` float32 (sum of options, 36), block G of each row's afterstate (`features.afterstate_gaps`: the relic counters
+  the engine reads (`vocab.COUNTER_RELICS`, over their scales), the "?" rooms visited this act and the odds of a fight, a treasure room and a shop, the merchant's
+  removal quote and the removals owed, and three known bits), row for row in `rows.npz`'s order; the manifest says `state_gaps: true` and `gaps_version: 1`. The
+  numbers are read off the engine's own state (state lists 25, 26 and 27) at the decision, so a shard played before has them only from a replay: `reencode` writes
+  the file (below). The student reads it with `run_student.py ... --state-gaps` (`docs/rl/RUN_STUDENT.md`); a file for another block G version, another row count
+  or with a number that is not finite is refused.
 * `manifest.json`: the agent (`agent`, `agent_sha256` over the combat prior's, the run head's and the human prior's sha256s and the recipe),
   the judge and engine (`judge`, `judge_sha256`, `engine`, `engine_sha256` of the native library), `k`, `k_max`, `m`, the leaf's B
   (`beyond`: 30.93 and 42.30), the guard's Z, NU0 and priors, the door's recalibration (`recal`), the namespace of the seeds, `seeds` (the
@@ -146,13 +153,13 @@ start (the run is a function of its seed, the player and the teacher's picks, al
 A finished run is in one shard only (the job that finished it, or the next job's, if the first was killed before it wrote one); a shard
 is rebuilt whole when its job runs again.
 
-**`reencode`: the map grid of an older shard.**
+**`reencode`: the map grid and the state gaps of an older shard.**
 
 ```
-python rl/run_teacher.py reencode --store D:/spireline/referee/run-teacher/gen13-r0 --generation 13 [--procs 4] [--lib <native folder>] [--agent <player folder>]
+python rl/run_teacher.py reencode --store D:/spireline/referee/run-teacher/gen13-r0 --generation 13 [--sides grid,gaps] [--procs 4] [--lib <native folder>] [--agent <player folder>]
 ```
 
-adds `rows_map.npz` to every shard of `<store>/<generation>` that lacks it. It takes the store's job lock (it refuses while a teacher job runs),
+adds `rows_map.npz` and `rows_gaps.npz` (`--sides` limits it to one) to every shard of `<store>/<generation>` that lacks them. It takes the store's job lock (it refuses while a teacher job runs),
 checks that the player it loads (`agent/current.json`, or `--agent`) is the one the shards name (`agent_sha256`), and builds the rows of every
 labelled screen again: a stored exploring run (source `stored`) is **replayed exactly** (`hindsight.replay_run`: the run's own seed and streams,
 checked against its record; the replay stops after the last labelled screen, and its fights are the stored run's own, no search of the teacher's
@@ -160,7 +167,11 @@ is run), a run the teacher played (source `new`) is read from its RunRecord (`de
 list, so no game is played. The rows built again must **equal the stored `rows.npz` rows exactly** (the same options, the same float32 numbers):
 a shard where any screen differs is refused as a whole (`ReencodeError` names the run, the screen and the largest difference) and nothing is
 written for it; otherwise `rows_map.npz` is written (tmp, then rename) and the manifest gains `map_grid: true`. It is idempotent (a shard that has
-its grid is skipped) and resumes (`reencode.d/` keeps each finished run). Workers are spawn processes at BelowNormal, one engine each, at most
+its files is skipped) and resumes (`reencode.d/` keeps each finished run). A run is replayed once for whatever side files its shard lacks; a run whose grid result
+is already in `reencode.d/` (an earlier reencode of the map grid) is replayed again only for its block G. Block G is the engine's state at the screen, so it
+needs an engine view that holds all three parts (a native library older than state lists 26 and 27 is refused for it, `--lib`), and a teacher-played run's
+RunRecord holds block G's source only if the run was played by a build that recorded it (`state.gaps` in the record): an older record cannot give it and the
+run is reported, not built with zeros that would pass for unknown parts. Workers are spawn processes at BelowNormal, one engine each, at most
 `--procs` (default 4); a replay costs about the run's own CPU to its last labelled screen (5 to 20 CPU-s). The stored runs replay on the engine
 the labelling used when `--lib` names that build's native folder (the rows decide whether it did: a differing row refuses the shard).
 

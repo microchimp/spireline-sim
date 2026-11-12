@@ -681,3 +681,86 @@ python rl/human_prior.py agreement --decisions decisions-v2 --map-grid --model <
 `tests/python/test_features_map_grid.py` (the grid on a hand-built map and on real maps), `tests/python/test_human_prior_map.py` (numpy tower equal to the torch tower, the v2 shard equal to the v1
 shard plus the grid, a route option's grid, the zero columns, a fit step reaching the tower, the refusals, the mirror and the dropout) and `tests/python/test_human_prior_infer.py` (`option_rows` with
 and without the grid, the tower scorers and the file format, the blended chooser) pin it.
+
+
+## v3: the state gaps (2026-11-12, D58 addenda 14 and 16; branch `feat/state-gaps`)
+
+Source of the record: Spire Codex public run export for v0.107.1. Aggregates only: no run is named, no cell under 20 decisions is shown, the exam fifth is never
+read (`assert_no_exam` on every shard, fit and agreement); the shards and fits stay in the referee's `human-prior` folder, never in a repository.
+
+**Why.** The audit of the state the student scores a choice on (D58 addendum 14) found three things a player tracks that the base vector leaves out: the **counters of
+relics** (a spent flag, elites killed, a book's count mod 5, a candle's kindle, a box's fights; the state had the relic ids only), the game's **shifting odds for the "?" rooms**
+(a fight is 10 in 100 at the start of an act and climbs by 10 with every "?" that was not a fight; a human tracks them from what each earlier "?" turned out to be), and the
+**removals bought** at the merchant (they set its quoted price, 75 + 25 a removal, 100 + 50 from Inflation; off the shop screen the state had neither the count nor the price).
+The fourth item of the audit, the next act's region, is dropped: every act after the first has one region in this version, so the act index names it and the state has it.
+
+### Block G, the encoding (`features.gaps_block`; fixed)
+
+36 float32 numbers, appended to the first layer's input (after the map tower's 64 when the net has one), in this order:
+
+| numbers | what |
+|---|---|
+| 27 | one per counter-bearing relic of `vocab.COUNTER_RELICS`, in that order: its counter over its scale (a count to a limit, at most 1; a tally that wraps at its period, `(counter mod period) / period`); 0 when the relic is not held |
+| 4 | the "?" rooms visited this act over 10, then the odds that the next one is a fight, a treasure room and a shop, as fractions (0.10, 0.02, 0.03 at the start of an act) |
+| 2 | the merchant's removal quote over 100 (from the removals bought and the ascension) and the removals owed over 3 |
+| 3 | the **known** bits: counters, "?" rooms, removals (0 where the source cannot know that part; its numbers are then all 0) |
+
+The counter table is read off the engine's sources (`RunNonCombatEffects`, `RunEngine`, `RunMapGenerator`, `RunRewardGenerator` and `RelicEffects.CarryRunCountersBack`): 27 relics, each
+with the scale the engine reads its counter over (a test holds every scale to the engine's own constant). The elite odds are not in the block: they start below zero and never become
+a chance. `BASE_SIZE` stays 1,855 and `FEATURE_VERSION` 2: every row of the run judgement and its value net's input are byte for byte unchanged (the digest of a view's row, taken on main
+before block G, is pinned), because a wider base or a new feature version makes every incumbent checkpoint refuse to load. Block G is an extra block only the prior and the student read
+(as block M is), so the brief's "BASE_SIZE grows" was not done: nothing in the base moves.
+
+**Where the engine gives it** (a C# edit in the fork, additive: a library without it answers -3 and the part is then unknown, not an error): state list 25 already gave the relics'
+`(id, counter)` pairs (the run's own outside a fight); new list 26 is `(the "?" rooms visited this act, the odds of a fight, a treasure room and a shop in thousandths)`; new list 27
+is `(removals bought, removals owed)`. `features.view_from_engine` reads them into `RunView.gaps` (a `StateGaps`; `None` for a view that has no engine state, such as the live coach's, which
+then writes zeros and known bits 0). A run record's views carry them (`state.gaps`, written only when known).
+
+**The afterstate** (`features.afterstate_gaps`): a removal at the merchant counts (the next quote is higher); a relic taken arrives with its starting counter (a tea its fights, the Crucible its
+upgrades); every other option leaves block G as it is (a step into a "?" does not move the odds: the room is rolled when it is entered, and the pending room carries that).
+
+### What a human record gives of it (`build --truth --state-gaps`)
+
+* **The "?" rooms.** The record names every room by its type; a "?" point is `map_point_type "unknown"` and its first room's `room_type` (monster, elite, treasure, shop or event) is what
+  it turned out to be. The state after the "?" rooms of an act entered before a decision is **`features.unknown_room_odds(visits)`**, the one function the engine is tested against: each visit
+  resets the odds of the room it was (one of the three) to their base and raises the others the roll could have picked by their base. What the roll could not pick comes from the same
+  rule as the engine (`features.unknown_visit_allows`): a shop is out of the roll straight after a shop and when every room the "?" leads to is a shop (read on the true map, at the
+  node the human stood on), and a fight is out with Juzu Bracelet. A route decision uses the visits up to the floor before it; every other kind those up to and including the room it stands
+  in. The odds restart each act. Where a "?" node's position cannot be read from the route (several paths of the same room types), the "?" state is unknown from there to the end of the
+  act (known bit 0; counted as `gaps|visits_unplaced`). Runs with a Golden Compass are already left out of the true-map build.
+* **The removals.** The merchant's removals bought before the decision (the record's `cards_removed` at shops, as the build already counted them for the shop price check); the ascension
+  is 10, so the quote is 100 + 50 each. Removals owed (a fight's power that grants one and a reward screen not yet left) are not in the record: they are written as 0, which is
+  right outside the few runs that held that card.
+* **The counters are unknown on a human row** (known bit 0, the 27 numbers 0): the record names the relics a run held, not how many fights each had counted.
+
+### The check against the engine
+
+`features.unknown_room_odds` and `unknown_visit_allows` are tested against the engine on walked runs (`tests/python/test_features_state_gaps.py`): at every "?" visit of 10 runs over three acts the
+derived state equals state list 26 (a scratch run of 40 runs: 467 visits, 0 differ; the rooms they turned out to be: 328 events, 86 fights, 35 shops, 18 treasure rooms; 48 visits with Juzu
+Bracelet held; every act's reset covered). The removal quote the merchant shows equals `features.removal_price`, and the afterstate of a removal predicts exactly the engine's next block.
+
+### The shards (`build --truth --map-grid --state-gaps`, `decisions-v3`)
+
+`python rl/human_prior.py build --truth <out>/truth --map-grid --state-gaps --procs 4 --clean` writes `decisions-v3` beside `decisions-v1` and `decisions-v2` (it refuses to write over them): each
+shard holds every array of the v2 shard **byte for byte** plus `gaps` (the distinct block G vectors, float32) and `gaps_ix` (each row's entry). `--state-gaps` alone (without `--map-grid`)
+writes the same folder without the grid.
+
+### The net and the files
+
+`PriorNet(state_gaps=True)` reads block G directly as the last 36 columns of the first layer (no tower of its own: the numbers are few and already scaled); they start at zero (`init_from_judge`,
+`init_from_prior`, also from a prior that already has the tower), so a net with them starts as the plain one. `export_net` writes the same arrays as before (the first layer is 36 columns wider) and
+`state_gaps: true` and `gaps_version` in the meta; `PriorScorer`, `StudentScorer` and `NumpyPrior` check the first layer's width against the flags and refuse to score a row without its block G. `fit --state-gaps`
+(with `--map-grid` for both) reads `decisions-v3`; `agreement --state-gaps` likewise.
+
+### Rerun (v3)
+
+```
+python rl/human_prior.py build --truth <out>/truth --map-grid --state-gaps --procs 2 --clean                         # decisions-v3
+python rl/human_prior.py fit --decisions decisions-v3 --map-grid --state-gaps --name pi_h-v3 --variants gen11 --winner-weights 1 --map-dropout 0.5 --map-flip 0.5   # GPU
+python rl/human_prior.py agreement --decisions decisions-v3 --map-grid --state-gaps --model <out>/pi_h-v3 --out <out>/pi_h-v3/agreement.json
+```
+
+`tests/python/test_features_state_gaps.py` (the counter table against the engine's constants, the block's layout and scales, the base vector byte for byte, the rule on hand-made visits and against
+the engine at every "?" of walked runs, the merchant's quote and a removal's afterstate, the lists the engine exports, the run record's codec), `tests/python/test_human_prior_gaps.py` (the derivation on a
+hand-made run: the shared rule, a shop before a "?", Juzu Bracelet, an ambiguous position, the removals; the v3 shard equal to the v2 shard plus the block; the zero columns; the numpy scorers equal to the
+torch net; a fit step reaching the columns; the refusals) and `tests/python/test_human_prior_infer.py` pin it.

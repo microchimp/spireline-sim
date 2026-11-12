@@ -157,6 +157,33 @@ route, shop and event; against v2b, which was, the map-grid student fails leg 2 
 and only event (no human fit) passes, on leg 1 alone at lambda 0.93. Its candidate is `gen14/candidate-mapgrid` (built with `--human-prior <v2b> --lambda 0.5`, which replaces the base's human prior
 as well as adding the student: judge it as that, not as `screen:student`); no marker was written.
 
+## The state gaps (`--state-gaps`, D58 addenda 14 and 16)
+
+The state a choice is scored on also holds three things a player tracks that the base vector leaves out (block G, `features.gaps_block`, 36 numbers: the counters of the
+relics whose counter the engine reads, the "?" rooms visited this act and the odds the next is a fight, a treasure room or a shop, the merchant's removal quote and the
+removals owed, and a **known** bit for each of the three parts). The base vector (1,855, feature version 2) and the value net's input are unchanged: block G is an
+extra block only the prior and the student read, as the first layer's last 36 columns (after the map tower's 64 when there is one). `HUMAN_PRIOR.md` section "v3: the
+state gaps" has the encoding, how a human record gives two of the three parts, and the v3 prior.
+
+* **Data.** The teacher's shards carry `rows_gaps.npz` beside `rows.npz` (`gaps` float32, 36 a row; `docs/lab/TEACHER_JOB.md`); `run_teacher.py reencode` adds it to shards
+  played before, by exact replay. The human shards are the v3 ones (`human-prior/decisions-v3`: `gaps` and `gaps_ix` beside each shard's rows; on a human row the counters are
+  unknown, their known bit is 0).
+* **The flag and the prior must agree**, as for the map grid: a fit with `--state-gaps` needs a prior that reads block G, every shard with its `rows_gaps.npz` and human shards
+  with block G; without the flag a prior that reads it is refused. A `rows_gaps.npz` of another block G version (`gaps_version`), another row count, another dtype or with a
+  number that is not finite is refused (`ShardError` names the shard). The flags are independent: `--map-grid --state-gaps` is the v3 prior with both.
+* **The student file** says `state_gaps: true` and `gaps_version` in its meta (the columns are `hidden1`'s, no array of their own); `StudentScorer` refuses to score a row
+  without its block G, and at play `imitation_chooser` passes it (`human_prior_infer.option_gaps`) to a scorer that reads it. A live (real game) view has no engine state: block G
+  is then zeros with every known bit 0.
+* **The legs and the recipe are unchanged.**
+
+```
+D:/spireline/venv-gpu/Scripts/python.exe rl/run_student.py round --map-grid --state-gaps \
+    --shards-root D:/spireline/referee/run-teacher/<generation> \
+    --prior <the v3 prior's weights.npz> --teacher-prior <the incumbent's human_prior.npz> \
+    --human-shards D:/spireline/referee/human-prior/decisions-v3 \
+    --out D:/spireline/referee/run-student/<generation>-r1-gaps [--no-build] ...
+```
+
 ## The recipe and the policy
 
 ```
