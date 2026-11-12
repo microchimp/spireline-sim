@@ -1556,7 +1556,7 @@ def cmd_build(a: argparse.Namespace) -> int:
     if a.map_grid:
         summary["map_grid"] = True
     if a.state_gaps:
-        summary["state_gaps"] = True
+        summary["has_state_gaps"] = True
     (dec_dir / "counts.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
     print(json.dumps({k: summary[k] for k in ("built", "drops", "shop_price_check", "seconds")}, indent=1))
     return 0
