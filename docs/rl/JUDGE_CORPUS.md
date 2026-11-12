@@ -84,7 +84,46 @@ back the oversampling only; `"none"` keeps the sample as drawn. Self-play rows w
 
 ## 5. Coverage and counts
 
-(Filled in from `coverage.md` and the manifest when the build ends; see section 8.)
+**Built 2026-11-11 to 2026-11-12** (complete: 13,401 of 13,401 planned human fights have a result; `manifest.json` has `complete: true`). Positions and runs
+a cell, from `coverage.md` (a cell under 20 positions or 20 runs is not shown; the cell minimums are those of section 4).
+
+| source | cell | positions | runs |
+| --- | --- | --- | --- |
+| human | Act 1 boss | 5,805 | 1,497 |
+| human | Act 2 boss | 14,338 | 3,692 |
+| human | Act 1 elite | 10,255 | 2,056 |
+| human | Act 2 elite | 10,218 | 1,947 |
+| human | Act 1 hallway | 5,198 | 1,314 |
+| human | Act 2 hallway | 5,277 | 1,248 |
+| self-play | Act 1 boss | 438,136 | 4,598 |
+| self-play | Act 2 boss | 76,783 | 1,082 |
+| self-play | Act 1 elite | 86,555 | 1,568 |
+| self-play | Act 2 elite | 47,486 | 1,104 |
+| self-play | Act 1 hallway | 155,616 | 3,215 |
+| self-play | Act 2 hallway | 112,492 | 1,980 |
+
+**Against the targets** (the brief: at least 20,000 boss turns, 20,000 elite turns and 10,000 hallway turns from human positions): **20,143 boss turns**
+(both acts, every one with a label: 10,988 settled, 9,155 soft), **20,473 elite turns** (9,285 settled, 11,188 soft) and **10,475 hallway positions** (the teacher's
+own search), 51,091 human positions in all from 13,371 fights of 6,418 runs (30 fights are missing, below), plus **917,068 self-play positions** of 7,392 runs. Held out
+by run: 10,345 human positions (20.2%) and 192,463 self-play positions (21.0%). The doors (first decisions) are 13,371 of the human positions, 11,030 of them as
+their own stage and the rest as the sampled early turn.
+
+Human positions by stage: early 13,371, middle 13,358, late 13,332, door 11,030. By boss (positions; every cell over its 400 minimum): Insatiable 4,778, Kaiser Crab 4,729,
+Knowledge Demon 4,831 (Act 2: the whole pool of each), Vantom 1,034, Soul Fysh 1,024, Lagavulin Matriarch 1,025, Waterfall Giant 935, Ceremonial Beast 894, The Kin 893 (Act 1:
+a part of the pool, 1,500 fights). By elite: from 1,610 (Phantasmal Gardeners) to 3,461 (Decimillipede). By deck type: starter 2,875, power 2,536, exhaust 4,775, block 5,141,
+attack 11,509, mixed 24,255 (all over their 300 minimum). By health band: healthy 19,621, hurt 21,910, critical 9,560. By potions held: none 29,759, one 11,804, two or more 9,528.
+
+**Relics and cards.** 220 relics appear in the human positions and **214 of them in at least 150 positions and 20 runs** (the other six are in fewer than 20 runs: the
+pool does not have them); of the 465 cards that appear, **222 are in at least 150 positions** and 229 in at least 20 positions and 20 runs; the other 236 are in fewer than 20 runs of
+the pool (event cards, other classes' cards a run picked up, transformed cards, a card seen in a handful of runs). Self-play: 204 relics and 198 cards in at least 150
+positions. The sampling put the rare features first (section 4): on the plan, the share of the pool's relics and cards that reach 50 starts in the sample rose from 175 to 189
+of 210 relics and from 126 to 157 of 187 cards at elites against a plain draw of the same size (bosses: cards 131 to 143 of 143); measured on the plan before the sampling
+rates were fixed, so approximate. **What the sampling cannot do**: a start has many features and the cells' quotas are fixed, so a feature of 100 to 200 pool starts reaches
+about half of them; and nothing is made up for a feature the pool lacks. The weights (`w`) undo the oversampling.
+
+`ai_assumed` is on 11,393 human positions (built on 2026-11-11 after 08:21Z and before the field was withdrawn). It is the search flag `ai_state_assumed`, which a fight loaded from
+a saved position never clears: it is sticky and carries no information about the position. Do not read it.
+
 
 ## 5b. The manifest's flags (for the judge-training lane)
 
@@ -124,7 +163,53 @@ label for both sources (a row with none of that kind is left out). The judge's o
 
 ## 8. What was built and measured
 
-(Filled in when the build ends.)
+**The build.** Eight work processes at BelowNormal beside the practice loop and the other lanes' jobs, from 2026-11-11 00:40Z (the first fights; the work waited on the design lane's
+`run-teacher` QUIET.lock line from 21:24Z to about 00:40Z until the coordinator said to go on beside it, and on `lab-train` and `handover-judgement` lines for about three hours in
+all) to 2026-11-12 06:32Z; the supervisor compacted every 15 then 45 minutes, so the manifest said `usable_for_training` from 2026-11-11 01:36Z (765 labelled boss and 759 labelled
+elite turns, 2,270 human positions, 917,068 self-play positions) and `complete` at 2026-11-12 06:40Z. **CPU: 148 core-hours of process time for the human fights** (13,371 fights;
+the machine was shared with the loop, the lab and the design lane, so process time reads high: two Act 2 boss games timed with the machine to themselves took 17 and 27 CPU-s against
+54 on average in the build) and a few CPU-minutes for the self-play pass. Mean CPU a fight (s; the teacher's game plus the ladder): Act 1 boss 40 + 29, Act 2 boss 54 + 37, Act 1 elite 5.7 + 8.6, Act 2 elite
+7.6 + 11.8, hallways 1 to 2. The brief expected 50 to 100 core-hours; the quotas were cut to its counts once an Act 2 boss fight was seen to cost 90 to 110 s.
+
+**Labels** (human positions with a ladder, `report.md`):
+
+| cell | positions | settled at the first rung | settled at the cap | soft |
+| --- | --- | --- | --- | --- |
+| Act 1 boss | 5,805 | 48% | 9% | 43% |
+| Act 2 boss | 14,338 | 46% | 8% | 46% |
+| Act 1 elite | 10,255 | 38% | 10% | 52% |
+| Act 2 elite | 10,218 | 33% | 10% | 57% |
+
+So **55% of boss turns and 45% of elite turns are settled** at x32 / x8 or at the cap, and the rest keep the cap's values marked `soft` (the convergence measurement:
+60% of boss and 54% of elite turns converge by 4 times the teacher's budget, and a turn that never converges there is what `soft` is). The screen settled 82% of the turns that
+settled at all, so the cap (x64 / x16 with its 256-pair duel) was searched for 54% of the boss turns and 64% of the elite turns.
+
+**The comparison in shared worlds, on the same searches** (the rule applied again to each turn's rung lines under the unpaired reading, `report.md`): the paired rule settles
+57 / 54% of Act 1 / Act 2 boss turns and 48 / 43% of elite turns, the unpaired one 47 / 46% and 40 / 33%; 39 / 38% (boss) and 30 / 25% (elite) settle under both, 16 to 18% settle
+only under the paired rule (the unpaired spread is what keeps them open) and 8 to 9% only under the unpaired. At the last rung the duel puts the runner-up at least two errors
+ahead of the most visited move in 4% of boss turns and 7 to 8% of elite turns (a tree move that rollouts disagree with: those stay unsettled). The duel cost 0.4 CPU-s at the first rung and 0.9 at the cap
+against 4.1 and 8.8 for the searches they follow (the first 27 Act 2 boss fights).
+
+**The teacher against the human on the same fights** (the door's result: the teacher's game against the human's run record): Act 1 / Act 2 boss 62 / 60 in 100 against 72 / 74, elite
+85 / 82 against 88 / 87, hallway 98 / 93 against 98 / 96 (v3 at the recipe's budgets, the CPU prior). This is the practice loop's human bar on 13,371 fights; the exam's 400
+starts are not in it.
+
+**What did not go in.** 30 of the 13,401 planned human fights (0.22%: 3 Act 1 and 9 Act 2 bosses, 4 and 13 elites, 1 hallway) have no row: the emulator's fail-fast killed
+the work process on them twice (exit code 0xC0000409), so they were recorded as failed and not tried a third time. Their start ids are in
+`referee/backlog/judge-corpus/crash-starts.txt` for the engine side. The loader and the manifest count what is there.
+
+**Checks** (`manifest.json` `checks`, counted on the 968,159 rows; every figure 0): rows of a run or start in the exam's or the boards' lists, human rows of the exam fifth, rows
+whose split is not their run's, runs on both sides of the split.
+
+**Unverified or approximate.** (1) The weights `w` follow the sampling plan (inclusion probabilities from the boosts), not an end-to-end check of a trained judge on reweighted data.
+(2) A self-play row's `hp` is the HP fraction of its tokens times its fight's max HP (the buffer keeps no HP), and its stage is a third of the fight's decisions (a human row's is a
+third of the decisions with two or more moves). (3) The human positions are the teacher's play from the human's start (the deck, relics, potions and HP going in, a fresh hand and
+draw order from the copy): the human's own hand and moves are not in the record, and `human_starts.py`'s approximations (enchantments, relic counters, event potions) apply. (4) The
+paired duel judges the gap under the rollout policy after the first move, not under the tree's play, so it can put a tree move behind (4 to 8% of turns). (5) The comparison of the two
+readings uses the rung lines' top two moves; a move's merged copies are not kept in them, so a rung that chose the same move through another copy reads as a change (rare). (6) The
+teacher's search sees the true enemy moves in a fight built from a saved position (`ai_state_assumed`); the diagnosis lane found the flag sticky and the in-run difference a measurement
+artifact, so the labels are unaffected. (7) Self-play positions are the loop's, including pre-loss starts; their labels are the search as played (x16) and their outcome, not settled values.
+
 
 ## 9. Tests
 
