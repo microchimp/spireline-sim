@@ -133,6 +133,30 @@ D:/spireline/venv-gpu/Scripts/python.exe rl/run_student.py round --map-grid \
     --out D:/spireline/referee/run-student/<generation>-r1-map [--no-build] ...
 ```
 
+**The first map-grid fit (2026-11-12; `referee/run-student/gen13-r1-map`, beside the summary-rows fit `gen13-r1`).** Round 0's store (`gen13-r0`: 2,188 runs, 10,058 screens, 41,691
+rows; `rows_map.npz` added by `reencode`: 2,177 runs replayed, every row built again equal to its stored row, 5.0 core-hours of CPU, 3 hours on 4 processes), the v2b prior
+(`HUMAN_PRIOR.md` "v2": the tower with dropout and the mirror, as good as v1 on the humans) as `--prior`, the plain prior the teacher played with as `--teacher-prior`, the v2 human
+shards, the recipe's defaults; 3.5 minutes in all (the fit 7 s on the card, seven epochs run, best epoch five). Both fits read the same 9,967 decisions of 2,176 runs and the same 1,971 held-out
+decisions, so their cross-entropies to the teacher's target compare directly (nats, lower is better; the floor is the target's own entropy):
+
+| kind | held-out decisions | summary-rows student (prior v0) | map-grid student (prior v2b) | floor |
+|---|---|---|---|---|
+| card | 515 | 1.2816 | 1.2771 | 1.0146 |
+| ancient | 117 | 1.0915 | 1.0971 | 0.7485 |
+| rest | 159 | 0.9508 | 0.9642 | 0.7241 |
+| route | 486 | 0.7586 | 0.7665 | 0.5331 |
+| shop | 143 | 1.2936 | 1.3425 | 0.9304 |
+| event | 214 | 0.6784 | 0.6759 | 0.4712 |
+| reward | 254 | 0.7232 | 0.7485 | 0.5015 |
+| select | 83 | 1.4592 | 1.4398 | 1.0447 |
+| all | 1,971 | 0.9856 | 0.9935 | 0.7267 |
+
+The whole map does not help the student imitate the teacher on this data: it is within 0.02 nats of the summary-rows student on every kind but shop (0.05 worse) and reward (0.025 worse),
+0.008 worse over all. The legs' verdicts are not comparable, because each is against its own prior: against v0, which was never fitted on routes or shops, the summary-rows student passes
+route, shop and event; against v2b, which was, the map-grid student fails leg 2 on every kind with a human fit (route won +0.028, all +0.022; card won +0.024; ancient, rest, shop likewise)
+and only event (no human fit) passes, on leg 1 alone at lambda 0.93. Its candidate is `gen14/candidate-mapgrid` (built with `--human-prior <v2b> --lambda 0.5`, which replaces the base's human prior
+as well as adding the student: judge it as that, not as `screen:student`); no marker was written.
+
 ## The recipe and the policy
 
 ```
