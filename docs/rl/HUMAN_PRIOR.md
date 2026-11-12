@@ -752,6 +752,50 @@ writes the same folder without the grid.
 `state_gaps: true` and `gaps_version` in the meta; `PriorScorer`, `StudentScorer` and `NumpyPrior` check the first layer's width against the flags and refuse to score a row without its block G. `fit --state-gaps`
 (with `--map-grid` for both) reads `decisions-v3`; `agreement --state-gaps` likewise.
 
+### The check on the humans' own "?" rooms
+
+The rule is also read against what 60,564 human "?" rooms turned out to be (`counts.json` of `decisions-v3`, `state_gaps_check`; the 11,764 true-map runs of the four fifths, the exam fifth never read): at the n-th "?" of an act,
+the share that came up a fight, a treasure room and a shop, beside the mean odds the rule gave each at that visit (a room the roll could not pick counts as 0 odds):
+
+| visit of the act | n | fight: seen / the rule's | treasure: seen / rule's | shop: seen / rule's |
+|---|---|---|---|---|
+| 1 | 20,526 | 9.2 / 9.5 | 1.9 / 2.0 | 2.3 / 2.5 |
+| 2 | 17,586 | 17.3 / 18.0 | 4.2 / 4.0 | 4.6 / 4.7 |
+| 3 | 12,284 | 23.9 / 23.9 | 6.0 / 5.8 | 7.1 / 7.0 |
+| 4 | 6,535 | 26.7 / 26.4 | 7.2 / 7.4 | 9.6 / 9.0 |
+| 5 | 2,644 | 25.5 / 26.2 | 8.3 / 8.9 | 10.6 / 10.5 |
+| 6 and later | 989 | 26.4 / 26.2 | 10.2 / 10.5 | 12.2 / 12.0 |
+
+In 100 visits, to a tenth of a point; the engine's climb of 10, 2 and 3 in 100 per "?" that was not that room is what the humans' game did, and a shop in a "?" is rarer than 3 in 100 at the start because the roll
+leaves it out after a shop and before one (the rule's mean 2.5). This is a check of the derivation and of the copy's rule on the real game at once.
+
+### The shards: counts
+
+`decisions-v3` (built over the four fifths, 2,487 s on 2 processes at BelowNormal on a saturated machine): 1,987,020 rows, 22,795 distinct block G vectors (0.011 a row), the same decisions as `decisions-v2` (the counts and the drops by reason are equal),
+and **every array of all 300 shards of the v2 shard byte for byte the same**. Decisions with the "?" state known: card 150,151 of 150,213, rest 53,365 of 53,412, shop 246,232 of 246,362, route 106,648 of 106,648, ancient 20,945 of 20,945 (the
+others stand after a "?" node whose position the route could not place: 0.04 in 100 of the cards, 0.09 of the rests, 0.05 of the shop rows); 102,778 card, 50,790 rest, 173,641 shop and 68,010 route decisions come after at least one "?" of
+their act, and 32,633 / 15,307 / 50,689 / 22,716 after a removal at the merchant. The counters are known on no human row.
+
+### The fit and the agreement (`fit --decisions decisions-v3 --map-grid --state-gaps`, fifth 4)
+
+The v2b recipe (generation 11's trunk, winners 1x, tower dropout 0.5 and the mirror with chance 0.5) on the same decisions and fifths, so the only difference to v2b is block G's 36 columns; one run on one RTX 3080, 507 s (the card was free):
+
+| | v1 | v2b | **v3** (v2b + block G) |
+|---|---|---|---|
+| best epoch (of the epochs run) | 13 (16) | 12 (15) | 10 (13) |
+| validation score | 4.917 | 4.918 | 4.917 |
+| route, top-1 / mean NLL (24,298) | 76.0 / 0.540 | 75.9 / 0.539 | 75.9 / 0.538 |
+| card reward (34,323) | 50.7 / 1.128 | 51.0 / 1.128 | 50.2 / 1.139 |
+| ancient (4,775) | 54.5 / 0.941 | 54.3 / 0.939 | 54.7 / 0.939 |
+| rest kind (12,090) | 75.8 / 0.467 | 75.5 / 0.471 | 75.6 / 0.479 |
+| smith target (6,751) | 48.7 / 1.437 | 49.0 / 1.434 | 49.0 / 1.418 |
+| shop, buy or leave (15,630) | 83.6 / 0.404 | 83.4 / 0.406 | 83.8 / 0.403 |
+
+**What it says.** On the humans block G changes nothing the validation fifth can resolve (the score 4.917 against 4.918; every top-1 within 0.8 of a point of v2b's, the card reward 0.8 lower and its NLL 0.011
+higher, the shop 0.4 higher). That is what to expect of what it holds: a human's card, rest or route choice does not turn on how many "?" rooms they have walked or what a removal cost, and the counters are not
+in their record at all (known bit 0). Block G is for the student, whose labels come from the copy's play where a spent flag, a count to a limit and the next "?" are what the value turns on; the prior only carries
+the columns so the student starts from a net that has them (`RUN_STUDENT.md`, "The state gaps").
+
 ### Rerun (v3)
 
 ```
