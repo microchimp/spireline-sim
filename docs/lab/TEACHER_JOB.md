@@ -252,7 +252,7 @@ door, recalibrated per act and per judge as the floors leaf does (above); `A2(s)
 
 ```
 D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py regrade --src D:/spireline/referee/run-teacher/14 [--out D:/spireline/referee/run-teacher-frontier/14] \
-    [--a2 D:/spireline/referee/agent/act2/v1/a2.pt] [--doors-from D:/spireline/referee/run-teacher/14 ...] [--dry-run]
+    [--a2 D:/spireline/referee/agent/act2/v1/a2.npz] [--doors-from D:/spireline/referee/run-teacher/14 ...] [--dry-run]
 ```
 
 (`--out` defaults to the same path with `run-teacher` named `run-teacher-frontier`; minutes of one core, no game.) What it does, record by record of every shard:
@@ -278,20 +278,36 @@ boss's below floor 17 (74,964 draws) and the Act 2's from it on (27,062), and ea
 
 **The door rows.** From the next block, `continuation` reads the session at the Act 1 boss door once, while it is open (`door_row_of`: the state's own base vector and the fight block H of its region, the
 row an option's afterstate gets, built through the same fight net so that a model that reads option rows reads it; one encode and one forward over the region's queries), keeps it float16 per draw
-(`rows_door.npz`, about 0.4 GB per 10,000 screens), and with the Act 2 model reads A2 on it (`--a2`, default `auto`: `agent/act2/v1/a2.pt` when the file exists; the manifest's `a2_sha256`, and a model that does not
+(`rows_door.npz`, about 0.4 GB per 10,000 screens), and with the Act 2 model reads A2 on it (`--a2`, default `auto`: `agent/act2/v1/a2.npz`, the numpy-only file of the model (`a2.pt` is the same model and needs torch), when it exists; the manifest's `a2_sha256`, and a model that does not
 load is said in the block's `result.json` (`a2`) and costs the rows their reading, not the block). `--door-rows` is on by default (`--no-door-rows` turns it off), so the lab's own command line gains it; the
 Act 2 door and a death keep no row (Act 2 is exact without it). A row that cannot be built costs the draw only the row (`door_errors` in the record). With door rows on, a replayed run keeps what its
 earlier screens stored; screens made before the build have no `door` and are regraded as above. Cost: see "Cost of the door rows" below.
 
-**`--grade frontier` in a live job** is built (`decide(..., grade=)`, `continuation(..., grade=)`: G is the frontier grade, `g_floors` beside it) and refused until what it needs exists: the Act 2 model (`--a2`) and the guard's
-priors in its unit (`PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, measured by `units` on a regraded store; `check_grade`). Nothing the lab runs uses it.
+**`--grade frontier` in a live job** is built (`decide(..., grade=)`, `continuation(..., grade=)`: G is the frontier grade, `g_floors` beside it) and refused without the Act 2 model (`--a2`, `check_grade`); its guard priors
+are measured (below: `PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, by kind in the screen's door act). Nothing the lab runs uses it.
 
 **`units`**: `python rl/run_teacher.py units --store <a generation folder>` measures, from the records of a store, what a grade's unit sets: the guard's prior (`PAIRED_SD_PRIOR`: per kind, the pooled sd of one draw's difference
 between two played options: each pair of played options of a decision gives the sample variance of its K differences on K - 1 degrees of freedom; the kind's is their degrees-of-freedom-weighted mean, a kind with fewer than 20
 decisions left out) and the noise sd of one draw's centred option value (`noise_and_spread`). On a regraded store it reports both grades on the same screens (`g_floors`) and `tau_min_suggested` = `TAU_MIN` x the
 ratio of the noise sds, the floor of the student's temperature in the frontier unit (`docs/rl/RUN_STUDENT.md`, "The grade"). The floors figures are `PAIRED_SD_PRIOR` and `TAU_MIN` as they stand (card 3.41, rest 2.76, route 4.83, shop 2.94; 0.25).
 The method run on generation 14's floors store (10,426 screens, 2026-11-13, read only) gives card 3.62, rest 2.17, route 4.84, shop 3.16 and a noise sd of 2.08 (the 11-05 table's 2.00), so it is the same
-quantity under another generation's play; the frontier's are set from the regraded store and are `None` until then (`guard_priors` and the student's `tau_min_for` refuse a grade whose unit is not measured).
+quantity under another generation's play. A grade whose unit is not measured has no priors (`guard_priors` and the student's `tau_min_for` refuse it, a table of `None`).
+
+**The frontier's constants, measured** (2026-11-13, both regraded stores pooled: 13,551 screens, 10,706 with an Act 1 door and 2,845 with the Act 2's; A2 `a2.npz` sha256 `a5d3da24`). The guard's prior is by kind **in the
+screen's door act** (`paired_sd_cells`; the unit differs by a factor of about six between the acts: an Act 1 option differs through the Act 2 chance of a deck, about 0.1 x 13.5 floors-equivalent, and through its chance of
+dying at the Act 1 door; an Act 2 option through the Act 2 boss door itself). Paired sd of one draw's difference, floors then frontier, Act 1 / Act 2: card 3.56 / 3.72 then 0.32 / 2.09; rest 2.19 / 2.26 then 0.26 / 1.88;
+shop 3.17 / 3.32 then 0.33 / 2.18; reward 2.96 / 2.80 then 0.29 / 1.74; select 3.18 / 3.46 then 0.31 / 2.05; ancient 5.22 / 4.63 then 0.53 / 2.17; Act 2 only (no Act 1 route or event is graded) route 4.33 then 2.48 and event
+3.48 then 2.19; all kinds pooled 3.36 then 0.93 (`_all`, the prior of a kind with no cell: bundle, a route or event in Act 1). The noise sd of one draw's centred option value is 2.010 floors and 0.568 frontier
+(Act 1 alone 1.996 and 0.194, Act 2 alone 2.065 and 1.234), the ratio 0.283, so `TAU_MIN` in the frontier unit is 0.25 x 0.283 = **0.071** (`run_student.TAU_MIN_BY_GRADE`). They are in
+`run_teacher.FRONTIER_PAIRED_SD_PRIOR` and `run_student.FRONTIER_TAU_MIN`; a refit of A2 changes them (re-run `units` on the regraded stores).
+
+**The first regrade** (2026-11-13 02:06Z, `run-teacher-frontier/14` and `run-teacher-frontier/gen13-r0/13`: generation 14's store at 11,158 screens and round 0's at 10,058, `a2.npz` sha256 `a5d3da24`, the judge filter v2b
+for Act 2; 15 s and 10 s, one process): generation 14 gave 7,567 screens graded (Act 1 deck kinds on the option's row 4,722, Act 2 exact 2,845 of v2b-judged runs) and skipped 3,591: Act 1 routes and events 2,362
+(route 1,651, event 711), Act 2 screens of v0-judged runs 1,153, Act 1 `bundle` 35, no row for an option 34 (`select`: an option the rules policy decides), refused 7. Round 0 gave 5,984 graded (all Act 1 deck kinds: its Act 2
+screens are v0's) and skipped 4,074: routes and events 3,320 (route 2,283, event 1,037), Act 2 v0-judged 674, bundle 38, no row 37, refused 5. In all 13,551 screens, 41,763 + 30,752 rows. The recalibration of P(death) at the
+Act 1 door, v2b: a -0.183, b 1.139 on 172 doors; v0: a -0.483, b 0.793 on 78 doors (round 0 borrows both from the daily store, `--doors-from`). A2's own spread between the options of one Act 1 screen is small: mean A2
+0.115, within-screen sd 0.011, so most of an Act 1 option's frontier difference is the chance of the Act 1 boss door (1 - p1), as the design said for a deck with no new reading. The floors regrade of each store (all 40 and 30
+shards of that morning) reproduced every label and was byte for byte the stored `decisions.jsonl` and `rows.npz` on a scratch copy.
 
 **Cost of the door rows** (measured 2026-11-13 on this build, one process at BelowNormal with the lab's teacher running beside it): eight draws of one card option at floor 2, played with and without door rows
 (the same draws came to the same ends: reading the door changes nothing in the game): continuation CPU median 2.93 s without and 2.97 s with (a stand-in A2 as large as the run judgement's trunk; the

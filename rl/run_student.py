@@ -111,9 +111,11 @@ MIN_LAMBDA_DECISIONS = 30  # held-out decisions a lambda cell needs; fewer falls
 LAMBDA_CAP = 2.0  # a measured lambda above this is clipped (the recipes' base is 0.5)
 TAU_MIN = 0.25  # floors: the target's temperature never goes below this
 # The same floor in each grade's own unit (D59): a store is graded one way (`run_teacher.py regrade`), and a temperature measured in one grade's unit is held back by
-# that grade's floor. The frontier's is the floors' scaled by the ratio of the noise sd of one draw (`run_teacher.unit_constants`, `tau_min_suggested`), measured on
-# the regraded store and set here once it is; until then a frontier store is refused, not fitted with a floors number.
-TAU_MIN_BY_GRADE: dict[str, float | None] = {"floors": TAU_MIN, "frontier": None}
+# that grade's floor. The frontier's is the floors' scaled by the ratio of the noise sd of one draw's centred option value in the two grades on the same screens
+# (`run_teacher.unit_constants`, `tau_min_suggested`): 0.568 / 2.010 (the two regraded stores, 13,551 screens, 2026-11-13, A2 `a2.npz` sha256 a5d3da24) x 0.25 = 0.071. A grade
+# whose unit is not measured (None) is refused, not fitted with a floors number.
+FRONTIER_TAU_MIN = 0.071
+TAU_MIN_BY_GRADE: dict[str, float | None] = {"floors": TAU_MIN, "frontier": FRONTIER_TAU_MIN}
 GRADES = ("floors", "frontier")
 TAU_CELL_MIN = 20  # decisions a (kind, act) cell needs for its own noise estimate; fewer takes the kind's, then all
 BOOT_DRAWS = 2000

@@ -118,8 +118,9 @@ DEFAULT_JUDGE = "D:/spireline/referee/agent/judge/v2b/judge-board.pt"
 V2B_JUDGE_SHA256 = "62bcaf0dbeaf8c42c846f074d289c882376f0aed7ae27849e4f61b2725aab643"
 ACT2_JUDGES = (V2B_JUDGE_SHA256,)
 # Lane A's Act 2 chance model (`rl/act2_chance.py`, `Act2Scorer(path).score(rows) -> probabilities`, `.sha256`): P(kills the Act 2 boss | past the Act 1
-# boss, the Act 1 state a 1,863-number row describes). The teacher records its reading at the Act 1 door when the file exists; `regrade` needs it.
-DEFAULT_A2 = "D:/spireline/referee/agent/act2/v1/a2.pt"
+# boss, the Act 1 state a 1,863-number row describes). The teacher records its reading at the Act 1 door when the file exists; `regrade` needs it. The default is the
+# numpy-only `a2.npz` (the same model as `a2.pt`, which needs torch to be read: sixteen workers would each import it).
+DEFAULT_A2 = "D:/spireline/referee/agent/act2/v1/a2.npz"
 DECK_KINDS = ("card", "rest", "ancient", "shop", "reward", "select")  # Act 1 kinds whose option row holds what the option does to the deck
 ROUTE_EVENT_KINDS = ("route", "event")  # Act 1 kinds whose effect comes after the row (an elite's relic, an event's later pages)
 DEFAULT_FRONTIER_ROOT = "D:/spireline/referee/run-teacher-frontier"
@@ -140,12 +141,20 @@ PAIRED_SD_DEFAULT = 3.11
 # The grades (D59). `floors` is the teacher's grade and stays the default: a continuation is worth its final floor, and at a boss door the judge's chance
 # of dying x the boss's floor plus the chance of surviving x BEYOND. `frontier` grades by the chance of killing the Act 2 boss (`frontier_return`), x 13.5,
 # so that the guard, the temperature and lambda keep a floors-equivalent scale. The guard's prior sd of a paired difference is in the grade's own unit:
-# floors' are the constants above; the frontier's are measured on a regraded store (`units`) and stay None, so no live frontier teacher runs, until they are.
+# floors' are the constants above; the frontier's are measured on the regraded stores (`units`).
 GRADE_FLOORS, GRADE_FRONTIER = "floors", "frontier"
 GRADES = (GRADE_FLOORS, GRADE_FRONTIER)
 DEFAULT_GRADE = GRADE_FLOORS
 FRONTIER_SCALE = 13.5  # the grade of a run that kills the Act 2 boss, in floors-equivalent (the mean gap between a death before the Act 1 boss and a win of Act 2)
-PAIRED_SD_PRIOR_BY_GRADE: dict[str, dict[str, float] | None] = {GRADE_FLOORS: PAIRED_SD_PRIOR, GRADE_FRONTIER: None}
+# The frontier's, by kind in the screen's door act (`<kind>/a<N>`, N 1 the Act 1 boss's door, 2 the Act 2 boss's) and `_all` for a cell with none, measured 2026-11-13 with
+# `paired_sd_cells` on the two regraded stores (generation 14's 7,567 screens and round 0's 5,984; A2 `a2.npz` sha256 a5d3da24; `units`, docs/lab/TEACHER_JOB.md): the unit differs by a
+# factor of about six between the acts (an Act 1 option differs through the Act 2 chance of a deck, about 0.1 x 13.5; an Act 2 option through the boss door itself). A kind
+# with no Act 1 cell (route, event) has no Act 1 screen graded: the regrade leaves them out. Floors' figures on the same screens: card 3.56 / 3.72, rest 2.19 / 2.26 (Act 1 / 2).
+FRONTIER_PAIRED_SD_PRIOR: dict[str, float] = {
+    "ancient/a1": 0.5311, "card/a1": 0.3189, "rest/a1": 0.2616, "reward/a1": 0.2902, "select/a1": 0.3076, "shop/a1": 0.3342,
+    "ancient/a2": 2.1666, "card/a2": 2.0857, "event/a2": 2.1892, "rest/a2": 1.8766, "reward/a2": 1.7367, "route/a2": 2.4786, "select/a2": 2.0465, "shop/a2": 2.1834,
+    "_all": 0.9297}
+PAIRED_SD_PRIOR_BY_GRADE: dict[str, dict[str, float] | None] = {GRADE_FLOORS: PAIRED_SD_PRIOR, GRADE_FRONTIER: FRONTIER_PAIRED_SD_PRIOR}
 TAU_MIN_FLOORS = 0.25  # run_student.TAU_MIN, the floor of the targets' temperature in floors: `unit_constants` scales it to another grade's unit
 # The job (`job`): adaptive K, the door's recalibration, the stored-run source, the store.
 JOB_K = 2  # draws of every shortlisted option before the first look
@@ -269,12 +278,21 @@ def guard_priors(grade: str = DEFAULT_GRADE) -> dict[str, float]:
     return table
 
 
-def guard_prior_sd(kind: str | None, grade: str = DEFAULT_GRADE) -> float:
-    """The prior sd for one kind: floors' table with `PAIRED_SD_DEFAULT` for a kind it has none for; another grade's table, then its `_all`."""
+def door_act_of_floor(floor: int) -> int:
+    """The 0-based act of the boss door a screen's continuations stop at: the Act 1 boss's for a screen below its floor, the Act 2 boss's from it on (the screen at the
+    Act 1 boss floor is already beyond that boss)."""
+    return 0 if int(floor) < ACT_BOSS_FLOORS[0] else 1
+
+
+def guard_prior_sd(kind: str | None, grade: str = DEFAULT_GRADE, act: int | None = None) -> float:
+    """The prior sd for one kind: floors' table (by kind) with `PAIRED_SD_DEFAULT` for a kind it has none for; another grade's table by the kind in the screen's door
+    act (`door_act_of_floor`, key `<kind>/a<N>`), then by the kind, then its `_all`: the frontier's unit differs by a factor of five between the acts."""
     table = guard_priors(grade)
     if grade == GRADE_FLOORS:
         return table.get(kind or "", PAIRED_SD_DEFAULT)
-    got = table.get(kind or "", table.get("_all"))
+    got = table.get(f"{kind}/a{int(act) + 1}") if act is not None else None
+    if got is None:
+        got = table.get(kind or "", table.get("_all"))
     if got is None:
         raise ValueError(f"the {grade} grade has no measured prior for kind {kind!r}")
     return float(got)
@@ -487,11 +505,11 @@ def paired_se(a: Sequence[float], b: Sequence[float]) -> float | None:
     return math.sqrt(sample_var(d) / len(d))
 
 
-def guard_se(diffs: Sequence[float], kind: str | None, nu0: float = NU0, grade: str = DEFAULT_GRADE) -> float:
+def guard_se(diffs: Sequence[float], kind: str | None, nu0: float = NU0, grade: str = DEFAULT_GRADE, act: int | None = None) -> float:
     """The standard error of a mean paired difference over K draws, its variance pooled with the kind's prior (`PAIRED_SD_PRIOR`; the grade's own table
     for another grade, `guard_priors`) of `nu0` degrees of freedom, so that two draws that happen to agree do not make a tiny error."""
     k = len(diffs)
-    prior = guard_prior_sd(kind, grade) ** 2
+    prior = guard_prior_sd(kind, grade, act) ** 2
     own = sample_var(diffs) if k >= 2 else 0.0
     var = ((k - 1) * own + nu0 * prior) / ((k - 1) + nu0) if k >= 1 else prior
     return math.sqrt(var / max(1, k))
@@ -524,7 +542,8 @@ def top_two(g: dict[int, list[float]], extra: dict[int, float] | None = None) ->
     return a, b, score[a] - score[b], mean(diffs), diffs
 
 
-def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[int, float] | None = None, z: float = Z, grade: str = DEFAULT_GRADE) -> bool:
+def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[int, float] | None = None, z: float = Z, grade: str = DEFAULT_GRADE,
+                     act: int | None = None) -> bool:
     """Adaptive K (D57 part 3): after the first draws, two more only where the top two options are within `z` standard errors of each
     other (the guard's own error, `guard_se`: the paired variance pooled with the kind's prior). Options that are clearly apart, or a
     screen with fewer than two options valued, stop where they are."""
@@ -532,7 +551,7 @@ def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[in
     if t is None:
         return False
     _, _, gap, _, diffs = t
-    return gap < z * guard_se(diffs, kind, grade=grade)
+    return gap < z * guard_se(diffs, kind, grade=grade, act=act)
 
 
 # ---------------------------------------------------------------------------------------------------------- the statistics
@@ -881,6 +900,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
     chosen = shortlist(decision.options, rd["scores"], max_options, pick.index)
     kind = KIND_OF_TYPE.get(decision.type)
     extra = prior_extra(rd, chosen)
+    door_act = door_act_of_floor(view.floor)
     top = max(int(k), int(k_max or 0))
     draws: dict[int, list[dict]] = {i: [] for i in chosen}
     extra_kw = {"grade": grade, "door_rows": door_out is not None, "a2_scorer": a2_scorer} if (door_out is not None or grade != DEFAULT_GRADE) else {}
@@ -897,7 +917,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
             break
         g_now = {o: [d["G"] for d in rows] for o, rows in draws.items()}
         if (any(x is None for v in g_now.values() for x in v) or int(pick.index) not in g_now
-                or not wants_more_draws(g_now, kind, extra, grade=grade)):
+                or not wants_more_draws(g_now, kind, extra, grade=grade, act=door_act)):
             break
     k = taken
     g = {o: [d["G"] for d in rows] for o, rows in draws.items()}
@@ -949,7 +969,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
 
         raw = teacher_index(q, len(decision.options), p, **kw)
         gain = score_gain(raw, q) if raw != p else 0.0
-        se = guard_se([a - b for a, b in zip(g[raw], g[p], strict=True)], kind, grade=grade) if raw != p else None
+        se = guard_se([a - b for a, b in zip(g[raw], g[p], strict=True)], kind, grade=grade, act=door_act) if raw != p else None
         played = guarded(raw, p, gain, se if se is not None else math.inf)
         rec.update(teacher=played, teacher_raw=raw, q={str(o): round(x, 4) for o, x in q.items()})
         rec["gain"] = round(gain, 4)
@@ -964,7 +984,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
                 if r_h == p:
                     hp.append((r_h, p))
                     continue
-                se_h = guard_se([a - b for a, b in zip(g[r_h][sl], g[p][sl], strict=True)], kind, grade=grade)
+                se_h = guard_se([a - b for a, b in zip(g[r_h][sl], g[p][sl], strict=True)], kind, grade=grade, act=door_act)
                 hp.append((r_h, guarded(r_h, p, score_gain(r_h, h), se_h)))
             rec["half_picks"] = [x[0] for x in hp]
             rec["half_played"] = [x[1] for x in hp]
@@ -2525,15 +2545,31 @@ def paired_sd_by_kind(recs: Iterable[dict], min_decisions: int = 20, key: str = 
     return out
 
 
+def paired_sd_cells(recs: Iterable[dict], min_decisions: int = 20, key: str = "g") -> dict[str, Any]:
+    """`paired_sd_by_kind`'s measure by kind in each door act (`door_act_of_floor`): {"<kind>/a<N>": sd} for the cells with at least `min_decisions` decisions, and `_all`,
+    the sd pooled over every kind that has one (the prior for a kind with no cell of its own)."""
+    cells: dict[str, Any] = {}
+    recs = list(recs)
+    for act in (0, 1):
+        got = paired_sd_by_kind([r for r in recs if door_act_of_floor(int(r.get("floor", 0))) == act], min_decisions, key)
+        cells.update({f"{kind}/a{act + 1}": sd for kind, sd in got.items() if kind != "_dof"})
+    whole = paired_sd_by_kind(recs, min_decisions, key)
+    kinds = [k for k in whole if k != "_dof"]
+    if kinds:
+        cells["_all"] = round(math.sqrt(sum(whole[k] ** 2 * whole["_dof"][k] for k in kinds) / sum(whole["_dof"][k] for k in kinds)), 4)
+    return cells
+
+
 def unit_constants(floors: Sequence[dict], frontier: Sequence[dict] | None = None, min_decisions: int = 20, tau_min_floors: float = TAU_MIN_FLOORS) -> dict[str, Any]:
     """What a grade's unit sets, measured on decision records: the guard's prior by kind (`paired_sd_by_kind`) and the pooled noise sd of one draw's centred
     option value (`noise_and_spread`), for the floors records and, on the same screens, the frontier records. `noise_ratio` is the frontier's noise sd over
     the floors', and `tau_min_suggested` the floor of the student's temperature in the frontier unit: floors' `TAU_MIN` (0.25) x that ratio, so that the same
     share of a typical temperature is held back."""
-    rep: dict[str, Any] = {"paired_sd": {"floors": paired_sd_by_kind(floors, min_decisions)},
+    rep: dict[str, Any] = {"paired_sd": {"floors": paired_sd_by_kind(floors, min_decisions)}, "paired_sd_cells": {"floors": paired_sd_cells(floors, min_decisions)},
                            "noise_sd": {"floors": noise_and_spread([g for g in (_decision_g(r) for r in floors) if g])["noise_sd"]}, "decisions": {"floors": len(floors)}}
     if frontier is not None:
         rep["paired_sd"]["frontier"] = paired_sd_by_kind(frontier, min_decisions)
+        rep["paired_sd_cells"]["frontier"] = paired_sd_cells(frontier, min_decisions)
         rep["noise_sd"]["frontier"] = noise_and_spread([g for g in (_decision_g(r) for r in frontier) if g])["noise_sd"]
         rep["decisions"]["frontier"] = len(frontier)
         nf, nq = rep["noise_sd"]["floors"], rep["noise_sd"]["frontier"]

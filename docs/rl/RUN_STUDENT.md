@@ -193,14 +193,17 @@ manifest says which (`grade`; one with no such key is floors', so no shard writt
 * `load_shards` refuses shards that carry two grades (a shard's manifest, or a record's own `grade`): the target `softmax((Q + lambda log pi_h) / tau)` would mix two units, and the temperature, lambda and the legs'
   paired differences with it. The error names the grades and the number of shards of each; fit one root at a time (`--shards-root D:/spireline/referee/run-teacher/<g>` or `.../run-teacher-frontier/<g>`, never their parent).
   An unknown grade is refused too. The loaded set names its grade (`ts.stats["grade"]`, `public_stats`, each shard's provenance entry).
-* **`TAU_MIN`** (the floor of the target's temperature, 0.25 floors, above) is the grade's own unit's: `TAU_MIN_BY_GRADE` (`floors` 0.25, the value `TAU_MIN` holds and every floors store reads unchanged; `frontier` is
-  `None` until measured, and a frontier store is then refused with that said, not fitted with a floors number). The frontier's is the floors' scaled by the ratio of the noise sd of one draw's centred option value in the two
+* **`TAU_MIN`** (the floor of the target's temperature, 0.25 floors, above) is the grade's own unit's: `TAU_MIN_BY_GRADE` (`floors` 0.25, the value `TAU_MIN` holds and every floors store reads unchanged; `frontier`
+  0.071; a grade whose unit is `None` is refused with that said, not fitted with a floors number). The frontier's is the floors' scaled by the ratio of the noise sd of one draw's centred option value in the two
   grades **on the same screens**: `python rl/run_teacher.py units --store <the regraded generation folder>` reports both (a regraded record keeps the floors `g` as `g_floors`) and `tau_min_suggested` = 0.25 x
-  (frontier noise sd / floors noise sd), so that the same share of a typical temperature is held back.
+  (frontier noise sd / floors noise sd), so that the same share of a typical temperature is held back. Measured on the two regraded stores pooled (13,551 screens, 2026-11-13, A2 `a2.npz` sha256 `a5d3da24`):
+  0.568 / 2.010 x 0.25 = 0.071 (Act 1 alone 0.194 / 1.996 would give 0.024, Act 2 alone 1.234 / 2.065 0.149: the temperature of an Act 1 decision is its noise over the root of K, about 0.1, so the floor binds there
+  only when K is 4 and the noise small).
 * **`PAIRED_SD_PRIOR`** (the guard's prior sd of a paired difference, by kind, `run_teacher.py`; used only where the teacher plays, `guard_se`) has a floors table (card 3.41, rest 2.76, route 4.83, shop 2.94, default 3.11:
-  unchanged) and a frontier one, `PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, measured by the same `units` command: per kind, the pooled sd of one draw's difference between two played options (each pair of options of a
-  decision: the sample variance of its K differences on K - 1 degrees of freedom, weighted by those degrees; a kind under 20 decisions left out). The measuring function reads any store: on generation 14's floors
-  store it is the figure to compare the 11-05 table with; on the regraded store, the frontier's.
+  unchanged) and a frontier one, `FRONTIER_PAIRED_SD_PRIOR` in `PAIRED_SD_PRIOR_BY_GRADE`, measured by the same `units` command: per kind **and door act** (the unit differs by about six between Act 1 and Act 2: card 0.32 and
+  2.09, rest 0.26 and 1.88, shop 0.33 and 2.18), the pooled sd of one draw's difference between two played options (each pair of options of a decision: the sample variance of its K differences on K - 1 degrees of freedom,
+  weighted by those degrees; a cell under 20 decisions left out), and `_all` (0.93) for a cell with none. The measuring function reads any store: on generation 14's floors store it is the figure to compare the 11-05
+  table with (card 3.62, rest 2.17, route 4.84, shop 3.16); on the regraded stores, the frontier's (`docs/lab/TEACHER_JOB.md`, "The frontier's constants, measured").
 * The student's legs, lambda and recipe are unchanged; lambda is measured against V, which is still floors (`V + lambda log pi_s` at play), so on a frontier store it is the new value per nat beyond V in the
   frontier's unit: read it as the design says (`OBJECTIVE.md` section 6, risk 7) before it is given to a candidate.
 

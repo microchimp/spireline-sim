@@ -1371,6 +1371,8 @@ class GradeTests(unittest.TestCase):
         self.assertEqual(0.25, rs.TAU_MIN_BY_GRADE["floors"])
         self.assertEqual({"card": 3.41, "rest": 2.76, "route": 4.83, "shop": 2.94}, rt.PAIRED_SD_PRIOR)
         self.assertEqual(rt.PAIRED_SD_PRIOR, rt.PAIRED_SD_PRIOR_BY_GRADE["floors"])
+        self.assertEqual(0.071, rs.TAU_MIN_BY_GRADE["frontier"])  # the frontier unit's, measured on the regraded stores (run_teacher.py units)
+        self.assertAlmostEqual(0.25 * 0.568 / 2.010, rs.TAU_MIN_BY_GRADE["frontier"], places=3)
 
     def test_a_store_with_no_grade_is_floors_and_a_frontier_store_names_its_own(self):
         self.shard("a")

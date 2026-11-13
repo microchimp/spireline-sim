@@ -110,6 +110,31 @@ class FrontierGradeTests(unittest.TestCase):
         with mock.patch.dict(rt.PAIRED_SD_PRIOR_BY_GRADE, {"frontier": None}), self.assertRaises(ValueError):
             rt.guard_se([5.0, 5.0], "card", grade="frontier")  # not measured in that unit yet: no guess
 
+    def test_the_measured_frontier_priors_are_by_kind_in_the_door_act_and_floors_is_untouched(self):
+        t = rt.FRONTIER_PAIRED_SD_PRIOR
+        self.assertIs(t, rt.PAIRED_SD_PRIOR_BY_GRADE["frontier"])
+        self.assertTrue(all(v > 0 for v in t.values()))
+        self.assertIn("_all", t)
+        for kind in ("ancient", "card", "rest", "reward", "select", "shop"):  # the unit of an Act 1 option is a fraction of an Act 2 option's
+            self.assertLess(t[f"{kind}/a1"], t[f"{kind}/a2"] / 3, kind)
+        self.assertEqual(t["card/a1"], rt.guard_prior_sd("card", "frontier", act=0))
+        self.assertEqual(t["card/a2"], rt.guard_prior_sd("card", "frontier", act=1))
+        self.assertEqual(t["_all"], rt.guard_prior_sd("route", "frontier", act=0))  # no Act 1 route is graded: the pooled prior
+        self.assertEqual(t["_all"], rt.guard_prior_sd("bundle", "frontier", act=1))
+        self.assertEqual(t["_all"], rt.guard_prior_sd("card", "frontier"))  # no act given: the kind has no pooled entry, so the pooled prior
+        self.assertEqual(3.41, rt.guard_prior_sd("card", "floors", act=0))  # floors: by kind only, whatever the act
+        self.assertEqual(3.41, rt.guard_prior_sd("card", "floors", act=1))
+        self.assertEqual(rt.PAIRED_SD_DEFAULT, rt.guard_prior_sd("event", "floors", act=1))
+        self.assertAlmostEqual(rt.guard_se([5.0, 5.0], "card", grade="frontier", act=0), math.sqrt((4 * t["card/a1"] ** 2) / 5 / 2), places=6)
+        self.assertGreater(rt.guard_se([5.0, 5.0], "card", grade="frontier", act=1), rt.guard_se([5.0, 5.0], "card", grade="frontier", act=0))
+        edge = 2.0 * rt.guard_se([0.0, 0.0], "card", grade="frontier", act=0)  # a gap that is clear in Act 1's unit is not in Act 2's
+        near = {0: [10.0, 10.0], 1: [10.0 + edge + 0.01] * 2}
+        self.assertFalse(rt.wants_more_draws(near, "card", grade="frontier", act=0))
+        self.assertTrue(rt.wants_more_draws(near, "card", grade="frontier", act=1))
+
+    def test_the_door_act_of_a_screen_is_the_act_of_the_boss_its_continuations_stop_at(self):
+        self.assertEqual([0, 0, 1, 1], [rt.door_act_of_floor(f) for f in (1, 16, 17, 32)])
+
     def test_the_act_2_model_file_is_found_by_default_only_when_it_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / "a2.pt"
@@ -356,7 +381,7 @@ class RegradeTests(StoreCase):
             ts = rs.load_shards(self.out)
         self.assertEqual(4, len(ts))
         self.assertEqual("frontier", ts.stats["grade"])
-        with self.assertRaises(rs.ShardError):
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": None}), self.assertRaises(rs.ShardError):
             rs.load_shards(self.out)  # not measured: refused
 
     def test_the_manifest_names_the_grade_the_scale_the_scorer_and_the_filter(self):
@@ -815,6 +840,21 @@ class UnitConstantsTests(unittest.TestCase):
         got = rt.paired_sd_by_kind([a], min_decisions=1)
         # pairs (0,1): differences -1, 1 (variance 2); (0,2): 0, 0; (1,2): 1, -1 (variance 2); pooled over three pairs of one degree of freedom each
         self.assertAlmostEqual(got["card"], math.sqrt((2 + 0 + 2) / 3), places=4)
+
+    def test_the_cells_are_by_kind_in_the_door_act_with_an_overall_prior(self):
+        def r(kind, floor, d):
+            return {"kind": kind, "act": 0 if floor < 18 else 1, "floor": floor, "played": [0, 1], "g": {"0": [0.0, 0.0], "1": [d, -d]}}
+
+        recs = [r("card", 5, 1.0), r("card", 6, 1.0), r("card", 20, 3.0), r("card", 21, 3.0), r("rest", 17, 3.0), r("rest", 30, 3.0)]
+        got = rt.paired_sd_cells(recs, min_decisions=2)
+        self.assertAlmostEqual(got["card/a1"], math.sqrt(2.0), places=4)  # differences d, -d: variance 2 d^2
+        self.assertAlmostEqual(got["card/a2"], 3.0 * math.sqrt(2.0), places=4)
+        self.assertAlmostEqual(got["rest/a2"], 3.0 * math.sqrt(2.0), places=4)  # a screen at the Act 1 boss floor is before the Act 2 door
+        self.assertNotIn("rest/a1", got)
+        self.assertAlmostEqual(got["_all"], math.sqrt((2 * 2.0 * 1.0 + 4 * 18.0 * 1.0) / 6), places=3)
+        self.assertEqual({"_all"}, set(rt.paired_sd_cells(recs, min_decisions=3)))  # no act cell has three decisions; the kinds pooled over the acts still do
+        rep = rt.unit_constants(recs, recs, min_decisions=2)
+        self.assertEqual(got, rep["paired_sd_cells"]["frontier"])
 
     def test_the_unit_report_compares_two_grades_on_the_same_screens(self):
         floors = [self.rec("card", {0: [20.0, 24.0], 1: [22.0, 22.0]}), self.rec("card", {0: [10.0, 14.0], 1: [12.0, 12.0]})]
