@@ -6,6 +6,7 @@ The shards, donor maps and fitted weights are in the referee's `human-prior` fol
 
 **v1 (2026-11-05) extends this file**: the real map of each run replaces the donors, routes are a fifth kind, and shop prices the copy vouches for are in the fit; see the section "v1" at the end. The text below is v0 as it was written.
 **v2 (2026-11-11)** gives the net the whole act map as a grid and a map tower (section "v2: the map grid", the last section): it matches v1 on every kind with the regularisation it needs, and does not beat it.
+**v4 (2026-11-13)** (the last section) adds the information-parity side blocks of the teacher's rows (what a relic or potion does, the roles of the deck's cards, what an event option pays) and the loader that takes any side block by a flag; no net is fitted.
 
 ## What the record teaches
 
@@ -808,3 +809,71 @@ python rl/human_prior.py agreement --decisions decisions-v3 --map-grid --state-g
 the engine at every "?" of walked runs, the merchant's quote and a removal's afterstate, the lists the engine exports, the run record's codec), `tests/python/test_human_prior_gaps.py` (the derivation on a
 hand-made run: the shared rule, a shop before a "?", Juzu Bracelet, an ambiguous position, the removals; the v3 shard equal to the v2 shard plus the block; the zero columns; the numpy scorers equal to the
 torch net; a fit step reaching the columns; the refusals) and `tests/python/test_human_prior_infer.py` pin it.
+
+## v4: the information-parity side blocks (2026-11-13, D59 lane D; branch `feat/info-parity`)
+
+Source of the record: none read. The blocks come from the fork engine (its relic, potion and card tables, its event options stepped on clones, a probe that plays every card) and the teacher's
+own shards; the human shards are not changed. `BASE_SIZE` stays 1,855 and `FEATURE_VERSION` 2: every row of the run judgement and its value net's input are byte for byte unchanged (the digest
+of a view's row, taken on main before the blocks, is pinned again), so every incumbent checkpoint still loads.
+
+**Why.** The owner's rule (2026-11-13): at every decision the player's inputs hold what the game shows a human there, plus what humans derive. The inventory (`PARITY.md` section 1 in the act-2
+build folder) found four things the encoder held only as ids: what a relic does, what a potion does, the roles of the cards of a deck, and what an event option pays. Each becomes a side block like
+M and G: computed per option from its afterstate, stored beside `rows.npz`, taken by a loader behind a flag, default off. Nothing here fits a model; the fit is on the regraded labels (lanes A and B).
+
+### The blocks (`rl/parity_blocks.py`; fixed)
+
+`option_parity(view, options)` returns one float32 array per block, `(n options, width)`, built from the same afterstates `option_rows` encodes (`features.apply_option`; a random transform takes the card
+out of the deck):
+
+| block | width | what |
+|---|---|---|
+| `relics` (P1, `rl/parity_relics.py`) | 90 | the effect tags of the relics held after the option (a sum), then the tags of the option's own relic. A relic's 45 numbers: 25 effects (energy, draw, block, Strength, Dexterity, heal, max HP, gold, potion slots and potions, card rewards, a rest or shop effect, curses, damage, debuffs, upgrades, removals, cards added, HP paid, relics given, damage taken reduced, junk added, a drawback flag, a map change) as the game's own amount over a fixed scale, 12 triggers (pickup, fight start, turn start, turn end, card played, damage taken, kill, rest site, shop, reward, always on, conditional), 8 rarities |
+| `roles` (P2, `rl/parity_cards.py`) | 19 | the deck's role counts after the option over 6 (clipped to 1) and its size over 40, then the roles of the option's card or cards (a bundle's, or the deck card a removal, upgrade or transform touches) over 2. Roles: multi-target, scaling damage, scaling block, draw, energy, repeatable block, exhaust, power, junk |
+| `events` (P3, `rl/parity_events.py`) | 17 | for an event option: known, the mean one-step change of HP, max HP, gold, deck size, relics, curses and potions over their scales, and the shares of where it leads (a fight, a card reward, a relic reward, a removal, an upgrade, a transform, another screen, the event's next page, refused). Zeros and known 0 for any other option, and for a key the table lacks |
+| `potions` (P4, `rl/parity_potions.py`) | 68 | the effect tags of the potions held after the option (a sum), then the option's potion. A potion's 34 numbers: the 25 effects, 5 flags (drunk out of a fight, automatic, needs a target, opens a choice, random) and 4 rarities |
+
+Where each number comes from: **relics and potions** are tables read off the engine's own relic hooks and pickup arms and its potion arms (`rl/parity_data/relic_effects.txt`, `potion_effects.txt`; one row per
+id: 296 and 63), checked against the engine by playing. Every relic is held in a fight's opening and the opening's energy, cards in hand, block, Strength, Dexterity, HP and max HP are compared both ways with the table
+(nothing the engine shows is missing from the table; every unconditional first-turn effect in the table is shown); every potion is drunk in a fight and its immediate energy, block, Strength, Dexterity, HP and max HP
+compared (nine potions whose effect arrives over several turns are listed with their reason). **Card roles** are measured by playing every card of the table (577) on the engine (`rl/card_tags.py`'s probe: a following
+Strike or Defend, this turn and, for the powers that act at a turn's start, the next turn; a four-energy opening for the cards a three-energy turn cannot test): `rl/parity_data/card_probe.json`. **Event payoffs**
+are measured by taking each option of each event decision on a clone of the run, over random runs whose fights are resolved by the engine's own hook (so a run reaches all three acts in a fraction of a second):
+`rl/parity_data/event_payoffs.json`, 60,195 option clones over 3,000 runs, 196 options of all 58 events. The table, not a clone at play, is the encoding: the teacher's stored runs and the human records have no live engine, and a table is the same number at train and at play.
+
+The held halves of P1, P2 and P4 are **linear in the counts of the base vector** (block E, F, G): `held_from_base(base)` takes them from a base row with three matrix products and no view, equal to `option_parity`'s
+held halves on every option of real decisions (a test; a random transform differs by the expectation the base vector holds). That is what makes the human shards' re-encode cheap (`PARITY.md` section 5).
+
+### The files and the loader
+
+`python rl/parity_reencode.py --store <store> --generation N [--procs 4]` adds `rows_parity.npz` beside each shard's `rows.npz`: one float32 array per block aligned with `rows` and `known` (bool per row); the
+manifest gains `parity: true`, `parity_version`, `parity_blocks`, `parity_rows`, `parity_unknown_rows`. Every row is rebuilt from the screen's view and options and its base vector checked against the stored row
+(equal float32, exactly); a run that cannot be replayed or whose rows differ is written as zeros with `known` False and counted, never refused. A run the teacher played is built from its run record (no game); a
+stored exploring run is replayed (about 7 CPU-s). It borrows the readers and the replay machinery of `run_teacher.py reencode`, changes none of that file, takes its own lock and adds files only.
+
+`rl/student_sides.py` is the one place that knows the side blocks (`grid`, `gaps`, `parity-relics`, `parity-roles`, `parity-events`, `parity-potions`: files, widths, dtypes, layout versions): `parse_flags` (default none),
+`read_sides` (validated and aligned with the rows; a missing file or a wrong shape, dtype, version or non-finite number is refused naming the shard), `columns`, `width`, `widen_first_layer` (zero columns, so a net with the
+blocks starts as the plain one). The student's loader takes a block by one flag each; `run_student.py` is not changed here (lane B edits it): its one-line hook is described in `PARITY.md` section 6.
+
+### Counts
+
+Tables: 296 relics, 63 potions, 577 cards (524 playable on turn one; 17 with scaling untested: X-cost cards and a few that eat the follow-up), 196 event options of 58 events (60,195 clones). Rows of the teacher's stores
+(`rows_parity.npz`, 194 floats a row):
+
+| store | shards | runs | rows | unknown rows | how | cost |
+|---|---|---|---|---|---|---|
+| `run-teacher/14` (round 1, the student's labels) | 40 | 249 | 49,381 | 0 | run records, no game | 41 s, one process |
+| `run-teacher/gen13-r0/13` (round 0) | 30 | 2,177 | 41,691 | each shard's manifest says (`parity_unknown_rows`) | the stored exploring runs replayed on the engine, 4 processes at BelowNormal | about the G reencode's 4.1 core-hours (D58 addendum 23) |
+
+On real shards every row built again had its base vector equal to the stored row (float32, exactly), so no row is unknown. The live store grows (the teacher is on): `parity_reencode.py` is idempotent and adds
+the file to any shard that lacks it.
+
+### Rerun (v4)
+
+```
+python rl/parity_cards.py probe                       # rl/parity_data/card_probe.json (every card played on the engine)
+python rl/parity_events.py build --runs 3000          # rl/parity_data/event_payoffs.json (about 10 minutes, one process)
+python rl/parity_reencode.py --store <referee>/run-teacher --generation 14 --procs 4
+python rl/parity_reencode.py --store <referee>/run-teacher/gen13-r0 --generation 13 --agent <referee>/agent/gen13/candidate-stakes --procs 4
+```
+
+`tests/python/test_parity_relics.py`, `test_parity_cards.py`, `test_parity_potions.py`, `test_parity_events.py`, `test_parity_blocks.py`, `test_parity_reencode.py` and `test_student_sides.py` pin it.
