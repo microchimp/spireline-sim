@@ -972,6 +972,31 @@ class StudentPolicyTests(unittest.TestCase):
         self.assertEqual(ic.BlendedPolicy(REAL_JUDGE, self.prior, 0.5, W=53.0).pick(view, d, None).index, card.index)
         self.assertEqual("card", pol.last["screen"])
 
+    def test_a_merged_student_decides_each_kind_by_the_net_that_serves_it(self):
+        merged = Path(self.tmp.name) / "merged.npz"
+        hpi.write_merged_student(merged, [(self.same, ("card", "shop")), (self.flipped, ("route",))])
+        view, d = self.view_and_decision()
+        route = F.Decision("map", d.options[:3])
+        rows = hpi.option_rows(self.nets, view, route.options)
+        v = models.expected_floors(self.nets.value.floor_probs(rows), 53.0)
+        by_same = int(np.argmax(v + 4.0 * hpi.log_softmax(hpi.load_student(self.same).row_logits(rows))))
+        by_flipped = int(np.argmax(v + 4.0 * hpi.log_softmax(hpi.load_student(self.flipped).row_logits(rows))))
+        self.assertNotEqual(by_same, by_flipped)  # the two nets decide this screen differently: the check is not vacuous
+        pol = self.policy(merged, {"card": (0.5, 0.5, 0.5), "route": (4.0, 4.0, 4.0)})
+        pick = pol.pick(view, route, None)
+        self.assertEqual("s:route", pol.last["screen"])
+        if not pol.last["guard"]:
+            self.assertEqual(by_flipped, pick.index)
+        ref = self.policy(self.flipped, {"route": (4.0, 4.0, 4.0)}).pick(view, route, None)
+        self.assertEqual((ref.index, ref.values), (pick.index, pick.values))
+        card = pol.pick(view, d, None)  # the card screen is the first net's, as the plain student `same` decides it
+        want = self.policy(self.same, {"card": (0.5, 0.5, 0.5)}).pick(view, d, None)
+        self.assertEqual((want.index, want.values), (card.index, card.values))
+        self.assertEqual(hpi.load_student(merged).sha256[:8], pol.describe()["pi_s"])
+        self.assertEqual({"card": ["0.5"] * 3, "route": ["4", "4", "4"]}, pol.describe()["student_kinds"])
+        with self.assertRaises(ValueError):  # a kind the merged file does not serve
+            self.policy(merged, {"reward": (0.5, 0.5, 0.5)})
+
     def test_a_students_lambda_of_zero_is_vrun_for_that_kind_and_act(self):
         from run_train.policy import LookaheadPolicy
 

@@ -29,6 +29,12 @@ macro (`imitation_chooser.macro_name`).
 The run student `pi_s` (`rl/run_student.py`) is the same net refitted on the run teacher's labels, in the same file format; its file also
 says which decision kinds it was fitted for (`meta["student"]["kinds"]`) and what it started from. `StudentScorer` / `load_student` read
 such a file with the same scoring as `PriorScorer` (a plain prior's file is refused there: it names no kinds), `write_student` writes one.
+
+A merged student (`write_merged_student`, D59 lane G) holds two or more students' nets in one file, each serving its own kinds: the kinds one student
+keeps from the incumbent and the kinds another has newly fitted, with the recipe still naming one file by one sha256. Each net's arrays sit under
+`net<i>.` (nothing under a plain name, so a build that does not know the format refuses the file instead of scoring every kind with the first
+net), its kinds and its own side flags (map tower, state gaps, side blocks) in `meta["student"]["nets"]`; `StudentScorer.scorer_for(kind)` gives the
+net that serves a kind, and `PriorScorer` on such a file is its first net.
 """
 
 from __future__ import annotations
@@ -77,6 +83,37 @@ def load(path: Path | str) -> PriorScorer:
 
 STUDENT_META = "student"  # the key of a student file's meta block
 STUDENT_FORMAT = 1
+NETS_KEY = "nets"  # a merged student's list of nets in its meta block: {"kinds", "source_sha256", "source_prior_sha256", "flags"} each, the first net first
+
+
+def net_prefix(index: int) -> str:
+    """The prefix of net `index`'s arrays in a merged student file."""
+    return f"net{int(index)}."
+
+
+def split_nets(params: Mapping[str, np.ndarray], meta: Mapping[str, Any] | None) -> tuple[dict[str, np.ndarray], dict[str, Any], list[tuple[dict[str, np.ndarray], dict[str, Any], tuple[str, ...]]]]:
+    """(the first net's arrays, the meta that net reads, [(arrays, flags, kinds) of every further net]) of a file; a file that is not a merged student
+    is returned as it is, with no further nets. The first net's meta is the file's with that net's own flags (map tower, state gaps, side blocks) at
+    the top, where `PriorScorer` reads them. A kind named by two nets refuses the file."""
+    meta = dict(meta or {})
+    block = meta.get(STUDENT_META)
+    nets = block.get(NETS_KEY) if isinstance(block, dict) else None
+    if not nets:
+        return dict(params), meta, []
+    owner: dict[str, int] = {}
+    for i, net in enumerate(nets):
+        for kind in net["kinds"]:
+            if kind in owner:
+                raise ValueError(f"the kind {kind} is named by more than one net (nets {owner[kind]} and {i})")
+            owner[kind] = i
+    parts = []
+    for i, net in enumerate(nets):
+        prefix = net_prefix(i)
+        parts.append(({k[len(prefix):]: v for k, v in params.items() if k.startswith(prefix)}, dict(net.get("flags") or {}), tuple(str(k) for k in net["kinds"])))
+    top = {k: v for k, v in meta.items() if k != STUDENT_META}
+    top.update(parts[0][1])
+    top[STUDENT_META] = block
+    return parts[0][0], top, parts[1:]
 
 
 def log_softmax(x: np.ndarray) -> np.ndarray:
@@ -127,6 +164,7 @@ class PriorScorer:
     """`pi_h`: one logit per option's afterstate row (with the map tower, one per row and its map grid)."""
 
     def __init__(self, params: dict[str, np.ndarray], meta: dict[str, Any] | None = None, sha256: str = ""):
+        params, meta, self._further_nets = split_nets(params, meta)  # a merged student is its first net here; `StudentScorer` serves the others
         missing = [k for k in _KEYS if k not in params]
         if missing:
             raise ValueError(f"the prior's weights lack {missing}")
@@ -236,9 +274,21 @@ class StudentScorer(PriorScorer):
             raise ValueError(f"not a run student file: its meta has no `{STUDENT_META}` block of format {STUDENT_FORMAT} naming kinds")
         self.kinds: tuple[str, ...] = tuple(str(k) for k in block["kinds"])
         self.prior_sha256: str = str(block.get("prior_sha256") or "")
+        self._by_kind: dict[str, PriorScorer] = {}  # a merged student's further nets, by the kinds each serves
+        for sub, flags, kinds in self._further_nets:
+            net = PriorScorer(sub, flags, sha256)
+            self._by_kind.update({kind: net for kind in kinds})
+        named = {k for net in block.get(NETS_KEY) or [] for k in net["kinds"]}
+        if named and named != set(self.kinds):
+            raise ValueError(f"the student names the kinds {sorted(self.kinds)} but its nets serve {sorted(named)}")
 
     def has(self, kind: str) -> bool:
         return kind in self.kinds
+
+    def scorer_for(self, kind: str) -> PriorScorer:
+        """The net that serves `kind`: this scorer (a plain student, or a merged one's first net) or the further net of a merged student that
+        keeps the kind."""
+        return self._by_kind.get(kind, self)
 
 
 @lru_cache(maxsize=4)
@@ -288,6 +338,64 @@ def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Seq
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as fh:
         np.savez(fh, meta=np.array(json.dumps(meta, sort_keys=True)), **{k: np.asarray(params[k], dtype=np.float32) for k in (*_KEYS, *tower)})
+    os.replace(tmp, path)
+    return file_sha256(path)
+
+
+def write_merged_student(path: Path | str, parts: Sequence[tuple[Path | str, Sequence[str]]], *, extra_meta: Mapping[str, Any] | None = None) -> str:
+    """Write one student file that serves each kind with the net of the student file it comes from: `parts` is [(student file, kinds it serves)], two
+    or more, each kind in one part only and among the kinds that file was fitted for, a plain student file each (never a merged one). The first part's
+    net comes first (what a reader of a plain prior gets; its record of the prior it started from and its fit are the file's own); each net's arrays go
+    under `net<i>.` with its kinds, flags and source sha256 in the meta, nothing under a plain array name. Tmp then rename; returns the sha256."""
+    import os  # noqa: PLC0415
+
+    parts = [(Path(p), tuple(str(k) for k in kinds)) for p, kinds in parts]
+    if len(parts) < 2:
+        raise ValueError("a merged student takes two or more students")
+    arrays: dict[str, np.ndarray] = {}
+    nets: list[dict[str, Any]] = []
+    owner: dict[str, int] = {}
+    first: dict[str, Any] = {}
+    for i, (src, kinds) in enumerate(parts):
+        with np.load(src, allow_pickle=False) as z:
+            params = {k: z[k] for k in z.files if k != "meta"}
+            meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
+        block = meta.get(STUDENT_META)
+        if not isinstance(block, dict) or block.get("format") != STUDENT_FORMAT or not block.get("kinds"):
+            raise ValueError(f"{src.name} is not a run student file")
+        if block.get(NETS_KEY):
+            raise ValueError(f"{src.name} is a merged student already: merge the files it was made from")
+        if not kinds:
+            raise ValueError(f"net {i} ({src.name}) serves no kind: a net serves at least one kind")
+        unfitted = [k for k in kinds if k not in block["kinds"]]
+        if unfitted:
+            raise ValueError(f"{src.name} was not fitted for {unfitted} (its file names {block['kinds']})")
+        for kind in kinds:
+            if kind in owner:
+                raise ValueError(f"the kind {kind} would be served by more than one net (nets {owner[kind]} and {i})")
+            owner[kind] = i
+        missing = [k for k in _KEYS if k not in params]
+        if missing:
+            raise ValueError(f"{src.name}'s weights lack {missing}")
+        tower = map_keys_in(params)
+        for key in (*_KEYS, *tower):
+            arrays[f"{net_prefix(i)}{key}"] = np.asarray(params[key], dtype=np.float32)
+        flags: dict[str, Any] = {}
+        if tower:
+            flags["map_grid"] = True
+        if meta.get("state_gaps"):
+            flags.update(state_gaps=True, gaps_version=int(meta.get("gaps_version", 1)))
+        if meta.get("side_blocks"):
+            flags["side_blocks"] = list(_side_flags(meta["side_blocks"]))
+        nets.append({"kinds": list(kinds), "source_sha256": file_sha256(src), "source_prior_sha256": str(block.get("prior_sha256") or ""), "flags": flags})
+        if i == 0:
+            first = block
+    doc = {**(extra_meta or {}), STUDENT_META: {"format": STUDENT_FORMAT, "kinds": [k for _, kinds in parts for k in kinds],
+                                               "prior_sha256": str(first.get("prior_sha256") or ""), "fit": first.get("fit") or {}, NETS_KEY: nets}}
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        np.savez(fh, meta=np.array(json.dumps(doc, sort_keys=True)), **arrays)
     os.replace(tmp, path)
     return file_sha256(path)
 

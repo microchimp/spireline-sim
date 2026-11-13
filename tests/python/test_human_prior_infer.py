@@ -209,5 +209,96 @@ class ChooserTests(unittest.TestCase):
         self.assertEqual([None], calls)
 
 
+class MergedStudentTests(unittest.TestCase):
+    """One student file that serves each kind with its own net (D59 lane G): the first net's kinds and the kinds kept from another student.
+    Nothing is stored under a plain array name, so a build that does not know the format refuses the file instead of playing one net for
+    every kind."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.a = self.dir / "a.npz"
+        self.b = self.dir / "b.npz"
+        hpi.write_student(self.a, plain_params(4), kinds=("card", "rest", "shop", "reward", "route"), prior_sha256="aa" * 32, fit={"who": "a"})
+        hpi.write_student(self.b, plain_params(7), kinds=("route", "shop", "event"), prior_sha256="bb" * 32, fit={"who": "b"})
+        self.m = self.dir / "m.npz"
+        self.sha = hpi.write_merged_student(self.m, [(self.a, ("card", "rest", "shop", "reward")), (self.b, ("route", "event"))])
+
+    @staticmethod
+    def inputs(n: int = 6, seed: int = 1) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        return rng.standard_normal((n, hpi.DENSE_WIDTH)).astype(np.float32), rng.integers(0, 3, (n, hpi.E_SIZE + hpi.F_SIZE + hpi.G_SIZE)).astype(np.float32)
+
+    def test_the_file_names_every_kind_once_and_stores_each_net_under_its_own_prefix(self):
+        self.assertEqual(hpi.file_sha256(self.m), self.sha)
+        self.assertEqual(("card", "rest", "shop", "reward", "route", "event"), hpi.student_kinds_of(self.m))
+        with np.load(self.m, allow_pickle=False) as z:
+            meta = json.loads(str(z["meta"]))
+            self.assertFalse([k for k in z.files if k in hpi._KEYS], "no array under a plain name")  # noqa: SLF001
+            for key in hpi._KEYS:  # noqa: SLF001
+                np.testing.assert_array_equal(z[f"net0.{key}"], plain_params(4)[key])
+                np.testing.assert_array_equal(z[f"net1.{key}"], plain_params(7)[key])
+        nets = meta["student"]["nets"]
+        self.assertEqual([["card", "rest", "shop", "reward"], ["route", "event"]], [n["kinds"] for n in nets])
+        self.assertEqual([hpi.file_sha256(self.a), hpi.file_sha256(self.b)], [n["source_sha256"] for n in nets])
+        self.assertEqual("aa" * 32, meta["student"]["prior_sha256"])  # the first net's own record
+
+    def test_each_kind_is_scored_by_its_own_net_and_a_plain_student_by_itself(self):
+        s = hpi.load_student(self.m)
+        dense, counts = self.inputs()
+        a, b = hpi.load_student(self.a), hpi.load_student(self.b)
+        for kind, want in (("card", a), ("rest", a), ("shop", a), ("reward", a), ("route", b), ("event", b)):
+            np.testing.assert_allclose(s.scorer_for(kind).logits(dense, counts), want.logits(dense, counts), atol=1e-6, err_msg=kind)
+        self.assertFalse(np.allclose(s.scorer_for("card").logits(dense, counts), s.scorer_for("route").logits(dense, counts)))
+        self.assertTrue(all(s.has(k) for k in ("card", "route", "event")) and not s.has("select"))
+        self.assertIs(a, a.scorer_for("card"))  # a plain student is its own scorer for every kind it names
+        self.assertEqual(self.sha, s.sha256)
+
+    def test_the_first_net_is_what_a_reader_of_a_plain_prior_gets(self):
+        dense, counts = self.inputs()
+        np.testing.assert_allclose(hpi.PriorScorer.load(self.m).logits(dense, counts), hpi.load_student(self.a).logits(dense, counts), atol=1e-6)
+        self.assertEqual(hpi.PriorScorer.load(self.a).p.keys(), hpi.PriorScorer.load(self.m).p.keys())
+
+    def test_each_net_keeps_its_own_map_tower_and_flags(self):
+        tower = self.dir / "tower.npz"
+        hpi.write_student(tower, tower_params(), kinds=("route", "event"), prior_sha256="cc" * 32)
+        m = self.dir / "mt.npz"
+        hpi.write_merged_student(m, [(self.a, ("card", "shop")), (tower, ("route",))])
+        s = hpi.load_student(m)
+        self.assertEqual((False, True), (s.scorer_for("card").map_grid, s.scorer_for("route").map_grid))
+        self.assertEqual(("card", "shop", "route"), hpi.student_kinds_of(m))
+        dense, counts = self.inputs()
+        with self.assertRaisesRegex(ValueError, "map tower"):  # the kept net still refuses to score without its grids
+            s.scorer_for("route").logits(dense, counts)
+
+    def test_what_cannot_be_merged_is_refused_with_the_reason(self):
+        out = self.dir / "x.npz"
+        cases = [([(self.a, ("card", "shop")), (self.b, ("shop", "event"))], "more than one net"),
+                 ([(self.a, ("route",)), (self.b, ("route",))], "more than one net"),
+                 ([(self.a, ("event",)), (self.b, ("route",))], "was not fitted for"),
+                 ([(self.a, ("card",)), (self.b, ())], "at least one kind"),
+                 ([(self.a, ("card",))], "two or more"),
+                 ([(self.m, ("card",)), (self.b, ("route",))], "merged student")]
+        for parts, why in cases:
+            with self.assertRaisesRegex(ValueError, why, msg=str(parts)):
+                hpi.write_merged_student(out, parts)
+            self.assertFalse(out.exists())
+        plain_prior = self.dir / "prior.npz"
+        np.savez(plain_prior, meta=np.array(json.dumps({})), **plain_params())
+        with self.assertRaisesRegex(ValueError, "not a run student"):
+            hpi.write_merged_student(out, [(self.a, ("card",)), (plain_prior, ("route",))])
+
+    def test_a_file_whose_nets_name_a_kind_twice_does_not_load(self):
+        with np.load(self.m, allow_pickle=False) as z:
+            arrays = {k: z[k] for k in z.files if k != "meta"}
+            meta = json.loads(str(z["meta"]))
+        meta["student"]["nets"][1]["kinds"] = ["route", "card"]
+        bad = self.dir / "bad.npz"
+        np.savez(bad, meta=np.array(json.dumps(meta)), **arrays)
+        with self.assertRaisesRegex(ValueError, "more than one net"):
+            hpi.StudentScorer.load(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

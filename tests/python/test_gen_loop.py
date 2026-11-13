@@ -1615,5 +1615,135 @@ class StudentCandidateTests(unittest.TestCase):
         self.assertTrue(json.loads((cand / "agent.json").read_text())["macro"].startswith("vrun+pi_s:lambda=0.5:pi_h="))
 
 
+class StudentKeepTests(unittest.TestCase):
+    """`run_student.build_student_candidate(keep=, lambda_floor=)` (D59 lane G): heads kept from the incumbent's student beside a new fit's, in one student
+    file; a kind's lambda at play floored with the measured one recorded; the stored legs cover every kind the recipe names."""
+
+    def setUp(self):
+        import hashlib
+
+        from test_run_student import random_weights
+        from test_screens import legs_doc
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.agents, _base5, self.prior, self.student, self.human = student_world(self.root)
+        # the incumbent: generation 6, a student serving route and shop, with the legs it passed (against the human prior)
+        self.inc = gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 6, why="incumbent", export=False, tag="inc",
+                                            student=self.student, student_lams={"route": (0.3715, 2.0, 2.0), "shop": (0.2858, 0.2311, 0.2311)})
+        inc_student = self.inc / "run_student.npz"
+        legs = legs_doc(inc_student.read_bytes(), self.human.read_bytes(), kinds=("route", "shop"), human=("route", "shop"), lam=0.3)
+        legs["student_sha256"] = human_prior_infer.file_sha256(inc_student)
+        legs["lambda"]["chosen"] = {"route": [0.3715, 2.0, 2.0], "shop": [0.2858, 0.2311, 0.2311]}
+        self.inc_legs = legs
+        (self.inc / "run_student_legs.json").write_text(json.dumps(legs), encoding="utf-8")
+        (self.agents / "current.json").write_text(json.dumps({"generation": 6, "dir": str(self.inc)}))
+        # the new fit: card, shop and reward, started from the incumbent's student, its legs against it
+        self.new = self.root / "new.npz"
+        human_prior_infer.write_student(self.new, random_weights(seed=11), kinds=("card", "rest", "shop", "reward"),
+                                        prior_sha256=human_prior_infer.file_sha256(inc_student), fit={"test": True})
+        self.out = self.root / "fit2"
+        self.out.mkdir()
+        (self.out / run_student.STUDENT_OUT).write_bytes(self.new.read_bytes())
+        new_legs = legs_doc(self.new.read_bytes(), inc_student.read_bytes(), kinds=("card", "shop", "reward"), human=("card", "shop"), lam=0.25)
+        new_legs["lambda"]["chosen"]["card"] = [0.0, 0.1149, 0.1149]
+        self.new_legs = new_legs
+        (self.out / run_student.LEGS_FILE).write_text(json.dumps(new_legs), encoding="utf-8")
+        self.sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+    def build(self, **kw):
+        kw.setdefault("tag", "second")
+        return run_student.build_student_candidate(self.out, self.inc, self.agents, 7, why="test", export=False, **kw)
+
+    def test_a_kept_head_and_a_new_one_are_one_student_file_each_at_the_lambdas_it_was_measured_at(self):
+        cand = self.build(keep=("route",), lambda_floor={"card": 0.5})
+        meta = json.loads((cand / "agent.json").read_text())
+        merged = cand / "run_student.npz"
+        self.assertEqual(self.sha(merged), meta["student"]["sha256"])
+        self.assertTrue(meta["macro"].endswith(f":pi_s={self.sha(merged)[:8]}:card=0.5/0.5/0.5:route=0.3715/2/2:shop=0.25/0.25/0.25:reward=0.25/0.25/0.25"), meta["macro"])
+        self.assertEqual({"card": ["0.5"] * 3, "route": ["0.3715", "2", "2"], "shop": ["0.25"] * 3, "reward": ["0.25"] * 3}, meta["student"]["kinds"])
+        # the kept head is the incumbent's own net, the new kinds the new fit's
+        s, inc, new = (human_prior_infer.load_student(p) for p in (merged, self.inc / "run_student.npz", self.new))
+        rng = np.random.default_rng(2)
+        dense = rng.standard_normal((5, human_prior_infer.DENSE_WIDTH)).astype(np.float32)
+        counts = rng.integers(0, 3, (5, human_prior_infer.E_SIZE + human_prior_infer.F_SIZE + human_prior_infer.G_SIZE)).astype(np.float32)
+        np.testing.assert_allclose(s.scorer_for("route").logits(dense, counts), inc.logits(dense, counts), atol=1e-6)
+        for kind in ("card", "shop", "reward"):
+            np.testing.assert_allclose(s.scorer_for(kind).logits(dense, counts), new.logits(dense, counts), atol=1e-6, err_msg=kind)
+        # what the record says: where each head came from, and the measured lambda beside the floored one
+        self.assertEqual({"kinds": {"route": ["0.3715", "2", "2"]}, "sha256": self.sha(self.inc / "run_student.npz")}, {
+            "kinds": meta["student"]["kept"]["kinds"], "sha256": meta["student"]["kept"]["sha256"]})
+        self.assertEqual({"card": {"measured": ["0", "0.1149", "0.1149"], "floor": "0.5"}}, meta["student"]["floored"])
+        self.assertEqual(list(human_prior_infer.student_kinds_of(merged)), meta["student"]["fitted_for"])
+        agent = gen_loop.load_agent(cand)
+        self.assertEqual({"card": (0.5,) * 3, "route": (0.3715, 2.0, 2.0), "shop": (0.25,) * 3, "reward": (0.25,) * 3}, dict(agent.student_lams))
+
+    def test_the_stored_legs_cover_every_named_kind_and_the_screen_reads_them(self):
+        import screens
+
+        cand = self.build(keep=("route",), lambda_floor={"card": 0.5})
+        stored = json.loads((cand / "run_student_legs.json").read_text())
+        self.assertEqual(self.sha(cand / "run_student.npz"), stored["student_sha256"])
+        self.assertEqual(self.new_legs["baseline"], stored["baseline"])  # measured against the incumbent's student, as the screen checks
+        self.assertEqual(self.inc_legs["leg1"]["kinds"]["route"], stored["leg1"]["kinds"]["route"])  # the kept head carries its own legs
+        self.assertEqual(self.new_legs["leg1"]["kinds"]["card"], stored["leg1"]["kinds"]["card"])
+        self.assertEqual({"route": {"student_sha256": self.inc_legs["student_sha256"], "baseline": self.inc_legs["baseline"]}},
+                         {k: {x: v[x] for x in ("student_sha256", "baseline")} for k, v in stored["kept"].items()})
+        self.assertEqual([0.3715, 2.0, 2.0], stored["lambda"]["chosen"]["route"])
+        self.assertEqual([0.0, 0.1149, 0.1149], stored["lambda"]["chosen"]["card"])  # the measured value stays in the legs, the floor is in the recipe
+        r = screens.run_student(cand, self.inc)
+        self.assertNotIn("skipped", r)
+        self.assertFalse(r["rejected"], r.get("line"))
+        self.assertEqual({"card", "route", "shop", "reward"}, set(r["kinds"]))
+        self.assertEqual("student", screens.kind_of(cand, self.inc))
+
+    def test_a_floor_only_raises_a_lambda_and_only_for_a_kind_the_student_takes(self):
+        meta = json.loads((self.build(lambda_floor={"card": 0.05, "shop": 0.2, "ancient": 0.5}, tag="floors") / "agent.json").read_text())
+        self.assertEqual({"card": ["0.05", "0.1149", "0.1149"], "shop": ["0.25"] * 3}, {k: meta["student"]["kinds"][k] for k in ("card", "shop")})
+        self.assertEqual({"card": {"measured": ["0", "0.1149", "0.1149"], "floor": "0.05"}}, meta["student"]["floored"])  # shop is over its floor, ancient is not taken
+
+    def test_without_keep_or_floor_the_candidate_is_what_it_was(self):
+        meta = json.loads((self.build(tag="plain") / "agent.json").read_text())
+        self.assertNotIn("kept", meta["student"])
+        self.assertNotIn("floored", meta["student"])
+        self.assertEqual(self.sha(self.new), meta["student"]["sha256"])  # the new fit's own file, not a merged one
+        self.assertEqual(["card", "rest", "shop", "reward"], meta["student"]["fitted_for"])
+
+    def test_what_cannot_be_kept_is_refused_with_the_reason_and_leaves_no_folder(self):
+        for kw, why in (({"keep": ("card",)}, "does not serve"),  # the incumbent's student serves route and shop only
+                        ({"keep": ("shop",)}, "new student and by the kept"),  # the new fit takes shop too
+                        ({"keep": ("route",), "lambda_floor": {"bundle": 0.5}}, "kind")):
+            with self.assertRaisesRegex(ValueError, why, msg=str(kw)):
+                self.build(tag="refused", **kw)
+            self.assertFalse((self.agents / "gen7" / "candidate-refused").exists())
+
+    def test_a_base_without_a_student_or_without_its_legs_keeps_nothing(self):
+        (self.inc / "run_student_legs.json").unlink()
+        with self.assertRaisesRegex(ValueError, "legs"):
+            self.build(keep=("route",), tag="nolegs")
+        (self.inc / "run_student_legs.json").write_text(json.dumps({**self.inc_legs, "student_sha256": "0" * 64}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "legs"):
+            self.build(keep=("route",), tag="otherlegs")
+        legs = json.loads((self.out / run_student.LEGS_FILE).read_text())
+        (self.root / "plain").mkdir()
+        agents, base, prior, student, human = student_world(self.root / "plain")  # a base that plays no student
+        (self.out / run_student.LEGS_FILE).write_text(json.dumps({**legs, "baseline": {"sha256": human_prior_infer.file_sha256(human), "kind": "human prior"}}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "no student"):
+            run_student.build_student_candidate(self.out, agents / "current.json", agents, 7, why="t", export=False, keep=("route",))
+        self.assertFalse((agents / "gen7").exists())
+
+    def test_the_command_line_takes_the_kinds_the_heads_to_keep_and_the_floors(self):
+        p = run_student.build_parser()
+        a = p.parse_args(["candidate", "--out", "o", "--base", "b", "--agent-root", "r", "--target", "9", "--keep", "route,event", "--kinds", "card,rest",
+                          "--lambda-floor", "card=0.5", "--lambda-floor", "rest=0.25"])
+        self.assertEqual((("route", "event"), ("card", "rest"), {"card": 0.5, "rest": 0.25}),
+                         (tuple(a.keep), tuple(a.kinds), run_student.parse_floors(a.lambda_floor)))
+        d = p.parse_args(["candidate", "--out", "o", "--base", "b", "--agent-root", "r", "--target", "9"])
+        self.assertEqual(((), None, None), (tuple(d.keep), d.kinds, d.lambda_floor))
+        with self.assertRaises(SystemExit):
+            p.parse_args(["candidate", "--out", "o", "--base", "b", "--agent-root", "r", "--target", "9", "--lambda-floor", "card"])
+
+
 if __name__ == "__main__":
     unittest.main()

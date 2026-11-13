@@ -321,7 +321,7 @@ class BlendedPolicy(LookaheadPolicy):
             kind, lam_s = taken
             if lam_s <= 0:  # the student's lambda is 0 here: the judgement alone, as `vrun` decides it
                 return LookaheadPolicy.pick(self, view, decision, rng)
-            return self._decide(view, decision, rng, kind, lam_s, self.student, student=True)
+            return self._decide(view, decision, rng, kind, lam_s, self.student.scorer_for(kind), student=True)  # a merged student's net for this kind
         lam = self.lam_at(view.floor)
         screen = screen_of(decision) if lam > 0 else None
         if screen is None:

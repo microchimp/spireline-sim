@@ -51,6 +51,14 @@ the human term reads the v3 decision shards (`decisions-v3`, where the counters 
 the prior's. The two flags are independent (a v3 prior may carry the tower too: then both are given) and each is checked as `--map-grid` is: the flag and
 the prior must agree, a shard set without the side file (or with one written for another block G version or another row count) is refused.
 
+**The target's lambda unit** (D59 lane G, `--target-lambda-scale S`, default 1): the teacher's lambda in the target `Q + lambda log pi_h` is the player's, in floors per nat. A store
+graded in another unit (the frontier grade: its differences between options are about a fifth of floors', so the prior term is most of an Act 1 target) takes the lambda scaled to
+it: S multiplies the lambda of every decision, for the fit and for leg 1's target alike (the fit and its legs record it). The frontier grade's own scale is the grades' noise ratio
+(0.283, `run_teacher.py units`' `noise_ratio`, the one `FRONTIER_TAU_MIN` uses). **A candidate that keeps heads** (`candidate --keep route,event`): the kinds named are served by the
+incumbent's own student net (its lambdas as its recipe gives them, its legs carried over from its `run_student_legs.json`), the others by the new fit, in one merged student file
+(`human_prior_infer.write_merged_student`); `--lambda-floor KIND=VALUE` (repeatable) raises a taken kind's lambda to at least VALUE in each act and records the measured one beside it
+in agent.json (`student.floored`) and in the legs; `--kinds` limits the new fit's kinds.
+
 **The side blocks** (D59 lane F, `--side-block NAME`, repeatable, default none: `rl/student_sides.py`): the map grid as flat columns (`grid`), the state gaps (`gaps`), the full parity
 blocks (`parity-relics`, `parity-roles`, `parity-events`, `parity-potions`, from the shards' `rows_parity.npz`) and the held halves of three of them (`held-relics`, `held-roles`,
 `held-potions`: functions of a row's counts, so the human rows and the rows at play give them too). The student's first layer is widened by the blocks' width, zero columns, so
@@ -258,6 +266,14 @@ class TeacherSet:
 
     def __len__(self) -> int:
         return len(self.kind)
+
+    def scale_lambda(self, factor: float) -> None:
+        """Multiply the lambda the teacher decided every screen with by `factor` (a positive number): the target's prior term in another grade's unit.
+        1 leaves it as it is."""
+        if not (math.isfinite(factor) and factor > 0):
+            raise ValueError(f"the target's lambda scale is a positive number, not {factor!r}")
+        if factor != 1.0:
+            self.lam = (self.lam.astype(np.float64) * float(factor)).astype(np.float32)
 
     def kind_name(self, i: int) -> str:
         return KINDS[int(self.kind[i])]
@@ -771,8 +787,12 @@ def net_params(net) -> dict[str, np.ndarray]:
 
 
 def read_prior_params(path: Path | str) -> dict[str, np.ndarray]:
+    """The arrays of the net a fit starts from: the file's own, or a merged student's first net (`human_prior_infer.split_nets`)."""
+    import human_prior_infer as hpi  # noqa: PLC0415
+
     with np.load(Path(path), allow_pickle=False) as z:
-        return {k: z[k] for k in z.files if k != "meta"}
+        meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
+        return hpi.split_nets({k: z[k] for k in z.files if k != "meta"}, meta)[0]
 
 
 def human_loss_from_z(gpu, kind: str, didx, z, m, valid):  # noqa: ANN001
@@ -1190,7 +1210,7 @@ def utc() -> str:
 
 
 def run_legs(ts: TeacherSet, student_path: Path | str, prior_path: Path | str, *, human_test=None, baseline_kind: str = "human prior",
-             exam_ids: frozenset[str] | None = None) -> dict[str, Any]:
+             exam_ids: frozenset[str] | None = None, target_lambda_scale: float = 1.0) -> dict[str, Any]:
     """Both legs and lambda for a written student file against `prior_path`, on the held-out runs (leg 1 and lambda) and fifth 4 (leg 2:
     `human_test`, a loaded v1 dataset, or None: not measured, and no kind with human choices can pass)."""
     from human_prior_infer import StudentScorer  # noqa: PLC0415
@@ -1203,6 +1223,8 @@ def run_legs(ts: TeacherSet, student_path: Path | str, prior_path: Path | str, *
                             "rule": {"leg1": f"gain lower bound above 0 on at least {LEG1_MIN_DECISIONS} held-out decisions of the kind",
                                      "leg2": f"human log-loss against the baseline's at most +{TIE_NATS} (won runs) and +{LIMIT_NATS} (all runs); "
                                              "none for a kind with no human fit"}}
+    if target_lambda_scale != 1.0:  # leg 1's target is the fit's: `ts` carries the scaled lambda
+        legs["target"] = {"lambda_scale": float(target_lambda_scale)}
     legs["leg1"] = leg1(ts, test, student, prior)
     legs["leg2"] = leg2(human_test, student, prior, exam_ids=exam_ids) if human_test is not None else {"measured": False, "no_human_fit": []}
     legs["lambda"] = measure_lambda(ts, test, student)
@@ -1213,8 +1235,10 @@ def run_legs(ts: TeacherSet, student_path: Path | str, prior_path: Path | str, *
 
 def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *, human_dir: Path | str | None = None, cfg: FitConfig | None = None,
             device: str | None = None, exam_ids: frozenset[str] | None = None, log=print, map_grid: bool = False,
-            teacher_prior_path: Path | str | None = None, state_gaps: bool = False, side_blocks: Sequence[str] = ()) -> dict[str, Any]:
+            teacher_prior_path: Path | str | None = None, state_gaps: bool = False, side_blocks: Sequence[str] = (),
+            target_lambda_scale: float = 1.0) -> dict[str, Any]:
     """Load the shards, fit the student from the prior's weights, write `student.npz`, `fit.json` and `legs.json` into `out`. Returns the legs.
+    `target_lambda_scale`: the teacher's lambda in the target, scaled to another grade's unit (`TeacherSet.scale_lambda`; 1: as the teacher decided).
     `side_blocks`: the student loader's blocks (`rl/student_sides.py`; none by default): the shards, the human shards and the student carry them, and the prior must read none.
     `map_grid`: the prior is the v2 prior (a map tower), the shards need their `rows_map.npz` and the human shards the map grid; the student
     carries the tower. `teacher_prior_path`: the prior the teacher decided with, when it is not `prior_path`. `state_gaps`: the prior is the v3 prior (block
@@ -1231,6 +1255,9 @@ def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *,
     log(f"loading the shards under {Path(shards_root).name}" + (f" with the side blocks {list(flags)}" if flags else ""))
     ts = load_shards(shards_root, prior=prior, map_grid=map_grid, teacher_prior=teacher_prior, state_gaps=state_gaps, side_blocks=flags)
     log(f"  {len(ts)} decisions of {len(ts.seeds)} runs; dropped {ts.stats['dropped']}")
+    ts.scale_lambda(float(target_lambda_scale))
+    if target_lambda_scale != 1.0:
+        log(f"  the target's lambda is the teacher's x {target_lambda_scale:g}")
     human_train = human_test = None
     if human_dir is not None:
         log("loading the human decisions (fifths 1 to 3 to fit on, fifth 4 for leg 2)")
@@ -1242,8 +1269,9 @@ def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *,
     sha = hpi.write_student(out / STUDENT_OUT, res["params"], kinds=kinds, prior_sha256=file_sha256(prior_path),
                             fit={"best_epoch": res["best_epoch"], "config": res["config"], "train_decisions": res["train_decisions"]}, state_gaps=state_gaps,
                             side_blocks=flags)
-    legs = run_legs(ts, out / STUDENT_OUT, prior_path, human_test=human_test, exam_ids=exam_ids)
+    legs = run_legs(ts, out / STUDENT_OUT, prior_path, human_test=human_test, exam_ids=exam_ids, target_lambda_scale=target_lambda_scale)
     fit_doc = {"version": VERSION, "written": utc(), "student_sha256": sha, "prior_sha256": file_sha256(prior_path), "data": public_stats(ts),
+               **({"target_lambda_scale": float(target_lambda_scale)} if target_lambda_scale != 1.0 else {}),
                "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "side_blocks": list(flags), "teacher_prior_sha256": file_sha256(teacher_prior_path) if teacher_prior_path else None,
                "fit": {k: res[k] for k in ("history", "best_epoch", "seconds", "config", "device", "train_decisions", "val_decisions")},
                "human": None if human_train is None else {"train_fifths": list(HUMAN_TRAIN_FIFTHS), "test_fifth": HUMAN_TEST_FIFTH,
@@ -1253,13 +1281,76 @@ def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *,
     return legs
 
 
+def kept_legs(legs: Mapping[str, Any], base_legs: Mapping[str, Any], kept: Sequence[str]) -> dict[str, Any]:
+    """The legs of a student that keeps heads from the incumbent's: the new fit's `legs` with, for each kept kind, the entries the incumbent's own legs hold
+    for it (leg 1, leg 2 or its having no human fit, the measured lambda), and the verdicts read again. `kept` says where each came from (the incumbent's
+    student sha256 and what its legs were measured against): a kept head is held to the legs it passed, not to ones measured on another grade's store."""
+    import copy  # noqa: PLC0415
+
+    out = copy.deepcopy(dict(legs))
+    out["kept"] = {}
+    l1 = out.setdefault("leg1", {}).setdefault("kinds", {})
+    l2 = out.setdefault("leg2", {"measured": False})
+    l2.setdefault("kinds", {})
+    no_fit = set(l2.get("no_human_fit") or [])
+    lam = out.setdefault("lambda", {})
+    lam.setdefault("chosen", {})
+    for kind in kept:
+        got1 = ((base_legs.get("leg1") or {}).get("kinds") or {}).get(kind)
+        chosen = ((base_legs.get("lambda") or {}).get("chosen") or {}).get(kind)
+        if not got1 or chosen is None:
+            raise ValueError(f"the base's legs hold no leg 1 or no lambda for the kept kind {kind}")
+        l1[kind] = copy.deepcopy(got1)
+        got2 = ((base_legs.get("leg2") or {}).get("kinds") or {}).get(kind)
+        if got2:
+            l2["kinds"][kind] = copy.deepcopy(got2)
+        else:
+            l2["kinds"].pop(kind, None)
+        if kind in ((base_legs.get("leg2") or {}).get("no_human_fit") or []):
+            no_fit.add(kind)
+        else:
+            no_fit.discard(kind)
+        lam["chosen"][kind] = list(chosen)
+        for cell in (f"{kind}/a1", f"{kind}/a2"):
+            if cell in ((base_legs.get("lambda") or {}).get("cells") or {}):
+                lam.setdefault("cells", {})[cell] = copy.deepcopy(base_legs["lambda"]["cells"][cell])
+        out["kept"][kind] = {"student_sha256": base_legs.get("student_sha256"), "baseline": copy.deepcopy(base_legs.get("baseline")), "written": base_legs.get("written")}
+    if l2.get("measured") is not None or no_fit:
+        l2["no_human_fit"] = sorted(no_fit)
+    out["verdict"] = {k: kind_verdict(out, k) for k in KINDS}
+    out["kinds_passing"] = {**(out.get("kinds_passing") or {}), **{k: [float(x) for x in lam["chosen"][k]] for k in kept}}
+    return out
+
+
+def parse_floors(specs: Sequence[str] | None) -> dict[str, float] | None:
+    """`--lambda-floor KIND=VALUE` (repeatable) as {kind: floor}; None for none."""
+    if not specs:
+        return None
+    out: dict[str, float] = {}
+    for spec in specs:
+        kind, sep, value = str(spec).partition("=")
+        try:
+            floor = float(value)
+        except ValueError:
+            floor = math.nan
+        if not sep or kind not in KINDS or not (math.isfinite(floor) and floor >= 0):
+            raise ValueError(f"a lambda floor is KIND=VALUE with a kind of {', '.join(KINDS)} and a value of 0 or more, not {spec!r}")
+        out[kind] = floor
+    return out
+
+
 def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str, prior_dir: Path | str | None = None,
                             tag: str = "student", export: bool = True, kinds: Sequence[str] | None = None, human_prior: Path | str | None = None,
-                            lam: float | None = None) -> Path:
+                            lam: float | None = None, keep: Sequence[str] = (), lambda_floor: Mapping[str, float] | None = None) -> Path:
     """The candidate for a fitted student (`run_fit`'s folder `out`): `gen_loop.build_candidate` with the student on the kinds that passed
     (or `kinds`, a subset of them), at their lambdas, the base's human prior, stakes schedule and hold kept; the legs are stored beside the
     student (run_student_legs.json) for `screens.run_student`. Refuses when no kind passed. A base that plays `vrun` alone has no human prior
-    to keep: `human_prior` and `lam` give the blend the other screens are decided by."""
+    to keep: `human_prior` and `lam` give the blend the other screens are decided by.
+
+    `keep` (D59 lane G): kinds the base's own student serves that this candidate keeps, at the base's lambdas, with the base's net (a merged student file: the new
+    fit's net for its kinds, the base's for these; `gen_loop.build_candidate(student_keep=)`); the base's `run_student_legs.json` must be for its student, and the
+    kept kinds' legs are carried into the stored legs (`kept_legs`). `lambda_floor` ({kind: floor}): a taken kind's lambda is at least the floor in every act; the
+    measured lambda stays in the legs and is recorded beside the floor in agent.json (`student.floored`) and in the legs (`lambda.floored`)."""
     import gen_loop  # noqa: PLC0415
 
     out = Path(out)
@@ -1272,6 +1363,15 @@ def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path 
     take = passing_kinds(legs, blends)
     if kinds is not None:
         take = {k: v for k, v in take.items() if k in set(kinds)}
+    if lambda_floor:
+        unknown = sorted(set(lambda_floor) - set(KINDS))
+        if unknown or any(not (math.isfinite(f) and f >= 0) for f in lambda_floor.values()):
+            raise ValueError(f"a lambda floor names a kind of {', '.join(KINDS)} and a value of 0 or more: {unknown or dict(lambda_floor)}")
+    floored: dict[str, dict[str, Any]] = {}
+    for kind, floor in (lambda_floor or {}).items():
+        if kind in take and any(x < floor for x in take[kind]):
+            floored[kind] = {"measured": [float(x) for x in take[kind]], "floor": float(floor)}
+            take[kind] = [max(float(x), float(floor)) for x in take[kind]]
     if not take:
         raise ValueError("no kind passed both legs with a measured lambda: no candidate")
     # the legs were measured against the prior the fit started from: it must be the base's own prior (or the student it replaces)
@@ -1280,10 +1380,29 @@ def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path 
         raise ValueError("the blend needs both the human prior's weights and lambda")
     if (file_sha256(Path(named)) if named else None) != legs["baseline"]["sha256"]:
         raise ValueError("the legs were measured against another prior than the base's (its student's if it has one, else its human prior's)")
+    keep = tuple(dict.fromkeys(str(k) for k in keep))
+    base_legs = None
+    if keep:
+        if not base_agent.student:
+            raise ValueError("the base has no student to keep heads from")
+        legs_path = Path(base_agent.path) / gen_loop.STUDENT_LEGS_FILE
+        try:
+            base_legs = json.loads(legs_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError(f"the base has no readable {gen_loop.STUDENT_LEGS_FILE}: the legs of the heads to keep are not known") from None
+        if base_legs.get("student_sha256") != file_sha256(Path(base_agent.student)):
+            raise ValueError(f"the base's {gen_loop.STUDENT_LEGS_FILE} are not the legs of its student's weights")
     extra = {} if human_prior is None else {"human_prior": human_prior, "lam": lam}
+    notes = {"floored": {k: {"measured": [macro_recipe.format_lambda(x) for x in v["measured"]], "floor": macro_recipe.format_lambda(v["floor"])}
+                         for k, v in floored.items()}} if floored else {}
     cand = gen_loop.build_candidate(Path(prior_dir or base_agent.path), base, agent_root, target, why=why, export=export, tag=tag,
-                                    student=out / STUDENT_OUT, student_lams=take, **extra)
-    (cand / gen_loop.STUDENT_LEGS_FILE).write_text(json.dumps(legs, indent=1), encoding="utf-8")
+                                    student=out / STUDENT_OUT, student_lams=take, student_keep=keep or None, student_notes=notes or None, **extra)
+    stored = kept_legs(legs, base_legs, keep) if keep else dict(legs)
+    if keep or floored:
+        stored["student_sha256"] = file_sha256(cand / gen_loop.STUDENT_FILE)  # the legs are for the file the candidate plays
+    if floored:
+        stored = {**stored, "lambda": {**(stored.get("lambda") or {}), "floored": floored}}
+    (cand / gen_loop.STUDENT_LEGS_FILE).write_text(json.dumps(stored, indent=1), encoding="utf-8")
     return cand
 
 
@@ -1309,14 +1428,15 @@ def _fit_args(a: argparse.Namespace) -> FitConfig:
 def cmd_fit(a: argparse.Namespace) -> int:
     _priority()
     legs = run_fit(a.shards_root, a.prior, a.out, human_dir=a.human_shards, cfg=_fit_args(a), device=a.device, map_grid=a.map_grid,
-                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block))
+                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block),
+                   target_lambda_scale=a.target_lambda_scale)
     print(json.dumps({"kinds_passing": legs["kinds_passing"], "verdict": {k: v["pass"] for k, v in legs["verdict"].items()}}, indent=1))
     return 0
 
 
 def cmd_candidate(a: argparse.Namespace) -> int:
     cand = build_student_candidate(a.out, a.base, a.agent_root, a.target, why=a.why, tag=a.tag, export=not a.no_export, prior_dir=a.prior_dir,
-                                   human_prior=a.human_prior, lam=a.lam)
+                                   human_prior=a.human_prior, lam=a.lam, kinds=a.kinds, keep=a.keep, lambda_floor=parse_floors(a.lambda_floor))
     print(cand.as_posix())
     return 0
 
@@ -1324,7 +1444,8 @@ def cmd_candidate(a: argparse.Namespace) -> int:
 def cmd_round(a: argparse.Namespace) -> int:
     _priority()
     legs = run_fit(a.shards_root, a.prior, a.out, human_dir=a.human_shards, cfg=_fit_args(a), device=a.device, map_grid=a.map_grid,
-                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block))
+                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block),
+                   target_lambda_scale=a.target_lambda_scale)
     print(json.dumps({"kinds_passing": legs["kinds_passing"]}, indent=1))
     if a.no_build:
         return 0
@@ -1332,9 +1453,13 @@ def cmd_round(a: argparse.Namespace) -> int:
         print("no kind passed both legs: no candidate is built")
         return 3
     cand = build_student_candidate(a.out, a.base, a.agent_root, a.target, why=a.why, tag=a.tag, export=not a.no_export, prior_dir=a.prior_dir,
-                                   human_prior=a.human_prior, lam=a.lam)
+                                   human_prior=a.human_prior, lam=a.lam, kinds=a.kinds, keep=a.keep, lambda_floor=parse_floors(a.lambda_floor))
     print(cand.as_posix())
     return 0
+
+
+def _bad_floor(spec: str):
+    raise argparse.ArgumentTypeError(f"a lambda floor is KIND=VALUE with a kind of {', '.join(KINDS)}, not {spec!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1358,6 +1483,8 @@ def build_parser() -> argparse.ArgumentParser:
                        "block G (decisions-v3)")
         p.add_argument("--teacher-prior", help="the human prior the teacher played with, when it is not --prior (a map-grid fit starts from the v2 prior; the target uses this one's log-probabilities)")
         student_sides.add_arguments(p)
+        p.add_argument("--target-lambda-scale", type=float, default=1.0, help="multiply the teacher's lambda in the target by this (a store graded in another unit: the frontier grade's is "
+                       "0.283, the grades' noise ratio); the fit and leg 1 both use it")
         p.add_argument("--beta", type=float, default=FitConfig.beta)
         p.add_argument("--kl", type=float, default=FitConfig.kl)
         p.add_argument("--epochs", type=int, default=FitConfig.epochs)
@@ -1376,6 +1503,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--no-export", action="store_true")
         p.add_argument("--human-prior", help="a base that plays vrun alone: the human prior's weights the other screens are blended with")
         p.add_argument("--lambda", dest="lam", type=float, help="... and its lambda")
+        p.add_argument("--keep", type=lambda s: [k for k in s.split(",") if k], default=[], metavar="KIND,KIND",
+                       help="kinds the base's own student serves that this candidate keeps with the base's net and lambdas (one merged student file)")
+        p.add_argument("--kinds", type=lambda s: [k for k in s.split(",") if k], default=None, metavar="KIND,KIND", help="limit the new fit's kinds to these (of those that passed)")
+        p.add_argument("--lambda-floor", action="append", default=None, metavar="KIND=VALUE", type=lambda s: s if "=" in s and s.partition("=")[0] in KINDS else _bad_floor(s),
+                       help="a taken kind's lambda is at least VALUE in every act (the measured one is recorded beside it); repeatable")
 
     f = sub.add_parser("fit", help="fit the student and measure both legs and lambda")
     fit_opts(f)

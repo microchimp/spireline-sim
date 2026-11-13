@@ -1453,7 +1453,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
                     human_prior: Path | str | None = None, lam: float | None = None, pick: str = macro_recipe.PICK_ARGMAX,
                     skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None,
                     lam_acts: Mapping[int, float] | None = None, student: Path | str | None = None,
-                    student_lams: Mapping[str, Sequence[float]] | None = None) -> Path:
+                    student_lams: Mapping[str, Sequence[float]] | None = None, student_keep: Sequence[str] | None = None,
+                    student_notes: Mapping[str, Any] | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1493,7 +1494,13 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     kinds at those lambdas, the human prior's blend decides the deck screens it has not taken over. The base may be a vrun generation (then
     `human_prior` and `lam` name the blend) or a blended one, or a student's, or one with a stakes schedule and a hold: the candidate keeps
     the base's human prior, lambda, lambda by act, pick mode, stakes schedule and hold unless they are given, so it differs from the base in
-    the student alone (`screens.kind_of` reads it as `screen:student`)."""
+    the student alone (`screens.kind_of` reads it as `screen:student`).
+
+    `student_keep` (kinds, with `student`; D59 lane G): kinds the base's own student serves that the candidate keeps, with the base's net and the lambdas the
+    base's recipe gives them. The candidate's run_student.npz is then a merged student (`human_prior_infer.write_merged_student`): `student` serves the kinds of
+    `student_lams`, the base's student the kept ones; the recipe names the merged file's sha256 and every kind, and agent.json's `student` block says where the
+    kept kinds came from (`kept`). A kind both named in `student_lams` and kept, or one the base's student does not serve, is refused. `student_notes` (a
+    mapping) is added to agent.json's `student` block as it is (the builder's record of the lambdas it floored)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1505,6 +1512,9 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     student_sha, student_kinds = None, None
     if (student is None) != (not student_lams):
         raise ValueError("a student needs its per-kind lambdas, and lambdas need a student")
+    if student_keep and student is None:
+        raise ValueError("heads kept from the base's student sit beside a new student: give the student too")
+    merged_dir = None
     if student is not None:
         import human_prior_infer  # noqa: PLC0415 -- numpy only
 
@@ -1515,6 +1525,27 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         if any(k not in fitted for k in student_kinds):
             raise ValueError(f"the student was fitted for {sorted(fitted)}, not for {sorted(set(student_kinds) - set(fitted))}")
         student_sha = file_sha256(student)
+        kept_block = None
+        if student_keep:
+            base_lams = {k: tuple(v) for k, v in base_agent.student_lams}
+            if not base_agent.student:
+                raise ValueError("the base has no student to keep heads from")
+            kept = tuple(dict.fromkeys(str(k) for k in student_keep))
+            absent = [k for k in kept if k not in base_lams]
+            if absent:
+                raise ValueError(f"the base's student does not serve {absent} (it serves {sorted(base_lams)}): nothing to keep")
+            both = [k for k in kept if k in student_kinds]
+            if both:
+                raise ValueError(f"{both} would be served by the new student and by the kept head")
+            import tempfile  # noqa: PLC0415
+
+            merged_dir = Path(tempfile.mkdtemp(prefix="merged-student-"))
+            merged = merged_dir / STUDENT_FILE
+            human_prior_infer.write_merged_student(merged, [(student, tuple(student_kinds)), (base_agent.student, kept)])
+            kept_block = {"file": f"{Path(base_agent.path).name}/{Path(base_agent.student).name}", "sha256": file_sha256(base_agent.student),
+                          "kinds": {k: [macro_recipe.format_lambda(x) for x in base_lams[k]] for k in kept}}
+            student_kinds = {**student_kinds, **{k: base_lams[k] for k in kept}}
+            student_sha = file_sha256(merged)
         if human_prior is None and lam is None:  # keep the base's blend on the screens the student does not take over
             if not macro_recipe.is_blended(base_agent.macro):
                 raise ValueError("a student recipe keeps the human prior's blend on the other kinds: build on a blended base, or give the "
@@ -1606,10 +1637,13 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         shutil.copyfile(human_prior, cand / "human_prior.npz")
     student_block = None
     if student is not None:
-        shutil.copyfile(student, cand / STUDENT_FILE)
+        shutil.copyfile(merged if kept_block else student, cand / STUDENT_FILE)
+        if merged_dir is not None:
+            shutil.rmtree(merged_dir, ignore_errors=True)
         student_block = {"file": STUDENT_FILE, "sha256": student_sha, "source": f"{Path(student).parent.name}/{Path(student).name}",
                          "kinds": {k: [macro_recipe.format_lambda(x) for x in v] for k, v in student_kinds.items()},
-                         "fitted_for": list(human_prior_infer.student_kinds_of(student))}
+                         "fitted_for": list(human_prior_infer.student_kinds_of(cand / STUDENT_FILE)),
+                         **({"kept": kept_block} if kept_block else {}), **dict(student_notes or {})}
     npz = cand / "run_value.npz"
     fit = {"source": "base", "sha256": file_sha256(npz)} if npz.is_file() else {"source": "none", "sha256": None}
     if fit_doc is not None:

@@ -856,6 +856,92 @@ class RoundTests(unittest.TestCase):
             self.assertTrue(legs["leg1"]["kinds"]["card"]["gain"]["mean"] > 0)
 
 
+class TargetLambdaScaleTests(unittest.TestCase):
+    """`--target-lambda-scale` (D59 lane G): the teacher's lambda in the target scaled to another grade's unit (the frontier grade's differences are about
+    0.283 of floors', the ratio `FRONTIER_TAU_MIN` uses), for the fit and for leg 1's target; 1 is the fit it always was."""
+
+    def loaded(self, tmp: str):
+        weights = random_weights()
+        synth = Synth(weights)
+        recs, rows = [], []
+        for i, kind in enumerate(("card", "rest", "route")):
+            r, rr = synth.record(f"S0000000{i}", i, kind, lam=0.5)
+            recs.append(r)
+            rows.append(rr)
+        return rs.load_shards(write_shard(Path(tmp), "a", recs, rows), prior=hpi.PriorScorer(weights))
+
+    def test_the_scale_multiplies_the_lambda_the_teacher_decided_with_and_so_the_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ts = self.loaded(tmp)
+            before, t0 = ts.lam.copy(), ts.targets()
+            self.assertEqual([0.5, 0.5, 0.0], [float(x) for x in before])  # the route screen is not blended: lambda 0
+            ts.scale_lambda(0.283)
+            np.testing.assert_allclose(ts.lam, before * np.float32(0.283), rtol=1e-6)
+            t1 = ts.targets()
+            for i in range(len(ts)):
+                a, b = int(ts.start[i]), int(ts.start[i] + ts.count[i])
+                played = ~np.isnan(ts.q[a:b])
+                lp = hpi.log_softmax(ts.zh[a:b])[played]
+                want = rs.teacher_target(ts.q[a:b][played], lp if before[i] else None, float(before[i]) * 0.283, float(ts.tau[i]))
+                np.testing.assert_allclose(t1[a:b][played], want, atol=1e-6)
+            a, b = int(ts.start[0]), int(ts.start[0] + ts.count[0])
+            self.assertFalse(np.allclose(t1[a:b], t0[a:b]))  # a blended screen's target moves
+            a, b = int(ts.start[2]), int(ts.start[2] + ts.count[2])
+            np.testing.assert_allclose(t1[a:b], t0[a:b], atol=1e-7)  # an unblended one does not
+
+    def test_a_scale_of_one_changes_nothing_and_a_scale_that_is_not_a_positive_number_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ts = self.loaded(tmp)
+            lam, t0 = ts.lam.copy(), ts.targets()
+            ts.scale_lambda(1.0)
+            np.testing.assert_array_equal(lam, ts.lam)
+            np.testing.assert_array_equal(t0, ts.targets())
+            for bad in (0.0, -0.5, float("nan"), float("inf")):
+                with self.assertRaisesRegex(ValueError, "scale"):
+                    ts.scale_lambda(bad)
+            np.testing.assert_array_equal(lam, ts.lam)
+
+    def test_the_fit_and_its_legs_record_the_scale_and_the_default_records_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(rs, "BOOT_DRAWS", 100), mock.patch.object(rs, "LEG1_MIN_DECISIONS", 20), \
+                mock.patch.object(rs, "MIN_LAMBDA_DECISIONS", 10):
+            root = Path(tmp)
+            weights = random_weights()
+            prior_path = write_weights(root / "pi_h.npz", weights)
+            synth_shards(root, Synth(weights, seed=3), runs=120, kinds=("card", "route"))
+            cfg = rs.FitConfig(epochs=2, patience=2, lr=2e-3, dropout=0.0)
+            plain = rs.run_fit(root, prior_path, root / "plain", cfg=cfg, device="cpu", log=lambda *_: None)
+            scaled = rs.run_fit(root, prior_path, root / "scaled", cfg=cfg, device="cpu", log=lambda *_: None, target_lambda_scale=0.283)
+            self.assertNotIn("target", plain)
+            self.assertNotIn("target_lambda_scale", json.loads((root / "plain" / rs.FIT_FILE).read_text()))
+            self.assertEqual({"lambda_scale": 0.283}, scaled["target"])
+            self.assertEqual(0.283, json.loads((root / "scaled" / rs.FIT_FILE).read_text())["target_lambda_scale"])
+            # leg 1's target floor (the least any cross-entropy can reach) is the scaled target's: the card screens' prior share is smaller
+            self.assertNotEqual(plain["leg1"]["kinds"]["card"]["ce_floor"], scaled["leg1"]["kinds"]["card"]["ce_floor"])
+            self.assertEqual(plain["leg1"]["kinds"]["route"]["ce_floor"], scaled["leg1"]["kinds"]["route"]["ce_floor"])  # route is not blended
+
+    def test_the_command_line_has_the_flag_and_its_default_is_one(self):
+        p = rs.build_parser()
+        base = ["--shards-root", "s", "--prior", "p", "--out", "o"]
+        self.assertEqual(1.0, p.parse_args(["fit", *base]).target_lambda_scale)
+        self.assertEqual(0.283, p.parse_args(["fit", *base, "--target-lambda-scale", "0.283"]).target_lambda_scale)
+        r = p.parse_args(["round", *base, "--base", "b", "--agent-root", "r", "--target", "9", "--target-lambda-scale", "0.5"])
+        self.assertEqual(0.5, r.target_lambda_scale)
+
+    def test_a_fit_starts_from_the_first_net_of_a_merged_student(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b, m = (Path(tmp) / n for n in ("a.npz", "b.npz", "m.npz"))
+            wa, wb = random_weights(seed=4), random_weights(seed=7)
+            student_file(a, wa, kinds=("card", "route"))
+            student_file(b, wb, kinds=("route", "shop"))
+            hpi.write_merged_student(m, [(a, ("card",)), (b, ("route",))])
+            got = rs.read_prior_params(m)
+            self.assertEqual(set(wa), set(got))
+            for k, v in wa.items():
+                np.testing.assert_array_equal(v, got[k])
+            for k, v in rs.read_prior_params(a).items():
+                np.testing.assert_array_equal(v, got[k])
+
+
 class CommandLineTests(unittest.TestCase):
     def test_check_prints_the_counts_and_names_no_run(self):
         import contextlib

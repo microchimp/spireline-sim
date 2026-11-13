@@ -206,6 +206,11 @@ manifest says which (`grade`; one with no such key is floors', so no shard writt
   table with (card 3.62, rest 2.17, route 4.84, shop 3.16); on the regraded stores, the frontier's (`docs/lab/TEACHER_JOB.md`, "The frontier's constants, measured").
 * The student's legs, lambda and recipe are unchanged; lambda is measured against V, which is still floors (`V + lambda log pi_s` at play), so on a frontier store it is the new value per nat beyond V in the
   frontier's unit: read it as the design says (`OBJECTIVE.md` section 6, risk 7) before it is given to a candidate.
+* **`--target-lambda-scale S`** (D59 lane G, default 1; `fit` and `round`): the teacher's lambda in the target `Q + lambda log pi_h` is the player's, in floors per nat, and the regrade does not rescale it, so on a
+  frontier store, where Q's differences between options are about a fifth of floors' in Act 1, the prior term is most of an Act 1 target (a sharpened human prior). S multiplies the lambda of every decision
+  (`TeacherSet.scale_lambda`), for the fit and for leg 1's target alike; `fit.json` records `target_lambda_scale` and `legs.json` `target.lambda_scale` when it is not 1 (a fit without the flag writes neither, byte
+  for byte as before). The grades' noise ratio, 0.283 (`run_teacher.py units`' `noise_ratio`, the one `FRONTIER_TAU_MIN` uses), is the scale that puts the term in the frontier's unit; it makes
+  the Q-driven target LOOK0.md's fit (iv) used. The lambda the legs then measure is still against V in floors (the unit caveat above: in Act 1 it is 0 for card, rest and reward for that reason).
 
 ## The recipe and the policy
 
@@ -233,6 +238,18 @@ V fit, human prior and its lambdas, pick mode, stakes schedule and potion hold a
 are stored beside it as `run_student_legs.json`. The loader (`load_agent`) holds the folder to the recipe: the student's bytes by the 8
 hex and the full sha256, the kinds against `agent.json`, the kinds against what the file was fitted for. The base may be a vrun
 generation (then give `--human-prior` and `--lambda`), a blended one or an earlier student's (its blend is kept, its student replaced).
+
+**Heads kept from the incumbent** (D59 lane G; `candidate --keep route,event --kinds card,rest,shop,reward --lambda-floor card=0.5`, `build_student_candidate(keep=, kinds=, lambda_floor=)`,
+`build_candidate(student_keep=)`): the incumbent's own student serves some kinds at the lambdas its recipe gives them; a new fit can take other kinds without the candidate losing those heads. A student is one
+net scoring every kind, so the two nets go in one **merged student file** (`human_prior_infer.write_merged_student`): net 0 (the new fit's) serves its kinds, net 1 (the incumbent's student file, bytes
+unchanged) the kept ones; the arrays sit under `net<i>.` and nothing under a plain name, so a build that does not know the format fails to read the file instead of scoring every kind with net 0 (a plain
+`PriorScorer` on the file is net 0; `read_prior_params`, which a fit starts from, likewise). `StudentScorer.scorer_for(kind)` is the net that serves a kind (itself for a plain student) and
+`BlendedPolicy` decides each student kind with it; the recipe still names one file by one sha256 (that of the merged file) and every kind in `STUDENT_KINDS` order, agent.json's `student` block gets `kept`
+(the incumbent's file, its sha256, the kinds and their lambdas) and `fitted_for` is the merged file's kinds. A kind the incumbent's student does not serve, one the new student takes too, and a base with no
+`run_student_legs.json` for its student's bytes are refused. The stored legs are the new fit's with the kept kinds' leg 1, leg 2 and lambda entries copied from the incumbent's own legs (`kept_legs`; `kept`
+says where each came from and what it was measured against), so `screen:student` reads every kind the recipe names and holds a kept head to the legs it passed, not to ones measured on another grade's
+store. `--lambda-floor KIND=VALUE` (repeatable) raises a taken kind's lambda to at least VALUE in each act; the measured one stays in the legs and is recorded beside the floor (`student.floored` in
+agent.json, `lambda.floored` in the legs).
 
 `screens.kind_of` reads a candidate that differs from the incumbent in the student (and the recipe naming it) alone as `screen:student`;
 `run_student` reads the stored legs for the kinds the recipe names and **rejects** when any fails the verdict above (a kind the legs do not
@@ -290,7 +307,9 @@ net and file with the tower, a whole map-grid fit and both legs; targets and tem
 refusals, the net equal to the prior, the fit on a planted teacher, leg 1, the KL term, leg 2, the verdict's margins, lambda recovering a
 planted value, a whole round, the command line), `test_imitation_chooser.py` (the recipe grammar and the byte-for-byte plain recipes, the
 student's screens and guard, the policy with a student), `test_screens.py` (`screen:student`: kinds, verdicts, skips, the promote path,
-never `screen:prior`), `test_gen_loop.py` (`build_candidate` with a student, the loader's refusals, `build_student_candidate`).
+never `screen:prior`), `test_gen_loop.py` (`build_candidate` with a student, the loader's refusals, `build_student_candidate`; `StudentKeepTests`: kept heads, floors and the stored legs),
+`test_human_prior_infer.py` (`MergedStudentTests`: the merged file's format and refusals, each kind scored by its own net), `test_imitation_chooser.py` (a merged student decides each kind by its net),
+`test_run_student.py` (`TargetLambdaScaleTests`: the scale, its record, the flag, a fit starting from a merged student's first net).
 
 The one-minute smoke fit on the card (synthetic shards written by a scratch script, 4,800 decisions of 400 runs and four synthetic human
 fifths; the GPU venv) ran the whole `fit` command: load, fit (7 s on the card), both legs, lambda, `legs.json`; no path or run id in
