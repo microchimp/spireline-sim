@@ -1,0 +1,306 @@
+# Relic effect tags (information-parity block P1, D59 lane D). One row per relic of the fork engine's table (296): Name | effect=amount ... | trigger ...
+# Effects (amount in the unit shown; a relic's stated amount where it has one, else 1): energy (energy), draw (cards), block (block), strength, dexterity, heal (HP),
+# max_hp (max HP; negative = lost), gold (negative = paid), potion_slot, potion (potions given), card_reward (extra card choices; negative = a reward given up), rest (extra
+# rest-site option), shop (cheaper or extra shop), curse (curse cards added), damage (extra damage or damage dealt, per trigger), debuff (stacks put on enemies), upgrade
+# (cards upgraded, enchanted or improved), remove (cards removed or transformed away), add_card (cards added to the deck or a fight's hand), hp_cost (HP paid), relic
+# (relics given), mitigate (damage taken is reduced), junk (status cards added to a fight), drawback (the relic has a price beyond its numbers), map (changes the map).
+# Triggers: pickup, combat_start (a fight's start or first turn), turn_start, turn_end, card_play, damage (damage taken), kill, rest_site, shop, reward (after a fight,
+# a chest or an event), passive (always on), conditional (needs a condition, a counter or happens once).
+# Read off the engine's relic hooks and pickup arms in the fork (RelicEffects, RunNonCombatEffects, RunEngine, RunRewardGenerator); the first-turn numbers are checked
+# against the engine by tests/python/test_parity_relics.py. A coarse description, not a rules engine: one number per effect.
+Akabeko | damage=8 | combat_start
+AlchemicalCoffer | potion_slot=4 potion=4 | pickup
+AmethystAubergine | gold=15 | reward
+Anchor | block=10 | combat_start
+ArcaneScroll | add_card=1 | pickup
+ArchaicTooth | remove=1 add_card=1 | pickup
+ArtOfWar | energy=1 | turn_start conditional
+Astrolabe | remove=3 add_card=3 upgrade=3 | pickup
+BagOfMarbles | debuff=1 | combat_start
+BagOfPreparation | draw=2 | combat_start
+BeatingRemnant | mitigate=1 | passive
+BeautifulBracelet | upgrade=3 | pickup
+Bellows | upgrade=5 | combat_start
+BeltBuckle | dexterity=2 | passive conditional
+BigHat | add_card=2 | combat_start
+BigMushroom | max_hp=20 draw=-2 drawback=1 | pickup combat_start
+BiiigHug | remove=4 junk=1 | pickup passive
+BingBong | add_card=1 | passive
+BlackBlood | heal=12 | reward
+BlackStar | relic=1 | reward
+BlessedAntler | energy=1 junk=3 drawback=1 | passive combat_start
+BloodSoakedRose | energy=1 curse=1 drawback=1 | pickup passive
+BloodVial | heal=2 | combat_start
+BoneFlute | block=2 | card_play conditional
+BoneTea | upgrade=5 | combat_start conditional
+Bookmark | energy=1 | turn_end conditional
+BookOfFiveRings | heal=15 | conditional
+BookRepairKnife | heal=3 | kill conditional
+BoomingConch | draw=2 energy=1 | combat_start conditional
+BoundPhylactery | damage=1 | combat_start turn_start
+BowlerHat | gold=1 | reward passive
+Bread | energy=1 drawback=1 | turn_start passive
+BrilliantScarf | energy=1 | card_play conditional
+Brimstone | strength=2 drawback=1 | turn_start
+BronzeScales | damage=3 | combat_start
+BurningBlood | heal=6 | reward
+BurningSticks | add_card=1 | card_play conditional
+Byrdpip | damage=1 | passive
+CallingBell | relic=3 curse=1 | pickup
+Candelabra | energy=2 | turn_start conditional
+CaptainsWheel | block=18 | turn_start conditional
+Cauldron | potion=5 | pickup
+CentennialPuzzle | draw=3 | damage conditional
+Chandelier | energy=3 | turn_start conditional
+CharonsAshes | damage=3 | card_play conditional
+ChemicalX | energy=1 | passive conditional
+ChoicesParadox | add_card=1 | combat_start
+ChosenCheese | max_hp=1 | reward
+Circlet | | passive
+Claws | remove=6 add_card=6 | pickup
+CloakClasp | block=5 | turn_end conditional
+CrackedCore | damage=1 | combat_start
+Crossbow | add_card=1 damage=1 | turn_start
+CursedPearl | curse=1 gold=300 | pickup
+DarkstonePeriapt | max_hp=6 | conditional
+DataDisk | damage=1 | combat_start
+DaughterOfTheWind | block=1 | card_play conditional
+DelicateFrond | potion=3 | combat_start
+DemonTongue | heal=5 | damage conditional
+DiamondDiadem | mitigate=1 | turn_end conditional
+DingyRug | card_reward=1 | passive
+DistinguishedCape | max_hp=-9 add_card=3 drawback=1 | pickup
+DivineDestiny | energy=1 | combat_start
+DivineRight | energy=1 | combat_start
+DollysMirror | add_card=1 | pickup
+DragonFruit | max_hp=1 | reward conditional
+DreamCatcher | card_reward=1 | rest_site
+Driftwood | card_reward=1 | passive
+DustyTome | add_card=1 | pickup
+Ectoplasm | energy=1 drawback=1 | passive
+ElectricShrymp | upgrade=1 | pickup
+EmberTea | strength=2 | combat_start conditional
+EmotionChip | damage=1 | turn_start conditional
+EmptyCage | remove=2 | pickup
+EternalFeather | heal=15 | rest_site
+FakeAnchor | block=4 | combat_start
+FakeBloodVial | heal=1 | combat_start
+FakeHappyFlower | energy=1 | turn_start conditional
+FakeLeesWaffle | heal=8 | pickup
+FakeMango | max_hp=3 | pickup
+FakeMerchantsRug | | passive
+FakeOrichalcum | block=3 | turn_end conditional
+FakeSneckoEye | drawback=1 | combat_start
+FakeStrikeDummy | damage=1 | passive
+FakeVenerableTeaSet | energy=1 | combat_start conditional
+FencingManual | damage=10 add_card=1 | combat_start
+FestivePopper | damage=9 | combat_start
+Fiddle | draw=2 drawback=1 | passive turn_start
+FishingRod | upgrade=1 | reward conditional
+ForgottenSoul | damage=1 | card_play conditional
+FragrantMushroom | hp_cost=15 upgrade=2 | pickup
+FresnelLens | upgrade=1 | passive
+FrozenEgg | upgrade=1 | passive
+FuneraryMask | add_card=3 | combat_start
+FurCoat | damage=1 | combat_start conditional
+GalacticDust | block=1 | card_play conditional
+GamblingChip | draw=1 | combat_start conditional
+GamePiece | draw=1 | card_play conditional
+GhostSeed | drawback=1 | passive
+Girya | strength=3 | rest_site combat_start conditional
+GlassEye | card_reward=5 | pickup
+Glitter | upgrade=1 | passive
+GnarledHammer | upgrade=3 | pickup
+GoldenCompass | map=1 | pickup
+GoldenPearl | gold=150 | pickup
+GoldPlatedCables | damage=1 | passive
+Gorget | block=4 | combat_start
+GremlinHorn | energy=1 draw=1 | kill
+HandDrill | debuff=2 | damage conditional
+HappyFlower | energy=1 | turn_start conditional
+HeftyTablet | card_reward=1 curse=1 | pickup
+HelicalDart | dexterity=1 | card_play conditional
+HistoryCourse | damage=1 | turn_start conditional
+HornCleat | block=14 | turn_start conditional
+IceCream | energy=1 | passive
+InfusedCore | damage=3 | combat_start
+IntimidatingHelmet | block=4 | card_play conditional
+IronClub | draw=1 | card_play conditional
+IvoryTile | energy=1 | card_play conditional
+JeweledMask | draw=1 | combat_start conditional
+JewelryBox | add_card=1 upgrade=1 | pickup
+JossPaper | draw=1 | turn_end conditional
+JuzuBracelet | map=1 | passive
+Kaleidoscope | card_reward=2 | pickup
+Kifuda | upgrade=3 | pickup
+Kunai | dexterity=1 | card_play conditional
+Kusarigama | damage=6 | card_play conditional
+Lantern | energy=1 | combat_start
+LargeCapsule | relic=2 add_card=2 | pickup
+LastingCandy | add_card=1 | reward conditional
+LavaLamp | upgrade=1 | reward conditional
+LavaRock | relic=1 | reward conditional
+LeadPaperweight | card_reward=1 | pickup
+LeafyPoultice | max_hp=-12 remove=2 add_card=2 drawback=1 | pickup
+LeesWaffle | max_hp=7 heal=25 | pickup
+LetterOpener | damage=5 | card_play conditional
+LizardTail | heal=40 | damage conditional
+LoomingFruit | max_hp=31 | pickup
+LordsParasol | shop=1 | shop
+LostCoffer | card_reward=1 potion=1 | pickup
+LostWisp | damage=8 | card_play conditional
+LuckyFysh | gold=15 | conditional
+LunarPastry | energy=1 | turn_end
+Mango | max_hp=14 | pickup
+MassiveScroll | | passive
+MawBank | gold=12 | reward conditional
+MealTicket | heal=15 | shop
+MeatCleaver | max_hp=9 remove=2 | rest_site
+MeatOnTheBone | heal=12 | reward conditional
+MembershipCard | shop=1 | shop
+MercuryHourglass | damage=3 | turn_start
+Metronome | damage=1 | conditional
+MiniatureCannon | damage=3 | passive conditional
+MiniatureTent | rest=1 | rest_site
+MiniRegent | strength=1 | conditional
+MoltenEgg | upgrade=1 | passive
+MrStruggles | damage=1 | turn_start
+MummifiedHand | energy=1 | card_play conditional
+MusicBox | add_card=1 | card_play conditional
+MysticLighter | damage=9 | passive conditional
+NeowsBones | relic=2 curse=1 | pickup
+NeowsTalisman | upgrade=2 | pickup
+NeowsTorment | add_card=1 | pickup
+NewLeaf | remove=1 add_card=1 | pickup
+NinjaScroll | add_card=3 | combat_start
+Nunchaku | energy=1 | card_play conditional
+NutritiousOyster | max_hp=11 | pickup
+NutritiousSoup | upgrade=5 | pickup
+OddlySmoothStone | dexterity=1 | combat_start
+OldCoin | gold=300 | pickup
+OrangeDough | add_card=2 | combat_start
+Orichalcum | block=6 | turn_end conditional
+OrnamentalFan | block=4 | card_play conditional
+Orrery | card_reward=5 | pickup
+PaelsBlood | draw=1 | passive
+PaelsClaw | upgrade=5 | pickup
+PaelsEye | energy=1 | turn_start conditional
+PaelsFlesh | energy=1 | turn_start conditional
+PaelsGrowth | add_card=1 | pickup rest_site
+PaelsHorn | add_card=2 | pickup
+PaelsLegion | block=1 | conditional
+PaelsTears | energy=2 | turn_start conditional
+PaelsTooth | remove=5 upgrade=5 | pickup
+PaelsWing | relic=1 card_reward=-1 | reward conditional
+PandorasBox | remove=5 add_card=5 | pickup
+Pantograph | heal=25 | combat_start conditional
+PaperKrane | mitigate=1 | passive
+PaperPhrog | damage=1 | passive
+ParryingShield | block=6 | turn_end conditional
+Pear | max_hp=10 | pickup
+Pendulum | draw=1 | turn_start conditional
+PenNib | damage=6 | card_play conditional
+Permafrost | block=7 | card_play conditional
+PetrifiedToad | potion=1 | combat_start
+PhialHolster | potion_slot=1 potion=2 | pickup
+PhilosophersStone | energy=1 drawback=1 | passive combat_start
+PhylacteryUnbound | damage=5 | combat_start turn_start
+Planisphere | heal=5 | reward conditional
+Pocketwatch | draw=3 | turn_start conditional
+PollinousCore | draw=2 | turn_start conditional
+Pomander | upgrade=1 | pickup
+PotionBelt | potion_slot=2 | pickup
+PowerCell | draw=2 | combat_start conditional
+PrayerWheel | card_reward=1 | reward
+PrecariousShears | remove=2 hp_cost=16 | pickup
+PreciseScissors | remove=1 | pickup
+PreservedFog | remove=3 curse=1 | pickup
+PrismaticGem | energy=1 card_reward=1 | passive
+PumpkinCandle | energy=1 | combat_start rest_site conditional
+PunchDagger | upgrade=1 | pickup
+RadiantPearl | add_card=1 | combat_start
+RainbowRing | strength=1 dexterity=1 | card_play conditional
+RazorTooth | upgrade=1 | card_play
+RedMask | debuff=1 | combat_start
+RedSkull | strength=3 | damage conditional
+Regalite | block=2 | card_play conditional
+RegalPillow | heal=15 | rest_site
+ReptileTrinket | strength=3 | card_play conditional
+RingingTriangle | draw=1 | combat_start conditional
+RingOfTheDrake | draw=2 | turn_start conditional
+RingOfTheSnake | draw=2 | combat_start
+RippleBasin | block=4 | turn_end conditional
+RoyalPoison | hp_cost=4 | combat_start
+RoyalStamp | upgrade=1 | pickup
+RuinedHelmet | strength=1 | conditional
+RunicCapacitor | damage=1 | combat_start
+RunicPyramid | draw=5 | passive
+Sai | block=7 | turn_start
+SandCastle | upgrade=6 | pickup
+ScreamingFlagon | damage=20 | turn_end conditional
+ScrollBoxes | add_card=3 card_reward=1 | pickup
+SeaGlass | card_reward=1 | pickup
+SealOfGold | energy=1 gold=-5 drawback=1 | turn_start
+SelfFormingClay | block=3 | damage conditional
+SereTalon | curse=2 add_card=3 | pickup
+Shovel | relic=1 | rest_site
+Shuriken | strength=1 | card_play conditional
+SignetRing | gold=999 | pickup
+SilkenTress | gold=-99 upgrade=1 drawback=1 | pickup passive
+SilverCrucible | upgrade=3 drawback=1 | reward conditional
+SlingOfCourage | strength=2 | combat_start conditional
+SmallCapsule | relic=1 | pickup
+SneckoEye | draw=2 drawback=1 | passive combat_start
+SneckoSkull | debuff=1 | passive
+Sozu | energy=1 drawback=1 | passive
+SparklingRouge | strength=1 dexterity=1 | turn_start conditional
+SpikedGauntlets | energy=1 drawback=1 | passive
+StoneCalendar | damage=52 | turn_end conditional
+StoneCracker | upgrade=3 | combat_start
+StoneHumidifier | max_hp=5 | rest_site
+Storybook | add_card=1 | pickup
+Strawberry | max_hp=7 | pickup
+StrikeDummy | damage=3 | passive conditional
+SturdyClamp | block=1 | passive
+SwordOfJade | strength=3 | combat_start
+SwordOfStone | strength=3 | reward conditional
+SymbioticVirus | damage=1 | combat_start
+TanxsWhistle | add_card=1 | pickup
+TeaOfDiscourtesy | junk=2 drawback=1 | combat_start conditional
+TheAbacus | block=6 | passive conditional
+TheBoot | damage=1 | passive conditional
+TheCourier | shop=1 | shop
+ThrowingAxe | damage=1 | card_play conditional
+Tingsha | damage=3 | card_play conditional
+TinyMailbox | potion=2 | rest_site
+ToastyMittens | strength=1 | turn_start
+Toolbox | add_card=1 | combat_start
+TouchOfOrobas | upgrade=1 | pickup
+ToughBandages | block=3 | card_play conditional
+ToxicEgg | upgrade=1 | passive
+ToyBox | relic=4 | pickup
+TriBoomerang | upgrade=3 | pickup
+TungstenRod | mitigate=1 | passive
+TuningFork | block=7 | card_play conditional
+TwistedFunnel | debuff=4 | combat_start
+UnceasingTop | draw=1 | card_play conditional
+UndyingSigil | mitigate=1 | passive
+UnsettlingLamp | debuff=1 | conditional
+Vajra | strength=1 | combat_start
+Vambrace | block=1 | card_play conditional
+VelvetChoker | energy=1 drawback=1 | passive
+VenerableTeaSet | energy=2 | combat_start conditional
+VeryHotCocoa | energy=4 | combat_start
+VexingPuzzlebox | add_card=1 | combat_start
+VitruvianMinion | damage=1 | passive
+WarHammer | upgrade=4 | reward conditional
+WarPaint | upgrade=2 | pickup
+Whetstone | upgrade=2 | pickup
+WhisperingEarring | energy=1 | passive combat_start
+WhiteBeastStatue | potion=1 | reward
+WhiteStar | card_reward=1 | reward conditional
+WingCharm | upgrade=1 | reward
+WingedBoots | map=1 | passive
+WongoCustomerAppreciationBadge | | passive
+WongosMysteryTicket | relic=3 | conditional
+YummyCookie | upgrade=4 | pickup
