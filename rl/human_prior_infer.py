@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -137,6 +137,7 @@ class PriorScorer:
         if bool(self.meta.get("map_grid")) != self.map_grid:
             raise ValueError(f"the file's meta says map_grid={bool(self.meta.get('map_grid'))} but its weights {'hold' if self.map_grid else 'lack'} the map tower")
         self.state_gaps = bool(self.meta.get("state_gaps"))  # block G's columns close the first layer's input
+        self.side_blocks: tuple[str, ...] = _side_flags(self.meta.get("side_blocks"))  # the student loader's side blocks (rl/student_sides.py), after block G's columns
         self.sha256 = sha256
         want = (self.p["embed.deck.weight"].shape[1], self.p["embed.relics.weight"].shape[1], self.p["embed.potions.weight"].shape[1])
         if want != (E_SIZE, F_SIZE, G_SIZE):
@@ -153,6 +154,10 @@ class PriorScorer:
             if int(self.meta.get("gaps_version", 1)) != 1:
                 raise ValueError(f"the prior reads block G version {self.meta.get('gaps_version')}, this build writes version 1")
             width += GAPS_SIZE
+        if self.side_blocks:
+            import student_sides  # noqa: PLC0415
+
+            width += student_sides.width(self.side_blocks)
         if self.p["hidden1.weight"].shape[1] != width:
             raise ValueError(f"the prior's first layer reads {self.p['hidden1.weight'].shape[1]} numbers, the judgement's input is {width}")
 
@@ -164,10 +169,13 @@ class PriorScorer:
             meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
         return cls(params, meta, file_sha256(path))
 
-    def logits(self, dense: np.ndarray, counts: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None) -> np.ndarray:
+    def logits(self, dense: np.ndarray, counts: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None,
+               sides: Mapping[str, np.ndarray] | None = None) -> np.ndarray:
         """The logit of each row of the judgement's assembled inputs (`models.value_inputs`): `dense` (n, 350), `counts` (n, 1513). A prior with
         the map tower needs each row's block M `grid` (n, MAP_GRID_SIZE) and refuses to score without it; one without ignores `grid`. A prior with the
-        state gaps likewise needs each row's block G `gaps` (n, GAPS_SIZE) and ignores it otherwise."""
+        state gaps likewise needs each row's block G `gaps` (n, GAPS_SIZE) and ignores it otherwise. A prior with side blocks (`side_blocks` in its meta, the student
+        loader's: `rl/student_sides.py`) reads their columns after block G's: `sides` gives each block (name -> (n, width)); the held blocks it makes from `counts` itself
+        when they are not given, a block with a file (the grid, the gaps, the parity blocks) it refuses to score without."""
         p = self.p
         counts = np.asarray(counts, dtype=np.float32)
         emb = np.concatenate([counts[:, :E_SIZE] @ p["embed.deck.weight"].T,
@@ -182,24 +190,40 @@ class PriorScorer:
             if gaps is None or len(gaps) != len(counts):
                 raise ValueError("this prior reads the state gaps: score its rows with their block G (option_gaps)")
             parts.append(np.asarray(gaps, dtype=np.float32))
+        if self.side_blocks:
+            import student_sides  # noqa: PLC0415
+
+            given = dict(sides or {})
+            for name, block in student_sides.derive(counts, [f for f in self.side_blocks if f not in given]).items():
+                given[name] = block
+            lacking = [f for f in self.side_blocks if f not in given]
+            if lacking:
+                raise ValueError(f"this scorer reads the side blocks {list(self.side_blocks)}: {lacking[0]} was not given (option_sides builds them at play)")
+            wrong = [f for f in self.side_blocks if len(given[f]) != len(counts)]
+            if wrong:
+                raise ValueError(f"the side block {wrong[0]} has {len(given[wrong[0]])} rows for {len(counts)} rows")
+            parts.append(student_sides.columns(given, self.side_blocks))
         h = np.maximum(np.concatenate(parts, axis=1) @ p["hidden1.weight"].T + p["hidden1.bias"], 0.0)
         h = np.maximum(h @ p["hidden2.weight"].T + p["hidden2.bias"], 0.0)
         return (h @ p["score.weight"].T + p["score.bias"])[:, 0]
 
-    def row_logits(self, rows: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None) -> np.ndarray:
+    def row_logits(self, rows: np.ndarray, grid: np.ndarray | None = None, gaps: np.ndarray | None = None,
+                   sides: Mapping[str, np.ndarray] | None = None) -> np.ndarray:
         """The logits of rows of the judgement's 1,863-wide vector (the base vector and H): the shared input of V and the prior. `grid`: the
-        rows' block M grids, which a prior with the map tower needs; `gaps`: their block G, which a prior with the state gaps needs."""
+        rows' block M grids, which a prior with the map tower needs; `gaps`: their block G, which a prior with the state gaps needs; `sides`: the side blocks a
+        student with `side_blocks` reads (the held blocks it makes from the rows)."""
         from run_train import models  # noqa: PLC0415 -- numpy only
 
         dense, counts = models.value_inputs(rows)
-        return self.logits(dense, counts, grid, gaps)
+        return self.logits(dense, counts, grid, gaps, sides)
 
     def log_probs(self, view: Any, options: Sequence[Any], nets: Any) -> np.ndarray:
         """Log-probabilities of a decision's options: the softmax over their logits."""
         rows = option_rows(nets, view, options)
         grid = option_grids(view, options) if self.map_grid else None
         gaps = option_gaps(view, options) if self.state_gaps else None
-        return log_softmax(self.row_logits(rows, grid, gaps))
+        sides = option_sides(view, options, self.side_blocks, rows) if self.side_blocks else None
+        return log_softmax(self.row_logits(rows, grid, gaps, sides))
 
 
 class StudentScorer(PriorScorer):
@@ -240,7 +264,7 @@ def student_kinds_of(path: Path | str) -> tuple[str, ...]:
 
 
 def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Sequence[str], prior_sha256: str, fit: dict[str, Any] | None = None,
-                  extra_meta: dict[str, Any] | None = None, state_gaps: bool = False) -> str:
+                  extra_meta: dict[str, Any] | None = None, state_gaps: bool = False, side_blocks: Sequence[str] = ()) -> str:
     """Write a student file (the prior's nine arrays and a meta block naming the kinds, the prior it started from and the fit's record),
     tmp then rename. Returns the file's sha256."""
     import os  # noqa: PLC0415
@@ -258,6 +282,8 @@ def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Seq
     if state_gaps:  # the first layer's last GAPS_SIZE columns read block G (no array of its own)
         meta["state_gaps"] = True
         meta["gaps_version"] = 1
+    if side_blocks:  # the student loader's side blocks (`rl/student_sides.py`): the first layer's last columns, in the blocks' own order, after block G's
+        meta["side_blocks"] = list(_side_flags(side_blocks))
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "wb") as fh:
@@ -293,6 +319,39 @@ def option_grids(view: Any, options: Sequence[Any]) -> np.ndarray:
     if not len(options):
         return np.zeros((0, MAP_GRID_SIZE), dtype=np.int8)
     return np.stack([features.afterstate_map_grid(view, option) for option in options])
+
+
+def _side_flags(spec: Any) -> tuple[str, ...]:
+    """The side blocks a meta names, validated and in the blocks' own order (`student_sides.parse_flags`); () for none."""
+    if not spec:
+        return ()
+    import student_sides  # noqa: PLC0415
+
+    return student_sides.parse_flags([str(x) for x in spec])
+
+
+def option_sides(view: Any, options: Sequence[Any], flags: Sequence[str], rows: np.ndarray) -> dict[str, np.ndarray]:
+    """The student's side blocks of each option's afterstate at play, name -> float32 (n, width): the map grid (`option_grids`), the state gaps (`option_gaps`) and the full parity
+    blocks (`parity_blocks.option_parity`) from the view and the options; the held blocks from `rows` (the options' judgement rows: their counts are the afterstates')."""
+    import student_sides  # noqa: PLC0415
+    from run_train import models  # noqa: PLC0415 -- numpy only
+
+    flags = student_sides.parse_flags(list(flags))
+    out: dict[str, np.ndarray] = {}
+    if any(student_sides.BLOCKS[f].derived for f in flags):
+        out.update(student_sides.derive(models.value_inputs(np.asarray(rows))[1], flags))
+    if "grid" in flags:
+        out["grid"] = option_grids(view, options).astype(np.float32)
+    if "gaps" in flags:
+        out["gaps"] = option_gaps(view, options)
+    full = [f for f in flags if student_sides.BLOCKS[f].file == "rows_parity.npz"]
+    if full:
+        import parity_blocks  # noqa: PLC0415
+
+        built = parity_blocks.option_parity(view, options)
+        for f in full:
+            out[f] = built[student_sides.BLOCKS[f].key]
+    return out
 
 
 def option_gaps(view: Any, options: Sequence[Any]) -> np.ndarray:

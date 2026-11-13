@@ -923,6 +923,32 @@ class StudentPolicyTests(unittest.TestCase):
         self.assertEqual("s:card", pol.last["screen"])  # the run row says the student decided
         self.assertEqual({k: v for k, v in plain.last.items() if k != "screen"}, {k: v for k, v in pol.last.items() if k != "screen"})
 
+    def test_a_student_with_side_blocks_reads_them_at_play_and_with_zero_columns_decides_as_the_plain_student_does(self):
+        import student_sides as ss
+
+        flags = ("gaps", "held-relics", "held-potions")
+        with np.load(REAL_WEIGHTS, allow_pickle=False) as z:
+            params = {k: z[k] for k in z.files if k != "meta"}
+        params["hidden1.weight"] = ss.widen_first_layer(params["hidden1.weight"], ss.width(flags))
+        wide = Path(self.tmp.name) / "wide.npz"
+        hpi.write_student(wide, params, kinds=("card", "route", "shop", "reward"), prior_sha256=self.prior.sha256, side_blocks=flags)
+        view, d = self.view_and_decision()
+        a = self.policy(self.same, {"card": (0.5, 0.5, 0.5)}).pick(view, d, None)
+        b = self.policy(wide, {"card": (0.5, 0.5, 0.5)}).pick(view, d, None)
+        self.assertEqual((a.index, a.values), (b.index, b.values))
+        # random columns are read: the blocks reach the logits (the play side builds them from the view, the options and the rows)
+        rng = np.random.default_rng(3)
+        params["hidden1.weight"][:, -ss.width(flags):] = (rng.standard_normal((params["hidden1.weight"].shape[0], ss.width(flags))) * 0.5).astype(np.float32)
+        loud = Path(self.tmp.name) / "loud.npz"
+        hpi.write_student(loud, params, kinds=("card",), prior_sha256=self.prior.sha256, side_blocks=flags)
+        rows = hpi.option_rows(self.nets, view, list(d.options))
+        sides = hpi.option_sides(view, list(d.options), flags, rows)
+        self.assertEqual(set(flags), set(sides))
+        self.assertEqual((len(d.options), ss.width(flags)), ss.columns(sides, flags).shape)
+        s = hpi.load_student(loud)
+        self.assertFalse(np.allclose(s.row_logits(rows, None, None, sides), hpi.load_student(self.same).row_logits(rows)))
+        np.testing.assert_allclose(hpi.log_softmax(s.row_logits(rows, None, None, sides)), s.log_probs(view, list(d.options), self.nets), atol=1e-5)
+
     def test_a_kind_the_student_has_taken_is_decided_by_v_plus_lambda_log_pi_s_and_an_untaken_one_is_as_before(self):
         from run_train.policy import LookaheadPolicy
 

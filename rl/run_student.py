@@ -51,6 +51,13 @@ the human term reads the v3 decision shards (`decisions-v3`, where the counters 
 the prior's. The two flags are independent (a v3 prior may carry the tower too: then both are given) and each is checked as `--map-grid` is: the flag and
 the prior must agree, a shard set without the side file (or with one written for another block G version or another row count) is refused.
 
+**The side blocks** (D59 lane F, `--side-block NAME`, repeatable, default none: `rl/student_sides.py`): the map grid as flat columns (`grid`), the state gaps (`gaps`), the full parity
+blocks (`parity-relics`, `parity-roles`, `parity-events`, `parity-potions`, from the shards' `rows_parity.npz`) and the held halves of three of them (`held-relics`, `held-roles`,
+`held-potions`: functions of a row's counts, so the human rows and the rows at play give them too). The student's first layer is widened by the blocks' width, zero columns, so
+before its first step it is the prior logit for logit; the blocks are given to the net after block G's columns, in the blocks' own order. A shard that lacks a block's file, and
+human shards that lack a block (`decisions-v3` holds the grid and the gaps; no file holds the parity blocks for human rows), are refused with the reason. The student file names its
+blocks (`side_blocks` in its meta) and a scorer makes the held ones from a row's counts; the legs are measured against the prior as ever.
+
 Lab code: nothing here changes the engine, the search, the lab's self-play, the loop or the night. Teacher shards hold game seeds, never a
 human record; the human term reads only the prior's shards of fifths 1 to 4 and reports aggregates only (cells under 20 runs hidden).
 Source of the human record: Spire Codex public run export for v0.107.1.
@@ -82,6 +89,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
 import human_prior as hp  # noqa: E402
 import human_starts as hs  # noqa: E402
 import macro_recipe  # noqa: E402
+import student_sides  # noqa: E402
 from human_prior_infer import PriorScorer, file_sha256, log_softmax  # noqa: E402
 
 VERSION = 1
@@ -245,6 +253,8 @@ class TeacherSet:
     grid: np.ndarray | None = None  # (rows, GRID_WIDTH) int8 block M of each row, when every shard read has `rows_map.npz` (a map-grid fit needs it)
     zt: np.ndarray | None = None  # (rows,) float32 the logits of the prior the teacher decided with, when it is not `zh`'s (`attach_prior(teacher_prior=)`)
     gaps: np.ndarray | None = None  # (rows, GAPS_WIDTH) float32 block G of each row, when every shard read has `rows_gaps.npz` (a state-gaps fit needs it)
+    sides: dict[str, np.ndarray] | None = None  # the student loader's side blocks (`rl/student_sides.py`) of each row, name -> (rows, width), when `side_blocks` named any
+    side_flags: tuple[str, ...] = ()  # their names, in the blocks' own order
 
     def __len__(self) -> int:
         return len(self.kind)
@@ -278,9 +288,13 @@ class TeacherSet:
             raise ShardError("this prior has a map tower and the shards have no map grid (rows_map.npz): run `run_teacher.py reencode`")
         if getattr(scorer, "state_gaps", False) and self.gaps is None:
             raise ShardError("this prior reads the state gaps and the shards have none (rows_gaps.npz): run `run_teacher.py reencode`")
+        want = tuple(getattr(scorer, "side_blocks", ()) or ())
+        if want and (self.sides is None or any(f not in self.sides for f in want)):
+            raise ShardError(f"this scorer reads the side blocks {list(want)} and the set has {list(self.side_flags)}: load the shards with --side-block for each")
         for s in range(0, len(self.dense), 20000):
+            kw = {"sides": {f: self.sides[f][s:s + 20000] for f in want}} if want else {}
             out[s:s + 20000] = scorer.logits(self.dense[s:s + 20000], self.counts[s:s + 20000], None if self.grid is None else self.grid[s:s + 20000],
-                                             self.gaps[s:s + 20000] if getattr(scorer, "state_gaps", False) else None)
+                                             self.gaps[s:s + 20000] if getattr(scorer, "state_gaps", False) else None, **kw)
         return out
 
     def attach_prior(self, prior: PriorScorer, tol: float = 1e-3, teacher_prior: PriorScorer | None = None) -> None:
@@ -349,10 +363,11 @@ def _clean(value: Any) -> Any:
     return value
 
 
-def read_shard(d: Path | str) -> dict[str, Any]:
+def read_shard(d: Path | str, side_blocks: Sequence[str] = ()) -> dict[str, Any]:
     """One shard folder: its manifest, decision records, and the rows with their decision and option. Refuses (ShardError) a missing file, a
     schema version it does not know, rows of another width, non-finite numbers, indices out of range, an option twice in a decision, a
-    `row0` that does not point at the decision's first row, and counts in the manifest that the data does not have."""
+    `row0` that does not point at the decision's first row, and counts in the manifest that the data does not have. `side_blocks`: the student loader's blocks that have
+    a file (`student_sides.read_sides`: validated, aligned with the rows; none by default, nothing read) come back under `sides`."""
     d = Path(d)
     for name in (DECISIONS_FILE, ROWS_FILE, MANIFEST_FILE):
         if not (d / name).is_file():
@@ -430,8 +445,12 @@ def read_shard(d: Path | str) -> dict[str, Any]:
             raise ShardError(f"{d.name}: block G is {gaps.shape} {gaps.dtype}, not ({len(rows)}, {GAPS_WIDTH}) float32 (one row of block G per row: the row count differs)")
         if len(gaps) and not np.isfinite(gaps).all():
             raise ShardError(f"{d.name}: block G holds a number that is not finite")
+    try:
+        sides = student_sides.read_sides(d, side_blocks, len(rows))
+    except student_sides.SideError as e:
+        raise ShardError(str(e)) from e
     return {"name": d.name, "manifest": manifest, "records": recs, "rows": rows, "order": order, "sorted_decision": sd, "sorted_option": so,
-            "tail_cut": tail_cut, "grid": grid, "gaps": gaps}
+            "tail_cut": tail_cut, "grid": grid, "gaps": gaps, "sides": sides}
 
 
 _PROVENANCE_KEYS = ("version", "agent", "agent_sha256", "judge", "judge_sha256", "engine", "engine_sha256", "k", "m", "max_options", "beyond",
@@ -439,15 +458,22 @@ _PROVENANCE_KEYS = ("version", "agent", "agent_sha256", "judge", "judge_sha256",
 
 
 def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorScorer | None = None, map_grid: bool = False,
-                teacher_prior: PriorScorer | None = None, state_gaps: bool = False) -> TeacherSet:
+                teacher_prior: PriorScorer | None = None, state_gaps: bool = False, side_blocks: Sequence[str] = ()) -> TeacherSet:
     """Every shard under `root`, complete decisions only. A decision is dropped (and counted by reason in `stats["dropped"]`) when the
     teacher refused it, has no values, is of a kind the student does not take (`kinds`), has fewer than two options with a value, an option
     without a row, or a lambda of infinity; any other malformation refuses the shard. With `prior` the rows are scored (`attach_prior`).
     With `map_grid` every shard must hold its `rows_map.npz` (else `ShardError` naming the shards that lack it) and the set carries the
     grids; without it the grids are not read into the set. A prior with the map tower (`prior.map_grid`) needs `map_grid`, and the flag needs
-    such a prior: the two are checked against each other. `state_gaps` is the same for block G (`rows_gaps.npz`, a prior with `state_gaps`)."""
+    such a prior: the two are checked against each other. `state_gaps` is the same for block G (`rows_gaps.npz`, a prior with `state_gaps`). `side_blocks`: the student
+    loader's side blocks (`rl/student_sides.py`), each read row for row from its shard file (a shard without it is refused naming the shard and the file) or, for the held blocks,
+    made from the rows' counts; none by default, and then nothing is read and the set carries none."""
     from run_train import models  # noqa: PLC0415 -- numpy only
 
+    flags = student_sides.parse_flags(list(side_blocks))
+    for who, scorer in (("the prior", prior), ("the teacher prior", teacher_prior)):
+        have = tuple(getattr(scorer, "side_blocks", ()) or ())
+        if scorer is not None and have and have != flags:
+            raise ShardError(f"{who} reads the side blocks {list(have)}: fit with --side-block for exactly those (given: {list(flags)})")
     shards = find_shards(root)
     if not shards:
         raise ShardError(f"no decision shard (a folder with {DECISIONS_FILE}) under {Path(root).name}")
@@ -481,6 +507,7 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     count_parts: list[np.ndarray] = []
     grid_parts: list[np.ndarray] = []
     gaps_parts: list[np.ndarray] = []
+    side_parts: dict[str, list[np.ndarray]] = {f: [] for f in student_sides.file_backed(flags)}
     g_all: list = []
     dropped: Counter = Counter()
     kept: Counter = Counter()
@@ -488,7 +515,7 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     grades: dict[str, set[str]] = defaultdict(set)  # grade -> the shards (and records) that carry it
     n_rows = 0
     for d in shards:
-        sh = read_shard(d)
+        sh = read_shard(d, flags)
         grade = sh["manifest"].get("grade", "floors")  # a shard from before the grades is graded floors
         if grade not in GRADES:
             raise ShardError(f"{sh['name']}: unknown grade {grade!r}; one of {', '.join(GRADES)}")
@@ -563,6 +590,8 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
                 grid_parts.append(sh["grid"][idx])
             if state_gaps:
                 gaps_parts.append(sh["gaps"][idx])
+            for f in side_parts:
+                side_parts[f].append(sh["sides"][f][idx])
             g_all.append(gm)
             kept[kind] += 1
             n_rows += n
@@ -579,9 +608,13 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
         v=np.concatenate(v_rows), dense=np.concatenate(dense_parts), counts=np.concatenate(count_parts), g=g_all,
         logp_rec=np.concatenate(lp_rows),
         stats={"shards": len(shards), "decisions": len(cols["run"]), "rows": n_rows, "runs": len(seeds), "kept": dict(kept), "dropped": dict(dropped),
-               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "grade": next(iter(grades), "floors")},
+               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "grade": next(iter(grades), "floors"), "side_blocks": list(flags)},
         manifests=manifests, grid=np.concatenate(grid_parts).astype(np.int8) if map_grid else None,
         gaps=np.concatenate(gaps_parts).astype(np.float32) if state_gaps else None)
+    if flags:
+        sides = {f: np.concatenate(parts) for f, parts in side_parts.items()}
+        sides.update(student_sides.derive(ts.counts, flags))
+        ts.sides, ts.side_flags = {f: sides[f] for f in flags}, flags
     ts.set_tau()
     if prior is not None:
         ts.attach_prior(prior, teacher_prior=teacher_prior)
@@ -595,7 +628,8 @@ def public_stats(ts: TeacherSet) -> dict[str, Any]:
     return {"shards": ts.stats["shards"], "decisions": len(ts), "rows": int(len(ts.q)), "runs": len(ts.seeds), "kept_by_kind": dict(kinds),
             "dropped": ts.stats["dropped"], "decisions_by_split": {k: int(len(v)) for k, v in split.items()},
             "runs_by_split": dict(Counter(ts.run_split().tolist())), "noise_sd": ts.noise, "provenance": ts.manifests,
-            "logp_check": ts.stats.get("logp_check"), "map_grid": ts.grid is not None, "state_gaps": ts.gaps is not None, "grade": ts.stats.get("grade", "floors")}
+            "logp_check": ts.stats.get("logp_check"), "map_grid": ts.grid is not None, "state_gaps": ts.gaps is not None, "grade": ts.stats.get("grade", "floors"),
+            "side_blocks": list(ts.side_flags)}
 
 
 # ---------------------------------------------------------------------------------------------------------- the human data
@@ -624,10 +658,12 @@ def check_no_exam(ds: Any, exam_ids: frozenset[str]) -> int:
 
 
 def load_human(dec_dir: Path | str, fifths: Sequence[int], *, exam_ids: frozenset[str] | None = None, kinds: Sequence[str] | None = None,
-               map_grid: bool = False, state_gaps: bool = False):
+               map_grid: bool = False, state_gaps: bool = False, side_blocks: Sequence[str] = ()):
     """The prior's decisions of `fifths` (1 to 4 only: asking for the exam bucket is refused before any shard is read) from the shards of
     `dec_dir`, checked against the exam fifth. v1 shards only (the true map in every row): a donor-map dataset is refused. With `map_grid`
-    the shards must also hold block M (v2: `human_prior.py build --truth --map-grid`), with `state_gaps` block G (v3: `build --truth --state-gaps`)."""
+    the shards must also hold block M (v2: `human_prior.py build --truth --map-grid`), with `state_gaps` block G (v3: `build --truth --state-gaps`). `side_blocks` (the student
+    loader's, `rl/student_sides.py`): the grid and the gaps need the v3 shards, the held blocks need nothing (they are made from the rows' counts), and the full parity blocks have no
+    human file: each is refused with the reason."""
     bad = [f for f in fifths if f == hs.EXAM_BUCKET or f not in (1, 2, 3, 4)]
     if bad:
         raise AssertionError(f"run_student: fifth(s) {bad} asked for; only 1 to 4 are readable, bucket 0 is the exam")
@@ -638,6 +674,14 @@ def load_human(dec_dir: Path | str, fifths: Sequence[int], *, exam_ids: frozense
         raise ShardError("--map-grid: the human shards have no map grid (use the v2 shards, human-prior/decisions-v2)")
     if state_gaps and not ds.has_gaps:
         raise ShardError("--state-gaps: the human shards have no block G (use the v3 shards, human-prior/decisions-v3)")
+    for f in student_sides.parse_flags(list(side_blocks)):
+        if f == "grid" and not ds.has_grid:
+            raise ShardError("--side-block grid: the human shards have no map grid (use the v3 shards, human-prior/decisions-v3)")
+        if f == "gaps" and not ds.has_gaps:
+            raise ShardError("--side-block gaps: the human shards have no block G (use the v3 shards, human-prior/decisions-v3)")
+        if f not in ("grid", "gaps") and not student_sides.BLOCKS[f].derived:
+            raise ShardError(f"--side-block {f}: no human file carries it (its option half is not written for the human rows): the held blocks (held-relics, held-roles, held-potions) "
+                             "give the same facts from the rows' counts")
     check_no_exam(ds, default_exam_ids() if exam_ids is None else exam_ids)
     return ds
 
@@ -660,10 +704,11 @@ class FitConfig:
     seed: int = 20261111
 
 
-def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps: bool = False):
+def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps: bool = False, side_blocks: Sequence[str] = ()):
     """The prior's net (the run judgement's embeddings, two layers and one logit; the parameter names are `weights.npz`'s) loaded with
     `params` (a prior's weights): the student before any step is the prior, logit for logit. `state_gaps`: the prior's first layer ends in block G's columns
-    (they are in `hidden1.weight` like every other input; the flag makes the net take the extra input)."""
+    (they are in `hidden1.weight` like every other input; the flag makes the net take the extra input). `side_blocks`: the student loader's blocks (`rl/student_sides.py`),
+    the first layer's last `student_sides.width(side_blocks)` columns, given to the forward as one tensor `sides` (the blocks concatenated in their own order)."""
     import torch  # noqa: PLC0415
     from torch import nn  # noqa: PLC0415
 
@@ -687,6 +732,7 @@ def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps:
         uses_win = False
         uses_map = has_map
         uses_gaps = bool(state_gaps)
+        side_flags = student_sides.parse_flags(list(side_blocks))
 
         def __init__(self) -> None:
             super().__init__()
@@ -698,7 +744,7 @@ def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps:
             self.score = nn.Linear(hidden, 1)
             self.dropout = nn.Dropout(dropout)
 
-        def forward(self, dense, counts, grid=None, gaps=None):  # noqa: ANN001
+        def forward(self, dense, counts, grid=None, gaps=None, sides=None):  # noqa: ANN001
             parts = [dense, self.embed(counts)]
             if has_map:
                 if grid is None:
@@ -708,6 +754,10 @@ def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps:
                 if gaps is None:
                     raise ValueError("this net reads the state gaps")
                 parts.append(gaps.float())
+            if self.side_flags:
+                if sides is None:
+                    raise ValueError("this net reads side blocks")
+                parts.append(sides.float())
             h = self.dropout(torch.relu(self.hidden1(torch.cat(parts, dim=1))))
             return self.score(torch.relu(self.hidden2(h))).squeeze(1)
 
@@ -759,16 +809,24 @@ def _kl(t, z_s, z_h):  # noqa: ANN001
 
 
 def fit(ts: TeacherSet, prior_params: Mapping[str, np.ndarray], *, human=None, cfg: FitConfig | None = None, device: str | None = None,
-        lam_of: Mapping[tuple[str, int], float] | None = None, log=print, state_gaps: bool = False) -> dict[str, Any]:
+        lam_of: Mapping[tuple[str, int], float] | None = None, log=print, state_gaps: bool = False, side_blocks: Sequence[str] = ()) -> dict[str, Any]:
     """Fit the student on the teacher's `train` runs (stopping early on the `val` runs' cross-entropy) and, with `human` (a v1 `hp.Dataset` of
-    the training fifths), the human choices. Returns {"params", "history", "best_epoch", "seconds", "config"}; the weights are the best epoch's."""
+    the training fifths), the human choices. Returns {"params", "history", "best_epoch", "seconds", "config"}; the weights are the best epoch's. `side_blocks`: the student reads those blocks
+    (`rl/student_sides.py`) after block G's columns: its first layer is `prior_params`' with that many zero columns more (the student starts as the prior, logit for logit),
+    the set must carry the blocks (`load_shards(side_blocks=)`) and the human set be loaded with them; the KL anchor stays the plain prior."""
     import torch  # noqa: PLC0415
 
     cfg = cfg or FitConfig()
+    flags = student_sides.parse_flags(list(side_blocks))
+    if flags and (ts.side_flags != flags or ts.sides is None):
+        raise ShardError(f"the set carries the side blocks {list(ts.side_flags)}, the fit asks for {list(flags)}: load the shards with the same --side-block")
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     torch.manual_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
-    net = make_net(prior_params, cfg.dropout, state_gaps).to(dev)
+    start_params = dict(prior_params)
+    if flags:
+        start_params["hidden1.weight"] = student_sides.widen_first_layer(np.asarray(prior_params["hidden1.weight"]), student_sides.width(flags))
+    net = make_net(start_params, cfg.dropout, state_gaps, flags).to(dev)
     frozen = make_net(prior_params, 0.0, state_gaps).to(dev).eval()
     for p in frozen.parameters():
         p.requires_grad_(False)
@@ -790,6 +848,9 @@ def fit(ts: TeacherSet, prior_params: Mapping[str, np.ndarray], *, human=None, c
     if state_gaps and (ts.gaps is None or (human is not None and cfg.beta > 0 and not human.has_gaps)):
         raise ShardError("the prior reads the state gaps: the teacher's shards need rows_gaps.npz and the human shards block G (decisions-v3)")
     gaps = torch.from_numpy(ts.gaps).to(dev) if state_gaps else None
+    side_dev = {f: torch.from_numpy(ts.sides[f]).to(dev) for f in flags}
+    if flags and human is not None and cfg.beta > 0:
+        human.side_blocks(np.zeros(0, dtype=np.int64), flags)  # the human set must give every block the net reads (a ValueError says which it lacks)
 
     def batch_logits(model, idx: np.ndarray):
         m = torch.from_numpy(ts.matrix(idx)).to(dev)
@@ -801,6 +862,8 @@ def fit(ts: TeacherSet, prior_params: Mapping[str, np.ndarray], *, human=None, c
             kw["grid"] = grid[rows]
         if state_gaps:
             kw["gaps"] = gaps[rows]
+        if flags and model is net:
+            kw["sides"] = torch.cat([side_dev[f][rows].float() for f in flags], dim=1)
         z[valid] = model(dense[rows], counts[rows], **kw)
         return z, m, valid
 
@@ -989,8 +1052,13 @@ def leg2(ds: Any, student: PriorScorer, prior: PriorScorer, *, exam_ids: frozens
         raise ShardError("leg 2: the scorers have a map tower and the human shards have no map grid (use decisions-v2)")
     if (student.state_gaps or prior.state_gaps) and not ds.has_gaps:
         raise ShardError("leg 2: the scorers read the state gaps and the human shards have no block G (use decisions-v3)")
-    ps = human_per_decision(ds, hp.row_scores_np(ds, None, student.logits, grid=student.map_grid, gaps=student.state_gaps), valid)
-    pp = human_per_decision(ds, hp.row_scores_np(ds, None, prior.logits, grid=prior.map_grid, gaps=prior.state_gaps), valid)
+    try:
+        ps = human_per_decision(ds, hp.row_scores_np(ds, None, student.logits, grid=student.map_grid, gaps=student.state_gaps, sides=student.side_blocks), valid)
+        pp = human_per_decision(ds, hp.row_scores_np(ds, None, prior.logits, grid=prior.map_grid, gaps=prior.state_gaps, sides=prior.side_blocks), valid)
+    except ValueError as e:
+        if student.side_blocks or prior.side_blocks:
+            raise ShardError(f"leg 2: the scorers read side blocks {list(student.side_blocks or prior.side_blocks)} and the human shards lack one ({e})") from e
+        raise
     out: dict[str, Any] = {"measured": True, "heldout_fifth": HUMAN_TEST_FIFTH, "source": SPIRE_CODEX, "kinds": {}, "no_human_fit": [], "hidden": []}
 
     def cell(rec_s: dict, rec_p: dict, keep: np.ndarray) -> dict[str, Any] | None:
@@ -1145,8 +1213,9 @@ def run_legs(ts: TeacherSet, student_path: Path | str, prior_path: Path | str, *
 
 def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *, human_dir: Path | str | None = None, cfg: FitConfig | None = None,
             device: str | None = None, exam_ids: frozenset[str] | None = None, log=print, map_grid: bool = False,
-            teacher_prior_path: Path | str | None = None, state_gaps: bool = False) -> dict[str, Any]:
+            teacher_prior_path: Path | str | None = None, state_gaps: bool = False, side_blocks: Sequence[str] = ()) -> dict[str, Any]:
     """Load the shards, fit the student from the prior's weights, write `student.npz`, `fit.json` and `legs.json` into `out`. Returns the legs.
+    `side_blocks`: the student loader's blocks (`rl/student_sides.py`; none by default): the shards, the human shards and the student carry them, and the prior must read none.
     `map_grid`: the prior is the v2 prior (a map tower), the shards need their `rows_map.npz` and the human shards the map grid; the student
     carries the tower. `teacher_prior_path`: the prior the teacher decided with, when it is not `prior_path`. `state_gaps`: the prior is the v3 prior (block
     G's columns), the shards need their `rows_gaps.npz` and the human shards block G; the student carries the columns."""
@@ -1154,23 +1223,28 @@ def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *,
 
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    flags = student_sides.parse_flags(list(side_blocks))
     prior = PriorScorer.load(prior_path)
     teacher_prior = PriorScorer.load(teacher_prior_path) if teacher_prior_path else None
-    log(f"loading the shards under {Path(shards_root).name}")
-    ts = load_shards(shards_root, prior=prior, map_grid=map_grid, teacher_prior=teacher_prior, state_gaps=state_gaps)
+    if flags and prior.side_blocks:
+        raise ShardError(f"the prior already reads the side blocks {list(prior.side_blocks)}: a fit takes new side blocks from a prior that reads none")
+    log(f"loading the shards under {Path(shards_root).name}" + (f" with the side blocks {list(flags)}" if flags else ""))
+    ts = load_shards(shards_root, prior=prior, map_grid=map_grid, teacher_prior=teacher_prior, state_gaps=state_gaps, side_blocks=flags)
     log(f"  {len(ts)} decisions of {len(ts.seeds)} runs; dropped {ts.stats['dropped']}")
     human_train = human_test = None
     if human_dir is not None:
         log("loading the human decisions (fifths 1 to 3 to fit on, fifth 4 for leg 2)")
-        human_train = load_human(human_dir, HUMAN_TRAIN_FIFTHS, exam_ids=exam_ids, map_grid=map_grid, state_gaps=state_gaps)
-        human_test = load_human(human_dir, (HUMAN_TEST_FIFTH,), exam_ids=exam_ids, map_grid=map_grid, state_gaps=state_gaps)
-    res = fit(ts, read_prior_params(prior_path), human=human_train, cfg=cfg, device=device, log=log, state_gaps=state_gaps)
+        extra = {"side_blocks": flags} if flags else {}
+        human_train = load_human(human_dir, HUMAN_TRAIN_FIFTHS, exam_ids=exam_ids, map_grid=map_grid, state_gaps=state_gaps, **extra)
+        human_test = load_human(human_dir, (HUMAN_TEST_FIFTH,), exam_ids=exam_ids, map_grid=map_grid, state_gaps=state_gaps, **extra)
+    res = fit(ts, read_prior_params(prior_path), human=human_train, cfg=cfg, device=device, log=log, state_gaps=state_gaps, side_blocks=flags)
     kinds = sorted({ts.kind_name(i) for i in range(len(ts))}, key=KINDS.index)
     sha = hpi.write_student(out / STUDENT_OUT, res["params"], kinds=kinds, prior_sha256=file_sha256(prior_path),
-                            fit={"best_epoch": res["best_epoch"], "config": res["config"], "train_decisions": res["train_decisions"]}, state_gaps=state_gaps)
+                            fit={"best_epoch": res["best_epoch"], "config": res["config"], "train_decisions": res["train_decisions"]}, state_gaps=state_gaps,
+                            side_blocks=flags)
     legs = run_legs(ts, out / STUDENT_OUT, prior_path, human_test=human_test, exam_ids=exam_ids)
     fit_doc = {"version": VERSION, "written": utc(), "student_sha256": sha, "prior_sha256": file_sha256(prior_path), "data": public_stats(ts),
-               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "teacher_prior_sha256": file_sha256(teacher_prior_path) if teacher_prior_path else None,
+               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "side_blocks": list(flags), "teacher_prior_sha256": file_sha256(teacher_prior_path) if teacher_prior_path else None,
                "fit": {k: res[k] for k in ("history", "best_epoch", "seconds", "config", "device", "train_decisions", "val_decisions")},
                "human": None if human_train is None else {"train_fifths": list(HUMAN_TRAIN_FIFTHS), "test_fifth": HUMAN_TEST_FIFTH,
                                                           "train_decisions": int(len(human_train.dec))}}
@@ -1223,7 +1297,7 @@ def _priority() -> None:
 
 def cmd_check(a: argparse.Namespace) -> int:
     prior = PriorScorer.load(a.prior) if a.prior else None
-    ts = load_shards(a.shards_root, prior=prior, map_grid=a.map_grid, state_gaps=a.state_gaps)
+    ts = load_shards(a.shards_root, prior=prior, map_grid=a.map_grid, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block))
     print(json.dumps(public_stats(ts), indent=1))
     return 0
 
@@ -1235,7 +1309,7 @@ def _fit_args(a: argparse.Namespace) -> FitConfig:
 def cmd_fit(a: argparse.Namespace) -> int:
     _priority()
     legs = run_fit(a.shards_root, a.prior, a.out, human_dir=a.human_shards, cfg=_fit_args(a), device=a.device, map_grid=a.map_grid,
-                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps)
+                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block))
     print(json.dumps({"kinds_passing": legs["kinds_passing"], "verdict": {k: v["pass"] for k, v in legs["verdict"].items()}}, indent=1))
     return 0
 
@@ -1250,7 +1324,7 @@ def cmd_candidate(a: argparse.Namespace) -> int:
 def cmd_round(a: argparse.Namespace) -> int:
     _priority()
     legs = run_fit(a.shards_root, a.prior, a.out, human_dir=a.human_shards, cfg=_fit_args(a), device=a.device, map_grid=a.map_grid,
-                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps)
+                   teacher_prior_path=a.teacher_prior, state_gaps=a.state_gaps, side_blocks=student_sides.parse_flags(a.side_block))
     print(json.dumps({"kinds_passing": legs["kinds_passing"]}, indent=1))
     if a.no_build:
         return 0
@@ -1271,6 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--prior")
     c.add_argument("--map-grid", action="store_true", help="the shards must hold rows_map.npz (and the prior, if given, the map tower)")
     c.add_argument("--state-gaps", action="store_true", help="the shards must hold rows_gaps.npz (and the prior, if given, read the state gaps)")
+    student_sides.add_arguments(c)
     c.set_defaults(fn=cmd_check)
 
     def fit_opts(p: argparse.ArgumentParser) -> None:
@@ -1282,6 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--state-gaps", action="store_true", help="the state gaps: the prior is the v3 prior (block G's columns), the shards need rows_gaps.npz and the human shards "
                        "block G (decisions-v3)")
         p.add_argument("--teacher-prior", help="the human prior the teacher played with, when it is not --prior (a map-grid fit starts from the v2 prior; the target uses this one's log-probabilities)")
+        student_sides.add_arguments(p)
         p.add_argument("--beta", type=float, default=FitConfig.beta)
         p.add_argument("--kl", type=float, default=FitConfig.kl)
         p.add_argument("--epochs", type=int, default=FitConfig.epochs)

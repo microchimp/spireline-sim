@@ -1647,6 +1647,25 @@ class Dataset:
             raise ValueError("this dataset has no map grid (v2 shards: build --truth --map-grid)")
         return self.grid[self.grid_ix[rows]]
 
+    def side_blocks(self, rows: np.ndarray, flags: Iterable[str]) -> dict[str, np.ndarray]:
+        """The student loader's side blocks (`rl/student_sides.py`) of the rows `rows`, name -> float array (len(rows), width): the map grid and the state gaps from the
+        shards' tables (v3 shards hold both), the held blocks (relic effect tags, deck roles, potion effect tags) from the rows' counts. The full parity blocks have no human file
+        (their option halves are not written for the human shards): asking for one is a ValueError, as is a block the shards lack."""
+        import student_sides as ss  # noqa: PLC0415
+
+        flags = ss.parse_flags(list(flags))
+        rows = np.asarray(rows, dtype=np.int64)
+        out: dict[str, np.ndarray] = {}
+        for f in flags:
+            if f == "grid":
+                out[f] = self.grid_rows(rows).astype(np.float32)
+            elif f == "gaps":
+                out[f] = self.gaps_rows(rows)
+            elif not ss.BLOCKS[f].derived:
+                raise ValueError(f"the human shards carry no {f} block: only grid, gaps and the held blocks (held-relics, held-roles, held-potions) exist for human rows")
+        out.update(ss.derive(self.counts[rows], flags))
+        return out
+
     @classmethod
     def load(cls, dec_dir: Path | Iterable[tuple[Path, bool]], fifths: Iterable[int], donors: dict | None = None, kinds: Iterable[str] | None = None):
         """The decisions of `fifths` (and, with `kinds`, only those kinds) from the shards of `dec_dir`. `dec_dir` may also be a list of
@@ -1777,12 +1796,13 @@ def row_donors(ds: Dataset, donors: dict, didx: np.ndarray, rows_per_dec: np.nda
 
 
 def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000, extra: np.ndarray | None = None, grid: bool | None = None,
-                  gaps: bool | None = None) -> np.ndarray:
+                  gaps: bool | None = None, sides: Iterable[str] | None = None) -> np.ndarray:
     """Score every row of the dataset with `score_fn(dense350, counts_f32) -> (n,)`: with each decision's fixed donor (a v0 dataset), or
     with the row's own true map (a v1 one). `extra` (one number per row) is passed on as a third argument, for a prior with an extra input.
     `grid` (default: whether `score_fn` has a `map_grid` attribute) passes each row's block M as the keyword `grid` (a v2 dataset), for a
     prior with the map tower. `gaps` (default: whether `score_fn` has a `state_gaps` attribute) passes each row's block G as the keyword `gaps` (a v3
-    dataset), for a prior that reads the state gaps."""
+    dataset), for a prior that reads the state gaps. `sides` (side block names: a student's `side_blocks`) passes those blocks of each row as the keyword `sides`
+    (`Dataset.side_blocks`)."""
     if grid is None:
         grid = bool(getattr(score_fn, "map_grid", False))
     if gaps is None:
@@ -1804,6 +1824,8 @@ def row_scores_np(ds: Dataset, donors: dict | None, score_fn, chunk: int = 20000
         kw = {"grid": ds.grid_rows(np.arange(s, e))} if grid else {}
         if gaps:
             kw["gaps"] = ds.gaps_rows(np.arange(s, e))
+        if sides:
+            kw["sides"] = ds.side_blocks(np.arange(s, e), sides)
         out[s:e] = score_fn(x, cnt, **kw) if extra is None else score_fn(x, cnt, extra[s:e], **kw)
     return out
 
@@ -2142,6 +2164,7 @@ class Gpu:
         self.counts = torch.from_numpy(ds.counts).to(dev)
         self.grid = self.grid_ix = None
         self.gaps = self.gaps_ix = None
+        self.held: dict[str, object] = {}  # the held side blocks (student_sides) of every row, on the card, made when a net asks for them
         self.flip_p = 0.0
         if ds.has_gaps:  # v3: the distinct block G vectors and each row's entry
             self.gaps = torch.from_numpy(ds.gaps).to(dev)
@@ -2167,6 +2190,38 @@ class Gpu:
 
     def set_winner_weight(self, winner_weight: float) -> None:
         self.weight = 1.0 + (winner_weight - 1.0) * self.won
+
+    def side_columns(self, rows, flags):  # noqa: ANN001, ANN201
+        """The student loader's side blocks `flags` (`rl/student_sides.py`) of the rows `rows` (a tensor of row indices), concatenated in the blocks' own order: float32 (len(rows), width).
+        The grid and the gaps come from the shards' tables, the held blocks from the rows' counts (made once for every row, in chunks, on first use)."""
+        import student_sides as ss  # noqa: PLC0415
+
+        t = self.t
+        flags = ss.parse_flags(list(flags))
+        need = [f for f in flags if ss.BLOCKS[f].derived and f not in self.held]
+        if need:
+            parts: dict[str, list] = {f: [] for f in need}
+            for a in range(0, len(self.ds.counts), 100000):
+                got = ss.derive(self.ds.counts[a:a + 100000], need)
+                for f in need:
+                    parts[f].append(t.from_numpy(got[f]))
+            for f in need:
+                self.held[f] = t.cat(parts[f], dim=0).to(self.dev)
+        cols = []
+        for f in flags:
+            if f == "grid":
+                if self.grid is None:
+                    raise ValueError("this net reads the map grid as a side block and the dataset has none (v3 shards)")
+                cols.append(self.grid[self.grid_ix[rows]].float())
+            elif f == "gaps":
+                if self.gaps is None:
+                    raise ValueError("this net reads the state gaps as a side block and the dataset has none (v3 shards)")
+                cols.append(self.gaps[self.gaps_ix[rows]])
+            elif ss.BLOCKS[f].derived:
+                cols.append(self.held[f][rows])
+            else:
+                raise ValueError(f"the human shards carry no {f} block")
+        return t.cat(cols, dim=1)
 
     def matrix(self, didx):
         """Padded (B x K) row indices of the decisions `didx` (a tensor), -1 for pads."""
@@ -2217,6 +2272,8 @@ class Gpu:
             if self.gaps is None:
                 raise ValueError("this net reads the state gaps and the dataset has none (v3 shards)")
             kw["gaps"] = self.gaps[self.gaps_ix[rows]]
+        if getattr(net, "side_flags", ()):
+            kw["sides"] = self.side_columns(rows, net.side_flags)
         if getattr(net, "uses_win", False):
             flag = self.won[didx][owner] if win is None else t.full((len(rows),), float(win), device=self.dev)
             z = net(x, cnt, flag, **kw)

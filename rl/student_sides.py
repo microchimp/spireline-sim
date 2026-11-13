@@ -40,6 +40,7 @@ class SideBlock:
     version_key: str = ""  # the manifest key naming the block's layout version ("" none)
     version: int | None = None
     flag_key: str = ""  # the manifest key that says the file is complete ("" none)
+    derived: str = ""  # a block with no file: the `parity_blocks.held_from_counts` array of this name (the held half of a parity block, from a row's counts)
 
 
 # the order here is the order of the columns `columns` builds
@@ -51,6 +52,15 @@ BLOCKS: dict[str, SideBlock] = {
     "parity-events": SideBlock("parity-events", pb.SHARD_ROWS_PARITY, "events", pb.WIDTHS["events"], "float32", "parity_version", pb.PARITY_VERSION, "parity"),
     "parity-potions": SideBlock("parity-potions", pb.SHARD_ROWS_PARITY, "potions", pb.WIDTHS["potions"], "float32", "parity_version", pb.PARITY_VERSION, "parity"),
 }
+# The held halves of P1, P2 and P4 are functions of a row's counts alone (`parity_blocks.held_from_counts`): the relic effect tags of the relics held, the deck's role counts and size, the
+# potion effect tags of the potions held, in the option's afterstate. They need no side file, so a teacher row, a human row (the shards keep counts) and a row at play all give the same
+# columns by the same function: the blocks a student reads on both sides of its fit. (The option's own half is the difference between the options' held halves; the full blocks above
+# carry it as a column of their own, for the teacher's rows only.)
+BLOCKS.update({
+    "held-relics": SideBlock("held-relics", "", "relics", pb.WIDTHS["relics"] // 2, "float32", derived="relics"),
+    "held-roles": SideBlock("held-roles", "", "roles", (pb.WIDTHS["roles"] + 1) // 2, "float32", derived="roles"),
+    "held-potions": SideBlock("held-potions", "", "potions", pb.WIDTHS["potions"] // 2, "float32", derived="potions"),
+})
 DEFAULT_FLAGS: tuple[str, ...] = ()
 
 
@@ -58,7 +68,8 @@ def parse_flags(spec: str | Iterable[str] | None) -> tuple[str, ...]:
     """Block names from a comma list or a list of names, validated and in the blocks' own order (a name twice counts once); None or empty is no block."""
     if spec is None:
         return ()
-    names = [x.strip() for x in spec.split(",")] if isinstance(spec, str) else [str(x).strip() for x in spec]
+    items = [spec] if isinstance(spec, str) else [str(x) for x in spec]  # a comma list in any item (`--side-block a,b --side-block c`)
+    names = [x.strip() for item in items for x in item.split(",")]
     names = [x for x in names if x]
     unknown = [x for x in names if x not in BLOCKS]
     if unknown:
@@ -89,7 +100,7 @@ def _manifest(d: Path) -> dict:
 def read_sides(d: Path | str, flags: Sequence[str], n_rows: int) -> dict[str, np.ndarray]:
     """The blocks named by `flags` for the shard folder `d`, each aligned with its rows.npz (`n_rows` rows). No flag: `{}` (nothing is read). A block whose file is missing, whose manifest
     does not say it is there at this layout version, or whose array has another shape, dtype or a number that is not finite is `SideError`."""
-    flags = parse_flags(list(flags))
+    flags = tuple(f for f in parse_flags(list(flags)) if not BLOCKS[f].derived)  # a held block has no file
     if not flags:
         return {}
     d = Path(d)
@@ -132,6 +143,20 @@ def read_known(d: Path | str, n_rows: int) -> np.ndarray:
     if k.shape != (n_rows,) or k.dtype != np.bool_:
         raise SideError(f"{d.name}: known is {k.shape} {k.dtype}, not ({n_rows},) bool")
     return k
+
+
+def derive(counts: np.ndarray, flags: Sequence[str]) -> dict[str, np.ndarray]:
+    """The held blocks among `flags` from rows' counts (n, 1513), float32, whatever the counts' dtype (uint8 in the human shards): `{}` when none is flagged (nothing is computed)."""
+    want = [f for f in parse_flags(list(flags)) if BLOCKS[f].derived]
+    if not want:
+        return {}
+    held = pb.held_from_counts(counts)
+    return {f: np.ascontiguousarray(held[BLOCKS[f].derived], dtype=np.float32) for f in want}
+
+
+def file_backed(flags: Sequence[str]) -> tuple[str, ...]:
+    """The flags among `flags` that read a shard's side file (all but the held blocks), in the blocks' own order."""
+    return tuple(f for f in parse_flags(list(flags)) if not BLOCKS[f].derived)
 
 
 def select(sides: Mapping[str, np.ndarray], idx: np.ndarray) -> dict[str, np.ndarray]:

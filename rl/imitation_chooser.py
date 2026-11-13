@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from human_prior_infer import PriorScorer, StudentScorer, log_softmax, option_gaps, option_rows
+from human_prior_infer import PriorScorer, StudentScorer, log_softmax, option_gaps, option_rows, option_sides
 from human_prior_infer import load as load_prior
 from human_prior_infer import load_student
 from macro_recipe import (  # noqa: F401 -- the recipe's names live there
@@ -341,10 +341,12 @@ class BlendedPolicy(LookaheadPolicy):
             rows, grid = option_rows(self.nets, view, options), None
         probs = self.nets.value.floor_probs(rows)
         values = models.expected_floors(probs, self.W)
+        sided = tuple(getattr(scorer, "side_blocks", ()) or ())  # a student fitted with the loader's side blocks reads them too (the held ones from the rows)
+        kw = {"sides": option_sides(view, options, sided, rows)} if sided else {}
         if gapped:
-            logits = scorer.row_logits(rows, grid, option_gaps(view, options))
+            logits = scorer.row_logits(rows, grid, option_gaps(view, options), **kw)
         else:
-            logits = scorer.row_logits(rows, grid) if tower else scorer.row_logits(rows)
+            logits = scorer.row_logits(rows, grid, **kw) if (tower or sided) else scorer.row_logits(rows)
         logp = log_softmax(logits)
         gp = guard_prob_for(len(options), student)
         skip = next((i for i, o in enumerate(options) if o.kind == "card.skip"), None) if screen == "card" else None

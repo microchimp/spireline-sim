@@ -54,7 +54,8 @@ def make_shard(root: Path, n=6, *, grid=True, gaps=True, parity=True, parity_ver
 
 class FlagTests(unittest.TestCase):
     def test_the_blocks(self):
-        self.assertEqual(list(ss.BLOCKS), ["grid", "gaps", "parity-relics", "parity-roles", "parity-events", "parity-potions"])
+        self.assertEqual(list(ss.BLOCKS), ["grid", "gaps", "parity-relics", "parity-roles", "parity-events", "parity-potions", "held-relics", "held-roles", "held-potions"])
+        self.assertEqual([ss.BLOCKS[k].width for k in ("held-relics", "held-roles", "held-potions")], [45, 10, 34])  # the held halves (D59 lane F): no file, from a row's counts
         self.assertEqual(ss.BLOCKS["grid"].width, 1547)
         self.assertEqual(ss.BLOCKS["gaps"].width, 36)
         self.assertEqual(ss.BLOCKS["parity-relics"].width, pb.WIDTHS["relics"])
