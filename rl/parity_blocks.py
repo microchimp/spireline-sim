@@ -101,22 +101,32 @@ def _count_maps():  # noqa: ANN202
 _MAPS: tuple | None = None
 
 
-def held_from_base(base: np.ndarray) -> dict[str, np.ndarray]:
-    """The held halves of P1, P2 and P4 of rows' afterstates from their base vectors alone (float32 (n, 1855+), the first 1,855 columns read): `relics` (n, RELIC_TAG_WIDTH), `roles` (n,
-    N_ROLES + 1: the deck's role counts and its size) and `potions` (n, POTION_TAG_WIDTH). They are linear in the counts of block E (the deck), F (relics) and G (potions), so a row stored as counts
-    (the human shards) needs no view. Equal to `option_parity`'s held halves, except for a random transform, whose base vector holds the expectation over the pool (a fraction of each outcome
-    card) where `option_parity` takes the card out of the deck."""
+def held_from_counts(counts: np.ndarray) -> dict[str, np.ndarray]:
+    """`held_from_base` for rows stored as counts: (n, 1513) = the base vector's blocks E, F and G (`features.E_OFFSET` to `COUNTS_END`), as the human shards keep them (uint8)."""
     global _MAPS  # noqa: PLW0603
     from run_train import features  # noqa: PLC0415
 
     if _MAPS is None:
         _MAPS = _count_maps()
     cards, relics, potions = _MAPS
-    x = np.asarray(base, dtype=np.float32)
-    e = x[:, features.E_OFFSET: features.E_OFFSET + features.E_SIZE]
-    f = x[:, features.F_OFFSET: features.F_OFFSET + features.F_SIZE]
-    g = x[:, features.G_OFFSET: features.G_OFFSET + features.G_SIZE]
-    roles = np.zeros((len(x), pc.N_ROLES + 1), dtype=np.float32)
+    c = np.asarray(counts, dtype=np.float32)
+    if c.ndim != 2 or c.shape[1] != features.COUNTS_END - features.E_OFFSET:
+        raise ValueError(f"counts are {c.shape}, not (n, {features.COUNTS_END - features.E_OFFSET})")
+    e = c[:, : features.E_SIZE]
+    f = c[:, features.F_OFFSET - features.E_OFFSET: features.F_OFFSET - features.E_OFFSET + features.F_SIZE]
+    g = c[:, features.G_OFFSET - features.E_OFFSET: features.G_OFFSET - features.E_OFFSET + features.G_SIZE]
+    roles = np.zeros((len(c), pc.N_ROLES + 1), dtype=np.float32)
     roles[:, : pc.N_ROLES] = np.minimum(1.0, (e @ cards) / pc.COUNT_SCALE)
     roles[:, pc.N_ROLES] = np.minimum(1.0, e.sum(axis=1) / pc.DECK_SIZE_SCALE)
     return {"relics": (f @ relics).astype(np.float32), "roles": roles, "potions": (g @ potions).astype(np.float32)}
+
+
+def held_from_base(base: np.ndarray) -> dict[str, np.ndarray]:
+    """The held halves of P1, P2 and P4 of rows' afterstates from their base vectors alone (float32 (n, 1855+), the first 1,855 columns read): `relics` (n, RELIC_TAG_WIDTH), `roles` (n,
+    N_ROLES + 1: the deck's role counts and its size) and `potions` (n, POTION_TAG_WIDTH). They are linear in the counts of block E (the deck), F (relics) and G (potions), so a row stored as counts
+    (the human shards) needs no view. Equal to `option_parity`'s held halves, except for a random transform, whose base vector holds the expectation over the pool (a fraction of each outcome
+    card) where `option_parity` takes the card out of the deck."""
+    from run_train import features  # noqa: PLC0415
+
+    x = np.asarray(base, dtype=np.float32)
+    return held_from_counts(x[:, features.E_OFFSET: features.COUNTS_END])
