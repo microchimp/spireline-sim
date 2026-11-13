@@ -1,0 +1,67 @@
+# Potion effect tags (information-parity block P4, D59 lane D). One row per potion of the fork engine's table (63): Name | effect=amount ... | flags
+# Effects: the keys of relic_effects.txt (the amount of what one drink does; a potion that gives a number of turns' worth counts the sum). Flags: any_time (can be drunk outside a fight),
+# automatic (fires by itself), targets_enemy (needs a chosen enemy), chooses (opens a card choice), random (rolls something).
+# Read off the engine's potion arms (PotionEffects); the immediate energy, block, Strength, Dexterity and HP of a drink are checked against the engine by tests/python/test_parity_potions.py.
+Ashwater | remove=3 | chooses
+AttackPotion | add_card=1 | chooses random
+BeetleJuice | debuff=4 | targets_enemy
+BlessingOfTheForge | upgrade=5 |
+BlockPotion | block=12 |
+BloodPotion | heal=16 | any_time
+BoneBrew | damage=15 |
+BottledPotential | draw=5 |
+Clarity | draw=4 |
+ColorlessPotion | add_card=1 | chooses random
+CosmicConcoction | add_card=3 | random
+CunningPotion | add_card=3 |
+CureAll | energy=1 draw=2 |
+DexterityPotion | dexterity=2 |
+DistilledChaos | draw=3 | random
+DropletOfPrecognition | draw=1 | chooses
+Duplicator | damage=1 |
+EnergyPotion | energy=2 |
+EntropicBrew | potion=3 | any_time random
+EssenceOfDarkness | damage=1 |
+ExplosiveAmpoule | damage=10 |
+FairyInABottle | heal=24 | automatic
+FirePotion | damage=20 | targets_enemy
+FlexPotion | strength=5 |
+FocusPotion | damage=1 |
+Fortifier | block=20 |
+FoulPotion | damage=12 | any_time
+FruitJuice | max_hp=5 | any_time
+FyshOil | strength=1 dexterity=1 |
+GamblersBrew | draw=3 | chooses
+GhostInAJar | mitigate=1 |
+GigantificationPotion | damage=3 |
+GlowwaterPotion | draw=10 remove=5 |
+HeartOfIron | block=7 |
+KingsCourage | damage=15 |
+LiquidBronze | damage=3 |
+LiquidMemories | add_card=1 | chooses
+LuckyTonic | mitigate=1 |
+MazalethsGift | strength=1 |
+OrobicAcid | add_card=3 | random
+PoisonPotion | debuff=6 | targets_enemy
+PotionOfBinding | debuff=2 |
+PotionOfCapacity | damage=1 |
+PotionOfDoom | debuff=33 | targets_enemy
+PotionShapedRock | damage=15 | targets_enemy
+PotOfGhouls | add_card=2 |
+PowderedDemise | debuff=9 | targets_enemy
+PowerPotion | add_card=1 | chooses random
+RadiantTincture | energy=4 |
+RegenPotion | heal=15 |
+ShacklingPotion | debuff=7 |
+ShipInABottle | block=20 |
+SkillPotion | add_card=1 | chooses random
+SneckoOil | draw=7 | random
+SoldiersStew | damage=1 |
+SpeedPotion | dexterity=5 |
+StableSerum | draw=1 |
+StarPotion | energy=1 |
+StrengthPotion | strength=2 |
+SwiftPotion | draw=3 |
+TouchOfInsanity | energy=1 | chooses
+VulnerablePotion | debuff=3 | targets_enemy
+WeakPotion | debuff=3 | targets_enemy
