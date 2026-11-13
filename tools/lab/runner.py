@@ -381,6 +381,7 @@ class Runner:
         self.a, self.clock = a, clock
         self.lab = Lab(Path(a.lab))
         self.fork, self.tree, self.game = Path(a.fork), Path(a.tree), Path(a.game)
+        jobs.use_tree(self.tree)  # the student's screen count runs from the lab tree the job runs in, not from this checkout (jobs.student_check_cmd)
         self.skip = tuple(x for x in a.skip.split(",") if x)
         self.t_start = clock()
         self.root_job: winsys.JobObject | None = None
@@ -401,6 +402,7 @@ class Runner:
                                     clock=clock, load=self.load, prune=self.prune_some,
                                     parent_pid=os.getppid() if a.exit_with_parent else None, stay=a.always_on)
         self.next_strategy: str | None = None  # the strategy choose() picked for the job new_run() makes next
+        self.held_notes: dict[str, str] = {}  # kind -> the reason of its last "due but held" line (note_held)
         self.defer_sha: str | None = None  # set by choose() when a presort is deferred: the presorted tree's sha the picked job runs on
         self.last_mix_note = ""
         self.last_loop_note = ""
@@ -716,6 +718,16 @@ class Runner:
 
     last_nightly_note = ""
 
+    def note_held(self, kind: str, cfg: dict[str, Any], why: str | None) -> None:
+        """Say once, in runner.log, why a due student or teacher is held: one line per distinct reason (the nightly's pattern), and again when a hold
+        that ended comes back. A kind that is off, ready or only not due yet says nothing (`jobs.held_reason`)."""
+        held = jobs.held_reason(kind, self.lab.root, cfg, why)
+        if held is None:
+            self.held_notes.pop(kind, None)
+        elif self.held_notes.get(kind) != held:
+            self.held_notes[kind] = held
+            self.log(f"{kind}: due but held ({held})")
+
     def ladder_top(self, sha: str) -> str:
         """The agent-era kinds that outrank the fights rotation (docs/PLAN.md section 7), highest priority first: nightly-real (1.5: a
         promotion or the weekly clock, the real-game check comes first), score-real (2), train (3), selfplay when the loop
@@ -731,6 +743,8 @@ class Runner:
                 if why != self.last_nightly_note:  # due but held: say why once, not at every pick
                     self.last_nightly_note = why
                     self.log(f"nightly-real: skipped, {why}")
+            if kind == "student":  # a "cannot count the labelled screens" or a failed check was passed over without a word (11-12 to 11-13)
+                self.note_held(kind, cfg[kind], why)
             if why is None and self.kind_ready(kind, sha):
                 return kind
         share = float(cfg["selfplay"].get("share") or 0)
@@ -750,7 +764,9 @@ class Runner:
         for kind in jobs.BENCHES:
             if jobs.unready(kind, self.lab.root, cfg[kind]) is None and self.kind_ready(kind, sha):
                 return kind
-        if jobs.unready("teacher", self.lab.root, cfg["teacher"]) is None and self.kind_ready("teacher", sha):  # the filler's slot: the last thing the lab does (D56)
+        why = jobs.unready("teacher", self.lab.root, cfg["teacher"])
+        self.note_held("teacher", cfg["teacher"], why)
+        if why is None and self.kind_ready("teacher", sha):  # the filler's slot: the last thing the lab does (D56)
             return "teacher"
         return ""
 

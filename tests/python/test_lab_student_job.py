@@ -16,11 +16,13 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-for _p in (ROOT / "rl", ROOT / "src", ROOT):
+for _p in (ROOT / "rl", ROOT / "src", ROOT, Path(__file__).resolve().parent):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import numpy as np  # noqa: E402
 import run_student as rs  # noqa: E402
+import test_run_student as trs  # noqa: E402 -- its miniature stores: a planted teacher recording the log-probabilities of a prior
 from tools.lab import jobs  # noqa: E402
 from tools.lab import student_job as sj  # noqa: E402
 
@@ -44,6 +46,7 @@ class Base(unittest.TestCase):
         self.job = self.tmp / "job"
         self.job.mkdir()
         self.fit_args: tuple = ()
+        self.teacher_prior_path: object = "unset"
         self.build: dict = {}
         self.loader_calls: list[dict] = []
         self.legs: dict = {"kinds_passing": {"card": [0.1, 0.1, 0.1]}, "verdict": verdict()}
@@ -55,13 +58,14 @@ class Base(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def fake_fit(self, shards_root, prior, out, *, human_dir=None, cfg=None, device=None, exam_ids=None, log=print):
+    def fake_fit(self, shards_root, prior, out, *, human_dir=None, cfg=None, device=None, exam_ids=None, log=print, teacher_prior_path=None):
         """What run_fit does with the loader, and the files it leaves."""
         rs.load_shards(shards_root, prior=None)
         out = Path(out)
         out.mkdir(parents=True, exist_ok=True)
         (out / rs.FIT_FILE).write_text(json.dumps({"data": {"decisions": 12345}}), encoding="utf-8")
         self.fit_args = (str(shards_root), str(prior), str(out), None if human_dir is None else str(human_dir))
+        self.teacher_prior_path = teacher_prior_path
         return self.legs
 
     def fake_build(self, out, base, agent_root, target, *, why, tag="student", kinds=None, **kw):
@@ -94,6 +98,13 @@ class CommandTests(Base):
         self.assertEqual({"base": str(self.agents / "current.json"), "target": 14, "tag": "student", "kinds": tuple(rs.KINDS)}, self.build)
         self.assertEqual((str(self.tmp / "store"), str(self.tmp / "prior.npz"), str(self.job / "student"), str(self.tmp / "human")), self.fit_args)
         self.assertEqual([], res["frozen"])
+
+    def test_the_prior_the_teacher_decided_with_reaches_the_fit_and_without_the_flag_it_is_none(self):
+        sj.main(self.argv())
+        self.assertIsNone(self.teacher_prior_path)  # round 0: the start prior is the teacher's own
+        sj.main(self.argv(**{"--teacher-prior": self.tmp / "human_prior.npz", "--out": self.job / "student2", "--tag": "student-r2"}))
+        self.assertEqual(str(self.tmp / "human_prior.npz"), str(self.teacher_prior_path))
+        self.assertEqual(str(self.tmp / "prior.npz"), self.fit_args[1])  # the fit still starts from `--prior`
 
     def test_the_verdict_says_which_human_bars_were_measured(self):
         cell = {"n": 100, "runs": 30, "diff": 0.0, "lo95": -0.01, "hi95": 0.01}
@@ -163,6 +174,48 @@ class CommandTests(Base):
     def test_the_run_bar_never_raises(self):
         with mock.patch.dict(sys.modules, {"run_human_bar": None}):
             self.assertIn("not available", sj.run_bar_text(str(self.tmp)))
+
+
+class Loaded(Exception):
+    """Raised by the stand-in for the fit once the loader has passed: the shards were accepted for the prior they were given."""
+
+
+class StoreTests(unittest.TestCase):
+    """The real loader, the real `run_fit` up to the fit: a store the teacher recorded under prior A, a start prior B (the incumbent's student file)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        weights_a, weights_b = trs.random_weights(seed=3), trs.random_weights(seed=99)
+        self.human = trs.write_weights(self.tmp / "human_prior.npz", weights_a)  # what the teacher decided with (rl/run_teacher.py: pi_h)
+        self.student = trs.student_file(self.tmp / "run_student.npz", weights_b, kinds=("card", "route", "shop", "reward"))  # the incumbent's student
+        self.store = self.tmp / "store"
+        trs.synth_shards(self.store, trs.Synth(weights_a), runs=12)
+        for target, kw in (("_priority", {}), ("fit", {"side_effect": Loaded})):
+            p = mock.patch.object(rs, target, **kw)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def argv(self, prior: Path, *extra: str) -> list[str]:
+        return ["--lab", str(self.tmp / "LAB"), "--shards-root", str(self.store), "--prior", str(prior), "--out", str(self.tmp / "out"),
+                "--base", str(self.tmp / "current.json"), "--agent-root", str(self.tmp / "agent"), "--target", "15", "--result", str(self.tmp / "result.json"), *extra]
+
+    def test_the_students_file_as_the_start_prior_alone_is_refused_because_the_teacher_recorded_the_human_priors_log_probabilities(self):
+        with self.assertRaisesRegex(rs.ShardError, "differ from this prior"):
+            sj.main(self.argv(self.student))
+
+    def test_with_the_teachers_prior_named_the_same_store_loads_for_the_students_start(self):
+        with self.assertRaises(Loaded):  # the loader accepted the store: the fit is the next thing, and it is stood in for
+            sj.main(self.argv(self.student, "--teacher-prior", str(self.human)))
+
+    def test_the_human_prior_as_the_start_prior_needs_no_flag(self):
+        with self.assertRaises(Loaded):
+            sj.main(self.argv(self.human))
+
+    def test_a_wrong_teacher_prior_is_still_refused(self):
+        other = trs.write_weights(self.tmp / "other.npz", trs.random_weights(seed=5))
+        with self.assertRaisesRegex(rs.ShardError, "differ from the teacher prior"):
+            sj.main(self.argv(self.student, "--teacher-prior", str(other)))
 
 
 if __name__ == "__main__":

@@ -35,7 +35,10 @@ the next teacher block reads agent/current.json at its start     the new generat
   7 since the last fit, or since the loop started when there has been none) with at least `weekly_min_screens` (1,000) new. The count is two-stage:
   the shard manifests' `counts.decisions` (cheap; read at every pick through two fixed-depth globs, because the store holds thousands of per-run files) say
   when `rl/run_student.py check --shards-root D:/spireline/referee/run-teacher` is worth asking, and `check`'s `decisions` (what the loader keeps) is the
-  figure the trigger uses. `check` is asked again only when a shard changed. The fit's own count is stored as the baseline (`LAB/student/state.json`
+  figure the trigger uses. `check` runs the lab tree's own `rl/run_student.py` (the entry's `cwd`, `{tree}`: its `out/` is rebuilt at a presort; the runner's
+  checkout is not, and its library went stale at an engine landing, which silently held the loop from 11-12 to 11-13; `check_cmd` overrides). It is asked again
+  only when a shard changed. A student whose recorded screens meet the trigger but which is held (a failed `check`, a QUIET line, a waiting marker) says why once
+  per reason in `LAB/runner.log` (`student: due but held (...)`), the teacher the same (`runner.note_held`). The fit's own count is stored as the baseline (`LAB/student/state.json`
   `last_fit`): a round that built nothing still counts as the fit, so the next one wants 10,000 *more*.
 * **The student job's holds** (`jobs.student_hold`, also the runner's `unready`): the filler's rules (HALT, PAUSE, the night or a start within 30 min of
   it, a live QUIET.lock line outside `quiet_ignore`: `gym-loop` and `lab-score`), judgement first (any `LAB/train/ready-*` marker: one candidate is judged
@@ -152,7 +155,7 @@ orchestrator to merge into the live `LAB/jobs.json` (top level, beside `selfplay
   "check_timeout_s": 900,
   "cmd": [
    "D:/spireline/venv-gpu/Scripts/python.exe", "tools/lab/student_job.py", "--lab", "{lab}",
-   "--shards-root", "D:/spireline/referee/run-teacher", "--prior", "{student_prior}",
+   "--shards-root", "D:/spireline/referee/run-teacher", "--prior", "{student_prior}", "--teacher-prior", "{student_teacher_prior}",
    "--human-shards", "D:/spireline/referee/human-prior/decisions-v1", "--out", "{job}/student",
    "--base", "D:/spireline/referee/agent/current.json", "--agent-root", "D:/spireline/referee/agent",
    "--target", "{student_target}", "--tag", "{student_tag}", "--records", "D:/spireline/referee/run-teacher",
@@ -163,8 +166,10 @@ orchestrator to merge into the live `LAB/jobs.json` (top level, beside `selfplay
 }
 ```
 
-`{student_prior}`, `{student_target}` and `{student_tag}` are filled when the job is made (`jobs.student_params`): the incumbent's student file (else its
-human prior) from `agent/current.json`, the incumbent's generation + 1, and the first free tag. Nothing else of `jobs.json` changes: the fragments touch
+`{student_prior}`, `{student_teacher_prior}`, `{student_target}` and `{student_tag}` are filled when the job is made (`jobs.student_params`): the
+incumbent's student file (else its human prior) from `agent/current.json`; the incumbent's human prior (`agent.json` `human_prior.file`), which the teacher
+decided with, when the fit starts from the student's file (a start from the human prior itself has none: the token and `--teacher-prior` before it are left
+out); the incumbent's generation + 1; and the first free tag. Nothing else of `jobs.json` changes: the fragments touch
 neither `selfplay` nor `train` (whose `--marker-dir` already takes `ready-<gen>-g<N>-<tag>` markers).
 
 **The edit the orchestrator makes** (outside a night; `LAB/nightly/active` absent): back up `LAB/jobs.json` as `jobs.json.<date>-run-loop.bak`, add the two
@@ -190,9 +195,10 @@ files), `test_run_human_bar.py` (the human pass on a fixture with the exam fifth
 
 * **No real fit has run**: the student job's command was run only with stand-ins (the scratch chain) and lane 3's functions stubbed; the first real
   round waits for the first 10,000 labelled screens. After a student is **promoted**, the incumbent's prior for the next fit is the student, and lane
-  3's loader checks the teacher's recorded log-probabilities against the `--prior` it is given (`TeacherSet.attach_prior`): shards the teacher played
-  with the human prior will not match a student prior. Round 2 after a promotion therefore needs `shards_root` pointed at the new generation's shards
-  (`<store>/<generation>`); the entry's `shards_root` is the knob (the count and the fit both read it).
+  3's loader checks the teacher's recorded log-probabilities against the prior it is given (`TeacherSet.attach_prior`): the teacher's are the human
+  prior's (its pull is `lambda * logp` of pi_h), which a student prior's are not. The job therefore names the incumbent's human prior as the teacher's
+  (`--teacher-prior`, `{student_teacher_prior}`, 2026-11-13: the first unattended run refused its store by up to 4.7 nats without it), and the fit starts
+  from the student's file.
 * The fidelity-drop stop of the memo is not built (not in the plan's lane 4).
 * A freeze leaves the kind out of the fit's data and the candidate; the net is one network, so a frozen kind's weights are still the prior's through the
   KL term, not removed.

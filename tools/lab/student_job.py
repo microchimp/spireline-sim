@@ -4,13 +4,15 @@
         --human-shards human-prior/decisions-v1 --out <job>/student --base agent/current.json --agent-root agent --target N --tag student \
         --records run-teacher --result <job>/result.json
 
-It is `run_student.py round` with three differences the loop needs, and no other: (1) a kind in `LAB/student/frozen.json` (it failed the human bar in two
+It is `run_student.py round` with the differences the loop needs, and no other: (1) a kind in `LAB/student/frozen.json` (it failed the human bar in two
 rounds running, `tools/lab/jobs.update_human_bar`) is left out of the fit (the loader's `kinds`) and of the candidate; (2) it writes
 `result.json` (the rounds' verdicts per kind, the candidate's folder under the agent root, the labelled screens the fit used: what
 `jobs.student_finish` reads to write the marker, count the failures and freeze), and `run-bar.md`, the run-level human bar beside it (the human
 records' figures and the copy's from the teacher's recorded runs, `rl/run_human_bar.py`); (3) exit 0 when a candidate was built, 3 when no kind
 passed both legs (a finished round, not a failure: the runner's `ok_rcs` for the kind). The marker is not written here: the runner writes it once
-this process has exited cleanly. BelowNormal; one process; the fit is on the card, the legs are CPU for under half an hour.
+this process has exited cleanly. (4) `--teacher-prior`: the prior the teacher decided with, when it is not `--prior` (the fit of a round after a promotion
+starts from the incumbent's student file, but the teacher's recorded log-probabilities are the human prior's; the loader refuses a store for a prior it
+was not recorded under, so `jobs.student_params` names the human prior here and the loader checks the store against it). BelowNormal; one process; the fit is on the card, the legs are CPU for under half an hour.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lab", required=True)
     ap.add_argument("--shards-root", required=True)
     ap.add_argument("--prior", required=True)
+    ap.add_argument("--teacher-prior", help="the prior the teacher decided with, when it is not --prior (the incumbent's human prior, when --prior is its student file)")
     ap.add_argument("--human-shards")
     ap.add_argument("--out", required=True)
     ap.add_argument("--base", required=True)
@@ -81,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     orig = rs.load_shards
     rs.load_shards = lambda root, **kw: orig(root, **{**kw, "kinds": kinds})  # the frozen kinds are not read, so not fitted
     try:
-        legs = rs.run_fit(a.shards_root, a.prior, out, human_dir=a.human_shards, cfg=rs.FitConfig(), device=a.device)
+        legs = rs.run_fit(a.shards_root, a.prior, out, human_dir=a.human_shards, cfg=rs.FitConfig(), device=a.device, teacher_prior_path=a.teacher_prior)
     finally:
         rs.load_shards = orig
     fit_doc = json.loads((out / rs.FIT_FILE).read_text(encoding="utf-8"))

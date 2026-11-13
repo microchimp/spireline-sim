@@ -81,13 +81,14 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                         "--source", "new", "--procs", "4", "--block-min", "60", "--budget-h", "24", "--result", "{job}/result.json"],
                 "needs": ["{tree}/rl/run_teacher.py", "{tree}/out/Sts2Emulator.dll"]},
     # The run student (D56, D57 part 3, D58 C4; docs/lab/RUN_LOOP.md). Off until LAB/jobs.json switches it on. `{student_*}` tokens are
-    # filled when the job is made (`params_for`): the incumbent's prior (or student), the candidate's number and tag.
+    # filled when the job is made (`params_for`): the incumbent's prior (or student), the human prior the teacher decided with (the flag and its token are
+    # left out when the fit starts from that prior itself), the candidate's number and tag.
     "student": {"enabled": False, "cwd": "{tree}", "timeout_min": 180, "procs": 4, "cores": 4, "gpu": True, "new_screens": 10000,
                 "weekly_days": 7.0, "weekly_min_screens": 1000, "quiet_ignore": ["gym-loop", "lab-score"], "ok_rcs": [0, 3],
                 "shards_root": "D:/spireline/referee/run-teacher", "human_shards": "D:/spireline/referee/human-prior/decisions-v1",
                 "agent_root": "D:/spireline/referee/agent", "check_timeout_s": 900,
                 "cmd": ["D:/spireline/venv-gpu/Scripts/python.exe", "tools/lab/student_job.py", "--lab", "{lab}",
-                        "--shards-root", "D:/spireline/referee/run-teacher", "--prior", "{student_prior}",
+                        "--shards-root", "D:/spireline/referee/run-teacher", "--prior", "{student_prior}", "--teacher-prior", "{student_teacher_prior}",
                         "--human-shards", "D:/spireline/referee/human-prior/decisions-v1", "--out", "{job}/student",
                         "--base", "D:/spireline/referee/agent/current.json", "--agent-root", "D:/spireline/referee/agent",
                         "--target", "{student_target}", "--tag", "{student_tag}", "--records", "D:/spireline/referee/run-teacher",
@@ -301,6 +302,24 @@ def unready(kind: str, lab: Path, cfg: dict[str, Any]) -> str | None:
     if kind == STUDENT:
         return student_hold(lab, cfg)
     return f"unknown kind {kind}"
+
+
+def held_reason(kind: str, lab: Path | str, cfg: dict[str, Any], why: str | None, now: float | None = None) -> str | None:
+    """`why` (what `unready` said) when the student or the teacher is wanted and held, so the runner says it once; None when the kind is off, ready, or
+    only not due yet. The teacher is wanted whenever it is on (the filler). The student is wanted once its trigger is met by the screens recorded
+    (the count `check` makes is the next thing it asks, and a `check` that fails is what the reason says); a student short of the trigger, or one whose
+    `check` keeps too few labelled screens, is passed over quietly."""
+    if not why or not cfg.get("enabled") or kind not in (STUDENT, TEACHER):
+        return None
+    if kind == STUDENT:
+        if LABELLED_SHORT in why:
+            return None
+        now = time.time() if now is None else now
+        st = read_student_state(lab)
+        recorded, _ = student_recorded_screens(Path(str(cfg.get("shards_root") or DEFAULTS[STUDENT]["shards_root"])))
+        if recorded - int((st.get("last_fit") or {}).get("recorded") or 0) < _student_need(st, cfg, now)[0]:
+            return None
+    return why
 
 
 def params_for(kind: str, lab: Path, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -736,15 +755,34 @@ def student_recorded_screens(root: Path | str) -> tuple[int, tuple]:
     return total, tuple(sig)
 
 
+JOB_TREE: Path | None = None  # the lab tree (the runner's --tree) the student job runs in; the runner sets it (`use_tree`); None: this module's own checkout
+
+
+def use_tree(tree: Path | str | None) -> None:
+    """The lab tree the jobs run in, for the parts of this module that need a file of it before a job exists (the runner calls this once, at its start)."""
+    global JOB_TREE
+    JOB_TREE = None if tree is None else Path(tree)
+
+
+def job_tree(cfg: dict[str, Any]) -> Path:
+    """The folder the student job runs in: the entry's `cwd` (default `{tree}`) with `{tree}` as the runner resolves it (its --tree). A `cwd` that names
+    another token (`{lab}`) or none of this module's business falls back to the tree itself; with no tree set, this module's own checkout."""
+    tree = JOB_TREE if JOB_TREE is not None else ROOT
+    cwd = str(cfg.get("cwd") or "{tree}").replace("\\", "/")
+    got = cwd.replace("{tree}", tree.as_posix())
+    return tree if "{" in got else Path(got)
+
+
 def student_check_cmd(cfg: dict[str, Any], root: Path | str) -> list[str]:
-    """The command that counts what the student would learn from: `rl/run_student.py check --shards-root <root>` (the runner's own Python and tree;
-    `check_cmd` in the entry replaces it, with `{root}` and `{python}`)."""
+    """The command that counts what the student would learn from: `rl/run_student.py check --shards-root <root>`, run from the tree the job itself runs in
+    (`job_tree`: the lab tree, whose `out/` a presort rebuilds; the runner's own checkout is not rebuilt and its library goes stale at every engine landing),
+    in the runner's own Python. `check_cmd` in the entry replaces it, with `{root}` and `{python}`."""
     import sys  # noqa: PLC0415
 
     cmd = cfg.get("check_cmd")
     if isinstance(cmd, (list, tuple)) and cmd:
         return [str(t).replace("{root}", str(root)).replace("{python}", sys.executable) for t in cmd]
-    return [sys.executable, str(ROOT / "rl" / "run_student.py"), "check", "--shards-root", str(root)]
+    return [sys.executable, str(job_tree(cfg) / "rl" / "run_student.py"), "check", "--shards-root", str(root)]
 
 
 def student_exact_screens(root: Path | str, cfg: dict[str, Any]) -> tuple[int | None, str]:
@@ -780,15 +818,24 @@ def _exact_cached(root: Path | str, cfg: dict[str, Any], sig: tuple) -> tuple[in
     return kept, why
 
 
+LABELLED_SHORT = "new labelled screens since the last fit"  # student_due's reason when `check` keeps too few: the kind is not due, whatever holds it
+
+
+def _student_need(st: dict[str, Any], cfg: dict[str, Any], now: float) -> tuple[int, int, int, bool]:
+    """(new screens the trigger wants now, the threshold, the weekly floor, whether the weekly fit is due)."""
+    last = st.get("last_fit") or {}
+    threshold, floor_ = int(cfg.get("new_screens", 10000)), int(cfg.get("weekly_min_screens", 1000))
+    since = last.get("t") or st.get("loop_start")
+    weekly = since is not None and now - float(since) >= float(cfg.get("weekly_days", 7.0)) * 86400
+    return (floor_ if weekly else threshold), threshold, floor_, weekly
+
+
 def student_due(st: dict[str, Any], cfg: dict[str, Any], root: Path | str, now: float) -> tuple[bool, str, int | None, int]:
     """(due, reason, labelled screens `check` keeps, screens recorded). Due when `new_screens` (10,000) new labelled screens exist since the last fit, or
     when the weekly fit is due (`weekly_days` since the last fit, or since the loop started when there is none) and `weekly_min_screens` are new."""
     recorded, sig = student_recorded_screens(root)
     last = st.get("last_fit") or {}
-    threshold, floor_ = int(cfg.get("new_screens", 10000)), int(cfg.get("weekly_min_screens", 1000))
-    since = last.get("t") or st.get("loop_start")
-    weekly = since is not None and now - float(since) >= float(cfg.get("weekly_days", 7.0)) * 86400
-    need = floor_ if weekly else threshold
+    need, threshold, floor_, weekly = _student_need(st, cfg, now)
     new_rec = recorded - int(last.get("recorded") or 0)
     if new_rec < need:
         return False, (f"{max(0, new_rec)} new screens recorded since the last fit; the student wants {threshold}"
@@ -798,7 +845,7 @@ def student_due(st: dict[str, Any], cfg: dict[str, Any], root: Path | str, now: 
         return False, f"cannot count the labelled screens: {why}", None, recorded
     new_kept = kept - int(last.get("screens") or 0)
     if new_kept < need:
-        return False, f"{max(0, new_kept)} new labelled screens since the last fit (check); the student wants {need}", kept, recorded
+        return False, f"{max(0, new_kept)} {LABELLED_SHORT} (check); the student wants {need}", kept, recorded
     return True, f"{new_kept} new labelled screens" + (" (the weekly fit)" if weekly and new_kept < threshold else ""), kept, recorded
 
 
@@ -806,7 +853,9 @@ def student_due(st: dict[str, Any], cfg: dict[str, Any], root: Path | str, now: 
 
 def student_base(cfg: dict[str, Any]) -> dict[str, Any] | str:
     """The incumbent the student starts from (agent_root/current.json): its generation, folder and the prior the fit starts from (its student's
-    file when it has one, else its human prior's). The reason as a string when there is none."""
+    file when it has one, else its human prior's), and `teacher_prior`: the human prior the teacher decided with (rl/run_teacher.py pulls by pi_h), named
+    only when the fit starts from the student's file, which is not it (the loader refuses a store whose recorded log-probabilities are not the
+    prior's it is given); None when the start prior is the human prior itself or the incumbent names none. The reason as a string when there is none."""
     root = Path(str(cfg.get("agent_root") or DEFAULTS[STUDENT]["agent_root"]))
     cur = read_lenient(root / "current.json")
     if not isinstance(cur, dict) or not isinstance(cur.get("generation"), int) or not cur.get("dir"):
@@ -818,15 +867,19 @@ def student_base(cfg: dict[str, Any]) -> dict[str, Any] | str:
     if not isinstance(meta, dict):
         return f"{d.name}/agent.json is not readable"
     stu, hum = meta.get("student"), meta.get("human_prior")
+    teacher_prior: Path | None = None
     if isinstance(stu, dict):
         prior, what = d / str(stu.get("file") or "run_student.npz"), "student"
+        if isinstance(hum, dict):
+            teacher_prior = d / str(hum.get("file") or "human_prior.npz")
     elif isinstance(hum, dict):
         prior, what = d / str(hum.get("file") or "human_prior.npz"), "human prior"
     else:
         return "the incumbent plays no human prior or student to start the fit from"
-    if not prior.is_file():
-        return f"{prior.name} is missing in {d.name}"
-    return {"generation": int(cur["generation"]), "dir": d, "prior": prior, "prior_kind": what, "root": root}
+    for f in (prior, teacher_prior):
+        if f is not None and not f.is_file():
+            return f"{f.name} is missing in {d.name}"
+    return {"generation": int(cur["generation"]), "dir": d, "prior": prior, "prior_kind": what, "root": root, "teacher_prior": teacher_prior}
 
 
 def student_tag(lab: Path | str, agent_root: Path | str, generation: int, target: int) -> str:
@@ -870,8 +923,9 @@ def student_hold(lab: Path | str, cfg: dict[str, Any] | None = None, *, starting
 
 
 def student_params(lab: Path | str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """The job's own parameters, fixed when the job is made (a resumed job keeps them): the command with `{student_prior}`, `{student_target}` and
-    `{student_tag}` filled, the incumbent's generation, the candidate's number and tag, its marker, the screens the fit starts from."""
+    """The job's own parameters, fixed when the job is made (a resumed job keeps them): the command with `{student_prior}`, `{student_teacher_prior}`,
+    `{student_target}` and `{student_tag}` filled (when the fit starts from the human prior itself there is no teacher prior: the token and the flag
+    before it are left out), the incumbent's generation, the candidate's number and tag, its marker, the screens the fit starts from."""
     base = student_base(cfg)
     if isinstance(base, str):
         raise ValueError(base)
@@ -880,8 +934,15 @@ def student_params(lab: Path | str, cfg: dict[str, Any]) -> dict[str, Any]:
     root = Path(str(cfg.get("shards_root") or DEFAULTS[STUDENT]["shards_root"]))
     recorded, sig = student_recorded_screens(root)
     kept, _ = _exact_cached(root, cfg, sig) if recorded else (0, "")
-    cmd = [str(t).replace("{student_prior}", base["prior"].as_posix()).replace("{student_target}", str(target)).replace("{student_tag}", tag)
-           for t in cfg["cmd"]]
+    tp = base.get("teacher_prior")
+    cmd: list[str] = []
+    for t in (str(x) for x in cfg["cmd"]):
+        if "{student_teacher_prior}" in t and tp is None:  # nothing to name: the flag that takes it goes too (an element that is only the flag)
+            if t == "{student_teacher_prior}" and cmd and cmd[-1].startswith("--"):
+                cmd.pop()
+            continue
+        cmd.append(t.replace("{student_prior}", base["prior"].as_posix()).replace("{student_teacher_prior}", "" if tp is None else tp.as_posix())
+                   .replace("{student_target}", str(target)).replace("{student_tag}", tag))
     return {"cmd": cmd, "generation": str(gen), "candidate_generation": target, "tag": tag, "marker": f"ready-{gen}-g{target}-{tag}",
             "ok_rcs": [int(x) for x in (cfg.get("ok_rcs") or [0, 3])], "screens": kept, "recorded": recorded, "prior_kind": base["prior_kind"]}
 

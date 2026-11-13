@@ -132,8 +132,9 @@ class KindTests(Base):
         cmd = jb.DEFAULTS["student"]["cmd"]
         self.assertTrue(cmd[0].endswith("venv-gpu/Scripts/python.exe"))
         self.assertEqual("tools/lab/student_job.py", cmd[1])
-        for token in ("{student_prior}", "{student_target}", "{student_tag}", "{lab}"):
+        for token in ("{student_prior}", "{student_teacher_prior}", "{student_target}", "{student_tag}", "{lab}"):
             self.assertIn(token, cmd)
+        self.assertEqual("--teacher-prior", cmd[cmd.index("{student_teacher_prior}") - 1])  # the flag and its token go together (a start from the human prior drops both)
         self.assertIn("{job}/result.json", cmd)
         self.assertEqual([0, 3], jb.DEFAULTS["student"]["ok_rcs"])
         self.assertIn("{tree}/tools/lab/student_job.py", jb.DEFAULTS["student"]["needs"])
@@ -218,6 +219,30 @@ class TriggerTests(Base):
         self.assertEqual(["check", "--shards-root", "R"], cmd[2:])
         self.assertTrue(cmd[1].replace("\\", "/").endswith("rl/run_student.py"))
 
+    def test_the_default_check_runs_from_the_lab_tree_the_job_runs_in_not_the_runners_own_checkout(self):
+        lab_tree = self.tmp / "wt-lab"
+        jb.use_tree(lab_tree)
+        self.addCleanup(jb.use_tree, None)
+        got = jb.student_check_cmd({"cwd": "{tree}"}, "R")[1].replace("\\", "/")
+        self.assertEqual((lab_tree / "rl" / "run_student.py").as_posix(), got)
+        self.assertNotEqual((jb.ROOT / "rl" / "run_student.py").as_posix(), got)
+        self.assertEqual(got, jb.student_check_cmd({}, "R")[1].replace("\\", "/"))  # the entry's own default cwd is {tree}
+        other = (self.tmp / "elsewhere").as_posix()  # a literal cwd in the entry is where the job runs: the check follows it
+        self.assertEqual(f"{other}/rl/run_student.py", jb.student_check_cmd({"cwd": other}, "R")[1].replace("\\", "/"))
+
+    def test_check_cmd_still_replaces_the_default_and_a_runner_with_no_tree_set_falls_back_to_its_own_checkout(self):
+        jb.use_tree(self.tmp / "wt-lab")
+        self.addCleanup(jb.use_tree, None)
+        self.assertEqual(["x", "R"], jb.student_check_cmd({"check_cmd": ["x", "{root}"]}, "R"))
+        jb.use_tree(None)
+        self.assertEqual((jb.ROOT / "rl" / "run_student.py").as_posix(), jb.student_check_cmd({}, "R")[1].replace("\\", "/"))
+
+    def test_the_runner_hands_its_tree_to_the_jobs_module_and_the_check_runs_from_it(self):
+        self.addCleanup(jb.use_tree, None)
+        a = rn.parse_args(["--lab", str(self.lab), "--tree", str(self.tmp / "the-lab-tree"), "--once", "teacher", "--no-guard", ",".join(ALL_GUARDS)])
+        rn.Runner(a)
+        self.assertEqual((self.tmp / "the-lab-tree" / "rl" / "run_student.py").as_posix(), jb.student_check_cmd({}, "R")[1].replace("\\", "/"))
+
     def test_the_store_walk_is_two_globs_not_a_recursive_walk(self):
         self.shard(10)
         (self.store / "13" / "decisions.d").mkdir()
@@ -301,6 +326,45 @@ class ParamsTests(Base):
         p = jb.params_for("student", self.lab, self.config())
         self.assertEqual(("14", 15, "student"), (p["generation"], p["candidate_generation"], p["prior_kind"]))
         self.assertTrue(p["cmd"][p["cmd"].index("--prior") + 1].endswith("run_student.npz"))
+
+    def test_a_start_from_the_students_file_names_the_human_prior_the_teacher_decided_with(self):
+        d = self.promote(14, student=True)
+        self.shard(12000)
+        cmd = jb.params_for("student", self.lab, self.config())["cmd"]
+        self.assertEqual((d / "human_prior.npz").as_posix(), cmd[cmd.index("--teacher-prior") + 1])
+        self.assertTrue(cmd[cmd.index("--prior") + 1].endswith("run_student.npz"))
+        self.assertFalse(any("{student_" in t for t in cmd))
+
+    def test_the_human_priors_file_is_the_one_agent_json_names(self):
+        d = self.promote(14, student=True)
+        (d / "hp-v2.npz").write_bytes(b"prior")
+        meta = json.loads((d / "agent.json").read_text(encoding="utf-8"))
+        meta["human_prior"]["file"] = "hp-v2.npz"
+        (d / "agent.json").write_text(json.dumps(meta), encoding="utf-8")
+        self.shard(12000)
+        cmd = jb.params_for("student", self.lab, self.config())["cmd"]
+        self.assertEqual((d / "hp-v2.npz").as_posix(), cmd[cmd.index("--teacher-prior") + 1])
+
+    def test_a_start_from_the_human_prior_itself_passes_no_teacher_prior_and_no_token(self):
+        self.shard(12000)  # the round-0 case: the incumbent plays the human prior and no student
+        cmd = jb.params_for("student", self.lab, self.config())["cmd"]
+        self.assertNotIn("--teacher-prior", cmd)
+        self.assertFalse(any("{student_" in t for t in cmd))
+        self.assertEqual(len(jb.DEFAULTS["student"]["cmd"]) - 2, len(cmd))  # exactly the flag and its token are gone, nothing else
+
+    def test_a_student_with_no_human_prior_to_name_passes_no_flag(self):
+        d = self.promote(14, student=True)
+        (d / "agent.json").write_text(json.dumps({"generation": 14, "student": {"file": "run_student.npz"}}), encoding="utf-8")
+        self.shard(12000)
+        cmd = jb.params_for("student", self.lab, self.config())["cmd"]
+        self.assertNotIn("--teacher-prior", cmd)
+        self.assertFalse(any("{student_" in t for t in cmd))
+
+    def test_a_student_whose_human_prior_file_is_missing_holds_the_job_with_the_reason(self):
+        d = self.promote(14, student=True)
+        (d / "human_prior.npz").unlink()
+        self.shard(12000)
+        self.assertIn("human_prior.npz is missing in candidate-x", self.hold())
 
     def test_a_tag_is_never_used_twice_at_a_target(self):
         self.shard(12000)
@@ -743,6 +807,97 @@ class ChainTests(Base):
         text = (self.lab / "student" / "verdicts.md").read_text(encoding="utf-8")
         self.assertIn("student round 1", text)
         self.assertIn("judgement of ready-13-g14-student: PROMOTED", text)
+
+    def held_lines(self, kind: str) -> list[str]:
+        log = self.lab / "runner.log"  # no line at all: no file
+        return [ln for ln in (log.read_text(encoding="utf-8").splitlines() if log.exists() else []) if f"{kind}: due but held" in ln]
+
+    def quiet(self, tag: str) -> None:
+        (self.ref / "QUIET.lock").write_text(f"{tag} {iso(time.time() - 60)} pid=7\n", encoding="utf-8")
+
+    def test_a_due_student_that_is_held_says_why_once_and_again_for_a_new_reason(self):
+        self.write_jobs()
+        self.shard(12000)
+        r = self.runner()
+        self.quiet("lab-train")
+        for _ in range(3):
+            self.assertEqual("", r.ladder_top("abc"))
+        lines = self.held_lines("student")
+        self.assertEqual(1, len(lines), lines)
+        self.assertIn("student: due but held (QUIET.lock is held by lab-train)", lines[0])
+        self.quiet("judge-corpus")
+        r.ladder_top("abc")
+        r.ladder_top("abc")
+        lines = self.held_lines("student")
+        self.assertEqual(2, len(lines), lines)
+        self.assertIn("student: due but held (QUIET.lock is held by judge-corpus)", lines[1])
+
+    def test_a_hold_that_ended_and_came_back_is_said_again(self):
+        self.write_jobs()
+        self.shard(12000)
+        r = self.runner()
+        self.quiet("lab-train")
+        r.ladder_top("abc")
+        (self.ref / "QUIET.lock").unlink()
+        self.assertEqual("student", r.ladder_top("abc"))
+        self.quiet("lab-train")
+        r.ladder_top("abc")
+        self.assertEqual(2, len(self.held_lines("student")))
+
+    def test_a_student_that_cannot_count_its_screens_is_said_in_the_log(self):
+        self.write_jobs()
+        doc = json.loads((self.lab / "jobs.json").read_text(encoding="utf-8"))
+        doc["student"]["check_cmd"] = ["{python}", "-c", "import sys; sys.stderr.write('stale library'); sys.exit(1)"]
+        (self.lab / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
+        self.shard(12000)
+        r = self.runner()
+        r.ladder_top("abc")
+        r.ladder_top("abc")
+        lines = self.held_lines("student")
+        self.assertEqual(1, len(lines), lines)
+        self.assertIn("cannot count the labelled screens: the check failed (rc 1): stale library", lines[0])
+
+    def test_a_student_that_is_not_due_yet_or_is_off_is_passed_over_quietly(self):
+        self.write_jobs()
+        self.shard(50)  # far under the trigger: not due
+        r = self.runner()
+        self.quiet("lab-train")  # held by the quiet line as well, but nothing is due: no line
+        r.ladder_top("abc")
+        self.assertEqual([], self.held_lines("student"))
+        self.shard(12000, "j2", round0=True)
+        jb._count_cache.clear()
+        doc = json.loads((self.lab / "jobs.json").read_text(encoding="utf-8"))
+        doc["student"]["enabled"] = False
+        (self.lab / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
+        r.ladder_top("abc")
+        self.assertEqual([], self.held_lines("student"))
+
+    def test_a_labelled_count_short_of_the_trigger_is_not_a_hold(self):
+        self.write_jobs()
+        self.shard(12000)
+        doc = json.loads((self.lab / "jobs.json").read_text(encoding="utf-8"))
+        doc["student"]["check_cmd"] = ["{python}", "-c", "print('{\"decisions\": 20}')"]  # the loader keeps 20 of the 12,000 recorded
+        (self.lab / "jobs.json").write_text(json.dumps(doc), encoding="utf-8")
+        r = self.runner()
+        r.ladder_top("abc")
+        self.assertIn("new labelled screens since the last fit", jb.unready("student", self.lab, jb.load_config(self.lab)["student"]))
+        self.assertEqual([], self.held_lines("student"))
+
+    def test_a_held_teacher_says_why_once_per_reason_too(self):
+        self.write_jobs()
+        r = self.runner()
+        self.quiet("lab-train")
+        for _ in range(3):
+            r.ladder_top("abc")
+        lines = self.held_lines("teacher")
+        self.assertEqual(1, len(lines), lines)
+        self.assertIn("teacher: due but held (QUIET.lock is held by lab-train)", lines[0])
+        (self.lab / "PAUSE").write_text("x")
+        r.ladder_top("abc")
+        r.ladder_top("abc")
+        lines = self.held_lines("teacher")
+        self.assertEqual(2, len(lines), lines)
+        self.assertIn("teacher: due but held (LAB/PAUSE is up)", lines[1])
 
     def test_a_ready_bench_comes_before_the_teacher_and_a_waiting_train_marker_before_the_student(self):
         self.write_jobs()
