@@ -110,6 +110,11 @@ MIN_CELL = hp.MIN_CELL  # a human cell over fewer runs is not shown (D13)
 MIN_LAMBDA_DECISIONS = 30  # held-out decisions a lambda cell needs; fewer falls back to the kind's pooled, then the kind has no lambda
 LAMBDA_CAP = 2.0  # a measured lambda above this is clipped (the recipes' base is 0.5)
 TAU_MIN = 0.25  # floors: the target's temperature never goes below this
+# The same floor in each grade's own unit (D59): a store is graded one way (`run_teacher.py regrade`), and a temperature measured in one grade's unit is held back by
+# that grade's floor. The frontier's is the floors' scaled by the ratio of the noise sd of one draw (`run_teacher.unit_constants`, `tau_min_suggested`), measured on
+# the regraded store and set here once it is; until then a frontier store is refused, not fitted with a floors number.
+TAU_MIN_BY_GRADE: dict[str, float | None] = {"floors": TAU_MIN, "frontier": None}
+GRADES = ("floors", "frontier")
 TAU_CELL_MIN = 20  # decisions a (kind, act) cell needs for its own noise estimate; fewer takes the kind's, then all
 BOOT_DRAWS = 2000
 HUMAN_TRAIN_FIFTHS = (1, 2, 3)
@@ -137,6 +142,18 @@ def teacher_fn(name: str) -> Any:
 
 
 # ---------------------------------------------------------------------------------------------------------- the split
+
+
+def tau_min_for(grade: str) -> float:
+    """The floor of the targets' temperature in `grade`'s unit; a grade whose unit is not measured is refused (`ShardError`)."""
+    if grade not in TAU_MIN_BY_GRADE:
+        raise ShardError(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+    if grade == "floors":
+        return TAU_MIN  # the module's own, so that a test or a probe that sets it is read
+    got = TAU_MIN_BY_GRADE[grade]
+    if got is None:
+        raise ShardError(f"TAU_MIN is not measured for the {grade} grade (run_teacher.py units on a regraded store, then set TAU_MIN_BY_GRADE): no fit on it yet")
+    return float(got)
 
 
 def seed_hash(seed: str, salt: str = SPLIT_SALT) -> int:
@@ -290,8 +307,9 @@ class TeacherSet:
         for i in range(len(self)):
             cells[(self.kind_name(i), int(self.act[i]))].append(self.g[i])
         self.noise = tau_table(cells)
-        sd = np.array([noise_sd_for(self.noise, self.kind_name(i), int(self.act[i])) or TAU_MIN for i in range(len(self))], dtype=np.float64)
-        self.tau = np.maximum(sd / np.sqrt(np.maximum(self.k, 1)), TAU_MIN).astype(np.float32)
+        floor = tau_min_for(str(self.stats.get("grade", "floors")))
+        sd = np.array([noise_sd_for(self.noise, self.kind_name(i), int(self.act[i])) or floor for i in range(len(self))], dtype=np.float64)
+        self.tau = np.maximum(sd / np.sqrt(np.maximum(self.k, 1)), floor).astype(np.float32)
         return self.noise
 
     def targets(self, lam_of: Mapping[tuple[str, int], float] | None = None) -> np.ndarray:
@@ -415,7 +433,7 @@ def read_shard(d: Path | str) -> dict[str, Any]:
 
 
 _PROVENANCE_KEYS = ("version", "agent", "agent_sha256", "judge", "judge_sha256", "engine", "engine_sha256", "k", "m", "max_options", "beyond",
-                    "created_utc", "runs")
+                    "created_utc", "runs", "scale", "a2_sha256")
 
 
 def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorScorer | None = None, map_grid: bool = False,
@@ -465,16 +483,25 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     dropped: Counter = Counter()
     kept: Counter = Counter()
     manifests: list[dict] = []
+    grades: dict[str, set[str]] = defaultdict(set)  # grade -> the shards (and records) that carry it
     n_rows = 0
     for d in shards:
         sh = read_shard(d)
-        manifests.append({"shard": sh["name"], **{k: _clean(sh["manifest"][k]) for k in _PROVENANCE_KEYS if k in sh["manifest"]}})
+        grade = sh["manifest"].get("grade", "floors")  # a shard from before the grades is graded floors
+        if grade not in GRADES:
+            raise ShardError(f"{sh['name']}: unknown grade {grade!r}; one of {', '.join(GRADES)}")
+        grades[grade].add(sh["name"])
+        manifests.append({"shard": sh["name"], "grade": grade, **{k: _clean(sh["manifest"][k]) for k in _PROVENANCE_KEYS if k in sh["manifest"]}})
         dropped["truncated_tail"] += sh["tail_cut"]
         sd, so, order, rows = sh["sorted_decision"], sh["sorted_option"], sh["order"], sh["rows"]
         lo = np.searchsorted(sd, np.arange(len(sh["records"])), side="left")
         hi = np.searchsorted(sd, np.arange(len(sh["records"])), side="right")
         for i, r in enumerate(sh["records"]):
             kind = r.get("kind")
+            if r.get("grade") is not None:
+                if r["grade"] not in GRADES:
+                    raise ShardError(f"{sh['name']}: record {i + 1} has an unknown grade {r['grade']!r}")
+                grades[r["grade"]].add(sh["name"])
             if r.get("refused") or r.get("q") is None:
                 dropped["refused"] += 1
                 continue
@@ -537,6 +564,9 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
             g_all.append(gm)
             kept[kind] += 1
             n_rows += n
+    if len(grades) > 1:
+        raise ShardError("the shards carry two grades (" + "; ".join(f"{g}: {len(s)} shard(s)" for g, s in sorted(grades.items()))
+                         + "): a store is graded one way, its Q in one unit; regrade into a root of its own (run_teacher.py regrade) and fit one root at a time")
     if not cols["run"]:
         raise ShardError(f"no complete decision in {len(shards)} shard(s) (dropped: {dict(dropped)})")
     ts = TeacherSet(
@@ -547,7 +577,7 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
         v=np.concatenate(v_rows), dense=np.concatenate(dense_parts), counts=np.concatenate(count_parts), g=g_all,
         logp_rec=np.concatenate(lp_rows),
         stats={"shards": len(shards), "decisions": len(cols["run"]), "rows": n_rows, "runs": len(seeds), "kept": dict(kept), "dropped": dict(dropped),
-               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps)},
+               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "grade": next(iter(grades), "floors")},
         manifests=manifests, grid=np.concatenate(grid_parts).astype(np.int8) if map_grid else None,
         gaps=np.concatenate(gaps_parts).astype(np.float32) if state_gaps else None)
     ts.set_tau()
@@ -563,7 +593,7 @@ def public_stats(ts: TeacherSet) -> dict[str, Any]:
     return {"shards": ts.stats["shards"], "decisions": len(ts), "rows": int(len(ts.q)), "runs": len(ts.seeds), "kept_by_kind": dict(kinds),
             "dropped": ts.stats["dropped"], "decisions_by_split": {k: int(len(v)) for k, v in split.items()},
             "runs_by_split": dict(Counter(ts.run_split().tolist())), "noise_sd": ts.noise, "provenance": ts.manifests,
-            "logp_check": ts.stats.get("logp_check"), "map_grid": ts.grid is not None, "state_gaps": ts.gaps is not None}
+            "logp_check": ts.stats.get("logp_check"), "map_grid": ts.grid is not None, "state_gaps": ts.gaps is not None, "grade": ts.stats.get("grade", "floors")}
 
 
 # ---------------------------------------------------------------------------------------------------------- the human data

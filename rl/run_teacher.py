@@ -22,6 +22,8 @@ with the player at every screen is the player's run exactly.
     python rl/run_teacher.py job     --lab LAB --store DIR --agent-root DIR [--source auto|new|stored] [--procs 4] [--block-min 60]
     python rl/run_teacher.py label   --lab LAB --store DIR --agent-root DIR   # `job --source stored`: round 0 from the stored exploring runs
     python rl/run_teacher.py reencode --store DIR --generation N              # add rows_map.npz and rows_gaps.npz (blocks M and G of every row) to shards that lack them
+    python rl/run_teacher.py regrade --src DIR [--out DIR] [--a2 FILE]        # the stored continuations graded again under a new root (D59): the frontier grade
+    python rl/run_teacher.py units   --store DIR                              # the constants a store's grade sets (the guard's prior sd, the noise of a draw)
 
 `play` is the measurement (D56): it holds its own QUIET.lock line (`run-teacher`), stops on another live line (not the always-on loop's
 `gym-loop`), on main.lock and while a night runs, and resumes where it stopped (a run with a row is never played again).
@@ -48,6 +50,12 @@ where it stopped (`reencode.d/`) and does nothing on a shard that has the file.
 only from a replay: `reencode` replays each run once for whatever side file a shard lacks (the map grid, the state gaps, or both), builds the rows again, refuses
 the shard unless they equal `rows.npz` exactly, and writes the file(s). The per-run results are `reencode.d/<seed>.npz` (rows, grid) and `reencode.d/<seed>.gaps.npz`
 (rows, gaps): a run whose grid result stands is replayed again only for its gaps.
+
+**The grades and the door rows** (D59; docs/lab/TEACHER_JOB.md "The frontier grade, the regrade and the door rows"): the draws' `G` are in floors (`door_return`, the default,
+unchanged) or, beside it, the frontier grade (`frontier_return`: x 13.5 the chance of killing the Act 2 boss, 0 for a death before the door, `1 - p2` at the Act 2 door, `(1 - p1) x A2`
+at the Act 1 door, A2 lane A's Act 2 chance model read on the door's row). `regrade` writes a store's continuations graded again under `run-teacher-frontier/<generation>`, the stored store
+untouched. From the next block every shard also holds `rows_door.npz`: per draw that reached the Act 1 boss door its row (float16, 1,863), A2 and the floors `G`, so that Act 1 routes and
+events can be graded exactly. `units` measures the constants a grade's unit sets (`PAIRED_SD_PRIOR_BY_GRADE`, the student's `TAU_MIN_BY_GRADE`).
 
 Lab code: nothing here changes the engine, the search, the lab's self-play, the loop or the night. No human record is read anywhere in this
 file.
@@ -106,6 +114,17 @@ DEFAULT_AGENT = "D:/spireline/referee/agent/gen13/candidate-stakes"
 # (`src_emb`, the human-outcome input): the player never feeds a source (None is the teacher, row 0 is zero), so the two read identically, and the file
 # loads on any engine tree. v0 stays at `agent/judge/v0/judge.pt`.
 DEFAULT_JUDGE = "D:/spireline/referee/agent/judge/v2b/judge-board.pt"
+# The sha256 of `judge-board.pt`, v2b: the judge whose Act 2 boss door numbers the frontier grade trusts (Act 2 labels only from runs made under it).
+V2B_JUDGE_SHA256 = "62bcaf0dbeaf8c42c846f074d289c882376f0aed7ae27849e4f61b2725aab643"
+ACT2_JUDGES = (V2B_JUDGE_SHA256,)
+# Lane A's Act 2 chance model (`rl/act2_chance.py`, `Act2Scorer(path).score(rows) -> probabilities`, `.sha256`): P(kills the Act 2 boss | past the Act 1
+# boss, the Act 1 state a 1,863-number row describes). The teacher records its reading at the Act 1 door when the file exists; `regrade` needs it.
+DEFAULT_A2 = "D:/spireline/referee/agent/act2/v1/a2.pt"
+DECK_KINDS = ("card", "rest", "ancient", "shop", "reward", "select")  # Act 1 kinds whose option row holds what the option does to the deck
+ROUTE_EVENT_KINDS = ("route", "event")  # Act 1 kinds whose effect comes after the row (an elite's relic, an event's later pages)
+DEFAULT_FRONTIER_ROOT = "D:/spireline/referee/run-teacher-frontier"
+FRONTIER_ROOT_NAME = "run-teacher-frontier"
+STORE_ROOT_NAME = "run-teacher"
 # The sha256 of `agent/judge/v0/judge.pt`, the judge every store row was written under before a row named its judge: a row with no `judge_sha256` is v0's.
 V0_JUDGE_SHA256 = "b5ecf90386c894a9d6e4f56632104757fbef19e8d24e01a32fd72ae3ff79ffc0"
 DEFAULT_SEEDS_FROM = "D:/spireline/referee/agent/gen13/candidate-stakes/arms/E14-2026-11-08-a3-v1/runs.jsonl"
@@ -118,6 +137,16 @@ Z = 2.0
 NU0 = 4.0
 PAIRED_SD_PRIOR = {"card": 3.41, "rest": 2.76, "route": 4.83, "shop": 2.94}
 PAIRED_SD_DEFAULT = 3.11
+# The grades (D59). `floors` is the teacher's grade and stays the default: a continuation is worth its final floor, and at a boss door the judge's chance
+# of dying x the boss's floor plus the chance of surviving x BEYOND. `frontier` grades by the chance of killing the Act 2 boss (`frontier_return`), x 13.5,
+# so that the guard, the temperature and lambda keep a floors-equivalent scale. The guard's prior sd of a paired difference is in the grade's own unit:
+# floors' are the constants above; the frontier's are measured on a regraded store (`units`) and stay None, so no live frontier teacher runs, until they are.
+GRADE_FLOORS, GRADE_FRONTIER = "floors", "frontier"
+GRADES = (GRADE_FLOORS, GRADE_FRONTIER)
+DEFAULT_GRADE = GRADE_FLOORS
+FRONTIER_SCALE = 13.5  # the grade of a run that kills the Act 2 boss, in floors-equivalent (the mean gap between a death before the Act 1 boss and a win of Act 2)
+PAIRED_SD_PRIOR_BY_GRADE: dict[str, dict[str, float] | None] = {GRADE_FLOORS: PAIRED_SD_PRIOR, GRADE_FRONTIER: None}
+TAU_MIN_FLOORS = 0.25  # run_student.TAU_MIN, the floor of the targets' temperature in floors: `unit_constants` scales it to another grade's unit
 # The job (`job`): adaptive K, the door's recalibration, the stored-run source, the store.
 JOB_K = 2  # draws of every shortlisted option before the first look
 JOB_K_MAX = 4  # draws at most: two more when the top two options are within Z standard errors
@@ -137,6 +166,7 @@ GAPS_WIDTH = 36  # features.GAPS_SIZE (a test holds them equal): block G of one 
 GAPS_VERSION = 1  # features.GAPS_VERSION: the layout of block G a shard's rows_gaps.npz holds
 SHARD_ROWS_GAPS = "rows_gaps.npz"  # block G of every row of rows.npz, in its order (`gaps` float32 (rows, GAPS_WIDTH))
 SHARD_ROWS_MAP = "rows_map.npz"  # the map grid of every row of rows.npz, in its order (`grid` int8 (rows, GRID_WIDTH))
+SHARD_ROWS_DOOR = "rows_door.npz"  # the Act 1 boss door's row of every draw that reached it (D59): `door` float16 (draws, ROWS_WIDTH), `decision`, `option`, `draw`, `a2`, `g_floors`
 REENCODE_DIR = "reencode.d"  # `reencode`'s per-run results (resumable)
 DEFAULT_LAB = "D:/spireline/referee/LAB"
 DEFAULT_STORE = "D:/spireline/referee/run-teacher"
@@ -194,6 +224,98 @@ def door_return(end: str, floor: int, p_death: float | None, beyond: dict[int, f
         p = recalibrate(float(p_death), act, cal)
         return p * float(floor) + (1.0 - p) * float(beyond[act])
     return None
+
+
+def frontier_return(end: str, floor: int, p_death: float | None, a2: float | None = None, cal: dict[int, tuple[float, float]] | None = None,
+                    scale: float = FRONTIER_SCALE) -> float | None:
+    """G of one continuation under the frontier grade (D59), in floors-equivalent: `scale` x the chance of killing the Act 2 boss. A death on the way
+    is 0; at the Act 2 door `1 - p2`; at the Act 1 door `(1 - p1) x A2`, `A2` the Act 2 chance model's reading of the deck and state (`a2`, the
+    probability it kills the Act 2 boss once past the Act 1 boss); a won run 1. `p` is the judge's P(death) at that door, recalibrated per act as
+    `door_return` does (`cal`). None for any other end, a door with no estimate, an Act 1 door with no A2, or a door past Act 2: no return."""
+    if end == "death":
+        return 0.0
+    if end == "win":
+        return float(scale)
+    if end != "door":
+        return None
+    if p_death is None or not (0.0 <= float(p_death) <= 1.0):
+        return None
+    act = act_of_floor(int(floor))
+    if act == 1:
+        return float(scale) * (1.0 - recalibrate(float(p_death), 1, cal))
+    if act == 0:
+        if a2 is None or not math.isfinite(float(a2)) or not (0.0 <= float(a2) <= 1.0):
+            return None
+        return float(scale) * (1.0 - recalibrate(float(p_death), 0, cal)) * float(a2)
+    return None
+
+
+def draw_return(grade: str, end: str, floor: int, p_death: float | None, a2: float | None = None, cal: dict[int, tuple[float, float]] | None = None) -> float | None:
+    """G of one continuation under `grade` (`floors`: `door_return`; `frontier`: `frontier_return`)."""
+    if grade == GRADE_FLOORS:
+        return door_return(end, floor, p_death, cal=cal)
+    if grade == GRADE_FRONTIER:
+        return frontier_return(end, floor, p_death, a2=a2, cal=cal)
+    raise ValueError(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+
+
+def guard_priors(grade: str = DEFAULT_GRADE) -> dict[str, float]:
+    """The guard's prior sd of a paired difference by kind in `grade`'s unit. A grade whose unit has not been measured has none: refused, not guessed."""
+    if grade not in PAIRED_SD_PRIOR_BY_GRADE:
+        raise ValueError(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+    table = PAIRED_SD_PRIOR_BY_GRADE[grade]
+    if table is None:
+        raise ValueError(f"the guard's priors of the {grade} grade are not measured yet (`run_teacher.py units` on a regraded store, docs/lab/TEACHER_JOB.md)")
+    return table
+
+
+def guard_prior_sd(kind: str | None, grade: str = DEFAULT_GRADE) -> float:
+    """The prior sd for one kind: floors' table with `PAIRED_SD_DEFAULT` for a kind it has none for; another grade's table, then its `_all`."""
+    table = guard_priors(grade)
+    if grade == GRADE_FLOORS:
+        return table.get(kind or "", PAIRED_SD_DEFAULT)
+    got = table.get(kind or "", table.get("_all"))
+    if got is None:
+        raise ValueError(f"the {grade} grade has no measured prior for kind {kind!r}")
+    return float(got)
+
+
+def check_grade(grade: str, a2_scorer: Any = None) -> None:
+    """A live teacher grading by `grade` needs what the grade stands on: the frontier needs the Act 2 scorer (A2 at the Act 1 door) and its guard
+    priors measured. Exits with the reason otherwise."""
+    if grade not in GRADES:
+        raise SystemExit(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+    if grade == GRADE_FRONTIER:
+        if PAIRED_SD_PRIOR_BY_GRADE.get(GRADE_FRONTIER) is None:
+            raise SystemExit("the frontier grade's guard priors are not measured: run `run_teacher.py units` on a regraded store and set PAIRED_SD_PRIOR_BY_GRADE")
+        if a2_scorer is None:
+            raise SystemExit("the frontier grade needs the Act 2 chance model (--a2 <file>): an Act 1 door has no grade without A2")
+
+
+def draw_facts(rec: dict, option: int) -> list[tuple[str, int, float | None]]:
+    """What each draw of `option` in a stored decision record ended in: (end, floor, the judge's P(death) at the door). The record says it when it
+    keeps `draw_ends` and `draw_floors` (the teacher from D59 on); else it follows from what every record holds: a draw with a P(death) reached its
+    door (the Act 1 boss floor for a screen below it, the Act 2's from it on: the continuation stops at the next boss door), one with none and G at
+    the won floor won, any other died on the floor G (`door_return` stores a death's floor)."""
+    gs, ps = rec["g"][str(option)], rec["p_death"][str(option)]
+    ends = (rec.get("draw_ends") or {}).get(str(option))
+    floors = (rec.get("draw_floors") or {}).get(str(option))
+    door_floor = ACT_BOSS_FLOORS[0] if int(rec["floor"]) < ACT_BOSS_FLOORS[0] else ACT_BOSS_FLOORS[1]
+    out: list[tuple[str, int, float | None]] = []
+    for k, g in enumerate(gs):
+        p = ps[k] if k < len(ps) else None
+        if ends is not None and floors is not None and k < len(ends) and k < len(floors):
+            end, floor = str(ends[k]), int(floors[k])
+        elif p is not None:
+            end, floor = "door", door_floor
+        elif g is None:
+            end, floor = "?", 0
+        elif float(g) >= WON_FLOOR - 1e-9:
+            end, floor = "win", int(WON_FLOOR)
+        else:
+            end, floor = "death", int(round(float(g)))
+        out.append((end, floor, p if end == "door" else None))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------- the door's recalibration
@@ -365,11 +487,11 @@ def paired_se(a: Sequence[float], b: Sequence[float]) -> float | None:
     return math.sqrt(sample_var(d) / len(d))
 
 
-def guard_se(diffs: Sequence[float], kind: str | None, nu0: float = NU0) -> float:
-    """The standard error of a mean paired difference over K draws, its variance pooled with the kind's prior (`PAIRED_SD_PRIOR`) of
-    `nu0` degrees of freedom, so that two draws that happen to agree do not make a tiny error."""
+def guard_se(diffs: Sequence[float], kind: str | None, nu0: float = NU0, grade: str = DEFAULT_GRADE) -> float:
+    """The standard error of a mean paired difference over K draws, its variance pooled with the kind's prior (`PAIRED_SD_PRIOR`; the grade's own table
+    for another grade, `guard_priors`) of `nu0` degrees of freedom, so that two draws that happen to agree do not make a tiny error."""
     k = len(diffs)
-    prior = PAIRED_SD_PRIOR.get(kind or "", PAIRED_SD_DEFAULT) ** 2
+    prior = guard_prior_sd(kind, grade) ** 2
     own = sample_var(diffs) if k >= 2 else 0.0
     var = ((k - 1) * own + nu0 * prior) / ((k - 1) + nu0) if k >= 1 else prior
     return math.sqrt(var / max(1, k))
@@ -402,7 +524,7 @@ def top_two(g: dict[int, list[float]], extra: dict[int, float] | None = None) ->
     return a, b, score[a] - score[b], mean(diffs), diffs
 
 
-def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[int, float] | None = None, z: float = Z) -> bool:
+def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[int, float] | None = None, z: float = Z, grade: str = DEFAULT_GRADE) -> bool:
     """Adaptive K (D57 part 3): after the first draws, two more only where the top two options are within `z` standard errors of each
     other (the guard's own error, `guard_se`: the paired variance pooled with the kind's prior). Options that are clearly apart, or a
     screen with fewer than two options valued, stop where they are."""
@@ -410,7 +532,7 @@ def wants_more_draws(g: dict[int, list[float]], kind: str | None, extra: dict[in
     if t is None:
         return False
     _, _, gap, _, diffs = t
-    return gap < z * guard_se(diffs, kind)
+    return gap < z * guard_se(diffs, kind, grade=grade)
 
 
 # ---------------------------------------------------------------------------------------------------------- the statistics
@@ -590,9 +712,36 @@ def run_to_door(s: Any, player: Any, rng: Any, explore: Any, deadline: float) ->
     return out
 
 
-def continuation(base: Any, option: Any, player: Any, *, seed: str, ordinal: int, k: int, cal: dict[int, tuple[float, float]] | None = None) -> dict:
+def door_row_of(player: Any, session: Any) -> Any:
+    """The row of the state a session stands in at a boss door, float16 (ROWS_WIDTH,): the state's own base vector and the fight block H of its region,
+    built as `human_prior_infer.option_rows` builds an option's row (there is no option: the afterstate is the state), so that a model that reads option
+    rows (lane A's A2) reads it. One encode and one forward of the fight net over the region's queries."""
+    import numpy as np  # noqa: PLC0415
+
+    from run_train import features  # noqa: PLC0415
+
+    nets = player.policy.nets
+    if nets.base_size != features.BASE_SIZE:
+        raise ValueError("the door row reads feature version 2 rows; this judgement's nets read an older vector")
+    view = session.view()
+    base = np.asarray(features.encode(view), dtype=np.float32)[None, :]
+    block = nets.fight.summary(base, features.fight_queries(view))
+    row = np.concatenate([base, np.asarray(block, dtype=np.float32)], axis=1)[0]
+    if row.shape != (ROWS_WIDTH,):
+        raise ValueError(f"door row {row.shape}, not ({ROWS_WIDTH},)")
+    out = row.astype(np.float16)
+    if not np.isfinite(out).all():
+        raise ValueError("a door row holds a number float16 cannot")
+    return out
+
+
+def continuation(base: Any, option: Any, player: Any, *, seed: str, ordinal: int, k: int, cal: dict[int, tuple[float, float]] | None = None,
+                 grade: str = DEFAULT_GRADE, door_rows: bool = False, a2_scorer: Any = None) -> dict:
     """Draw k of one option: fork `base` on the decision's resample seed for k, apply the option, play on to the door. `cal` recalibrates
-    the judge's P(death) at the door (`door_return`); the draw's `p_death` stays the judge's own number."""
+    the judge's P(death) at the door (`door_return`); the draw's `p_death` stays the judge's own number. `grade` is the grade `G` is in (floors, the
+    default, or frontier). At the Act 1 boss door the session is read once, while it is open: with `door_rows` the draw keeps the door's row
+    (`door_row` float16, `door_row_of`), and with `a2_scorer` its A2 (`a2`); the frontier grade needs the A2 for its `G`, and `g_floors` is the floors
+    `G` beside it. A door row that cannot be built costs the draw nothing but the row (`door_error` names the exception)."""
     import hindsight  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
 
@@ -600,16 +749,31 @@ def continuation(base: Any, option: Any, player: Any, *, seed: str, ordinal: int
     rng = np.random.default_rng(stream_key(seed, ordinal, k, 0))
     explore = np.random.default_rng(stream_key(seed, ordinal, k, 1))
     c = hindsight.clone_session(base, resample_seed(seed, ordinal, k))
+    row = a2 = None
+    error = None
     try:
         c.apply(option)
         out = run_to_door(c, player, rng, explore, time.perf_counter() + CONT_WALL_CAP_S)
+        if (door_rows or grade != DEFAULT_GRADE) and out["end"] == "door" and int(out["floor"]) == ACT_BOSS_FLOORS[0]:
+            try:
+                row = door_row_of(player, c)
+                if a2_scorer is not None:
+                    a2 = float(np.asarray(a2_scorer.score(row.astype(np.float32)[None, :]), dtype=np.float64).reshape(-1)[0])
+            except Exception as e:  # noqa: BLE001 -- the draw's return stands without a row; it is said, not hidden
+                row, a2, error = None, None, type(e).__name__
     finally:
         c.close()
     p = ((out["door"] or {}).get("judge") or {}).get("p_death")
-    g = door_return(out["end"], out["floor"], p, cal=cal)
-    return {"k": k, "G": None if g is None else round(g, 4), "end": out["end"], "floor": out["floor"], "p_death": p,
+    g_floors = door_return(out["end"], out["floor"], p, cal=cal)
+    g = g_floors if grade == DEFAULT_GRADE else draw_return(grade, out["end"], out["floor"], p, a2=a2, cal=cal)
+    draw = {"k": k, "G": None if g is None else round(g, 4), "end": out["end"], "floor": out["floor"], "p_death": p,
             "door_hp": (out["door"] or {}).get("hp"), "fights": out["fights"], "cpu": round(time.process_time() - c0, 3),
             "seconds": round(time.perf_counter() - t0, 3)}
+    if door_rows or grade != DEFAULT_GRADE:
+        draw.update(g_floors=None if g_floors is None else round(g_floors, 4), a2=a2, door_row=row if door_rows else None)
+        if error:
+            draw["door_error"] = error
+    return draw
 
 
 def shortlist(options: Sequence[Any], scores: Sequence[float | None], limit: int, keep: int) -> list[int]:
@@ -695,12 +859,16 @@ def prior_extra(rd: dict[str, Any], options: Iterable[int]) -> dict[int, float]:
 
 def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: str, ordinal: int, k: int, max_options: int,
            k_max: int | None = None, k_step: int = JOB_K_STEP, rows_out: list | None = None,
-           cal: dict[int, tuple[float, float]] | None = None, grid_out: list | None = None, gaps_out: list | None = None) -> dict:
+           cal: dict[int, tuple[float, float]] | None = None, grid_out: list | None = None, gaps_out: list | None = None,
+           grade: str = DEFAULT_GRADE, door_out: list | None = None, a2_scorer: Any = None) -> dict:
     """Play the screen's shortlisted options K times each to the door and return the decision's record: the teacher's index,
     the player's, each draw's G and what the screen's reading was. With `k_max` above `k` the draws are taken adaptively: `k` first, then
     `k_step` more at a time while the top two options are within Z standard errors (`wants_more_draws`), up to `k_max`; the record's `k` is
     the number of draws taken. With `rows_out` the screen's option rows (`screen_inputs`) are appended to it, with `grid_out` their map grids and with `gaps_out`
-    their block G."""
+    their block G. `grade` is the grade the draws' `G` are in (floors, the default; frontier needs `a2_scorer`). With `door_out` the Act 1 boss door's row of every
+    draw that reached it is kept: one float16 array (door draws, ROWS_WIDTH) is appended (None when no draw did), and the record names them
+    (`door`: `draws` the (option, draw) of each row in the order they were made, `a2` and `g_floors` per row) and each draw's end and floor
+    (`draw_ends`, `draw_floors`), so that a regrade can grade the Act 1 screens exactly (`regrade_store`)."""
     t0, c0 = time.perf_counter(), time.process_time()
     view = decision.view or view
     rd = screen_inputs(player.policy, view, decision, rows=rows_out is not None)
@@ -715,17 +883,21 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
     extra = prior_extra(rd, chosen)
     top = max(int(k), int(k_max or 0))
     draws: dict[int, list[dict]] = {i: [] for i in chosen}
+    extra_kw = {"grade": grade, "door_rows": door_out is not None, "a2_scorer": a2_scorer} if (door_out is not None or grade != DEFAULT_GRADE) else {}
+    made: list[tuple[int, int]] = []  # (option, draw) in the order the draws were made
     taken = 0
     while True:
         upto = min(top, taken + (int(k) if taken == 0 else int(k_step)))
         for kk in range(taken, upto):  # draw-major: the same draw for every option before the next
             for oi in chosen:
-                draws[oi].append(continuation(s, decision.options[oi], player, seed=seed, ordinal=ordinal, k=kk, cal=cal))
+                draws[oi].append(continuation(s, decision.options[oi], player, seed=seed, ordinal=ordinal, k=kk, cal=cal, **extra_kw))
+                made.append((oi, kk))
         taken = upto
         if taken >= top:
             break
         g_now = {o: [d["G"] for d in rows] for o, rows in draws.items()}
-        if any(x is None for v in g_now.values() for x in v) or int(pick.index) not in g_now or not wants_more_draws(g_now, kind, extra):
+        if (any(x is None for v in g_now.values() for x in v) or int(pick.index) not in g_now
+                or not wants_more_draws(g_now, kind, extra, grade=grade)):
             break
     k = taken
     g = {o: [d["G"] for d in rows] for o, rows in draws.items()}
@@ -739,6 +911,24 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
                            "p_death": {str(o): [d["p_death"] for d in rows] for o, rows in draws.items()},
                            "door_hp": {str(o): [d["door_hp"] for d in rows] for o, rows in draws.items()},
                            "options": [o.kind for o in decision.options]}
+    if grade != DEFAULT_GRADE:
+        rec["grade"] = grade
+        rec["g_floors"] = {str(o): [d.get("g_floors") for d in rows] for o, rows in draws.items()}
+    if door_out is not None:
+        rec["draw_ends"] = {str(o): [d["end"] for d in rows] for o, rows in draws.items()}
+        rec["draw_floors"] = {str(o): [int(d["floor"]) for d in rows] for o, rows in draws.items()}
+        have = [(o, kk) for o, kk in made if draws[o][kk]["door_row"] is not None] if ok else []
+        if have:
+            import numpy as np  # noqa: PLC0415
+
+            items = [draws[o][kk] for o, kk in have]
+            door_out.append(np.stack([d["door_row"] for d in items]).astype(np.float16))
+            rec["door"] = {"draws": [[o, kk] for o, kk in have], "a2": [d.get("a2") for d in items], "g_floors": [d.get("g_floors") for d in items]}
+        else:
+            door_out.append(None)
+        errors = sum(1 for rows in draws.values() for d in rows if d.get("door_error"))
+        if errors:
+            rec["door_errors"] = errors
     if rows_out is not None and len(rd["row_options"]) < len(decision.options):
         rec["_ro"] = rd["row_options"]  # the options that have a row (stored with the screen, taken out when the shard is built)
     if not ok:
@@ -759,7 +949,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
 
         raw = teacher_index(q, len(decision.options), p, **kw)
         gain = score_gain(raw, q) if raw != p else 0.0
-        se = guard_se([a - b for a, b in zip(g[raw], g[p], strict=True)], kind) if raw != p else None
+        se = guard_se([a - b for a, b in zip(g[raw], g[p], strict=True)], kind, grade=grade) if raw != p else None
         played = guarded(raw, p, gain, se if se is not None else math.inf)
         rec.update(teacher=played, teacher_raw=raw, q={str(o): round(x, 4) for o, x in q.items()})
         rec["gain"] = round(gain, 4)
@@ -774,7 +964,7 @@ def decide(s: Any, decision: Any, view: Any, pick: Any, player: Any, *, seed: st
                 if r_h == p:
                     hp.append((r_h, p))
                     continue
-                se_h = guard_se([a - b for a, b in zip(g[r_h][sl], g[p][sl], strict=True)], kind)
+                se_h = guard_se([a - b for a, b in zip(g[r_h][sl], g[p][sl], strict=True)], kind, grade=grade)
                 hp.append((r_h, guarded(r_h, p, score_gain(r_h, h), se_h)))
             rec["half_picks"] = [x[0] for x in hp]
             rec["half_played"] = [x[1] for x in hp]
@@ -1084,7 +1274,10 @@ class RunFiles:
     are all there (in order) and cuts both files to that prefix. Beside the rows (`<seed>.rows_map.i8`) go their map grids (int8, `GRID_WIDTH` a
     row), written first, so a kill leaves at least as many grids as rows and `load` cuts them back too. A run whose rows have no grid (played by an
     earlier build, or a screen stored without one) is `grid_ok == False` for good: its shard gets no `rows_map.npz` until `reencode` writes it. Block G goes
-    the same way (`<seed>.rows_gaps.f32`, float32, `GAPS_WIDTH` a row; `gaps_ok`; `rows_gaps.npz`)."""
+    the same way (`<seed>.rows_gaps.f32`, float32, `GAPS_WIDTH` a row; `gaps_ok`; `rows_gaps.npz`). The Act 1 boss door's rows of a screen's draws (D59:
+    `<seed>.rows_door.f16`, float16, `ROWS_WIDTH` a row) are written before its record, which names them (`door.row0`, `door.draws`): a screen with
+    no door rows (a draw that reached no Act 1 door, or one played by an earlier build) has no `door` and takes no part of the file; `load` cuts the file
+    back with the screens like the others."""
 
     def __init__(self, gen_dir: Path | str, seed: str) -> None:
         d = Path(gen_dir) / "decisions.d"
@@ -1093,21 +1286,32 @@ class RunFiles:
         self.grid_ok = True
         self.gaps = d / f"{seed}.rows_gaps.f32"
         self.gaps_ok = True
+        self.door = d / f"{seed}.rows_door.f16"
         self.n_rows = 0
+        self.n_door = 0
         self.by_ordinal: dict[int, dict] = {}
 
     def load(self) -> dict[int, dict]:
         width = ROWS_WIDTH * 4
         size = self.rows.stat().st_size if self.rows.is_file() else 0
         have = size // width
+        dwidth = ROWS_WIDTH * 2
+        dsize = self.door.stat().st_size if self.door.is_file() else 0
+        dhave = dsize // dwidth
         keep: list[dict] = []
-        end = 0
+        end = dend = 0
         for r in read_jsonl(self.recs):
+            last = dlast = None
             if r.get("row0") is not None:
                 last = int(r["row0"]) + self.n_row_of(r)
                 if int(r["row0"]) != end or last > have:
                     break
-                end = last
+            if r.get("door"):
+                dlast = int(r["door"]["row0"]) + len(r["door"]["draws"])
+                if int(r["door"]["row0"]) != dend or dlast > dhave:
+                    break
+            end = end if last is None else last
+            dend = dend if dlast is None else dlast
             keep.append(r)
         text = "".join(json.dumps(r) + "\n" for r in keep)
         if self.recs.is_file() and self.recs.read_text(encoding="utf-8", errors="replace") != text:
@@ -1116,6 +1320,10 @@ class RunFiles:
             with open(self.rows, "r+b") as fh:
                 fh.truncate(end * width)
         self.n_rows = end
+        if self.door.is_file() and dsize != dend * dwidth:
+            with open(self.door, "r+b") as fh:
+                fh.truncate(dend * dwidth)
+        self.n_door = dend
         gsize = self.grid.stat().st_size if self.grid.is_file() else 0
         self.grid_ok = gsize >= end * GRID_WIDTH
         if self.grid_ok and gsize != end * GRID_WIDTH:
@@ -1135,14 +1343,23 @@ class RunFiles:
         """The rows a stored record has: one per option, or one per option in its `_ro` when only some options could be scored."""
         return len(rec["_ro"]) if rec.get("_ro") is not None else int(rec["n_options"])
 
-    def append(self, rec: dict, rows: Any, grid: Any = None, gaps: Any = None) -> dict:
+    def append(self, rec: dict, rows: Any, grid: Any = None, gaps: Any = None, door: Any = None) -> dict:
         """Store a decision record with its rows (a float32 array (rows, 1863): one per option, or one per option of the record's `_ro`; None
         when none could be built) and, with `grid`, their block M (int8 (rows, 1547)) and, with `gaps`, their block G (float32 (rows, 36)); returns the stored
-        record. Rows stored without a grid (or without gaps) end the run's grids (`grid_ok` False; `gaps_ok`): a file shorter than the rows would not line up."""
+        record. Rows stored without a grid (or without gaps) end the run's grids (`grid_ok` False; `gaps_ok`): a file shorter than the rows would not line up.
+        A record with a `door` (its `draws`, `a2`, `g_floors`) takes `door`, a float16 array (len(draws), 1863) of the Act 1 door's rows, which the record then
+        points at (`door.row0`); a `door` array with no `door` in the record, or the reverse, is refused."""
         import numpy as np  # noqa: PLC0415
 
         self.recs.parent.mkdir(parents=True, exist_ok=True)
         r = dict(rec)
+        darr = None
+        if r.get("door"):
+            darr = np.ascontiguousarray(door, dtype="<f2") if door is not None else None
+            if darr is None or darr.shape != (len(r["door"]["draws"]), ROWS_WIDTH):
+                raise ValueError(f"door rows {None if darr is None else darr.shape} for {len(r['door']['draws'])} draws")
+        elif door is not None:
+            raise ValueError("door rows for a record that names none")
         if rows is not None and self.n_row_of(r):
             arr = np.ascontiguousarray(rows, dtype="<f4")
             if arr.shape != (self.n_row_of(r), ROWS_WIDTH):
@@ -1171,6 +1388,11 @@ class RunFiles:
             self.n_rows += len(arr)
         else:
             r["row0"] = None
+        if darr is not None:
+            with open(self.door, "ab") as fh:
+                fh.write(darr.tobytes())
+            r["door"] = {**r["door"], "row0": self.n_door}
+            self.n_door += len(darr)
         with open(self.recs, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(r, default=_json_default) + "\n")
         self.by_ordinal[int(r["ordinal"])] = r
@@ -1180,6 +1402,11 @@ class RunFiles:
         """Forget the records of this decision and after (a replay that left them: they are computed again)."""
         keep = [r for o, r in sorted(self.by_ordinal.items()) if o < ordinal]
         end = max((int(r["row0"]) + self.n_row_of(r) for r in keep if r.get("row0") is not None), default=0)
+        dend = max((int(r["door"]["row0"]) + len(r["door"]["draws"]) for r in keep if r.get("door")), default=0)
+        if self.door.is_file():
+            with open(self.door, "r+b") as fh:
+                fh.truncate(dend * ROWS_WIDTH * 2)
+        self.n_door = dend
         self.recs.write_text("".join(json.dumps(r) + "\n" for r in keep), encoding="utf-8", newline="\n")
         if self.rows.is_file():
             with open(self.rows, "r+b") as fh:
@@ -1216,6 +1443,18 @@ def sharded_seeds(gen_dir: Path | str, but: str | None = None) -> set[str]:
     return out
 
 
+def write_door_rows(folder: Path, parts: dict[str, Any]) -> None:
+    """`rows_door.npz` of a shard folder: `door` float16 (draws, ROWS_WIDTH), the Act 1 boss door's row of each draw that reached it, and beside it `decision` int32
+    (the shard record's line), `option` int16, `draw` int16 (k), `a2` float32 (the Act 2 model's reading when the row was made; NaN: none) and `g_floors` float32
+    (the draw's G under the floors grade). Written whole, then renamed."""
+    import numpy as np  # noqa: PLC0415
+
+    np.savez_compressed(folder / "rows_door.tmp.npz", door=np.asarray(parts["door"], dtype=np.float16), decision=np.asarray(parts["decision"], dtype=np.int32),
+                        option=np.asarray(parts["option"], dtype=np.int16), draw=np.asarray(parts["draw"], dtype=np.int16),
+                        a2=np.asarray(parts["a2"], dtype=np.float32), g_floors=np.asarray(parts["g_floors"], dtype=np.float32))
+    os.replace(folder / "rows_door.tmp.npz", folder / SHARD_ROWS_DOOR)
+
+
 def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: dict) -> dict:
     """Write the decision shard `shards/<name>/` from the finished runs `seeds` (in that order): `decisions.jsonl` one record per screen
     exactly as the teacher made it plus `row0` (the screen's first row in `rows.npz`), `rows.npz` (`rows` float32 (rows, 1863) as
@@ -1230,9 +1469,11 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
     gen_dir = Path(gen_dir)
     recs_out: list[dict] = []
     rows_parts, dec_parts, opt_parts, grid_parts, gaps_parts = [], [], [], [], []
+    door_parts: dict[str, list] = {"door": [], "decision": [], "option": [], "draw": [], "a2": [], "g_floors": []}
     grid_all = True
     gaps_all = True
     n_rows = 0
+    n_door = 0
     by_kind: Counter = Counter()
     refused: Counter = Counter()
     extended = 0
@@ -1242,6 +1483,7 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
         mat = np.fromfile(rf.rows, dtype="<f4").reshape(-1, ROWS_WIDTH) if rf.rows.is_file() and rf.n_rows else np.zeros((0, ROWS_WIDTH), dtype="<f4")
         gmat = np.zeros((0, GRID_WIDTH), dtype=np.int8)
         zmat = np.zeros((0, GAPS_WIDTH), dtype="<f4")
+        dmat = np.fromfile(rf.door, dtype="<f2").reshape(-1, ROWS_WIDTH) if rf.door.is_file() and rf.n_door else np.zeros((0, ROWS_WIDTH), dtype="<f2")
         if rf.n_rows:
             if rf.grid_ok:
                 gmat = np.fromfile(rf.grid, dtype=np.int8).reshape(-1, GRID_WIDTH)
@@ -1269,6 +1511,18 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
                 n_rows += n
             else:
                 r["row0"] = None
+            if r.get("door"):
+                door = dict(r["door"])
+                at, nd = int(door["row0"]), len(door["draws"])
+                door_parts["door"].append(dmat[at : at + nd])
+                door_parts["decision"].append(np.full(nd, line, dtype=np.int32))
+                door_parts["option"].append(np.array([int(o) for o, _ in door["draws"]], dtype=np.int16))
+                door_parts["draw"].append(np.array([int(kk) for _, kk in door["draws"]], dtype=np.int16))
+                door_parts["a2"].append(np.array([np.nan if x is None else float(x) for x in door["a2"]], dtype=np.float32))
+                door_parts["g_floors"].append(np.array([np.nan if x is None else float(x) for x in door["g_floors"]], dtype=np.float32))
+                door["row0"] = n_door
+                r["door"] = door
+                n_door += nd
             recs_out.append(r)
             by_kind[f"{r.get('kind')}/a{int(r.get('act', 0)) + 1}"] += 1
             if r.get("refused"):
@@ -1291,12 +1545,14 @@ def build_shard(gen_dir: Path | str, name: str, seeds: Sequence[str], manifest: 
     if gaps_all:
         np.savez_compressed(tmp / "rows_gaps.tmp.npz", gaps=np.concatenate(gaps_parts).astype(np.float32) if gaps_parts else np.zeros((0, GAPS_WIDTH), dtype=np.float32))
         os.replace(tmp / "rows_gaps.tmp.npz", tmp / SHARD_ROWS_GAPS)
-    manifest = {**manifest, "map_grid": bool(grid_all), "state_gaps": bool(gaps_all)}
+    if n_door:
+        write_door_rows(tmp, {k: np.concatenate(v) for k, v in door_parts.items()})
+    manifest = {**manifest, "map_grid": bool(grid_all), "state_gaps": bool(gaps_all), "door_rows": bool(n_door)}
     if gaps_all:
         manifest["gaps_version"] = GAPS_VERSION
     doc = {**manifest, "seeds": list(seeds), "runs": len(seeds),
            "counts": {"decisions": len(recs_out), "rows": n_rows, "runs": len(seeds), "refused": int(sum(refused.values())),
-                      "k_extended": extended, "by_kind_act": dict(sorted(by_kind.items()))}}
+                      "k_extended": extended, "door_rows": n_door, "by_kind_act": dict(sorted(by_kind.items()))}}
     write_json(tmp / SHARD_MANIFEST, clean_path(doc))
     if final.exists():
         shutil.rmtree(final)
@@ -1331,18 +1587,23 @@ def agent_identity(agent_dir: Path | str, agent: Any) -> dict[str, Any]:
 
 
 def shard_manifest(*, job: str, generation: int, identity: dict, judge: str | None, lib: str | None, tree: str | None, k: int, k_max: int,
-                   max_options: int, cal: dict | None, sources: dict[str, int]) -> dict:
+                   max_options: int, cal: dict | None, sources: dict[str, int], grade: str = DEFAULT_GRADE, a2_sha256: str | None = None) -> dict:
     """The manifest of a job's decision shard (before its counts): who played (agent, judge, engine sha256s), K and the shortlist, the leaf's
-    B, the guard's Z and priors, the door's recalibration, the namespace of the seeds."""
-    return {"version": VERSION, "kind": "run-teacher-shard", "created_utc": utc().strftime("%Y-%m-%dT%H:%M:%SZ"), "job": job,
+    B, the guard's Z and priors, the door's recalibration, the namespace of the seeds, and the grade the draws' G are in (`grade`: floors unless the job
+    ran the frontier grade, with its `scale` and the sha256 of the Act 2 model whose reading the Act 1 doors took) and the Act 2 model the door rows
+    were read with (`a2_sha256`; None: the rows kept no reading)."""
+    return {"version": VERSION, "kind": "run-teacher-shard", "created_utc": utc().strftime("%Y-%m-%dT%H:%M:%SZ"), "job": job, "grade": grade,
+            **({"scale": FRONTIER_SCALE} if grade == GRADE_FRONTIER else {}), "a2_sha256": a2_sha256,
             "generation": generation, **identity,
             "judge": "/".join(Path(judge).parts[-2:]) if judge else None, "judge_sha256": file_digest(judge),
             "engine": tree, "engine_sha256": file_digest(Path(lib) / "Sts2Emulator.dll") if lib else None,
             "k": k, "k_max": k_max, "adaptive": k_max > k, "m": max_options, "max_options": max_options,
             "beyond": BEYOND, "leaf_b": BEYOND, "last_floor": LAST_FLOOR, "guard": {"z": Z, "nu0": NU0, "paired_sd_prior": PAIRED_SD_PRIOR,
                                                                                      "paired_sd_default": PAIRED_SD_DEFAULT},
-            "recal": cal or {}, "leaf": "the boss door: P(death) from the judge (recalibrated per act where the store has enough of the player's own "
-                                         "door outcomes) x the boss floor + P(survive) x beyond[act]; a death on the way its floor",
+            "recal": cal or {}, "leaf": ("the boss door: P(death) from the judge (recalibrated per act where the store has enough of the player's own "
+                                         "door outcomes) x the boss floor + P(survive) x beyond[act]; a death on the way its floor" if grade == GRADE_FLOORS else
+                                         "the chance of killing the Act 2 boss, x 13.5: 0 for a death before the door, 1 - p2 at the Act 2 door, (1 - p1) x A2 at "
+                                         "the Act 1 door (P(death) recalibrated as the floors leaf does); 1 for a win"),
             "seeds_namespace": NAMESPACE, "sources": sources, "kinds": list(TEACHER_KINDS),
             "human_corpus": "not read"}
 
@@ -1403,8 +1664,15 @@ def _init_job_worker(cfg: dict) -> None:
         import torch  # noqa: PLC0415
 
         torch.set_num_threads(1)
+    scorer = None
+    if cfg.get("a2"):
+        try:
+            scorer = load_a2_scorer(cfg["a2"])
+        except BaseException as e:  # noqa: BLE001 -- a model that cannot load costs the door rows their reading, not the run (the main process loaded it once and said)
+            print(f"run-teacher worker: the Act 2 model did not load ({type(e).__name__}): door rows without A2", flush=True)
     _J.clear()
-    _J.update(cfg, player=player, replayers={}, cal_map=calibration_map(cfg.get("cal")), gen_dir=Path(cfg["gen_dir"]))
+    _J.update(cfg, player=player, replayers={}, cal_map=calibration_map(cfg.get("cal")), gen_dir=Path(cfg["gen_dir"]), a2_scorer=scorer,
+              grade=cfg.get("grade", DEFAULT_GRADE), door_rows=bool(cfg.get("door_rows", False)))
 
 
 def _replayer(explore: tuple[float, float]) -> Any:
@@ -1480,12 +1748,15 @@ def _screen(files: RunFiles, ordinal: int, d: Any, view: Any, pick: Any, s: Any,
     rows_out: list = []
     grid_out: list = []
     gaps_out: list = []
+    door_out: list | None = [] if _J.get("door_rows") else None
     try:
         rec = decide(s, d, view, pick, _J["player"], seed=seed, ordinal=ordinal, k=_J["k"], max_options=_J["max_options"], k_max=_J["k_max"],
-                     rows_out=rows_out, cal=_J["cal_map"], grid_out=grid_out, gaps_out=gaps_out)
+                     rows_out=rows_out, cal=_J["cal_map"], grid_out=grid_out, gaps_out=gaps_out, grade=_J.get("grade", DEFAULT_GRADE), door_out=door_out,
+                     a2_scorer=_J.get("a2_scorer"))
     except Exception as e:  # noqa: BLE001 -- a screen the teacher cannot read is the player's, said by reason: it never costs the run (a retry would meet it again)
         return files.append(refused_record(d, view, pick, seed, ordinal, f"error:{type(e).__name__}"), None)
-    return files.append(rec, rows_out[0] if rows_out else None, grid_out[0] if grid_out else None, gaps_out[0] if gaps_out else None)
+    return files.append(rec, rows_out[0] if rows_out else None, grid_out[0] if grid_out else None, gaps_out[0] if gaps_out else None,
+                        door=door_out[0] if door_out else None)
 
 
 def new_run(task: tuple) -> dict:
@@ -1666,7 +1937,8 @@ def consolidate(gen_dir: Path, job_name: str, ctx: dict, agent: Any) -> dict:
         return {"job": job_name, "seeds": [], "runs": 0, "counts": {"decisions": 0, "rows": 0, "runs": 0, "refused": 0, "k_extended": 0, "by_kind_act": {}}}
     sources = dict(Counter(r.get("source", "?") for r in rows if r["seed"] in set(seeds)))
     manifest = shard_manifest(job=job_name, generation=ctx["generation"], identity=ctx["identity"], judge=ctx["judge"], lib=ctx["lib"], tree=ctx["tree"],
-                              k=ctx["k"], k_max=ctx["k_max"], max_options=ctx["max_options"], cal=ctx["cal_doc"], sources=sources)
+                              k=ctx["k"], k_max=ctx["k_max"], max_options=ctx["max_options"], cal=ctx["cal_doc"], sources=sources,
+                              grade=ctx.get("grade", DEFAULT_GRADE), a2_sha256=ctx.get("a2_sha256"))
     doc = build_shard(gen_dir, job_name, seeds, manifest)
     recs = [(s, RunFiles(gen_dir, s).record) for s in seeds]
     recs = [(s, p) for s, p in recs if p.is_file()]
@@ -1753,16 +2025,29 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
         if not tasks:
             res["idle"] = "no run to play" + (" (no stored run of this generation is left to replay)" if mode == "stored" else "")
         lib = str(a.lib or ROOT / "out")
+        a2_path, a2_sha, a2_note = resolve_a2(a.a2)
+        if a2_path is not None and (a.door_rows or a.grade != DEFAULT_GRADE):
+            try:
+                load_a2_scorer(a2_path)  # once here, so that a model that does not load is said in the block's result, not in sixteen workers' output
+            except BaseException as e:  # noqa: BLE001
+                a2_path, a2_sha, a2_note = None, None, f"did not load ({type(e).__name__})"
+        res["a2"] = {"sha256": a2_sha, "note": a2_note} if (a.door_rows or a.grade != DEFAULT_GRADE) else None
+        res["grade"] = a.grade
+        res["door_rows"] = bool(a.door_rows)
+        if a.grade != DEFAULT_GRADE:
+            check_grade(a.grade, a2_path)
         worker_cfg = {"agent_dir": str(agent_dir), "replay_agent": str(a.replay_agent or agent_dir), "judge": a.judge, "judge_sha256": judge_sha, "lib": lib, "gen_dir": str(gen_dir),
                       "ledger": str(ledger), "job": name, "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal": cal_doc,
                       "deadline": t_start + a.block_min * 60.0, "budget_h": float(cfg.get("core_hours_per_day", 24.0)),
                       "stop_file": str(job_dir / "STOP"), "stop_floor": a.stop_floor, "label_rate": a.label_rate, "per_run": a.per_run,
                       "kinds": kinds_of(a.kinds), "target_screens": a.target_screens if mode == "stored" else 0,
-                      "est_new_s": jobs.TEACHER_EST_CPU_S, "est_label_s": 60.0 + 45.0 * a.per_run}
+                      "est_new_s": jobs.TEACHER_EST_CPU_S, "est_label_s": 60.0 + 45.0 * a.per_run,
+                      "grade": a.grade, "door_rows": bool(a.door_rows), "a2": a2_path if (a.door_rows or a.grade != DEFAULT_GRADE) else None}
         if mode == "stored" and gen_loop.load_agent(worker_cfg["replay_agent"]).generation != generation:
             raise SystemExit("the stored runs are of generation %d: --replay-agent must be that generation's player" % generation)
         ctx = {"generation": generation, "identity": agent_identity(agent_dir, agent), "judge": a.judge, "lib": lib, "tree": _git_head(),
-               "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal_doc": {str(k): v for k, v in cal_doc.items()}}
+               "k": a.k, "k_max": a.k_max, "max_options": a.max_options, "cal_doc": {str(k): v for k, v in cal_doc.items()}, "grade": a.grade,
+               "a2_sha256": a2_sha if a.door_rows or a.grade != DEFAULT_GRADE else None}
         why = hold_fn(True)
         if why:
             res["held"] = why
@@ -1820,6 +2105,464 @@ def _git_head() -> str | None:
     with contextlib.suppress(Exception):
         return subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True, timeout=20).stdout.strip() or None
     return None
+
+
+# ---------------------------------------------------------------------------------------------------------- regrade: the stored continuations graded again (D59)
+
+REGRADE_DROP = ("teacher", "teacher_raw", "gain", "gain_se", "gain_se_own", "half_picks", "half_played")  # the floors guard's own: not meaningful in another grade
+SCORE_CHUNK = 20000
+
+
+def frontier_root_for(src: Path | str) -> Path:
+    """The default root of a store's frontier regrade: the same path with its `run-teacher` folder named `run-teacher-frontier` (`run-teacher/14` ->
+    `run-teacher-frontier/14`, `run-teacher/gen13-r0/13` -> `run-teacher-frontier/gen13-r0/13`)."""
+    parts = list(Path(src).parts)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == STORE_ROOT_NAME:
+            parts[i] = FRONTIER_ROOT_NAME
+            return Path(*parts)
+    raise SystemExit(f"no `{STORE_ROOT_NAME}` folder in the path {src}: give --out")
+
+
+def resolve_a2(arg: str | None) -> tuple[str | None, str | None, str]:
+    """The Act 2 model file a job reads: (path, its sha256, a note). `auto` (the default) is `DEFAULT_A2` when that file exists and else none; an empty
+    string or `none` is none; any other path must exist."""
+    text = "auto" if arg is None else str(arg).strip()
+    if text.lower() in ("", "none"):
+        return None, None, "off"
+    if text.lower() == "auto":
+        if Path(DEFAULT_A2).is_file():
+            return DEFAULT_A2, file_digest(DEFAULT_A2), "auto"
+        return None, None, "auto: no model file yet"
+    if not Path(text).is_file():
+        raise SystemExit(f"--a2: no such file {text!r}")
+    return text, file_digest(text), "given"
+
+
+def load_a2_scorer(path: str | Path) -> Any:
+    """Lane A's `Act2Scorer(path)`: `.score(rows (n, 1863)) -> P(kills the Act 2 boss | past the Act 1 boss)` of each row, `.sha256`."""
+    try:
+        import act2_chance  # noqa: PLC0415
+    except ImportError as e:
+        raise ImportError(f"rl/act2_chance.py is not in this tree ({e})") from e
+    return act2_chance.Act2Scorer(str(path))
+
+
+def judge_calibrations(rows: Sequence[dict]) -> tuple[dict[str, dict[int, tuple[float, float]]], dict[str, dict[str, Any]]]:
+    """Per judge, the door recalibration fitted on every door outcome the run rows hold under that judge (`door_pairs`): ({judge sha256: {act: (a, b)}}, the
+    same as a document by the sha256's first eight characters). A judge with fewer than `CAL_MIN_DOORS` doors of an act has none for it (its number stands)."""
+    cal: dict[str, dict[int, tuple[float, float]]] = {}
+    doc: dict[str, dict[str, Any]] = {}
+    for sha in sorted({str(row_judge_sha256(r)) for r in rows if not r.get("capped")}):
+        fit = fit_door_calibration(door_pairs(rows, sha))
+        if fit:
+            cal[sha] = calibration_map(fit)
+            doc[sha[:8]] = {str(a): v for a, v in fit.items()}
+    return cal, doc
+
+
+def _manifest_beyond(man: dict) -> dict[int, float]:
+    b = man.get("beyond") or BEYOND
+    return {int(k): float(v) for k, v in b.items()}
+
+
+def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTIER, scorer: Any = None, act2_judges: Sequence[str] | None = None,
+                  doors_from: Sequence[Path | str] = (), dry_run: bool = False, scale: float = FRONTIER_SCALE) -> dict:
+    """The stored continuations of a store graded again (D59): a new store `out`, the stored one `src` untouched (`out` may not be it or inside it).
+
+    `grade` frontier (the point): every record's draws are graded `frontier_return` and Q is their mean. A screen whose door is the Act 2 boss's (its floor
+    from the Act 1 boss floor on) is exact, for every kind, and only where the run was made under an Act 2 judge (`act2_judges`, default v2b: another judge's
+    Act 2 P(death) is another number). A screen whose door is the Act 1 boss's needs A2 (`scorer`, lane A's model) on the state at the door: read on the
+    door's row of each draw where the screen kept them (`door` in the record: the teacher from D59 on; any kind, exact), else on the option's own stored row
+    for the deck kinds (`DECK_KINDS`: what the option does to the deck is in the row; the door's own state is not), while Act 1 routes and events
+    (an elite's relic comes after the row) and any other Act 1 kind with no door rows have no grade and are left out of the new store, counted. P(death) is
+    recalibrated per judge on the door outcomes of the store's runs (and `doors_from`'s other stores' runs: a store with none of its own, round 0, borrows
+    another's under the same judge). A screen the teacher refused, an option with no row, an A2 the scorer cannot give and a draw with no return are left out
+    by reason. The guard's own fields (the floors-teacher's pick and gain) do not carry over; the floors `g` and `q` stay beside as `g_floors`, `q_floors`.
+
+    `grade` floors rebuilds the stored labels from each draw's end and P(death) under the recalibration the shard's manifest names: it writes the records
+    as they were and counts, in `mismatches`, the records whose recomputed `g` or `q` is not the stored one (a store regraded so reproduces its labels).
+
+    Returns the counts by reason, kind and act (never a seed). With `dry_run` nothing is written."""
+    import numpy as np  # noqa: PLC0415
+
+    src, out = Path(src), Path(out)
+    if grade not in GRADES:
+        raise SystemExit(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+    if grade == GRADE_FRONTIER and scorer is None:
+        raise SystemExit("the frontier regrade needs the Act 2 model (--a2 <file>): an Act 1 door has no grade without A2")
+    s_abs, o_abs = src.resolve(), out.resolve()
+    if o_abs == s_abs or s_abs in o_abs.parents or o_abs in s_abs.parents:
+        raise SystemExit("the regraded store is a root of its own: not the stored store, nor inside it, nor holding it")
+    shards = shard_folders(src)
+    if not shards:
+        raise SystemExit(f"no shard under {src}")
+    judges = tuple(ACT2_JUDGES if act2_judges is None else act2_judges)
+    runs = read_jsonl(src / "runs.jsonl")
+    judge_by_seed = {str(r["seed"]): row_judge_sha256(r) for r in runs if not r.get("capped") and r.get("seed") is not None}
+    pool = list(runs)
+    for other in doors_from:
+        pool += read_jsonl(Path(other) / "runs.jsonl")
+    cal_by_judge, cal_doc = judge_calibrations(pool) if grade == GRADE_FRONTIER else ({}, {})
+
+    reasons: Counter = Counter()
+    by_reason_kind: dict[str, Counter] = defaultdict(Counter)
+    kept: Counter = Counter()
+    a2_from: Counter = Counter()
+    kinds_graded: set[str] = set()
+    mismatches = decisions = 0
+    totals = {"rows": 0, "door_rows": 0}
+    written: list[str] = []
+    for d in shards:
+        man = json.loads((d / SHARD_MANIFEST).read_text(encoding="utf-8"))
+        recs = read_jsonl(d / SHARD_DECISIONS)
+        with np.load(d / SHARD_ROWS, allow_pickle=False) as z:
+            rows, dec, opt = z["rows"], z["decision"].astype(np.int64), z["option"].astype(np.int64)
+        side = {}
+        for fname, key in ((SHARD_ROWS_MAP, "grid"), (SHARD_ROWS_GAPS, "gaps")):
+            if (d / fname).is_file():
+                with np.load(d / fname, allow_pickle=False) as z:
+                    side[key] = z[key]
+        door_z = None
+        if (d / SHARD_ROWS_DOOR).is_file():
+            with np.load(d / SHARD_ROWS_DOOR, allow_pickle=False) as z:
+                door_z = {k: z[k] for k in z.files}
+        row_of: list[dict[int, int]] = [dict() for _ in recs]
+        for j, (i, o) in enumerate(zip(dec.tolist(), opt.tolist(), strict=True)):
+            if 0 <= i < len(recs):
+                row_of[i][o] = j
+        before = dict(reasons)
+        door_keep: dict[int, tuple[dict, Any]] = {}
+        shard_cal = calibration_map(man.get("recal"))
+        beyond = _manifest_beyond(man)
+        man_judge = man["judge_sha256"] if "judge_sha256" in man else V0_JUDGE_SHA256
+        kept_recs: list[dict] = []
+        kept_idx: list[int] = []
+        want: list[tuple[int, str, Any, Any]] = []  # (record, "option"/"door", key, row): what the scorer is asked
+        plan: dict[int, dict] = {}
+        for i, rec in enumerate(recs):
+            decisions += 1
+            cell = f"{rec.get('kind')}/a{int(rec.get('act', 0)) + 1}"
+
+            def skip(why: str, rec: dict = rec, cell: str = cell) -> None:
+                reasons[why] += 1
+                by_reason_kind[why][cell] += 1
+
+            if rec.get("refused") or rec.get("q") is None:
+                skip("refused")
+                if grade == GRADE_FLOORS:
+                    kept_recs.append(rec)
+                    kept_idx.append(i)
+                continue
+            seed = str(rec["seed"])
+            judge = judge_by_seed[seed] if seed in judge_by_seed else man_judge
+            played = [int(o) for o in rec["played"]]
+            facts = {o: draw_facts(rec, o) for o in played}
+            if grade == GRADE_FLOORS:
+                new_g = {}
+                for o in played:
+                    new_g[str(o)] = []
+                    for end, floor, p in facts[o]:
+                        g = door_return(end, floor, p, beyond=beyond, cal=shard_cal)
+                        new_g[str(o)].append(None if g is None else round(g, 4))
+                r2 = dict(rec)
+                r2["g"] = new_g
+                r2["q"] = {str(o): round(mean(new_g[str(o)]), 4) for o in played} if all(x is not None for v in new_g.values() for x in v) else rec["q"]
+                if new_g != rec["g"] or r2["q"] != rec["q"]:
+                    mismatches += 1
+                reasons["regraded"] += 1
+                kept[cell] += 1
+                if rec.get("door") and door_z is not None:
+                    door_keep[len(kept_recs)] = (rec["door"], None)
+                kept_recs.append(r2)
+                kept_idx.append(i)
+                continue
+            act = 0 if int(rec["floor"]) < ACT_BOSS_FLOORS[0] else 1
+            kind = rec.get("kind")
+            if act == 1:
+                if judge not in judges:
+                    skip("act2_judge")
+                    continue
+                plan[i] = {"mode": "act2", "judge": judge, "facts": facts, "played": played}
+                kept_idx.append(i)
+                continue
+            door = rec.get("door")
+            need = {(o, k) for o in played for k, (end, _, _) in enumerate(facts[o]) if end == "door"}
+            have = {(int(o), int(k)): int(door["row0"]) + j for j, (o, k) in enumerate(door["draws"])} if (door and door_z is not None) else {}
+            if need and need <= set(have):
+                keys = sorted(need)
+                plan[i] = {"mode": "door", "judge": judge, "facts": facts, "played": played, "keys": keys, "at": [have[k] for k in keys]}
+                for k, at in zip(keys, plan[i]["at"], strict=True):
+                    want.append((i, "door", k, door_z["door"][at].astype(np.float32)))
+                kept_idx.append(i)
+                continue
+            if kind in ROUTE_EVENT_KINDS:
+                skip("act1_route_event")
+                continue
+            if kind not in DECK_KINDS:
+                skip("act1_other_kind")
+                continue
+            if any(o not in row_of[i] for o in played):
+                skip("no_row")
+                continue
+            plan[i] = {"mode": "option", "judge": judge, "facts": facts, "played": played}
+            for o in played:
+                want.append((i, "option", o, rows[row_of[i][o]].astype(np.float32)))
+            kept_idx.append(i)
+        # the Act 2 model's reading of every row asked, in one go per chunk
+        scored: dict[tuple[int, str, Any], float] = {}
+        for at in range(0, len(want), SCORE_CHUNK):
+            part = want[at : at + SCORE_CHUNK]
+            probs = np.asarray(scorer.score(np.stack([w[3] for w in part])), dtype=np.float64).reshape(-1)
+            if len(probs) != len(part):
+                raise SystemExit(f"the Act 2 model gave {len(probs)} readings for {len(part)} rows")
+            for w, pr in zip(part, probs.tolist(), strict=True):
+                scored[(w[0], w[1], w[2])] = pr
+        if grade == GRADE_FLOORS:
+            final_idx, final_recs = kept_idx, kept_recs
+        else:
+            final_idx, final_recs = [], []
+            for i in kept_idx:
+                rec, pl = recs[i], plan[i]
+                cell = f"{rec.get('kind')}/a{int(rec.get('act', 0)) + 1}"
+                cal = cal_by_judge.get(pl["judge"])
+                a2s: dict[Any, float] = {}
+                bad = False
+                if pl["mode"] == "option":
+                    a2s = {o: scored[(i, "option", o)] for o in pl["played"]}
+                    bad = not all(math.isfinite(v) for v in a2s.values())
+                elif pl["mode"] == "door":
+                    a2s = {k: scored[(i, "door", k)] for k in pl["keys"]}
+                    bad = not all(math.isfinite(v) for v in a2s.values())
+                if bad:
+                    reasons["no_a2"] += 1
+                    by_reason_kind["no_a2"][cell] += 1
+                    continue
+                new_g: dict[str, list[float | None]] = {}
+                for o in pl["played"]:
+                    vals = []
+                    for k, (end, floor, p) in enumerate(pl["facts"][o]):
+                        a2 = a2s.get(o if pl["mode"] == "option" else (o, k))
+                        g = frontier_return(end, floor, p, a2=a2, cal=cal, scale=scale)
+                        vals.append(None if g is None else round(g, 4))
+                    new_g[str(o)] = vals
+                if any(x is None for v in new_g.values() for x in v):
+                    reasons["no_return"] += 1
+                    by_reason_kind["no_return"][cell] += 1
+                    continue
+                r2 = dict(rec)
+                r2["g_floors"], r2["q_floors"] = rec["g"], rec["q"]
+                r2["g"] = new_g
+                r2["q"] = {str(o): round(mean(new_g[str(o)]), 4) for o in pl["played"]}
+                for key in REGRADE_DROP:
+                    r2.pop(key, None)
+                r2["grade"] = GRADE_FRONTIER
+                r2.pop("door", None)
+                if pl["mode"] == "option":
+                    r2["a2"] = {str(o): round(v, 6) for o, v in a2s.items()}
+                    r2["a2_from"] = "option_row"
+                elif pl["mode"] == "door":
+                    per_option: dict[int, list[float]] = defaultdict(list)
+                    for (o, _), v in a2s.items():
+                        per_option[o].append(v)
+                    r2["a2"] = {str(o): round(mean(v), 6) for o, v in sorted(per_option.items())}
+                    r2["a2_from"] = "door_rows"
+                    door = recs[i]["door"]
+                    r2["door"] = {**door, "a2": [round(a2s[(int(o), int(k))], 6) if (int(o), int(k)) in a2s else None for o, k in door["draws"]]}
+                    door_keep[len(final_recs)] = (door, pl)
+                    a2_from["door_rows"] += 1
+                if pl["mode"] == "option":
+                    a2_from["option_row"] += 1
+                reasons["regraded"] += 1
+                kept[cell] += 1
+                kinds_graded.add(str(rec.get("kind")))
+                final_idx.append(i)
+                final_recs.append(r2)
+        if grade == GRADE_FLOORS:
+            for rr in final_recs:
+                if rr.get("refused") is None and rr.get("q") is not None:
+                    kinds_graded.add(str(rr.get("kind")))
+        if dry_run:
+            continue
+        shard_out = out / "shards" / d.name
+        info = _write_regraded_shard(shard_out, man, final_recs, final_idx, rows, dec, opt, side, door_z, door_keep, grade, scorer, scale, d.name,
+                                     {k: v - before.get(k, 0) for k, v in reasons.items() if v - before.get(k, 0)})
+        totals["rows"] += info["rows"]
+        totals["door_rows"] += info["door_rows"]
+        written.append(d.name)
+    res: dict[str, Any] = {"kind": "run-teacher-regrade", "source": "/".join(Path(src).parts[-2:]), "grade": grade, "scale": scale if grade == GRADE_FRONTIER else None,
+                           "a2_sha256": getattr(scorer, "sha256", None) if grade == GRADE_FRONTIER else None,
+                           "act2_judges": list(judges) if grade == GRADE_FRONTIER else None, "calibration": cal_doc, "shards": len(shards),
+                           "decisions": decisions, "by_reason": dict(reasons), "mismatches": mismatches,
+                           "by_reason_kind_act": {why: dict(sorted(c.items())) for why, c in sorted(by_reason_kind.items())},
+                           "kept_by_kind_act": dict(sorted(kept.items())), "grade_by_kind": {k: grade for k in sorted(kinds_graded)},
+                           "a2_from": dict(a2_from), "rows": totals["rows"], "door_rows": totals["door_rows"], "dry_run": bool(dry_run)}
+    if not dry_run:
+        write_json(out / SHARD_MANIFEST, clean_path({**res, "created_utc": utc().strftime("%Y-%m-%dT%H:%M:%SZ"), "shard_names": written}))
+    return res
+
+
+def _write_regraded_shard(folder: Path, man: dict, recs: list[dict], idx: list[int], rows: Any, dec: Any, opt: Any, side: dict, door_z: dict | None,
+                          door_keep: dict[int, tuple[dict, dict]], grade: str, scorer: Any, scale: float, source_shard: str, reasons: dict) -> dict:
+    """Write one regraded shard folder (whole, then renamed): the records kept, in order, with their rows renumbered from 0 and the side files cut to the same rows."""
+    import numpy as np  # noqa: PLC0415
+
+    tmp = folder.parent / f"{folder.name}.tmp"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+    rows_parts, dec_parts, opt_parts = [], [], []
+    side_parts: dict[str, list] = {k: [] for k in side}
+    door_parts: dict[str, list] = {"door": [], "decision": [], "option": [], "draw": [], "a2": [], "g_floors": []}
+    out_recs: list[dict] = []
+    n_rows = n_door = 0
+    by_kind: Counter = Counter()
+    refused = extended = 0
+    for line, (i, rec) in enumerate(zip(idx, recs, strict=True)):
+        r = dict(rec)
+        at = np.flatnonzero(dec == i)
+        if r.get("row0") is not None and len(at):
+            rows_parts.append(rows[at])
+            for k in side:
+                side_parts[k].append(side[k][at])
+            dec_parts.append(np.full(len(at), line, dtype=np.int32))
+            opt_parts.append(opt[at].astype(np.int16))
+            r["row0"] = n_rows
+            n_rows += len(at)
+        else:
+            r["row0"] = None
+        if line in door_keep and door_z is not None:
+            door, pl = door_keep[line]
+            first = int(door["row0"])
+            n = len(door["draws"])
+            door_parts["door"].append(door_z["door"][first : first + n])
+            door_parts["decision"].append(np.full(n, line, dtype=np.int32))
+            door_parts["option"].append(np.array([int(o) for o, _ in door["draws"]], dtype=np.int16))
+            door_parts["draw"].append(np.array([int(k) for _, k in door["draws"]], dtype=np.int16))
+            door_parts["a2"].append(np.array([np.nan if x is None else float(x) for x in r["door"]["a2"]], dtype=np.float32))
+            door_parts["g_floors"].append(door_z["g_floors"][first : first + n].astype(np.float32))
+            r["door"] = {**r["door"], "row0": n_door}
+            n_door += n
+        out_recs.append(r)
+        by_kind[f"{r.get('kind')}/a{int(r.get('act', 0)) + 1}"] += 1
+        refused += int(bool(r.get("refused")))
+        extended += int(int(r.get("k", 0)) > int(man.get("k", 0)))
+    (tmp / SHARD_DECISIONS).write_text("".join(json.dumps(r, default=_json_default) + "\n" for r in out_recs), encoding="utf-8", newline="\n")
+    np.savez_compressed(tmp / "rows.tmp.npz", rows=np.concatenate(rows_parts).astype(np.float32) if rows_parts else np.zeros((0, ROWS_WIDTH), dtype=np.float32),
+                        decision=np.concatenate(dec_parts) if dec_parts else np.zeros(0, dtype=np.int32),
+                        option=np.concatenate(opt_parts) if opt_parts else np.zeros(0, dtype=np.int16))
+    os.replace(tmp / "rows.tmp.npz", tmp / SHARD_ROWS)
+    for key, fname in (("grid", SHARD_ROWS_MAP), ("gaps", SHARD_ROWS_GAPS)):
+        if key in side:
+            np.savez_compressed(tmp / "side.tmp.npz", **{key: np.concatenate(side_parts[key]).astype(side[key].dtype) if side_parts[key] else side[key][:0]})
+            os.replace(tmp / "side.tmp.npz", tmp / fname)
+    if n_door:
+        write_door_rows(tmp, {k: np.concatenate(v) for k, v in door_parts.items()})
+    doc = {**man, "grade": grade, "source_shard": source_shard, "regrade": {"by_reason": reasons}, "door_rows": bool(n_door),
+           "map_grid": "grid" in side, "state_gaps": "gaps" in side}
+    if grade == GRADE_FRONTIER:
+        doc.update(scale=scale, a2_sha256=getattr(scorer, "sha256", None),
+                   leaf="the chance of killing the Act 2 boss, x 13.5, regraded from the stored continuations (docs/lab/TEACHER_JOB.md, The frontier grade)")
+    doc["counts"] = {**(man.get("counts") or {}), "decisions": len(out_recs), "rows": n_rows, "refused": refused, "k_extended": extended, "door_rows": n_door,
+                     "by_kind_act": dict(sorted(by_kind.items()))}
+    write_json(tmp / SHARD_MANIFEST, clean_path(doc))
+    if folder.exists():
+        shutil.rmtree(folder)
+    os.replace(tmp, folder)
+    return {"rows": n_rows, "door_rows": n_door, "decisions": len(out_recs)}
+
+
+def regrade_cmd(a: argparse.Namespace) -> int:
+    """`regrade`: the stored continuations of a store graded again under a new root (`regrade_store`); prints the counts."""
+    src = Path(a.src)
+    out = Path(a.out) if a.out else frontier_root_for(src)
+    scorer = None
+    if a.grade == GRADE_FRONTIER:
+        path, _, note = resolve_a2(a.a2 if a.a2 else None)
+        if path is None:
+            raise SystemExit(f"the frontier regrade needs the Act 2 model: --a2 <file> ({note})")
+        try:
+            scorer = load_a2_scorer(path)
+        except ImportError as e:
+            raise SystemExit(str(e)) from e
+    res = regrade_store(src, out, grade=a.grade, scorer=scorer, act2_judges=a.act2_judge or None, doors_from=[Path(x) for x in a.doors_from], dry_run=a.dry_run)
+    print(json.dumps(res, indent=1))
+    return 1 if res["mismatches"] else 0
+
+
+# ---------------------------------------------------------------------------------------------------------- the constants a grade's unit sets (D59)
+
+
+def _decision_g(rec: dict, key: str = "g") -> list[list[float]] | None:
+    """One decision record's G[option][draw] over its played options, or None when it has none (a refused screen, a missing draw)."""
+    if rec.get("refused") or not rec.get(key):
+        return None
+    g = [[float(x) for x in rec[key][str(o)]] for o in rec.get("played", []) if str(o) in rec[key] and all(x is not None for x in rec[key][str(o)])]
+    return g or None
+
+
+def paired_sd_by_kind(recs: Iterable[dict], min_decisions: int = 20, key: str = "g") -> dict[str, Any]:
+    """The guard's prior (`PAIRED_SD_PRIOR`) measured from decision records: per kind the pooled sd of one draw's difference between two played options. Each
+    pair of played options of a decision (K >= 2 draws, the draws common to both) gives the sample variance of its K differences on K - 1 degrees of freedom;
+    the kind's is the degrees-of-freedom-weighted mean of those variances, its sd the root. A kind with fewer than `min_decisions` decisions that contributed
+    is left out. `_dof` holds each kind's degrees of freedom. `key` names the record's G (`g`; `g_floors` in a regraded record)."""
+    num: dict[str, float] = defaultdict(float)
+    dof: dict[str, int] = defaultdict(int)
+    n: Counter = Counter()
+    for r in recs:
+        g = _decision_g(r, key)
+        k = min((len(x) for x in g), default=0) if g else 0
+        if not g or len(g) < 2 or k < 2:
+            continue
+        kind = str(r.get("kind"))
+        n[kind] += 1
+        for a in range(len(g)):
+            for b in range(a + 1, len(g)):
+                num[kind] += sample_var([x - y for x, y in zip(g[a][:k], g[b][:k], strict=True)]) * (k - 1)
+                dof[kind] += k - 1
+    out: dict[str, Any] = {kind: round(math.sqrt(num[kind] / dof[kind]), 4) for kind in sorted(dof) if n[kind] >= min_decisions and dof[kind]}
+    out["_dof"] = dict(sorted(dof.items()))
+    return out
+
+
+def unit_constants(floors: Sequence[dict], frontier: Sequence[dict] | None = None, min_decisions: int = 20, tau_min_floors: float = TAU_MIN_FLOORS) -> dict[str, Any]:
+    """What a grade's unit sets, measured on decision records: the guard's prior by kind (`paired_sd_by_kind`) and the pooled noise sd of one draw's centred
+    option value (`noise_and_spread`), for the floors records and, on the same screens, the frontier records. `noise_ratio` is the frontier's noise sd over
+    the floors', and `tau_min_suggested` the floor of the student's temperature in the frontier unit: floors' `TAU_MIN` (0.25) x that ratio, so that the same
+    share of a typical temperature is held back."""
+    rep: dict[str, Any] = {"paired_sd": {"floors": paired_sd_by_kind(floors, min_decisions)},
+                           "noise_sd": {"floors": noise_and_spread([g for g in (_decision_g(r) for r in floors) if g])["noise_sd"]}, "decisions": {"floors": len(floors)}}
+    if frontier is not None:
+        rep["paired_sd"]["frontier"] = paired_sd_by_kind(frontier, min_decisions)
+        rep["noise_sd"]["frontier"] = noise_and_spread([g for g in (_decision_g(r) for r in frontier) if g])["noise_sd"]
+        rep["decisions"]["frontier"] = len(frontier)
+        nf, nq = rep["noise_sd"]["floors"], rep["noise_sd"]["frontier"]
+        if nf and nq:
+            rep["noise_ratio"] = nq / nf
+            rep["tau_min_suggested"] = round(tau_min_floors * rep["noise_ratio"], 3)
+    return rep
+
+
+def store_records(root: Path | str) -> list[dict]:
+    """Every decision record of every shard under `root` (a store's generation folder) that has values: not refused, with a G."""
+    out: list[dict] = []
+    for d in shard_folders(root):
+        out += [r for r in read_jsonl(d / SHARD_DECISIONS) if not r.get("refused") and r.get("g")]
+    return out
+
+
+def units_cmd(a: argparse.Namespace) -> int:
+    """`units`: the constants a store's grade sets (`unit_constants`). On a regraded store the floors figures are those of the same screens (`g_floors`)."""
+    recs = store_records(a.store)
+    if recs and all(r.get("grade") == GRADE_FRONTIER and r.get("g_floors") for r in recs):
+        rep = unit_constants([{**r, "g": r["g_floors"]} for r in recs], recs, min_decisions=a.min_decisions)
+        rep["grade"] = GRADE_FRONTIER
+    else:
+        rep = unit_constants(recs, None, min_decisions=a.min_decisions)
+        rep["grade"] = GRADE_FLOORS
+    rep["store"] = "/".join(Path(a.store).parts[-2:])
+    print(json.dumps(clean_path(rep), indent=1))
+    return 0
 
 
 # ---------------------------------------------------------------------------------------------------------- reencode: the map grid of an older shard
@@ -2309,6 +3052,17 @@ def build_parser() -> argparse.ArgumentParser:
     re_.add_argument("--shard", action="append", default=[], help="only this shard (repeatable)")
     re_.add_argument("--sides", default="grid,gaps", help="which side files to add: grid (rows_map.npz), gaps (rows_gaps.npz), or both (default)")
     re_.add_argument("--limit-runs", type=int, default=0, help="replay at most this many runs (a smoke test; the shards that are not complete are left)")
+    rg = sub.add_parser("regrade", help="grade a store's stored continuations again under a new root (the stored store untouched): the frontier grade, or floors to check")
+    rg.add_argument("--src", required=True, help="the stored generation folder (<store>/<generation>)")
+    rg.add_argument("--out", default="", help="the regraded store's generation folder (default: the same path under run-teacher-frontier)")
+    rg.add_argument("--grade", choices=GRADES, default=GRADE_FRONTIER, help="frontier (default) or floors (rebuilds the stored labels and counts the ones that differ)")
+    rg.add_argument("--a2", default="auto", help="the Act 2 model file (frontier): auto is the default place if the file is there")
+    rg.add_argument("--act2-judge", action="append", default=[], help="a judge's sha256 whose Act 2 door numbers are trusted (repeatable; default: v2b)")
+    rg.add_argument("--doors-from", action="append", default=[], help="another store's folder whose runs' door outcomes join the recalibration (repeatable)")
+    rg.add_argument("--dry-run", action="store_true", help="count, write nothing")
+    un = sub.add_parser("units", help="the constants a store's grade sets: the guard's prior sd by kind and the noise of a draw (a regraded store compares both grades)")
+    un.add_argument("--store", required=True, help="a generation folder")
+    un.add_argument("--min-decisions", type=int, default=20)
     for name, help_ in (("job", "the teacher as a lab job: shards in the store, under the filler's rules"),
                         ("label", "round 0: replay the stored exploring runs and label their screens (job --source stored)")):
         jp = sub.add_parser(name, help=help_)
@@ -2346,6 +3100,12 @@ def build_parser() -> argparse.ArgumentParser:
         jp.add_argument("--result", default="", help="write the block's result.json here")
         jp.add_argument("--name", default="", help="the job's name (default: the UTC minute and -teacher)")
         jp.add_argument("--labels-calibration", default="", help="stored hindsight labels (a labels.d's parent) whose door outcomes seed the calibration")
+        jp.add_argument("--grade", choices=GRADES, default=DEFAULT_GRADE,
+                        help="the grade the draws are in: floors (default; the labels of every shard so far) or frontier (the chance of killing the Act 2 boss; needs --a2 "
+                             "and measured guard priors)")
+        jp.add_argument("--door-rows", action=argparse.BooleanOptionalAction, default=True,
+                        help="keep the Act 1 boss door's row of every draw that reaches it (rows_door.npz; default on): a regrade then grades Act 1 routes and events exactly")
+        jp.add_argument("--a2", default="auto", help="the Act 2 model file read at the Act 1 door (auto: the default place if the file is there, else no reading)")
         if name == "label":  # round 0: one long block over the stored runs, not under the daily budget
             jp.set_defaults(block_min=ROUND0_BLOCK_MIN, max_runs=ROUND0_MAX_RUNS)
     return p
@@ -2353,7 +3113,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
-    return {"play": play_cmd, "report": report_cmd, "relabel": relabel_cmd, "job": job_cmd, "label": job_cmd, "reencode": reencode_cmd}[a.cmd](a)
+    return {"play": play_cmd, "report": report_cmd, "relabel": relabel_cmd, "job": job_cmd, "label": job_cmd, "reencode": reencode_cmd, "regrade": regrade_cmd,
+            "units": units_cmd}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -1335,5 +1335,98 @@ class StateGapsTests(unittest.TestCase):
         self.assertTrue(p.parse_args(["check", "--shards-root", "s", "--state-gaps"]).state_gaps)
 
 
+# ------------------------------------------------------------------------------------------------------------------ the grade (D59, lane B)
+
+
+class GradeTests(unittest.TestCase):
+    """A store is graded one way: floors (the default; a shard with no `grade` is floors') or frontier (`run_teacher.py regrade`, D59). The loader refuses
+    two grades in one set of shards (the targets would mix two units), and the temperature's floor `TAU_MIN` is the grade's own."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.weights = random_weights()
+        self.synth = Synth(self.weights, noise=0.01)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def shard(self, name, grade=None, n=4, first=0, record_grade=None):
+        recs, rows = [], []
+        for i in range(n):
+            r, rr = self.synth.record(f"G{first + i:08d}", i, "card")
+            if record_grade:
+                r["grade"] = record_grade
+            recs.append(r)
+            rows.append(rr)
+        man = {"version": 1, "agent": "stub", "judge": "stub", "k": 4, "max_options": 4, "counts": {"decisions": n, "rows": int(sum(len(x) for x in rows))}}
+        if grade is not None:
+            man["grade"] = grade
+        return write_shard(self.root, name, recs, rows, manifest=man)
+
+    def test_the_defaults_are_the_floors_ones(self):
+        import run_teacher as rt
+
+        self.assertEqual(0.25, rs.TAU_MIN)
+        self.assertEqual(0.25, rs.TAU_MIN_BY_GRADE["floors"])
+        self.assertEqual({"card": 3.41, "rest": 2.76, "route": 4.83, "shop": 2.94}, rt.PAIRED_SD_PRIOR)
+        self.assertEqual(rt.PAIRED_SD_PRIOR, rt.PAIRED_SD_PRIOR_BY_GRADE["floors"])
+
+    def test_a_store_with_no_grade_is_floors_and_a_frontier_store_names_its_own(self):
+        self.shard("a")
+        ts = rs.load_shards(self.root)
+        self.assertEqual("floors", ts.stats["grade"])
+        self.assertEqual("floors", rs.public_stats(ts)["grade"])
+        self.assertTrue(np.all(ts.tau >= 0.25))
+        self.assertAlmostEqual(0.25, float(ts.tau.min()), places=5)  # a draw's noise this small is held to TAU_MIN
+        with tempfile.TemporaryDirectory() as other:
+            self.root = Path(other)
+            self.shard("a", grade="frontier")
+            with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": 0.05}):
+                ts = rs.load_shards(self.root)
+            self.assertEqual("frontier", ts.stats["grade"])
+            self.assertAlmostEqual(0.05, float(ts.tau.min()), places=5)  # the grade's own floor on the temperature
+
+    def test_two_grades_in_one_store_are_refused(self):
+        self.shard("a", grade="floors", first=0)
+        self.shard("b", grade="frontier", first=100)
+        with self.assertRaises(rs.ShardError) as cm:
+            rs.load_shards(self.root)
+        self.assertIn("two grades", str(cm.exception))
+        self.assertIn("floors", str(cm.exception))
+        self.assertIn("frontier", str(cm.exception))
+
+    def test_a_shard_with_no_grade_beside_a_frontier_one_is_two_grades(self):
+        self.shard("a", first=0)
+        self.shard("b", grade="frontier", first=100)
+        with self.assertRaises(rs.ShardError):
+            rs.load_shards(self.root)
+
+    def test_a_records_own_grade_counts_too(self):
+        self.shard("a", grade="floors", first=0)
+        self.shard("b", grade="floors", first=100, record_grade="frontier")
+        with self.assertRaises(rs.ShardError):
+            rs.load_shards(self.root)
+
+    def test_shards_of_one_grade_join(self):
+        self.shard("a", grade="frontier", first=0)
+        self.shard("b", grade="frontier", first=100)
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": 0.05}):
+            ts = rs.load_shards(self.root)
+        self.assertEqual((8, "frontier"), (len(ts), ts.stats["grade"]))
+        self.assertEqual({"frontier"}, {m["grade"] for m in ts.manifests})
+
+    def test_a_grade_whose_unit_is_not_measured_is_refused_not_guessed(self):
+        self.shard("a", grade="frontier")
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": None}), self.assertRaises(rs.ShardError) as cm:
+            rs.load_shards(self.root)
+        self.assertIn("TAU_MIN", str(cm.exception))
+
+    def test_an_unknown_grade_is_refused(self):
+        self.shard("a", grade="vibes")
+        with self.assertRaises(rs.ShardError):
+            rs.load_shards(self.root)
+
+
 if __name__ == "__main__":
     unittest.main()

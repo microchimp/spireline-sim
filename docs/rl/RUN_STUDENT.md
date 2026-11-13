@@ -184,6 +184,26 @@ D:/spireline/venv-gpu/Scripts/python.exe rl/run_student.py round --map-grid --st
     --out D:/spireline/referee/run-student/<generation>-r1-gaps [--no-build] ...
 ```
 
+## The grade (D59: floors, or the frontier)
+
+The teacher's `Q` is in the unit of its **grade** (`docs/lab/TEACHER_JOB.md`, "The frontier grade, the regrade and the door rows"): `floors` (every shard so far: final floors, the judge's chance of dying at a boss
+door times the boss's floor plus the chance of surviving times `BEYOND`) or `frontier` (the chance of killing the Act 2 boss, x 13.5, in a store that `run_teacher.py regrade` wrote under `run-teacher-frontier/`). A shard's
+manifest says which (`grade`; one with no such key is floors', so no shard written before D59 needs changing, and a record may say it too). **A store is graded one way**:
+
+* `load_shards` refuses shards that carry two grades (a shard's manifest, or a record's own `grade`): the target `softmax((Q + lambda log pi_h) / tau)` would mix two units, and the temperature, lambda and the legs'
+  paired differences with it. The error names the grades and the number of shards of each; fit one root at a time (`--shards-root D:/spireline/referee/run-teacher/<g>` or `.../run-teacher-frontier/<g>`, never their parent).
+  An unknown grade is refused too. The loaded set names its grade (`ts.stats["grade"]`, `public_stats`, each shard's provenance entry).
+* **`TAU_MIN`** (the floor of the target's temperature, 0.25 floors, above) is the grade's own unit's: `TAU_MIN_BY_GRADE` (`floors` 0.25, the value `TAU_MIN` holds and every floors store reads unchanged; `frontier` is
+  `None` until measured, and a frontier store is then refused with that said, not fitted with a floors number). The frontier's is the floors' scaled by the ratio of the noise sd of one draw's centred option value in the two
+  grades **on the same screens**: `python rl/run_teacher.py units --store <the regraded generation folder>` reports both (a regraded record keeps the floors `g` as `g_floors`) and `tau_min_suggested` = 0.25 x
+  (frontier noise sd / floors noise sd), so that the same share of a typical temperature is held back.
+* **`PAIRED_SD_PRIOR`** (the guard's prior sd of a paired difference, by kind, `run_teacher.py`; used only where the teacher plays, `guard_se`) has a floors table (card 3.41, rest 2.76, route 4.83, shop 2.94, default 3.11:
+  unchanged) and a frontier one, `PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, measured by the same `units` command: per kind, the pooled sd of one draw's difference between two played options (each pair of options of a
+  decision: the sample variance of its K differences on K - 1 degrees of freedom, weighted by those degrees; a kind under 20 decisions left out). The measuring function reads any store: on generation 14's floors
+  store it is the figure to compare the 11-05 table with; on the regraded store, the frontier's.
+* The student's legs, lambda and recipe are unchanged; lambda is measured against V, which is still floors (`V + lambda log pi_s` at play), so on a frontier store it is the new value per nat beyond V in the
+  frontier's unit: read it as the design says (`OBJECTIVE.md` section 6, risk 7) before it is given to a candidate.
+
 ## The recipe and the policy
 
 ```
@@ -262,7 +282,7 @@ counts (decisions by kind, split, dropped reasons) without a fit; that is what t
 
 ## Tests
 
-`tests/python/test_run_student.py` (the map grid: `rows_map.npz` in the loader, the refusals both ways, the teacher's prior for the target, the student
+`tests/python/test_run_student.py` (the grade: two grades refused, `TAU_MIN` per grade, a store with no grade is floors'; the map grid: `rows_map.npz` in the loader, the refusals both ways, the teacher's prior for the target, the student
 net and file with the tower, a whole map-grid fit and both legs; targets and temperature, the loader and each refusal, the measurement's records, the split, the exam
 refusals, the net equal to the prior, the fit on a planted teacher, leg 1, the KL term, leg 2, the verdict's margins, lambda recovering a
 planted value, a whole round, the command line), `test_imitation_chooser.py` (the recipe grammar and the byte-for-byte plain recipes, the

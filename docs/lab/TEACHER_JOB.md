@@ -121,8 +121,9 @@ block's CPU, shard counts and the budget left.
 ```
 runs.jsonl                  one row per finished run (a run with a row is never played again; a capped row is not a finished run)
 decisions.d/<seed>.jsonl    a run's decision records as they are made; <seed>.rows.f32 their option rows, <seed>.rows_map.i8 their map grids
-                            (int8, 1,547 a row, written before the rows), <seed>.rows_gaps.f32 their block G (float32, 36 a row); <seed>.record.json the run's RunRecord
-shards/<job>/               the decision shard: decisions.jsonl, rows.npz, rows_map.npz, rows_gaps.npz, manifest.json
+                            (int8, 1,547 a row, written before the rows), <seed>.rows_gaps.f32 their block G (float32, 36 a row), <seed>.rows_door.f16
+                            the Act 1 boss door's rows of their draws (float16, 1,863 a row, D59); <seed>.record.json the run's RunRecord
+shards/<job>/               the decision shard: decisions.jsonl, rows.npz, rows_map.npz, rows_gaps.npz, rows_door.npz (when a screen kept door rows), manifest.json
 reencode.d/<seed>.npz       `reencode`'s per-run results (rows, grids and options built again), kept so a stopped reencode resumes;
                             <seed>.gaps.npz the same for block G (rows, gaps, options)
 jobs/<job>/                 job.json, shards/ (the RunRecords of the job's runs in the lab's own run-shard layout)
@@ -156,10 +157,16 @@ start (the run is a function of its seed, the player and the teacher's picks, al
   numbers are read off the engine's own state (state lists 25, 26 and 27) at the decision, so a shard played before has them only from a replay: `reencode` writes
   the file (below). The student reads it with `run_student.py ... --state-gaps` (`docs/rl/RUN_STUDENT.md`); a file for another block G version, another row count
   or with a number that is not finite is refused.
+* `rows_door.npz` (from D59, the first block on this build): `door` float16 (door draws, 1,863), the row of the state at the **Act 1 boss door** of each draw that
+  reached it (below), with `decision` int32 (the record's line), `option` int16, `draw` int16 (k), `a2` float32 (the Act 2 model's reading when the row was
+  made, NaN when there was no model) and `g_floors` float32 (the draw's G under the floors grade). A record that kept door rows has `door`
+  (`row0`, `draws` the (option, draw) of each row in the order they were made, `a2`, `g_floors`), and every record made with door rows on says each draw's end and
+  floor (`draw_ends`, `draw_floors`). The manifest says `door_rows: true` and `counts.door_rows`.
 * `manifest.json`: the agent (`agent`, `agent_sha256` over the combat prior's, the run head's and the human prior's sha256s and the recipe),
   the judge and engine (`judge`, `judge_sha256`, `engine`, `engine_sha256` of the native library), `k`, `k_max`, `m`, the leaf's B
   (`beyond`: 30.93 and 42.30), the guard's Z, NU0 and priors, the door's recalibration (`recal`), the namespace of the seeds, `seeds` (the
-  runs in the shard), the sources (`new` and `stored` runs) and the `counts` the loader checks (`decisions`, `rows`).
+  runs in the shard), the sources (`new` and `stored` runs) and the `counts` the loader checks (`decisions`, `rows`), and from D59 the `grade` the draws' G are in
+  (`floors` unless the job ran the frontier grade; a shard with no `grade` is floors') and `a2_sha256` (the Act 2 model the door rows were read with).
 
 A finished run is in one shard only (the job that finished it, or the next job's, if the first was killed before it wrote one); a shard
 is rebuilt whole when its job runs again.
@@ -227,6 +234,70 @@ starts from the ridge alone, that is, keeps its own number at that act until it 
 the block's `result.json` carries the same as `recal` (`judge_sha256`, `doors_by_act`, `doors_other_judges`, `fitted_acts`). Two files that read
 identically (v2b's `judge.pt` and `judge-board.pt`) are two judges here, by hash: their pairs are kept apart.
 
+## The frontier grade, the regrade and the door rows (D59; the design is `referee/backlog/act2-build/OBJECTIVE.md`)
+
+**In plain words.** The teacher marks an option by how many floors the run reaches. That mark cannot see Act 2: dying early costs about 17 floors where
+killing the Act 2 boss is worth 13.5, and the Act 1 boss is worth 14 floors to every deck alike, so relics, upgrades and a deck's readiness for Act 2
+count only through the Act 1 boss. The **frontier grade** marks an option by its chance of killing the Act 2 boss instead. Like marking a pupil on the chance
+of passing the second exam, and before the first exam, the chance of passing it times how ready the notes are for the second. **Floors stays the default**: what
+the lab runs writes the same labels it always has; it gains door rows (below) and the ability to be graded again.
+
+**The grade of one continuation** (`run_teacher.frontier_return`, x `FRONTIER_SCALE` 13.5, so that the guard, the temperature and lambda keep a floors-equivalent
+scale): 0 if the run died before its door, `1 - p2` at the Act 2 boss door, `(1 - p1) x A2(s)` at the Act 1 boss door, 1 if it won. `p` is the judge's P(death) at that
+door, recalibrated per act and per judge as the floors leaf does (above); `A2(s)` is lane A's Act 2 chance model (`rl/act2_chance.py`, `Act2Scorer(path).score(rows)`,
+`.sha256`) read on the state at the Act 1 door: the chance that a run in this state, once past the Act 1 boss, kills the Act 2 boss. Q is the mean over the draws.
+`door_return` is unchanged and `DEFAULT_GRADE` is `floors`; `draw_return(grade, ...)` picks.
+
+**`regrade`**: the stored continuations of a store graded again, under a new root, the stored store untouched (it may not be the target, nor inside or around it):
+
+```
+D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py regrade --src D:/spireline/referee/run-teacher/14 [--out D:/spireline/referee/run-teacher-frontier/14] \
+    [--a2 D:/spireline/referee/agent/act2/v1/a2.pt] [--doors-from D:/spireline/referee/run-teacher/14 ...] [--dry-run]
+```
+
+(`--out` defaults to the same path with `run-teacher` named `run-teacher-frontier`; minutes of one core, no game.) What it does, record by record of every shard:
+
+| the screen | what the new store holds |
+|---|---|
+| Act 2 (its door is the Act 2 boss's: floor 17 on), any kind | **exact**, from the stored draws: death 0, door `1 - p2`. Only where the run was made under an Act 2 judge (`ACT2_JUDGES`, v2b's `judge-board.pt`); another judge's Act 2 P(death) is another number: skipped, `act2_judge` |
+| Act 1, deck kinds (card, rest, ancient, shop, reward, select) | A2 read on the **option's stored row** (what the option does to the deck is in the row; the door's state is not, so the change stays to the door and what comes after is shared under the common draws) |
+| Act 1, any kind, with door rows kept by the teacher | **exact**: A2 read on each draw's own door row (`a2_from: door_rows`), routes and events included |
+| Act 1 routes and events without door rows (an elite's relic comes after the row) | not relabelled, **left out of the new store**, counted (`act1_route_event`); any other Act 1 kind without door rows `act1_other_kind` |
+| a refused screen, an option with no row, an A2 the model cannot give, a draw with no return | left out by reason: `refused`, `no_row`, `no_a2`, `no_return` |
+
+P(death) at the doors is recalibrated per judge, refitted on the door outcomes of the store's own runs (`judge_calibrations`: only the pairs recorded under that judge, at least
+60 doors of an act, the ridge as in the job), plus those of `--doors-from` stores under the same judge (round 0 has none of its own: it borrows v0's from the daily store). A record
+keeps `g_floors` and `q_floors` beside the new `g` and `q`, `grade: "frontier"`, `a2` (per option) and `a2_from`; the floors guard's own fields (`teacher`, `teacher_raw`, `gain*`,
+`half_*`) are dropped: they describe a pick made on another grade. The rows are renumbered to the screens kept and the side files (`rows_map.npz`, `rows_gaps.npz`, and `rows_door.npz` for the screens
+graded from door rows) cut to them, so a regraded shard is a shard `run_student.load_shards` reads. Manifests: each shard's (`grade`, `scale`, `a2_sha256`, `source_shard`, the counts) and the
+store's (`<out>/manifest.json`: counts by reason and by reason, kind and act, the grade per kind, A2's sha256, the scale, the Act 2 judge filter, the recalibration per judge, `a2_from`); no seed, no
+absolute path. `--grade floors` rebuilds the stored labels from each draw's end and P(death) under the recalibration the shard's manifest names and writes them as they are: the output's
+`decisions.jsonl` is byte for byte the stored one's (a test holds it) and `mismatches` counts the records whose label did not reproduce (the exit code is 1 when any). Checked on generation 14's
+stored shards (10,426 screens with values at 2026-11-13 01:30Z): each of the 102,026 door draws' `G` reproduces from its P(death) under its shard's recalibration, the door being the Act 1
+boss's below floor 17 (74,964 draws) and the Act 2's from it on (27,062), and each of the 23,760 draws that died stored its floor.
+
+**The door rows.** From the next block, `continuation` reads the session at the Act 1 boss door once, while it is open (`door_row_of`: the state's own base vector and the fight block H of its region, the
+row an option's afterstate gets, built through the same fight net so that a model that reads option rows reads it; one encode and one forward over the region's queries), keeps it float16 per draw
+(`rows_door.npz`, about 0.4 GB per 10,000 screens), and with the Act 2 model reads A2 on it (`--a2`, default `auto`: `agent/act2/v1/a2.pt` when the file exists; the manifest's `a2_sha256`, and a model that does not
+load is said in the block's `result.json` (`a2`) and costs the rows their reading, not the block). `--door-rows` is on by default (`--no-door-rows` turns it off), so the lab's own command line gains it; the
+Act 2 door and a death keep no row (Act 2 is exact without it). A row that cannot be built costs the draw only the row (`door_errors` in the record). With door rows on, a replayed run keeps what its
+earlier screens stored; screens made before the build have no `door` and are regraded as above. Cost: see "Cost of the door rows" below.
+
+**`--grade frontier` in a live job** is built (`decide(..., grade=)`, `continuation(..., grade=)`: G is the frontier grade, `g_floors` beside it) and refused until what it needs exists: the Act 2 model (`--a2`) and the guard's
+priors in its unit (`PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, measured by `units` on a regraded store; `check_grade`). Nothing the lab runs uses it.
+
+**`units`**: `python rl/run_teacher.py units --store <a generation folder>` measures, from the records of a store, what a grade's unit sets: the guard's prior (`PAIRED_SD_PRIOR`: per kind, the pooled sd of one draw's difference
+between two played options: each pair of played options of a decision gives the sample variance of its K differences on K - 1 degrees of freedom; the kind's is their degrees-of-freedom-weighted mean, a kind with fewer than 20
+decisions left out) and the noise sd of one draw's centred option value (`noise_and_spread`). On a regraded store it reports both grades on the same screens (`g_floors`) and `tau_min_suggested` = `TAU_MIN` x the
+ratio of the noise sds, the floor of the student's temperature in the frontier unit (`docs/rl/RUN_STUDENT.md`, "The grade"). The floors figures are `PAIRED_SD_PRIOR` and `TAU_MIN` as they stand (card 3.41, rest 2.76, route 4.83, shop 2.94; 0.25).
+The method run on generation 14's floors store (10,426 screens, 2026-11-13, read only) gives card 3.62, rest 2.17, route 4.84, shop 3.16 and a noise sd of 2.08 (the 11-05 table's 2.00), so it is the same
+quantity under another generation's play; the frontier's are set from the regraded store and are `None` until then (`guard_priors` and the student's `tau_min_for` refuse a grade whose unit is not measured).
+
+**Cost of the door rows** (measured 2026-11-13 on this build, one process at BelowNormal with the lab's teacher running beside it): eight draws of one card option at floor 2, played with and without door rows
+(the same draws came to the same ends: reading the door changes nothing in the game): continuation CPU median 2.93 s without and 2.97 s with (a stand-in A2 as large as the run judgement's trunk; the
+difference is the noise of a loaded machine, the draws do the same work). In isolation `door_row_of` is 1.5 ms a call and a forward of that stand-in 0.9 ms: **2.4 ms against 2.9 s, 0.08 % of a continuation**
+(the design said under 1 in 100). The row is float16 (3.7 KB), about 0.4 GB per 10,000 screens. One run to its Act 1 door took 5.3 s CPU from the start.
+
 ## Cost (the measurement's figures, and the first smoke's)
 
 The measurement's final figures (K 4, M 4; `referee/backlog/run-self-play/BUILD-PLAN.md`): 1,383 CPU-s a run, 43.8 screens a run, 33.5 CPU-s
@@ -261,5 +332,5 @@ CPU-s here, with the door's P(death) recorded.
 
 ## Files
 
-`rl/run_teacher.py` (the job, the shard, the calibration, adaptive K, the stored-run source, `reencode`), `tools/lab/jobs.py` (kind `teacher`, the rules,
-the ledger), `tests/python/test_run_teacher.py`, `tests/python/test_lab_jobs_teacher.py`, this file.
+`rl/run_teacher.py` (the job, the shard, the calibration, adaptive K, the stored-run source, `reencode`, the frontier grade, `regrade`, the door rows, `units`), `tools/lab/jobs.py` (kind `teacher`, the rules,
+the ledger), `tests/python/test_run_teacher.py`, `tests/python/test_run_teacher_frontier.py` (the grade, the regrade, the door rows, the unit constants), `tests/python/test_lab_jobs_teacher.py`, this file.
