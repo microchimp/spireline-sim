@@ -59,6 +59,7 @@ ASCENSION = 10
 MAX_DRAWS = 64
 ACTS = (1, 2)
 Z = 1.959964
+RECORDS_ENV = "SPIRELINE_EXAM_RECORDS"  # the folder `--records` names, handed to the spawn workers through the environment
 FINISHED = ("win", "death")  # the rows whose run ran to its end; a crash, a timeout or a lost worker is counted and left out of the means
 
 
@@ -489,6 +490,24 @@ def _below_normal() -> None:
     hb._below_normal()
 
 
+def _play_recorded(gen0: Any, seed: str, ix: int, config: str, ascension: int, agent: Any, hook: Callable[..., bool], records: str, key: str, draw: int) -> dict[str, Any]:
+    """The same run with the lab's recording path on (`play_emu_run(record=True)`) and the measurement accounting of `seed_exam_records` on top of the
+    recorder. The run's record becomes one derived file in `records` (the seed's key in its name, no seed inside); the row loses the combat samples."""
+    import gen_loop  # noqa: PLC0415
+    import seed_exam_records as ser  # noqa: PLC0415
+
+    saved = gen_loop.RunRecorder
+    gen_loop.RunRecorder = ser.recorder_class()
+    try:
+        row = gen0.play_emu_run(seed, ix, config, ascension, agent=agent, hook=hook, record=True)
+    finally:
+        gen_loop.RunRecorder = saved
+    shard = row.pop("_shard", None)
+    if shard is not None:
+        ser.write_record(records, key, draw, row, shard["record"])
+    return row
+
+
 def play_task(seed: str, key: str, draw: int, ix: int, config: str, ascension: int, agent: Any, human_won: bool) -> dict[str, Any]:
     """One run of one seed under the agent (a worker's task): the lab's `gen0.play_emu_run` with a hook that reads the HP the first decision of each boss
     fight begins with (the door). The hook returns False, so the run is the lab's run unchanged. The row carries the seed's key, never the seed."""
@@ -507,13 +526,17 @@ def play_task(seed: str, key: str, draw: int, ix: int, config: str, ascension: i
             doors[str(int(s.act_index) + 1)] = [int(info["hp"]), int(info["max_hp"])]
         return False
 
+    records = os.environ.get(RECORDS_ENV)
     try:
-        row = gen0.play_emu_run(seed, ix, config, ascension, agent=agent, hook=hook)
+        if records:
+            row = _play_recorded(gen0, seed, ix, config, ascension, agent, hook, records, key, draw)
+        else:
+            row = gen0.play_emu_run(seed, ix, config, ascension, agent=agent, hook=hook)
     except Exception as e:  # noqa: BLE001 -- an engine or agent defect is a crash of that run, counted and left out of the means
         row = {"win": False, "floor": 0, "end": "crash", "decisions": 0, "crash": True, "error": scrub(f"{type(e).__name__}: {e}", [seed], seed_key)[:300]}
         if (fault := faults.fault_of(e)) is not None:
             row.update(end="engine_fault", **fault.row())  # the engine's step threw (docs/ENGINE_FAULTS.md): counted by class
-    row = {k: v for k, v in row.items() if k not in ("seed", "ix", "prior_calls", "prior_latency_ms")}
+    row = {k: v for k, v in row.items() if k not in ("seed", "ix", "prior_calls", "prior_latency_ms", "_shard")}
     row.update(key=key, draw=draw, human_won=bool(human_won), door=doors, wall=round(time.perf_counter() - t0, 2), cpu=round(time.process_time() - c0, 2))
     return row
 
@@ -618,6 +641,8 @@ def cmd_play(a: argparse.Namespace) -> int:
     hb._below_normal()
     import human_starts as hs  # noqa: PLC0415
 
+    if a.records:
+        os.environ[RECORDS_ENV] = str(Path(a.records).resolve())  # before the pool spawns: its workers inherit the environment
     corpus = Path(a.corpus) if a.corpus else hs.CORPUS
     exam_ids = hs.read_exam_ids(a.exam_ids) if a.exam_ids else hs.read_exam_ids()
     out = Path(a.out)
@@ -723,6 +748,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exam-ids", help="the exam fifth's ids file (default: beside the corpus)")
     p.add_argument("--limit-runs", type=int, default=0, help="stop reading after this many usable runs of the fifth (a trial)")
     p.add_argument("--force", action="store_true", help="start --out empty when it holds rows of another exam")
+    p.add_argument("--records", help="a folder for one derived record a run (fights, turns, decks, relics, decisions; `rl/seed_exam_records.py`); the run is unchanged")
     p.set_defaults(fn=cmd_play)
     r = sub.add_parser("report", help="print the table of a finished --out")
     r.add_argument("--out", required=True)

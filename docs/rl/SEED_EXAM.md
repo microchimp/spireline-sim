@@ -57,6 +57,12 @@ lab's boss rows: act and the share of the boss's HP taken, 1.0 = killed), `door`
 the route, card picks and rest choices, decisions, wall and CPU), `human.json` (the humans' figures on the picked seeds, all and split), `summary.json`
 and `table.md` (the table), `resume.json`.
 
+`play --records DIR` also writes one derived record a run, `DIR/<seed key>-d<draw>.json.gz` (`rl/seed_exam_records.py`: the lab's `RunRecorder` with accounting on top; the run is the run the exam plays, and a
+replay of a finished exam into another `--out` reproduces its rows exactly, floor, route, picks, decisions and simulations, when the tree, the engine build and the agent are the exam's). Per fight: the deck,
+relics, potions, gold and HP it began with, its enemies, its turns (the enemies' HP at the start and the end of each of our turns, our HP, cards and potions played) and whether it was won; per decision: its kind,
+the option taken, what was offered, HP, gold and deck size. The folder is handed to the spawn workers through the environment (`SPIRELINE_EXAM_RECORDS`). Note for a replay: `rl/data/card_tags.json` (the cache
+`rl/card_tags.py` writes) changes the combat net's inputs, so a tree that has it plays another game than one without; a measurement worker must not create it in the tree it replays in.
+
 What is never written: a seed (rows carry `seed_key`, `sha256("spireline-seed-exam|" + seed)[:16]`; an error text that names the seed is scrubbed to its
 key), a run id, a player id (never read). The humans' per-seed figures stay in memory; the paired block is computed from them and only its aggregates are
 written. `--exam` (with `--milestone NAME`, and only then) reads the exam fifth and appends one line to `referee/seed-exam/exam-use.log`.
