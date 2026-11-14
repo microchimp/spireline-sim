@@ -975,7 +975,8 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
                           beta: float = MATCHED_BETA, threads: int = 4, device: str | None = None,
                           seed_dirs: Sequence[Path | str] = (), seed_dir: Path | None = None,
                           incumbent: Path | str | None = None, ranking_check: Any = None,
-                          exploring_only: bool = False) -> dict[str, Any]:
+                          exploring_only: bool = False, ranking_runs_root: Path | str | None = None,
+                          human_leg: bool = True) -> dict[str, Any]:
     """A V_run fit (FightNet, the value head and the D33 keep record) on the runs one combat prior played, into `out`
     (run_value.pt, run_value.npz, vrun_fit.json): the fighter-matched recipe of the reset order's step C. The window is every
     self-play block of that prior (`fighter_manifests`), all of its generations in V's buffer; no E-block seed may be among its
@@ -986,7 +987,13 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
     The keep record also carries the ranking check (D47, D49): the fit's options ranked against `incumbent`'s head (a run_value.npz,
     a generation directory or a current.json) on the fixed set of held-out decisions in the self-play shards under `shards_root`,
     the fit window's runs left out. A fit is `kept` only when the D33 conditions and the ranking check both pass; with no
-    `incumbent` the check cannot run and the fit is not kept."""
+    `incumbent` the check cannot run and the fit is not kept.
+
+    `ranking_runs_root` is where the ranking check's fixed set is drawn from (the lab's self-play folder holding the generation-9 pool) when
+    the window's root is not that folder (a store of plain runs, D60 item 10); default `shards_root`. `human_leg` False runs the check without
+    its human leg (`run_train.ranking.run_check(human=None)`: the shard leg only), for a lane whose rules keep it off the human exam fifth: the
+    check then cannot pass, the fit is not `kept`, the record says `human_leg: false`, and only `read_vrun_fit(without_human_leg=True)`
+    reads it, when the human leg is the one check missing."""
     mans = fighter_manifests(shards_root, prior_sha256, gens, exploring_only=exploring_only)
     if not mans:
         raise ValueError(f"no {'exploring ' if exploring_only else ''}self-play shards of prior {prior_sha256[:12]} under "
@@ -1006,8 +1013,10 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
     value = dict(rv.get("value") or {})
     keep_doc = value.pop("keep", None) or {"status": "not_run", "all_computable_pass": False}
     if (out / "run_value.npz").is_file():
-        keep_doc["ranking"] = ranking_block(out / "run_value.npz", incumbent, shards_root, out, exclude_seeds=window_seeds, check=ranking_check)
-    doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta,
+        check = ranking_check if ranking_check is not None or human_leg else _ranking_without_human_leg
+        keep_doc["ranking"] = ranking_block(out / "run_value.npz", incumbent, ranking_runs_root or shards_root, out, exclude_seeds=window_seeds,
+                                            check=check)
+    doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta, "human_leg": bool(human_leg),
            "window": {"blocks": len(mans), "generations": generations, "exploring_only": bool(exploring_only),
                       "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
                                              for g in generations},
@@ -1074,12 +1083,38 @@ def ranking_block(candidate_npz: Path, incumbent: Path | str | None, runs_root: 
         return ranking.not_run(f"{type(err).__name__}: {err}")
 
 
-def read_vrun_fit(fit_dir: Path | str) -> dict[str, Any]:
-    """A fighter-matched fit's record, checked: its keep record passed (D33) and run_value.npz is the file it names."""
+def _ranking_without_human_leg(candidate_npz: Path | str, incumbent_npz: Path | str, runs_root: Path | str, out_dir: Path | str,
+                               **kw: Any) -> dict[str, Any]:
+    """The ranking check with its shard leg only (`run_train.ranking.run_check(human=None)`): its record has the human check as missing."""
+    from run_train import ranking  # noqa: PLC0415
+
+    return ranking.run_check(candidate_npz, incumbent_npz, runs_root, out_dir, human=None, **kw)
+
+
+HUMAN_LEG_MISSING = "the human leg did not run"  # run_train.ranking.judge's reason for the human check of a record made without the human leg
+
+
+def passed_but_human_leg(keep_doc: dict[str, Any] | None) -> bool:
+    """Whether a keep record passes everything but the human leg of its ranking check: the D33 conditions, a ranking block that ran (status
+    ok) with every check it computed passing (the rest and heal rates on the fixed set), and one failing check, the human agreement, failing only
+    because the human leg did not run. A failed human agreement, a failed rate, a check that did not run or a failed D33 condition is never this."""
+    block = (keep_doc or {}).get("ranking")
+    if not (keep_doc and keep_doc.get("all_computable_pass")) or not block or block.get("status") != "ok":
+        return False
+    checks = list(block.get("checks") or [])
+    human = [c for c in checks if str(c.get("name", "")).startswith("human_agreement")]
+    rest = [c for c in checks if not str(c.get("name", "")).startswith("human_agreement")]
+    return (bool(rest) and all(c.get("pass") for c in rest) and len(human) == 1 and not human[0].get("pass")
+            and human[0].get("why") == HUMAN_LEG_MISSING)
+
+
+def read_vrun_fit(fit_dir: Path | str, *, without_human_leg: bool = False) -> dict[str, Any]:
+    """A fighter-matched fit's record, checked: its keep record passed (D33) and run_value.npz is the file it names. `without_human_leg`
+    also reads a fit that passed everything but the human leg of its ranking check, which did not run (`passed_but_human_leg`)."""
     fit_dir = Path(fit_dir)
     doc = read_json(fit_dir / VRUN_FIT_JSON)
     npz = fit_dir / "run_value.npz"
-    if not doc.get("kept"):
+    if not doc.get("kept") and not (without_human_leg and passed_but_human_leg(doc.get("keep"))):
         raise ValueError(f"the V_run fit in {fit_dir.name} did not pass the keep test (D33); a candidate never carries it")
     if not npz.is_file() or file_sha256(npz) != doc.get("sha256"):
         raise ValueError(f"{fit_dir.name}/run_value.npz is not the fit {VRUN_FIT_JSON} records")
@@ -1776,6 +1811,91 @@ def build_route_elite_candidate(base: Path | str, agent_root: Path | str, target
     legs = base_dir / STUDENT_LEGS_FILE
     if legs.is_file():
         shutil.copyfile(legs, cand / STUDENT_LEGS_FILE)
+    return cand
+
+
+# ------------------------------------------------------------------ the V_run swap (D60 item 10, lane J)
+
+VRUN_SWAP_VALUE_FILES = ("run_value.npz", "run_value.pt", "run_value.onnx", "fight_net.pt", "fight_net.onnx")  # screens.VALUE_FILES: the fit's, never the base's
+VRUN_SWAP_NOT_COPIED = ("agent.json", "train.json", "promotion.json", "model.json")  # written anew (model.json for the target generation) or the base's own record
+
+
+def build_vrun_candidate(base: Path | str, vrun_fit: Path | str, agent_root: Path | str, target: int, *, why: str, tag: str = "",
+                         attempt: int = 1, export: bool = True, without_human_leg: bool = False) -> Path:
+    """Generation `target`'s candidate that is the generation `base` (a generation directory or a current.json) with its V_run fit replaced
+    by the one in `vrun_fit` (a folder `fit_run_value_matched` wrote) and nothing else: every other file of the base's folder is copied byte
+    for byte (the combat prior and its ONNX, the human prior, the run student and its legs), agent.json keeps the base's macro, recipe, human
+    prior, student, stakes schedule, hold and mask version, so the candidate differs from the base in the run-level judgement alone
+    (`screens.differing` reads ["value"], no screen applies) and its attempts count under the base's recipe with a new run head. The base's
+    chooser must read V (the vrun macro or a blend with it). The fit must have passed the keep test (`read_vrun_fit`); `without_human_leg`
+    also takes a fit that passed everything but the ranking check's human leg, which did not run (`passed_but_human_leg`), and agent.json's
+    `vrun_fit.human_leg` and note say so. The V export (run_value.onnx, fight_net.onnx) is made anew from the fit (`export`; the combat
+    ONNX stays the base's bytes); without `export` the candidate has none, never the base's old one. Written as gen<target>/candidate-<tag>
+    (`candidate_dirname`), never over an existing folder; `gen0.py build-vrun` writes the marker `ready-<base gen>-g<target>-<tag>`."""
+    import shutil  # noqa: PLC0415
+
+    agent_root, target = Path(agent_root), int(target)
+    base_agent = load_agent(base)
+    if base_agent.path is None:
+        raise ValueError("the base must be a generation directory or a current.json, not generation 0's empty agent")
+    if base_agent.macro != "vrun" and not macro_recipe.is_blended(base_agent.macro):
+        raise ValueError(f"the base's chooser ({base_agent.macro}) reads no V: a V_run fit changes nothing it plays")
+    if target <= base_agent.generation:
+        raise ValueError(f"a candidate built on generation {base_agent.generation} cannot be generation {target}")
+    fit_doc = read_vrun_fit(vrun_fit, without_human_leg=without_human_leg)
+    human_ran = bool(fit_doc.get("kept"))
+    base_dir, fit_dir = Path(base_agent.path), Path(vrun_fit)
+    cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt), tag)
+    if cand.exists() and any(cand.iterdir()):
+        raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
+    cand.mkdir(parents=True, exist_ok=True)
+    for f in sorted(base_dir.iterdir()):
+        if f.is_file() and f.name not in VRUN_SWAP_NOT_COPIED and f.name not in VRUN_SWAP_VALUE_FILES:
+            shutil.copyfile(f, cand / f.name)
+    for name in BUILT_BASE_FILES:
+        shutil.copyfile(fit_dir / name, cand / name)
+    model = write_prior_model_json(cand, target) if (base_dir / "model.json").is_file() else None
+    onnx = None
+    if export:
+        onnx = export_all(cand)
+        if (base_dir / "combat_net.onnx").is_file():  # the fight network is the base's: its export stays the base's bytes
+            shutil.copyfile(base_dir / "combat_net.onnx", cand / "combat_net.onnx")
+            onnx["combat_net"] = {**(onnx.get("combat_net") or {}), "kept": "the base's file"}
+    base_meta = read_json(base_dir / "agent.json")
+    npz = cand / "run_value.npz"
+    prior_sha = base_agent.describe()["prior_sha256"]
+    human_text = "run" if human_ran else ("not run: the ranking check's human leg (the held-out human fifth) was left out by the fit's lane; "
+                                          "its shard leg (rest and heal rates on the fixed set) passed")
+    fit = {"source": "fit", "sha256": file_sha256(npz), "dir": fit_dir.as_posix(), "recipe": fit_doc.get("recipe"),
+           "prior_sha256": fit_doc.get("prior_sha256"), "matched": fit_doc.get("prior_sha256") == prior_sha, "window": fit_doc.get("window"),
+           "beta": fit_doc.get("beta"), "ranking": ranking_summary(fit_doc.get("keep")), "human_leg": human_text}
+    old_fit = file_sha256(base_dir / "run_value.npz") if (base_dir / "run_value.npz").is_file() else None
+    prior = {"dir": base_dir.as_posix(), "policy_sha256": prior_sha,
+             "net_sha256": file_sha256(cand / "combat_net.pt") if (cand / "combat_net.pt").is_file() else None}
+    base_block = {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro, "policy_sha256": prior_sha,
+                  "run_value_sha256": old_fit}
+    extra = {**({"attempt": int(attempt)} if int(attempt) > 1 else {}), **({"tag": tag} if tag else {})}
+    built = {"why": why, "written": utc_now(), "trained": False, "swap": "vrun",
+             "rule": "the base's folder copied unchanged but its V_run fit; `gen0.py train` judges the candidate as it is",
+             "prior": prior, "base": base_block, **extra, "vrun_fit": fit}
+    lineage = None if target == base_agent.generation + 1 else {
+        "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
+        "difference": f"generation {base_agent.generation}'s agent with the V_run fit of {fit_dir.name}", "decision": why}
+    note = (f"built, not trained: generation {base_agent.generation}'s agent ({base_agent.recipe() or base_agent.macro}) with the V_run fit of "
+            f"{fit_dir.name} ({'matched to this prior' if fit['matched'] else 'played by another prior'}) and nothing else; its E-block judges the "
+            "V_run fit alone" + ("" if human_ran else "; the fit's ranking check ran without its human leg"))
+    meta = {k: v for k, v in base_meta.items() if k not in ("lineage", "note", BUILT_KEY, "vrun_fit")}
+    meta.update(generation=target, built_on=base_agent.generation, written=utc_now(), vrun_fit=fit, **({"lineage": lineage} if lineage else {}))
+    meta[BUILT_KEY] = {"why": why, "trained": False, "swap": "vrun", "prior": prior, "base": base_block, **extra}
+    meta["note"] = note
+    doc = {"candidate_generation": target, BUILT_KEY: built, **({"lineage": lineage} if lineage else {}),
+           "base_train": read_json(base_dir / "train.json") if (base_dir / "train.json").is_file() else None,
+           **({"model_json": model} if model else {}), **({"onnx": onnx} if onnx is not None else {})}
+    write_json(cand / "train.json", doc)
+    write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
+    got = load_agent(cand)
+    if (got.generation, got.macro, got.recipe(), got.describe()["prior_sha256"]) != (target, base_agent.macro, base_agent.recipe(), prior_sha):
+        raise ValueError(f"gen{target}/{cand.name} does not load as the base with a new V_run fit: {got.describe()}")
     return cand
 
 

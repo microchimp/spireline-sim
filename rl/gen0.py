@@ -906,6 +906,36 @@ def build_cmd(a: argparse.Namespace) -> int:
     return 0
 
 
+def build_vrun_cmd(a: argparse.Namespace) -> int:
+    """`build-vrun`: generation N's candidate, the base generation with its V_run fit replaced by a `vrun-fit` OUT and nothing else
+    (`gen_loop.build_vrun_candidate`, D60 item 10); with --marker-dir it then writes `ready-<base generation>-g<N>-<tag>`, so the lab's
+    train job judges it on the promotion path as it judges any built candidate. A marker that exists (or was consumed) is never written again."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+
+    base = a.base or str(Path(a.agent_root) / "current.json")
+    gen_loop.candidate_dirname(0, 1, a.tag)  # refuses a tag the markers cannot name
+    marker = None
+    if a.marker_dir:
+        name = f"ready-{gen_loop.load_agent(base).generation}-g{a.candidate_generation}-{a.tag}"
+        taken = [p.name for p in (Path(a.marker_dir) / name, Path(a.marker_dir) / ("done-" + name.removeprefix("ready-"))) if p.exists()]
+        if taken:
+            print(f"{', '.join(taken)} exists in {Path(a.marker_dir).name}: not built", file=sys.stderr)
+            return 2
+        marker = Path(a.marker_dir) / name
+    cand = gen_loop.build_vrun_candidate(base, a.vrun_fit, a.agent_root, a.candidate_generation, why=a.why, tag=a.tag,
+                                         export=not a.no_export, without_human_leg=bool(a.without_human_leg))
+    meta = gen_loop.read_json(cand / "agent.json")
+    out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
+           "recipe": meta.get("recipe") or meta.get("macro"), "vrun_fit": {k: meta["vrun_fit"].get(k) for k in ("source", "sha256", "matched", "human_leg")}}
+    if marker is not None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(gen_loop.utc_now() + "\n", encoding="utf-8")
+        out["marker"] = marker.name
+    print(json.dumps(out))
+    return 0
+
+
 def parse_lambda_acts(parts: list[str] | None) -> dict[int, float] | None:
     """`--lambda-act 1=0 --lambda-act 2=0.5` -> {1: 0.0, 2: 0.5} (the act numbers from 1; None when not given)."""
     out: dict[int, float] = {}
@@ -955,7 +985,9 @@ def vrun_fit_cmd(a: argparse.Namespace) -> int:
         doc = gen_loop.fit_run_value_matched(Path(a.shards_root), sha, Path(a.out), gens=gens,
                                              beta=gen_loop.MATCHED_BETA if a.beta is None else a.beta, threads=a.threads,
                                              device=a.device, seed_dirs=seed_dirs, incumbent=incumbent,
-                                             exploring_only=bool(getattr(a, "exploring_only", False)))
+                                             exploring_only=bool(getattr(a, "exploring_only", False)),
+                                             ranking_runs_root=Path(a.ranking_runs_root) if getattr(a, "ranking_runs_root", None) else None,
+                                             human_leg=not getattr(a, "no_human_leg", False))
     head = ((doc["keep"].get("heads") or {}).get("act1_boss_kill") or {}).get("brier_skill_vs_base_rate") or {}
     rk = doc["keep"].get("ranking") or {}
     print(json.dumps({"out": Path(a.out).name, "window": doc["window"]["runs_by_generation"], "blocks": doc["window"].get("blocks"),
@@ -1391,6 +1423,23 @@ def build_parser() -> argparse.ArgumentParser:
     vf.add_argument("--lab", help="the lab folder: its generated E-blocks (LAB/seeds) are checked against the window too")
     vf.add_argument("--device", default=None)
     vf.add_argument("--threads", type=int, default=4)
+    vf.add_argument("--ranking-runs-root", help="the self-play folder the ranking check's fixed set is drawn from (the lab's runs, which hold the "
+                    "generation-9 pool) when --shards-root is another store, e.g. plain runs (default: --shards-root)")
+    vf.add_argument("--no-human-leg", action="store_true", help="the ranking check without its human leg (the held-out human fifth): the "
+                    "shard leg only; the fit is then not kept, and only `build-vrun --without-human-leg` carries it, when that leg is all it lacks")
+    bv = sub.add_parser("build-vrun", help="generation N's candidate: the base generation with its V_run fit replaced by a `vrun-fit` OUT and "
+                        "nothing else (D60 item 10); with --marker-dir the lab's train job then judges it as it is")
+    bv.add_argument("--base", help="the generation the candidate copies (a generation directory or a current.json; default: --agent-root's "
+                    "current.json)")
+    bv.add_argument("--vrun-fit", required=True, help="a `vrun-fit` OUT whose keep record passed")
+    bv.add_argument("--agent-root", required=True)
+    bv.add_argument("--candidate-generation", type=int, required=True)
+    bv.add_argument("--tag", required=True, help="the recipe tag: gen<N>/candidate-<tag>, marker ready-<base generation>-g<N>-<tag>")
+    bv.add_argument("--why", required=True)
+    bv.add_argument("--marker-dir", help="LAB/train: write the marker once the candidate is complete")
+    bv.add_argument("--no-export", action="store_true", help="no ONNX files for the new V_run (they need torch's exporter and the onnx package)")
+    bv.add_argument("--without-human-leg", action="store_true", help="also carry a fit whose ranking check passed everything but its human "
+                    "leg, which did not run (`vrun-fit --no-human-leg`); agent.json says so")
     rk = sub.add_parser("ranking-check", help="the V_run keep test's ranking check (D47, D49): a candidate head's options ranked against "
                         "the incumbent's on the fixed set of held-out decisions, and against the human choice on the held-out fifth")
     rk.add_argument("--candidate", required=True, help="a run_value.npz, a generation directory, a fit folder or a current.json")
@@ -1512,6 +1561,8 @@ def main(argv: list[str] | None = None) -> int:
         return train_cmd(a)
     if a.cmd == "build":
         return build_cmd(a)
+    if a.cmd == "build-vrun":
+        return build_vrun_cmd(a)
     if a.cmd == "vrun-fit":
         return vrun_fit_cmd(a)
     if a.cmd == "ranking-check":
