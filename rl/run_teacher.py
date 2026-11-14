@@ -155,6 +155,12 @@ FRONTIER_PAIRED_SD_PRIOR: dict[str, float] = {
     "ancient/a2": 2.1666, "card/a2": 2.0857, "event/a2": 2.1892, "rest/a2": 1.8766, "reward/a2": 1.7367, "route/a2": 2.4786, "select/a2": 2.0465, "shop/a2": 2.1834,
     "_all": 0.9297}
 PAIRED_SD_PRIOR_BY_GRADE: dict[str, dict[str, float] | None] = {GRADE_FLOORS: PAIRED_SD_PRIOR, GRADE_FRONTIER: FRONTIER_PAIRED_SD_PRIOR}
+# The lambda of a screen the teacher blended is the player's, in floors per nat. In a store graded in the frontier unit the target `Q + lambda log pi_h` wants it in that
+# unit: scaled by the grades' noise ratio (the frontier's noise sd of one draw's centred option value over floors', `unit_constants`' `noise_ratio`): 0.283 = 0.568 / 2.010 on
+# the two first regraded stores (2026-11-13). `regrade --lambda-scale S` writes the scaled lambda into the records (D59 lane H); the rule below says when a store's own ratio
+# is far enough from it (more than a fifth) that the measured one is used instead.
+FRONTIER_LAMBDA_SCALE = 0.283
+LAMBDA_SCALE_TOL = 0.2
 TAU_MIN_FLOORS = 0.25  # run_student.TAU_MIN, the floor of the targets' temperature in floors: `unit_constants` scales it to another grade's unit
 # The job (`job`): adaptive K, the door's recalibration, the stored-run source, the store.
 JOB_K = 2  # draws of every shortlisted option before the first look
@@ -2187,7 +2193,7 @@ def _manifest_beyond(man: dict) -> dict[int, float]:
 
 
 def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTIER, scorer: Any = None, act2_judges: Sequence[str] | None = None,
-                  doors_from: Sequence[Path | str] = (), dry_run: bool = False, scale: float = FRONTIER_SCALE) -> dict:
+                  doors_from: Sequence[Path | str] = (), dry_run: bool = False, scale: float = FRONTIER_SCALE, lambda_scale: float | None = None) -> dict:
     """The stored continuations of a store graded again (D59): a new store `out`, the stored one `src` untouched (`out` may not be it or inside it).
 
     `grade` frontier (the point): every record's draws are graded `frontier_return` and Q is their mean. A screen whose door is the Act 2 boss's (its floor
@@ -2203,12 +2209,23 @@ def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTI
     `grade` floors rebuilds the stored labels from each draw's end and P(death) under the recalibration the shard's manifest names: it writes the records
     as they were and counts, in `mismatches`, the records whose recomputed `g` or `q` is not the stored one (a store regraded so reproduces its labels).
 
+    `lambda_scale` (frontier only; D59 lane H): the lambda each record carries (`lam`: the player's, in floors per nat) multiplied by it, the stored one kept as `lam_floors`: the target
+    `Q + lambda log pi_h` of a fit on the new store is then in the frontier unit and the fit's own `--target-lambda-scale` stays 1 (`run_student.check_lambda_units` refuses both). Both manifests
+    name it. None (the default) leaves `lam` as stored. The result's `unit` is the store's own measured unit (`unit_summary`: the noise ratio of the grades on the same screens, their spread
+    ratio, by act) beside the scale used and `lambda_scale_rule`'s reading of the two, so a scale chosen before the store was measured is checked by the same run.
+
     Returns the counts by reason, kind and act (never a seed). With `dry_run` nothing is written."""
     import numpy as np  # noqa: PLC0415
 
     src, out = Path(src), Path(out)
     if grade not in GRADES:
         raise SystemExit(f"unknown grade {grade!r}; one of {', '.join(GRADES)}")
+    if lambda_scale is not None:
+        if grade != GRADE_FRONTIER:
+            raise SystemExit("a lambda scale is the frontier unit's: floors labels are in the stored unit, nothing to scale")
+        if not (math.isfinite(float(lambda_scale)) and float(lambda_scale) > 0):
+            raise SystemExit(f"the lambda scale is a positive number, not {lambda_scale!r}")
+        lambda_scale = float(lambda_scale)
     if grade == GRADE_FRONTIER and scorer is None:
         raise SystemExit("the frontier regrade needs the Act 2 model (--a2 <file>): an Act 1 door has no grade without A2")
     s_abs, o_abs = src.resolve(), out.resolve()
@@ -2233,6 +2250,7 @@ def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTI
     mismatches = decisions = 0
     totals = {"rows": 0, "door_rows": 0}
     written: list[str] = []
+    unit_recs: list[dict] = []  # the graded screens' two G (`g_floors`, `g`) for the store's own unit
     for d in shards:
         man = json.loads((d / SHARD_MANIFEST).read_text(encoding="utf-8"))
         recs = read_jsonl(d / SHARD_DECISIONS)
@@ -2378,6 +2396,10 @@ def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTI
                     r2.pop(key, None)
                 r2["grade"] = GRADE_FRONTIER
                 r2.pop("door", None)
+                if lambda_scale is not None and rec.get("lam") is not None:
+                    r2["lam_floors"] = rec["lam"]
+                    r2["lam"] = rec["lam"] * lambda_scale  # an infinite lambda stays infinite: the loader drops such a screen as it always did
+                unit_recs.append({"kind": rec.get("kind"), "floor": rec.get("floor"), "played": pl["played"], "g": new_g, "g_floors": rec["g"]})
                 if pl["mode"] == "option":
                     r2["a2"] = {str(o): round(v, 6) for o, v in a2s.items()}
                     r2["a2_from"] = "option_row"
@@ -2406,7 +2428,7 @@ def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTI
             continue
         shard_out = out / "shards" / d.name
         info = _write_regraded_shard(shard_out, man, final_recs, final_idx, rows, dec, opt, side, door_z, door_keep, grade, scorer, scale, d.name,
-                                     {k: v - before.get(k, 0) for k, v in reasons.items() if v - before.get(k, 0)})
+                                     {k: v - before.get(k, 0) for k, v in reasons.items() if v - before.get(k, 0)}, lambda_scale=lambda_scale)
         totals["rows"] += info["rows"]
         totals["door_rows"] += info["door_rows"]
         written.append(d.name)
@@ -2417,13 +2439,16 @@ def regrade_store(src: Path | str, out: Path | str, *, grade: str = GRADE_FRONTI
                            "by_reason_kind_act": {why: dict(sorted(c.items())) for why, c in sorted(by_reason_kind.items())},
                            "kept_by_kind_act": dict(sorted(kept.items())), "grade_by_kind": {k: grade for k in sorted(kinds_graded)},
                            "a2_from": dict(a2_from), "rows": totals["rows"], "door_rows": totals["door_rows"], "dry_run": bool(dry_run)}
+    if grade == GRADE_FRONTIER:
+        res.update(lambda_scale=lambda_scale, unit=unit_summary(unit_recs, lambda_scale))
     if not dry_run:
         write_json(out / SHARD_MANIFEST, clean_path({**res, "created_utc": utc().strftime("%Y-%m-%dT%H:%M:%SZ"), "shard_names": written}))
     return res
 
 
 def _write_regraded_shard(folder: Path, man: dict, recs: list[dict], idx: list[int], rows: Any, dec: Any, opt: Any, side: dict, door_z: dict | None,
-                          door_keep: dict[int, tuple[dict, dict]], grade: str, scorer: Any, scale: float, source_shard: str, reasons: dict) -> dict:
+                          door_keep: dict[int, tuple[dict, dict]], grade: str, scorer: Any, scale: float, source_shard: str, reasons: dict,
+                          lambda_scale: float | None = None) -> dict:
     """Write one regraded shard folder (whole, then renamed): the records kept, in order, with their rows renumbered from 0 and the side files cut to the same rows."""
     import numpy as np  # noqa: PLC0415
 
@@ -2481,6 +2506,8 @@ def _write_regraded_shard(folder: Path, man: dict, recs: list[dict], idx: list[i
     doc = {**man, "grade": grade, "source_shard": source_shard, "regrade": {"by_reason": reasons}, "door_rows": bool(n_door),
            "map_grid": "grid" in side, "state_gaps": "gaps" in side}
     if grade == GRADE_FRONTIER:
+        if lambda_scale is not None:
+            doc["lambda_scale"] = lambda_scale
         doc.update(scale=scale, a2_sha256=getattr(scorer, "sha256", None),
                    leaf="the chance of killing the Act 2 boss, x 13.5, regraded from the stored continuations (docs/lab/TEACHER_JOB.md, The frontier grade)")
     doc["counts"] = {**(man.get("counts") or {}), "decisions": len(out_recs), "rows": n_rows, "refused": refused, "k_extended": extended, "door_rows": n_door,
@@ -2505,7 +2532,8 @@ def regrade_cmd(a: argparse.Namespace) -> int:
             scorer = load_a2_scorer(path)
         except ImportError as e:
             raise SystemExit(str(e)) from e
-    res = regrade_store(src, out, grade=a.grade, scorer=scorer, act2_judges=a.act2_judge or None, doors_from=[Path(x) for x in a.doors_from], dry_run=a.dry_run)
+    res = regrade_store(src, out, grade=a.grade, scorer=scorer, act2_judges=a.act2_judge or None, doors_from=[Path(x) for x in a.doors_from], dry_run=a.dry_run,
+                        lambda_scale=a.lambda_scale)
     print(json.dumps(res, indent=1))
     return 1 if res["mismatches"] else 0
 
@@ -2579,6 +2607,37 @@ def unit_constants(floors: Sequence[dict], frontier: Sequence[dict] | None = Non
     return rep
 
 
+def lambda_scale_rule(measured: float | None, default: float = FRONTIER_LAMBDA_SCALE, tol: float = LAMBDA_SCALE_TOL) -> tuple[float, str]:
+    """(the lambda scale to use, its basis): `default` while the measured noise ratio is within `tol` of it (a fifth), the measured ratio (4 places) beyond that; the default
+    when nothing was measured."""
+    if measured is None or not math.isfinite(measured) or measured <= 0 or abs(measured / default - 1.0) <= tol + 1e-12:
+        return default, "default"
+    return round(float(measured), 4), "measured"
+
+
+def unit_summary(recs: Sequence[dict], lambda_scale: float | None = None) -> dict[str, Any]:
+    """The unit a regraded store's screens are in, compact: on the same screens (`g_floors` against `g`) the noise sd of one draw's centred option value and the true spread of the
+    centred option values between options (`noise_and_spread`) under each grade, their ratios (`noise_ratio` is `unit_constants`' one), the same by door act, and the lambda scale the
+    regrade used against the measured noise ratio (`scale_against_measured`: scale / ratio - 1) with what `lambda_scale_rule` makes of it."""
+    def both(rs: Sequence[dict]) -> dict[str, Any]:
+        fl = noise_and_spread([g for g in (_decision_g(r, "g_floors") for r in rs) if g])
+        fr = noise_and_spread([g for g in (_decision_g(r, "g") for r in rs) if g])
+
+        def ratio(a: float | None, b: float | None) -> float | None:
+            return a / b if a and b else None
+
+        return {"decisions": len(rs), "noise_sd": {"floors": fl["noise_sd"], "frontier": fr["noise_sd"]}, "spread_sd": {"floors": fl["spread_sd"], "frontier": fr["spread_sd"]},
+                "noise_ratio": ratio(fr["noise_sd"], fl["noise_sd"]), "spread_ratio": ratio(fr["spread_sd"], fl["spread_sd"])}
+
+    out = both(recs)
+    out["by_act"] = {f"a{act + 1}": both([r for r in recs if door_act_of_floor(int(r.get("floor", 0))) == act]) for act in (0, 1)}
+    out["lambda_scale"] = lambda_scale
+    out["scale_against_measured"] = None if lambda_scale is None or not out["noise_ratio"] else lambda_scale / out["noise_ratio"] - 1.0
+    scale, basis = lambda_scale_rule(out["noise_ratio"])
+    out["rule"] = {"scale": scale, "basis": basis, "default": FRONTIER_LAMBDA_SCALE, "tolerance": LAMBDA_SCALE_TOL}
+    return out
+
+
 def store_records(root: Path | str) -> list[dict]:
     """Every decision record of every shard under `root` (a store's generation folder) that has values: not refused, with a G."""
     out: list[dict] = []
@@ -2589,14 +2648,19 @@ def store_records(root: Path | str) -> list[dict]:
 
 def units_cmd(a: argparse.Namespace) -> int:
     """`units`: the constants a store's grade sets (`unit_constants`). On a regraded store the floors figures are those of the same screens (`g_floors`)."""
-    recs = store_records(a.store)
+    stores = a.store if isinstance(a.store, list) else [a.store]  # several stores are pooled: one grade, one unit for the fit that reads them together
+    recs = [r for s in stores for r in store_records(s)]
     if recs and all(r.get("grade") == GRADE_FRONTIER and r.get("g_floors") for r in recs):
         rep = unit_constants([{**r, "g": r["g_floors"]} for r in recs], recs, min_decisions=a.min_decisions)
         rep["grade"] = GRADE_FRONTIER
+        scale, basis = lambda_scale_rule(rep.get("noise_ratio"))
+        rep["lambda_scale_suggested"] = {"scale": scale, "basis": basis, "default": FRONTIER_LAMBDA_SCALE}
+        rep["unit"] = unit_summary(recs)
     else:
         rep = unit_constants(recs, None, min_decisions=a.min_decisions)
         rep["grade"] = GRADE_FLOORS
-    rep["store"] = "/".join(Path(a.store).parts[-2:])
+    names = ["/".join(Path(s).parts[-2:]) for s in stores]
+    rep["store"] = names[0] if len(names) == 1 else names
     print(json.dumps(clean_path(rep), indent=1))
     return 0
 
@@ -3095,9 +3159,11 @@ def build_parser() -> argparse.ArgumentParser:
     rg.add_argument("--a2", default="auto", help="the Act 2 model file (frontier): auto is the default place if the file is there")
     rg.add_argument("--act2-judge", action="append", default=[], help="a judge's sha256 whose Act 2 door numbers are trusted (repeatable; default: v2b)")
     rg.add_argument("--doors-from", action="append", default=[], help="another store's folder whose runs' door outcomes join the recalibration (repeatable)")
+    rg.add_argument("--lambda-scale", type=float, default=None,
+                    help="frontier: multiply every record's lambda by this (the frontier unit; the grades' noise ratio, 0.283 on the first two stores), the stored one kept as lam_floors; default: as stored")
     rg.add_argument("--dry-run", action="store_true", help="count, write nothing")
     un = sub.add_parser("units", help="the constants a store's grade sets: the guard's prior sd by kind and the noise of a draw (a regraded store compares both grades)")
-    un.add_argument("--store", required=True, help="a generation folder")
+    un.add_argument("--store", required=True, action="append", help="a generation folder (repeatable: the stores are pooled)")
     un.add_argument("--min-decisions", type=int, default=20)
     for name, help_ in (("job", "the teacher as a lab job: shards in the store, under the filler's rules"),
                         ("label", "round 0: replay the stored exploring runs and label their screens (job --source stored)")):

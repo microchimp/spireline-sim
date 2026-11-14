@@ -811,6 +811,150 @@ class DoorRowStoreTests(StoreCase):
 # ---------------------------------------------------------------------------------------------------------- the unit's constants
 
 
+class LambdaUnitRegradeTests(StoreCase):
+    """The regrade puts the stored lambda into the frontier unit (D59 lane H): a store graded in another unit takes the lambda scaled to it, once, in the records,
+    so a fit needs no `--target-lambda-scale`; the regrade measures the store's own noise ratio beside the scale it used."""
+
+    screen = DoorRowStoreTests.screen
+    standard_store = RegradeTests.standard_store
+    regrade = RegradeTests.regrade
+
+    def lam_store(self):
+        s = "AAA"
+        card = self.screen(s, 0, kind="card", lam=0.5, screen="card")
+        route = self.screen(s, 1, kind="route", lam=0.5, screen="route")
+        event = self.screen(s, 2, kind="event", floor=5, lam=float("inf"), screen="event")
+        plain = self.screen(s, 3, kind="rest", floor=8)  # a screen the teacher did not blend: lambda 0, no screen
+        self.add_shard("J1", {s: [card, route, event, plain]})
+
+    def test_every_blended_screens_lambda_is_scaled_and_the_stored_one_is_kept_beside_it(self):
+        self.lam_store()
+        res = self.regrade(lambda_scale=0.283)
+        recs = {r["kind"]: r for r in self.records(self.out)}
+        self.assertAlmostEqual(0.5 * 0.283, recs["card"]["lam"])
+        self.assertAlmostEqual(0.5 * 0.283, recs["route"]["lam"])  # an Act 1 route graded from its door rows takes it too
+        self.assertEqual(0.5, recs["card"]["lam_floors"])
+        self.assertEqual(float("inf"), recs["event"]["lam"])  # the loader drops an infinite lambda as it always did
+        self.assertEqual(0.0, recs["rest"]["lam"])
+        self.assertEqual(0.283, res["lambda_scale"])
+        for doc in (json.loads((self.out / "shards" / "J1" / "manifest.json").read_text(encoding="utf-8")),
+                    json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))):
+            self.assertEqual(0.283, doc["lambda_scale"])
+        stored = {r["kind"]: r for r in self.records(self.src)}
+        self.assertEqual(0.5, stored["card"]["lam"])  # the stored store is untouched
+
+    def test_without_a_scale_the_lambda_is_the_stored_one_and_the_manifest_says_nothing(self):
+        self.lam_store()
+        res = self.regrade()
+        recs = {r["kind"]: r for r in self.records(self.out)}
+        self.assertEqual((0.5, None), (recs["card"]["lam"], recs["card"].get("lam_floors")))
+        self.assertIsNone(res["lambda_scale"])
+        self.assertNotIn("lambda_scale", json.loads((self.out / "shards" / "J1" / "manifest.json").read_text(encoding="utf-8")))
+
+    def test_a_scale_that_is_not_a_positive_number_or_belongs_to_the_floors_grade_is_refused_before_anything_is_written(self):
+        self.lam_store()
+        for bad in (0.0, -1.0, float("nan"), float("inf")):
+            with self.assertRaises(SystemExit, msg=str(bad)):
+                self.regrade(lambda_scale=bad)
+        with self.assertRaises(SystemExit):
+            self.regrade(grade="floors", scorer=None, lambda_scale=0.283)  # floors labels are in the stored unit: nothing to scale
+        self.assertFalse(self.out.exists())
+
+    def test_the_regraded_store_loads_with_the_scaled_lambda_and_says_so(self):
+        import run_student as rs
+
+        self.lam_store()
+        self.regrade(lambda_scale=0.283)
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": 0.1}):
+            ts = rs.load_shards(self.out)
+        self.assertEqual(0.283, ts.stats["lambda_scale"])
+        by_kind = {ts.kind_name(i): float(ts.lam[i]) for i in range(len(ts))}
+        self.assertAlmostEqual(0.5 * 0.283, by_kind["card"], places=5)
+        self.assertEqual(3, len(ts))  # the event's infinite lambda is dropped by the loader
+        with self.assertRaisesRegex(rs.ShardError, "already in the frontier unit"):
+            rs.check_lambda_units(ts, 0.283)  # a fit's own --target-lambda-scale on top would scale it twice
+        rs.check_lambda_units(ts, 1.0)
+
+    def test_a_store_not_regraded_with_a_scale_keeps_the_flag_working_as_before(self):
+        import run_student as rs
+
+        self.lam_store()
+        self.regrade()
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": 0.1}):
+            ts = rs.load_shards(self.out)
+        self.assertNotIn("lambda_scale", ts.stats)
+        rs.check_lambda_units(ts, 0.283)
+
+    def test_two_shards_in_two_lambda_units_are_refused_when_fitted_together(self):
+        import run_student as rs
+
+        self.lam_store()
+        self.regrade(lambda_scale=0.283)
+        other = self.tmp / "run-teacher-frontier" / "15"
+        rt.regrade_store(self.src, other, grade="frontier", scorer=StubA2(), lambda_scale=0.4)
+        root = self.tmp / "both"
+        shutil.copytree(self.out / "shards", root / "a" / "shards")
+        shutil.copytree(other / "shards", root / "b" / "shards")
+        with mock.patch.dict(rs.TAU_MIN_BY_GRADE, {"frontier": 0.1}), self.assertRaisesRegex(rs.ShardError, "lambda"):
+            rs.load_shards(root)
+
+    def test_the_regrade_reports_the_stores_own_noise_ratio_beside_the_scale_it_used(self):
+        self.standard_store()
+        res = self.regrade(lambda_scale=0.283)
+        unit = res["unit"]
+        recs = rt.store_records(self.out)
+        want = rt.unit_constants([{**r, "g": r["g_floors"]} for r in recs], recs)
+        self.assertEqual(want["noise_sd"], unit["noise_sd"])
+        self.assertAlmostEqual(want["noise_ratio"], unit["noise_ratio"])
+        self.assertEqual(len(recs), unit["decisions"])
+        self.assertEqual(0.283, unit["lambda_scale"])
+        self.assertEqual(unit["lambda_scale"] / unit["noise_ratio"] - 1.0, unit["scale_against_measured"])
+        self.assertIn("spread_ratio", unit)
+        man = json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(unit["noise_ratio"], man["unit"]["noise_ratio"])
+
+    def test_a_dry_run_measures_the_unit_and_writes_nothing(self):
+        self.standard_store()
+        res = self.regrade(dry_run=True)
+        self.assertIsNotNone(res["unit"]["noise_ratio"])
+        self.assertFalse(self.out.exists())
+
+
+class LambdaScaleRuleTests(unittest.TestCase):
+    """The scale the regrade is told: the first value (the grades' noise ratio as measured on the first two regraded stores) unless the store's own differs by more than a fifth."""
+
+    def test_the_default_stands_inside_a_fifth_and_the_measured_ratio_replaces_it_beyond(self):
+        self.assertEqual((0.283, "default"), rt.lambda_scale_rule(0.283))
+        self.assertEqual((0.283, "default"), rt.lambda_scale_rule(0.283 * 1.19))
+        self.assertEqual((0.283, "default"), rt.lambda_scale_rule(0.283 * 0.81))
+        scale, basis = rt.lambda_scale_rule(0.283 * 1.21)
+        self.assertEqual(("measured", round(0.283 * 1.21, 4)), (basis, scale))
+        scale, basis = rt.lambda_scale_rule(0.283 * 0.79)
+        self.assertEqual(("measured", round(0.283 * 0.79, 4)), (basis, scale))
+        self.assertEqual((0.283, "default"), rt.lambda_scale_rule(None))  # nothing measured: the default, said so
+
+    def test_units_takes_several_stores_pools_their_screens_and_suggests_the_scale(self):
+        import contextlib
+        import io
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        recs = [UnitConstantsTests.rec("card", {0: [1.0, 3.0], 1: [2.0, 2.0]}) for _ in range(3)]
+        for name, part in (("a", recs[:2]), ("b", recs[2:])):
+            d = tmp / name / "shards" / "S1"
+            d.mkdir(parents=True)
+            fl = [{**r, "g": {k: [x * 5 for x in v] for k, v in r["g"].items()}} for r in part]
+            (d / "decisions.jsonl").write_text("".join(json.dumps({**r, "grade": "frontier", "g_floors": f["g"]}) + "\n" for r, f in zip(part, fl, strict=True)), encoding="utf-8")
+            (d / "manifest.json").write_text(json.dumps({"grade": "frontier"}), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rt.main(["units", "--store", str(tmp / "a"), "--store", str(tmp / "b"), "--min-decisions", "1"])
+        rep = json.loads(out.getvalue())
+        self.assertEqual(3, rep["decisions"]["frontier"])  # both stores' screens, pooled
+        self.assertAlmostEqual(0.2, rep["noise_ratio"], places=3)
+        self.assertEqual({"scale": round(rep["noise_ratio"], 4), "basis": "measured", "default": 0.283}, rep["lambda_scale_suggested"])
+
+
 class UnitConstantsTests(unittest.TestCase):
     """What a grade's unit sets, measured from a store's decision records: the guard's prior (the paired sd of one draw's option difference, by kind) and
     the noise of a centred option value, whose ratio between two grades on the same screens scales TAU_MIN."""

@@ -255,7 +255,10 @@ D:/spireline/src/sts2/.venv/Scripts/python.exe rl/run_teacher.py regrade --src D
     [--a2 D:/spireline/referee/agent/act2/v1/a2.npz] [--doors-from D:/spireline/referee/run-teacher/14 ...] [--dry-run]
 ```
 
-(`--out` defaults to the same path with `run-teacher` named `run-teacher-frontier`; minutes of one core, no game.) What it does, record by record of every shard:
+(`--out` defaults to the same path with `run-teacher` named `run-teacher-frontier`; minutes of one core, no game: 30 s for each of generation 14's 19,212 screens and generation 15's 11,390 on 2026-11-14.) `--lambda-scale S`
+(frontier; D59 lane H) multiplies the lambda of every record by S, the stored one kept as `lam_floors`, and both manifests name it: the lambda in the frontier unit (`docs/rl/RUN_STUDENT.md`, "The lambda in the store"). The result's
+`unit` is the measured unit of the graded screens (noise sd of the two grades, their ratio, the spread's, pooled and by door act) with the scale used and `run_teacher.lambda_scale_rule`'s reading (0.283 unless the measured
+noise ratio is more than a fifth away). What it does, record by record of every shard:
 
 | the screen | what the new store holds |
 |---|---|
@@ -286,7 +289,7 @@ earlier screens stored; screens made before the build have no `door` and are reg
 **`--grade frontier` in a live job** is built (`decide(..., grade=)`, `continuation(..., grade=)`: G is the frontier grade, `g_floors` beside it) and refused without the Act 2 model (`--a2`, `check_grade`); its guard priors
 are measured (below: `PAIRED_SD_PRIOR_BY_GRADE["frontier"]`, by kind in the screen's door act). Nothing the lab runs uses it.
 
-**`units`**: `python rl/run_teacher.py units --store <a generation folder>` measures, from the records of a store, what a grade's unit sets: the guard's prior (`PAIRED_SD_PRIOR`: per kind, the pooled sd of one draw's difference
+**`units`**: `python rl/run_teacher.py units --store <a generation folder> [--store <another>]` (several stores are pooled) measures, from the records of a store, what a grade's unit sets: the guard's prior (`PAIRED_SD_PRIOR`: per kind, the pooled sd of one draw's difference
 between two played options: each pair of played options of a decision gives the sample variance of its K differences on K - 1 degrees of freedom; the kind's is their degrees-of-freedom-weighted mean, a kind with fewer than 20
 decisions left out) and the noise sd of one draw's centred option value (`noise_and_spread`). On a regraded store it reports both grades on the same screens (`g_floors`) and `tau_min_suggested` = `TAU_MIN` x the
 ratio of the noise sds, the floor of the student's temperature in the frontier unit (`docs/rl/RUN_STUDENT.md`, "The grade"). The floors figures are `PAIRED_SD_PRIOR` and `TAU_MIN` as they stand (card 3.41, rest 2.76, route 4.83, shop 2.94; 0.25).

@@ -211,6 +211,16 @@ manifest says which (`grade`; one with no such key is floors', so no shard writt
   (`TeacherSet.scale_lambda`), for the fit and for leg 1's target alike; `fit.json` records `target_lambda_scale` and `legs.json` `target.lambda_scale` when it is not 1 (a fit without the flag writes neither, byte
   for byte as before). The grades' noise ratio, 0.283 (`run_teacher.py units`' `noise_ratio`, the one `FRONTIER_TAU_MIN` uses), is the scale that puts the term in the frontier's unit; it makes
   the Q-driven target LOOK0.md's fit (iv) used. The lambda the legs then measure is still against V in floors (the unit caveat above: in Act 1 it is 0 for card, rest and reward for that reason).
+* **The lambda in the store** (D59 lane H): `run_teacher.py regrade --lambda-scale S` writes the scaled lambda into every record (`lam`; the stored one stays as `lam_floors`) and both manifests name it, so a fit on
+  the regraded store needs no `--target-lambda-scale` (the loader records `lambda_scale` in `fit.json` and `legs.json` `target.store_lambda_scale`, refuses a store whose shards are in two lambda units, and refuses
+  `--target-lambda-scale` on top of a scaled store). The scale is the grades' noise ratio on the stores being fitted together (`run_teacher.py units --store A --store B` pools them and prints
+  `lambda_scale_suggested`: 0.283, the first value, unless the measured ratio differs from it by more than a fifth); the regrade's own result carries the same measurement (`unit`: noise and spread ratios, pooled and by
+  door act) beside the scale it used. The ratio is a mixture of the acts' (Act 1 about 0.13, Act 2 about 0.65 on the regraded generation 14 and 15 stores), so it moves with the share of Act 2 screens.
+* **A start that is a merged student** (D59 lane H; `--prior` a file `human_prior_infer.write_merged_student` wrote, as the incumbent of generation 15): the fit starts from the file's first net
+  (`read_prior_params`), and every baseline is per kind: `load_baseline` reads a merged file as a `StudentScorer`, `TeacherSet.logits_of` scores a kind's rows with the net that serves the kind (so the KL anchor on teacher
+  rows and leg 1's prior column are that net's), and leg 2 reads the human log-loss of the baseline per kind the same way. The first net is no longer the baseline of route and event. (The KL anchor on the human rows
+  still reads the start net, the first one.) A kind the incumbent plays through the human prior's blend (card, ancient and rest when the student does not serve them) is still measured against the student file's net,
+  not the head the incumbent plays.
 
 ## The recipe and the policy
 

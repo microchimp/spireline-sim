@@ -718,6 +718,88 @@ class Leg2Tests(unittest.TestCase):
             rs.leg2(planted, self.same, self.prior, exam_ids=frozenset())
 
 
+class MergedBaselineTests(unittest.TestCase):
+    """A student that starts from a merged student file (D59 lane H: generation 15's incumbent has one net for card, rest, shop and reward and another for route and event): the
+    baseline of each kind in the fit's anchor and in both legs is the net that serves the kind at play, not the first net for every kind."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        cls.wa, cls.wb = random_weights(seed=3), random_weights(seed=8)
+        kinds = ("card", "ancient", "rest", "shop", "route", "event", "reward")
+        cls.a = student_file(cls.root / "a.npz", cls.wa, kinds=kinds)
+        cls.b = student_file(cls.root / "b.npz", cls.wb, kinds=kinds)
+        cls.merged = cls.root / "m.npz"
+        hpi.write_merged_student(cls.merged, [(cls.a, ("card", "shop", "rest")), (cls.b, ("route", "event", "ancient", "reward"))])
+        cls.human = write_weights(cls.root / "pi_h.npz", cls.wa)  # what the teacher decided with
+        cls.store = synth_shards(cls.root, Synth(cls.wa), runs=24, kinds=("card", "route", "shop", "reward"), per_kind=2)
+        cls.ids = run_ids_by_bucket(40)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def ts(self, prior_path):
+        return rs.load_shards(self.store, prior=rs.load_baseline(prior_path), teacher_prior=hpi.PriorScorer.load(self.human))
+
+    def test_a_merged_file_is_read_as_a_merged_student_and_any_other_as_the_plain_scorer_it_always_was(self):
+        merged = rs.load_baseline(self.merged)
+        self.assertEqual({"route", "event", "ancient", "reward"}, set(merged._by_kind))  # noqa: SLF001
+        self.assertIs(hpi.PriorScorer, type(rs.load_baseline(self.human)))
+        self.assertEqual(set(), set(getattr(rs.load_baseline(self.a), "_by_kind", {})))
+
+    def test_each_rows_logit_comes_from_the_net_that_serves_its_kind(self):
+        ts = self.ts(self.merged)
+        za, zb = ts.logits_of(hpi.StudentScorer.load(self.a)), ts.logits_of(hpi.StudentScorer.load(self.b))
+        row_kind = np.repeat(ts.kind, ts.count)
+        self.assertFalse(np.allclose(za, zb))
+        for kind, want in (("card", za), ("shop", za), ("route", zb), ("reward", zb)):
+            rows = row_kind == rs.KIND_ID[kind]
+            self.assertTrue(rows.any(), kind)
+            np.testing.assert_allclose(ts.zh[rows], want[rows], atol=1e-6, err_msg=kind)  # `zh` is what the anchor and leg 1's baseline read
+        np.testing.assert_allclose(ts.logits_of(hpi.StudentScorer.load(self.merged)), ts.zh, atol=1e-6)
+
+    def test_a_plain_scorer_scores_every_row_with_itself(self):
+        ts = self.ts(self.a)
+        np.testing.assert_allclose(ts.zh, ts.logits_of(hpi.PriorScorer.load(self.a)), atol=1e-7)
+
+    def test_leg_1_measures_a_kind_against_the_net_that_serves_it(self):
+        student = hpi.StudentScorer.load(self.a)
+        ts_m, ts_b = self.ts(self.merged), self.ts(self.b)
+        with mock.patch.object(rs, "BOOT_DRAWS", 100):
+            got = rs.leg1(ts_m, ts_m.split_idx()["test"], student, rs.load_baseline(self.merged))
+            want = rs.leg1(ts_b, ts_b.split_idx()["test"], student, hpi.PriorScorer.load(self.b))
+            same_a = rs.leg1(self.ts(self.a), ts_m.split_idx()["test"], student, hpi.PriorScorer.load(self.a))
+        for kind in ("route", "reward"):  # served by b
+            self.assertEqual(want["kinds"][kind]["ce_prior"], got["kinds"][kind]["ce_prior"], kind)
+        for kind in ("card", "shop"):  # served by a: the student is a, so it equals its baseline
+            self.assertEqual(same_a["kinds"][kind]["ce_prior"], got["kinds"][kind]["ce_prior"], kind)
+            self.assertAlmostEqual(0.0, got["kinds"][kind]["gain"]["mean"], places=6)
+
+    def test_leg_2_measures_a_kind_against_the_net_that_serves_it(self):
+        ds = human_dataset({4: self.ids[4][:40]}, per_run=3)
+        student = hpi.StudentScorer.load(student_file(self.root / "s.npz", random_weights(seed=12)))
+        with mock.patch.object(rs, "BOOT_DRAWS", 100):
+            got = rs.leg2(ds, student, rs.load_baseline(self.merged), exam_ids=frozenset())
+            vs_a = rs.leg2(ds, student, hpi.PriorScorer.load(self.a), exam_ids=frozenset())
+            vs_b = rs.leg2(ds, student, hpi.PriorScorer.load(self.b), exam_ids=frozenset())
+        for kind in ("card", "shop", "rest"):
+            self.assertEqual(vs_a["kinds"][kind]["all"], got["kinds"][kind]["all"], kind)
+            self.assertEqual(vs_a["kinds"][kind]["won"], got["kinds"][kind]["won"], kind)
+        for kind in ("route", "event", "ancient"):
+            self.assertEqual(vs_b["kinds"][kind]["all"], got["kinds"][kind]["all"], kind)
+            self.assertEqual(vs_b["kinds"][kind]["won"], got["kinds"][kind]["won"], kind)
+        self.assertNotEqual(vs_a["kinds"]["route"]["all"]["ll_prior"], got["kinds"]["route"]["all"]["ll_prior"])  # the old reading, net 0 for every kind, was another number
+
+    @unittest.skipIf(torch is None, "torch is not installed")
+    def test_a_fit_from_a_merged_file_records_it_as_the_baseline_and_starts_from_its_first_net(self):
+        cfg = rs.FitConfig(epochs=1, patience=1, batch_teacher=64, lr=1e-3, beta=0.0, kl=0.0, dropout=0.0)
+        legs = rs.run_fit(self.store, self.merged, self.root / "fit", cfg=cfg, device="cpu", log=lambda *_: None, teacher_prior_path=self.human)
+        self.assertEqual(hpi.file_sha256(self.merged), legs["baseline"]["sha256"])
+        self.assertEqual(hpi.file_sha256(self.merged), json.loads((self.root / "fit" / rs.FIT_FILE).read_text())["prior_sha256"])
+
+
 class VerdictTests(unittest.TestCase):
     def legs(self, *, gain_lo=0.01, n=500, won=0.0015, allr=0.01, lam=(0.2, 0.2, 0.2), kind="card", human=True, measured=True):
         l2 = {"measured": measured, "kinds": {}, "no_human_fit": [] if human else [kind]}

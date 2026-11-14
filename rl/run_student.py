@@ -59,6 +59,10 @@ incumbent's own student net (its lambdas as its recipe gives them, its legs carr
 (`human_prior_infer.write_merged_student`); `--lambda-floor KIND=VALUE` (repeatable) raises a taken kind's lambda to at least VALUE in each act and records the measured one beside it
 in agent.json (`student.floored`) and in the legs; `--kinds` limits the new fit's kinds.
 
+**The store's lambda and a merged start** (D59 lane H): `run_teacher.py regrade --lambda-scale S` puts the lambda of the records into the frontier unit (`lam_floors` keeps the stored one), so a fit on that store takes no
+`--target-lambda-scale` (refused on top of it; two lambda units in one root are refused). A `--prior` that is a merged student (the incumbent of generation 15: one net for card, rest, shop and reward, one for route and event) starts the
+fit from its first net and is the baseline kind by kind: `load_baseline`, `TeacherSet.logits_of` (the anchor on the teacher rows, leg 1's prior column) and `leg2` use the net that serves each kind.
+
 **The side blocks** (D59 lane F, `--side-block NAME`, repeatable, default none: `rl/student_sides.py`): the map grid as flat columns (`grid`), the state gaps (`gaps`), the full parity
 blocks (`parity-relics`, `parity-roles`, `parity-events`, `parity-potions`, from the shards' `rows_parity.npz`) and the held halves of three of them (`held-relics`, `held-roles`,
 `held-potions`: functions of a row's counts, so the human rows and the rows at play give them too). The student's first layer is widened by the blocks' width, zero columns, so
@@ -278,6 +282,13 @@ class TeacherSet:
     def kind_name(self, i: int) -> str:
         return KINDS[int(self.kind[i])]
 
+    def check_lambda_units(self, target_lambda_scale: float) -> None:
+        """Refuse a fit's own `--target-lambda-scale` on a store whose lambda a regrade already put into the frontier unit (`regrade --lambda-scale`): it would be scaled twice."""
+        have = self.stats.get("lambda_scale")
+        if have is not None and float(target_lambda_scale) != 1.0:
+            raise ShardError(f"the store's lambda is already in the frontier unit (regraded with --lambda-scale {have:g}): --target-lambda-scale {float(target_lambda_scale):g} "
+                             "would scale it twice (leave it at 1)")
+
     def run_split(self) -> np.ndarray:
         """The part of each run (`test`, `val`, `train`)."""
         return np.array([split_of(s) for s in self.seeds])
@@ -299,7 +310,20 @@ class TeacherSet:
     def logits_of(self, scorer: PriorScorer) -> np.ndarray:
         """`scorer`'s logit of every row (a scorer with the map tower is given each row's grid, one with the state gaps each row's block G, and either refuses a
         set that lacks what it reads)."""
-        out = np.zeros(len(self.dense), dtype=np.float32)
+        by_kind = getattr(scorer, "_by_kind", None)
+        if by_kind:  # a merged student: each kind's rows are scored by the net that serves the kind (the first net serves the kinds no further net names)
+            out = np.zeros(len(self.dense), dtype=np.float32)
+            row_kind = np.repeat(self.kind.astype(np.int64), self.count.astype(np.int64))  # rows follow the decisions, in order
+            for kid in np.unique(row_kind):
+                sel = np.flatnonzero(row_kind == kid)
+                out[sel] = self._logits_of_rows(scorer.scorer_for(KINDS[int(kid)]), sel)
+            return out
+        return self._logits_of_rows(scorer, None)
+
+    def _logits_of_rows(self, scorer: PriorScorer, sel: np.ndarray | None) -> np.ndarray:
+        """`logits_of` for one net: of every row, or of the rows `sel` (indices; the result has one number per row of `sel`)."""
+        n = len(self.dense) if sel is None else len(sel)
+        out = np.zeros(n, dtype=np.float32)
         if scorer.map_grid and self.grid is None:
             raise ShardError("this prior has a map tower and the shards have no map grid (rows_map.npz): run `run_teacher.py reencode`")
         if getattr(scorer, "state_gaps", False) and self.gaps is None:
@@ -307,10 +331,14 @@ class TeacherSet:
         want = tuple(getattr(scorer, "side_blocks", ()) or ())
         if want and (self.sides is None or any(f not in self.sides for f in want)):
             raise ShardError(f"this scorer reads the side blocks {list(want)} and the set has {list(self.side_flags)}: load the shards with --side-block for each")
-        for s in range(0, len(self.dense), 20000):
-            kw = {"sides": {f: self.sides[f][s:s + 20000] for f in want}} if want else {}
-            out[s:s + 20000] = scorer.logits(self.dense[s:s + 20000], self.counts[s:s + 20000], None if self.grid is None else self.grid[s:s + 20000],
-                                             self.gaps[s:s + 20000] if getattr(scorer, "state_gaps", False) else None, **kw)
+
+        def part(a: np.ndarray, s: int) -> np.ndarray:
+            return a[s:s + 20000] if sel is None else a[sel[s:s + 20000]]
+
+        for s in range(0, n, 20000):
+            kw = {"sides": {f: part(self.sides[f], s) for f in want}} if want else {}
+            out[s:s + 20000] = scorer.logits(part(self.dense, s), part(self.counts, s), None if self.grid is None else part(self.grid, s),
+                                             part(self.gaps, s) if getattr(scorer, "state_gaps", False) else None, **kw)
         return out
 
     def attach_prior(self, prior: PriorScorer, tol: float = 1e-3, teacher_prior: PriorScorer | None = None) -> None:
@@ -529,10 +557,12 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     kept: Counter = Counter()
     manifests: list[dict] = []
     grades: dict[str, set[str]] = defaultdict(set)  # grade -> the shards (and records) that carry it
+    lam_units: dict[float | None, set[str]] = defaultdict(set)  # the lambda scale a regrade wrote into the records (None: the lambda as the teacher decided) -> its shards
     n_rows = 0
     for d in shards:
         sh = read_shard(d, flags)
         grade = sh["manifest"].get("grade", "floors")  # a shard from before the grades is graded floors
+        lam_units[None if sh["manifest"].get("lambda_scale") is None else float(sh["manifest"]["lambda_scale"])].add(sh["name"])
         if grade not in GRADES:
             raise ShardError(f"{sh['name']}: unknown grade {grade!r}; one of {', '.join(GRADES)}")
         grades[grade].add(sh["name"])
@@ -614,6 +644,10 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     if len(grades) > 1:
         raise ShardError("the shards carry two grades (" + "; ".join(f"{g}: {len(s)} shard(s)" for g, s in sorted(grades.items()))
                          + "): a store is graded one way, its Q in one unit; regrade into a root of its own (run_teacher.py regrade) and fit one root at a time")
+    if len(lam_units) > 1:
+        raise ShardError("the shards carry the lambda in " + " and ".join(f"{'the unit the teacher decided it in' if u is None else f'the frontier unit (scale {u:g})'}: {len(s)} shard(s)"
+                                                                          for u, s in sorted(lam_units.items(), key=lambda kv: (kv[0] is not None, kv[0] or 0.0)))
+                         + ": a fit takes one lambda unit; regrade every store with the same --lambda-scale")
     if not cols["run"]:
         raise ShardError(f"no complete decision in {len(shards)} shard(s) (dropped: {dict(dropped)})")
     ts = TeacherSet(
@@ -624,7 +658,8 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
         v=np.concatenate(v_rows), dense=np.concatenate(dense_parts), counts=np.concatenate(count_parts), g=g_all,
         logp_rec=np.concatenate(lp_rows),
         stats={"shards": len(shards), "decisions": len(cols["run"]), "rows": n_rows, "runs": len(seeds), "kept": dict(kept), "dropped": dict(dropped),
-               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "grade": next(iter(grades), "floors"), "side_blocks": list(flags)},
+               "map_grid": bool(map_grid), "state_gaps": bool(state_gaps), "grade": next(iter(grades), "floors"), "side_blocks": list(flags),
+               **({"lambda_scale": next(iter(lam_units))} if next(iter(lam_units), None) is not None else {})},
         manifests=manifests, grid=np.concatenate(grid_parts).astype(np.int8) if map_grid else None,
         gaps=np.concatenate(gaps_parts).astype(np.float32) if state_gaps else None)
     if flags:
@@ -637,6 +672,11 @@ def load_shards(root: Path | str, *, kinds: Sequence[str] = KINDS, prior: PriorS
     return ts
 
 
+def check_lambda_units(ts: TeacherSet, target_lambda_scale: float) -> None:
+    """`TeacherSet.check_lambda_units`, for a fit's caller."""
+    ts.check_lambda_units(target_lambda_scale)
+
+
 def public_stats(ts: TeacherSet) -> dict[str, Any]:
     """The counts of a loaded set for a report: no seeds, nothing per run."""
     split = ts.split_idx()
@@ -645,7 +685,7 @@ def public_stats(ts: TeacherSet) -> dict[str, Any]:
             "dropped": ts.stats["dropped"], "decisions_by_split": {k: int(len(v)) for k, v in split.items()},
             "runs_by_split": dict(Counter(ts.run_split().tolist())), "noise_sd": ts.noise, "provenance": ts.manifests,
             "logp_check": ts.stats.get("logp_check"), "map_grid": ts.grid is not None, "state_gaps": ts.gaps is not None, "grade": ts.stats.get("grade", "floors"),
-            "side_blocks": list(ts.side_flags)}
+            "side_blocks": list(ts.side_flags), **({"lambda_scale": ts.stats["lambda_scale"]} if "lambda_scale" in ts.stats else {})}
 
 
 # ---------------------------------------------------------------------------------------------------------- the human data
@@ -784,6 +824,19 @@ def make_net(params: Mapping[str, np.ndarray], dropout: float = 0.1, state_gaps:
 
 def net_params(net) -> dict[str, np.ndarray]:
     return {k: v.detach().cpu().numpy().astype(np.float32) for k, v in net.state_dict().items()}
+
+
+def load_baseline(path: Path | str) -> PriorScorer:
+    """The scorer of a file a fit starts from and is measured against: a merged student (`human_prior_infer.write_merged_student`: one net per group of kinds) as a `StudentScorer`,
+    which serves each kind with its own net (`logits_of`, `leg2` read it so), any other file as the plain `PriorScorer` it always was."""
+    import human_prior_infer as hpi  # noqa: PLC0415
+
+    with np.load(Path(path), allow_pickle=False) as z:
+        meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
+    block = meta.get(hpi.STUDENT_META)
+    if isinstance(block, dict) and block.get(hpi.NETS_KEY):
+        return hpi.StudentScorer.load(path)
+    return PriorScorer.load(path)
 
 
 def read_prior_params(path: Path | str) -> dict[str, np.ndarray]:
@@ -1068,16 +1121,22 @@ def leg2(ds: Any, student: PriorScorer, prior: PriorScorer, *, exam_ids: frozens
     fewer than `MIN_CELL` runs is not shown. `no_human_fit` lists the kinds the data has no decisions for."""
     check_no_exam(ds, default_exam_ids() if exam_ids is None else exam_ids)
     valid = ~hp._bool_unavailable(ds, True, True, True)  # noqa: SLF001
-    if (student.map_grid or prior.map_grid) and not ds.has_grid:
+    # the baseline of a kind is the net that serves it: a merged student's further nets serve their kinds, the first net the rest (`StudentScorer.scorer_for`)
+    nets = [prior] + list(dict.fromkeys(getattr(prior, "_by_kind", {}).values()))
+    if (student.map_grid or any(n.map_grid for n in nets)) and not ds.has_grid:
         raise ShardError("leg 2: the scorers have a map tower and the human shards have no map grid (use decisions-v2)")
-    if (student.state_gaps or prior.state_gaps) and not ds.has_gaps:
+    if (student.state_gaps or any(n.state_gaps for n in nets)) and not ds.has_gaps:
         raise ShardError("leg 2: the scorers read the state gaps and the human shards have no block G (use decisions-v3)")
     try:
         ps = human_per_decision(ds, hp.row_scores_np(ds, None, student.logits, grid=student.map_grid, gaps=student.state_gaps, sides=student.side_blocks), valid)
-        pp = human_per_decision(ds, hp.row_scores_np(ds, None, prior.logits, grid=prior.map_grid, gaps=prior.state_gaps, sides=prior.side_blocks), valid)
+        pp = {}
+        for net in nets:
+            got = human_per_decision(ds, hp.row_scores_np(ds, None, net.logits, grid=net.map_grid, gaps=net.state_gaps, sides=net.side_blocks), valid)
+            pp.update({kind: v for kind, v in got.items() if getattr(prior, "scorer_for", lambda _k: prior)(kind) is net})
     except ValueError as e:
-        if student.side_blocks or prior.side_blocks:
-            raise ShardError(f"leg 2: the scorers read side blocks {list(student.side_blocks or prior.side_blocks)} and the human shards lack one ({e})") from e
+        sides = list(student.side_blocks or next((n.side_blocks for n in nets if n.side_blocks), ()))
+        if sides:
+            raise ShardError(f"leg 2: the scorers read side blocks {sides} and the human shards lack one ({e})") from e
         raise
     out: dict[str, Any] = {"measured": True, "heldout_fifth": HUMAN_TEST_FIFTH, "source": SPIRE_CODEX, "kinds": {}, "no_human_fit": [], "hidden": []}
 
@@ -1216,15 +1275,16 @@ def run_legs(ts: TeacherSet, student_path: Path | str, prior_path: Path | str, *
     from human_prior_infer import StudentScorer  # noqa: PLC0415
 
     student = StudentScorer.load(student_path)
-    prior = PriorScorer.load(prior_path)
+    prior = load_baseline(prior_path)
     test = ts.split_idx()["test"]
     legs: dict[str, Any] = {"version": VERSION, "written": utc(), "source": SPIRE_CODEX, "student_sha256": file_sha256(student_path),
                             "baseline": {"sha256": file_sha256(prior_path), "kind": baseline_kind},
                             "rule": {"leg1": f"gain lower bound above 0 on at least {LEG1_MIN_DECISIONS} held-out decisions of the kind",
                                      "leg2": f"human log-loss against the baseline's at most +{TIE_NATS} (won runs) and +{LIMIT_NATS} (all runs); "
                                              "none for a kind with no human fit"}}
-    if target_lambda_scale != 1.0:  # leg 1's target is the fit's: `ts` carries the scaled lambda
-        legs["target"] = {"lambda_scale": float(target_lambda_scale)}
+    if target_lambda_scale != 1.0 or "lambda_scale" in ts.stats:  # leg 1's target is the fit's: `ts` carries the scaled lambda
+        legs["target"] = {**({"lambda_scale": float(target_lambda_scale)} if target_lambda_scale != 1.0 else {}),
+                          **({"store_lambda_scale": ts.stats["lambda_scale"]} if "lambda_scale" in ts.stats else {})}
     legs["leg1"] = leg1(ts, test, student, prior)
     legs["leg2"] = leg2(human_test, student, prior, exam_ids=exam_ids) if human_test is not None else {"measured": False, "no_human_fit": []}
     legs["lambda"] = measure_lambda(ts, test, student)
@@ -1248,16 +1308,19 @@ def run_fit(shards_root: Path | str, prior_path: Path | str, out: Path | str, *,
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     flags = student_sides.parse_flags(list(side_blocks))
-    prior = PriorScorer.load(prior_path)
+    prior = load_baseline(prior_path)
     teacher_prior = PriorScorer.load(teacher_prior_path) if teacher_prior_path else None
     if flags and prior.side_blocks:
         raise ShardError(f"the prior already reads the side blocks {list(prior.side_blocks)}: a fit takes new side blocks from a prior that reads none")
     log(f"loading the shards under {Path(shards_root).name}" + (f" with the side blocks {list(flags)}" if flags else ""))
     ts = load_shards(shards_root, prior=prior, map_grid=map_grid, teacher_prior=teacher_prior, state_gaps=state_gaps, side_blocks=flags)
     log(f"  {len(ts)} decisions of {len(ts.seeds)} runs; dropped {ts.stats['dropped']}")
+    check_lambda_units(ts, float(target_lambda_scale))
     ts.scale_lambda(float(target_lambda_scale))
     if target_lambda_scale != 1.0:
         log(f"  the target's lambda is the teacher's x {target_lambda_scale:g}")
+    if "lambda_scale" in ts.stats:
+        log(f"  the store's lambda is in the frontier unit (regraded with --lambda-scale {ts.stats['lambda_scale']:g})")
     human_train = human_test = None
     if human_dir is not None:
         log("loading the human decisions (fifths 1 to 3 to fit on, fifth 4 for leg 2)")

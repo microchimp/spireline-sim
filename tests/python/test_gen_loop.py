@@ -1777,9 +1777,10 @@ class StudentKeepRestTests(unittest.TestCase):
 
         with mock.patch.object(run_student, "run_fit", side_effect=fit), mock.patch.object(run_student, "_priority"), \
                 mock.patch.object(run_student, "build_student_candidate", side_effect=lambda *a, **kw: built(*a, **{**kw, "export": False})):
-            rc = sj.main(["--lab", str(self.root / "LAB"), "--shards-root", str(self.root / "store"), "--prior", str(self.inc_student), "--out", str(out),
-                          "--base", str(self.agents / "current.json"), "--agent-root", str(self.agents), "--target", "8", "--tag", "student",
-                          "--result", str(self.root / "job" / "result.json")])
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = sj.main(["--lab", str(self.root / "LAB"), "--shards-root", str(self.root / "store"), "--prior", str(self.inc_student), "--out", str(out),
+                              "--base", str(self.agents / "current.json"), "--agent-root", str(self.agents), "--target", "8", "--tag", "student",
+                              "--result", str(self.root / "job" / "result.json")])
         self.assertEqual(0, rc)
         result = json.loads((self.root / "job" / "result.json").read_text(encoding="utf-8"))
         self.assertEqual((True, "gen8/candidate-student", ["event", "rest", "reward", "shop"]), (result["built"], result["candidate"], result["kept"]))
