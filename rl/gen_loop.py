@@ -157,6 +157,10 @@ class Agent:
     # its lambda per kind, ((kind, (Act 1, Act 2, Act 3)), ...) in the recipe's order; unset for every agent that existed before it
     student: str | None = None
     student_lams: tuple[tuple[str, tuple[float, float, float]], ...] = ()
+    # the Act 1 elite bonus (2026-11-14, D60 item 9; agent.json `route_elite`, the recipe's `+elite:<bonus>@<per cent>`): (floors per elite room on the best
+    # path through an Act 1 route option, the HP per cent of max HP at or above which it applies). Part of the identity, like the schedule and the hold;
+    # None is every agent that existed before it.
+    route_elite: tuple[float, int] | None = None
 
     def search_config(self, sims):
         """The `search_configs.SearchConfig` this agent plays when the lab asks for `sims` (a config name or a flat budget): `sims` itself
@@ -177,8 +181,8 @@ class Agent:
         return 1.0 if self.stakes is None else self.search_config("a3-v1").wall_factor()
 
     def recipe(self) -> str:
-        """The ledger's recipe (`macro_recipe.full_recipe`): the macro's, the schedule's and the hold's."""
-        return macro_recipe.full_recipe(self.macro, self.stakes, self.hold)
+        """The ledger's recipe (`macro_recipe.full_recipe`): the macro's, the schedule's, the hold's and the elite bonus's."""
+        return macro_recipe.full_recipe(self.macro, self.stakes, self.hold, self.route_elite)
 
     def search_extra(self) -> dict[str, Any]:
         """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
@@ -214,7 +218,8 @@ class Agent:
                 raise ValueError(f"macro {self.macro} needs run_student.npz")
             return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W,
                                                    pick=pick, skip_bias=bias, act_lam=dict(self.lam_acts) or None,
-                                                   **({"student": self.student, "student_lams": dict(self.student_lams)} if self.student else {}))
+                                                   **({"student": self.student, "student_lams": dict(self.student_lams)} if self.student else {}),
+                                                   **({"route_elite": self.route_elite} if self.route_elite is not None else {}))
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -228,6 +233,8 @@ class Agent:
         explore = {k: v for k, v in (("tau", self.tau), ("eps", self.eps)) if v}
         # the search's own identity, named only where the agent has it, so an older agent's description is what it was
         search = {k: v for k, v in (("stakes", self.stakes), ("hold", self.hold)) if v is not None}
+        if self.route_elite is not None:  # what the run chooser picks on the map, named only where the agent has it
+            search["route_elite"] = [self.route_elite[0], self.route_elite[1]]
         return {"generation": self.generation, "dir": tail, "prior": bool(self.prior_dir), "prior_sha256": sha,
                 "macro": self.macro, **explore, **search}
 
@@ -317,10 +324,13 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     if isinstance(mask_version, bool) or mask_version not in AGENT_MASK_VERSIONS:
         raise ValueError(f"{p.name}/agent.json: mask_version {mask_version!r} is not one of {list(AGENT_MASK_VERSIONS)}")
     stakes, hold = search_identity(meta, p.name)
+    route_elite = route_elite_identity(meta, p.name)
+    if route_elite is not None and not blended:
+        raise ValueError(f"{p.name}/agent.json: route_elite needs a blended macro (the elite bonus rides on the run chooser), not {mode!r}")
     agent = Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
                   float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
                   human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold, lam_acts=tuple(sorted(lam_acts.items())),
-                  student=str(student_file) if student_file else None, student_lams=tuple(student_lams.items()))
+                  student=str(student_file) if student_file else None, student_lams=tuple(student_lams.items()), route_elite=route_elite)
     if meta.get("recipe") is not None and meta["recipe"] != agent.recipe():  # the recipe agent.json records is the one the fields give
         raise ValueError(f"{p.name}/agent.json: recipe {meta['recipe']!r} is not the agent's ({agent.recipe()!r})")
     return agent
@@ -357,6 +367,24 @@ def search_identity(meta: dict[str, Any], name: str = "agent.json") -> tuple[str
         except (KeyError, TypeError, ValueError) as e:
             raise ValueError(f"{name}: potion_hold {ph!r} is not {{'hp_frac': <whole per cent as a fraction>, 'fights': 'hall'}}: {e}") from e
     return stakes, hold
+
+
+def route_elite_identity(meta: dict[str, Any], name: str = "agent.json") -> tuple[float, int] | None:
+    """(bonus, HP per cent) of an agent.json's `route_elite` ({"bonus": floors per elite room, "hp_frac": 0.6 (a whole per cent as a fraction), "act": 1}):
+    the Act 1 elite bonus of the route screen (`imitation_chooser.elites_ahead`); None for an agent without it. A bonus that is not a number above 0 (and at
+    most `macro_recipe.MAX_ELITE_BONUS`), a fraction that is not a whole per cent from 1 to 100, and an act other than 1 are refused."""
+    re_ = meta.get("route_elite")
+    if re_ is None:
+        return None
+    try:
+        pct = round(float(re_["hp_frac"]) * 100)
+        if abs(float(re_["hp_frac"]) * 100 - pct) > 1e-6:
+            raise ValueError(f"hp_frac {re_['hp_frac']!r} is not a whole per cent")
+        if re_.get("act", 1) != 1:
+            raise ValueError(f"act {re_['act']!r}: the bonus is for Act 1")
+        return macro_recipe.elite_bonus(re_["bonus"]), macro_recipe.elite_pct(int(pct))
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"{name}: route_elite {re_!r} is not {{'bonus': floors per elite room, 'hp_frac': <whole per cent as a fraction>, 'act': 1}}: {e}") from e
 
 
 def active_agent_extra() -> dict[str, Any]:
@@ -1454,7 +1482,7 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
                     skip_bias: float = 0.0, search_schedule: dict[str, Any] | None = None, potion_hold: float | None = None,
                     lam_acts: Mapping[int, float] | None = None, student: Path | str | None = None,
                     student_lams: Mapping[str, Sequence[float]] | None = None, student_keep: Sequence[str] | None = None,
-                    student_notes: Mapping[str, Any] | None = None) -> Path:
+                    student_notes: Mapping[str, Any] | None = None, route_elite: tuple[float, float] | None = None) -> Path:
     """Generation `target`'s candidate assembled from parts, nothing trained (D44 step A): the combat prior exported in `prior_dir`
     (model.json, combat_policy.pt and combat_net.pt; the fight loop's `players/v<N>` has that layout) with everything else of the
     generation `base` (a generation directory or a current.json): its V_run fit, macro, tau, eps and mask version.
@@ -1500,7 +1528,11 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     base's recipe gives them. The candidate's run_student.npz is then a merged student (`human_prior_infer.write_merged_student`): `student` serves the kinds of
     `student_lams`, the base's student the kept ones; the recipe names the merged file's sha256 and every kind, and agent.json's `student` block says where the
     kept kinds came from (`kept`). A kind both named in `student_lams` and kept, or one the base's student does not serve, is refused. `student_notes` (a
-    mapping) is added to agent.json's `student` block as it is (the builder's record of the lambdas it floored)."""
+    mapping) is added to agent.json's `student` block as it is (the builder's record of the lambdas it floored).
+
+    `route_elite` (bonus, HP fraction; D60 item 9, the elite test): the Act 1 elite bonus of the route screen, written to agent.json (`route_elite`:
+    {"bonus", "hp_frac", "act": 1}; `route_elite_identity` reads it back) and to the recipe (`+elite:<bonus>@<per cent>`), so it is a recipe of its own. Only a
+    blended or student recipe carries it (a base that has one keeps it when a student is given, as the schedule and the hold are kept)."""
     import shutil  # noqa: PLC0415
 
     import combat_prior  # noqa: PLC0415
@@ -1559,6 +1591,9 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
             search_schedule = {"base": base_meta0["search_schedule"]["base"], "mult": base_meta0["search_schedule"]["mult"]}
         if potion_hold is None and base_meta0.get("potion_hold") is not None:
             potion_hold = float(base_meta0["potion_hold"]["hp_frac"])
+        if route_elite is None and base_meta0.get("route_elite") is not None:  # the chooser's map bonus stays the base's unless one is given
+            kept_re = route_elite_identity(base_meta0, Path(base_agent.path).name)
+            route_elite = (kept_re[0], kept_re[1] / 100.0)
     fit_doc = read_vrun_fit(vrun_fit) if vrun_fit is not None else None
     if fit_doc is not None and base_agent.macro != "vrun":
         raise ValueError(f"a V_run fit drives the vrun macro; the base plays {base_agent.macro}")
@@ -1609,6 +1644,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
         raise ValueError("a lambda by act belongs to the blended chooser (--human-prior and --lambda)")
     if (base_agent.stakes is not None or base_agent.hold is not None) and student is None:
         raise ValueError("the base has a stakes schedule or a potion hold; build on a plain generation")
+    if base_agent.route_elite is not None and student is None:
+        raise ValueError("the base has an elite bonus, which a build without a student would drop; build on a plain generation")
     search_meta: dict[str, Any] = {}
     if search_schedule is not None:
         search_meta["search_schedule"] = {"base": str(search_schedule["base"]), "mult": macro_recipe.stakes_mult(search_schedule["mult"])}
@@ -1617,7 +1654,15 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     stakes_tag, hold_per_cent = search_identity(search_meta, f"gen{target}/candidate")  # refuses what the load would refuse
     if stakes_tag is not None:
         search_meta["search_schedule"]["tag"] = stakes_tag
-    recipe = macro_recipe.full_recipe(macro, stakes_tag, hold_per_cent)
+    elite_pair = None
+    if route_elite is not None:
+        if not macro_recipe.is_blended(macro):
+            raise ValueError(f"the elite bonus rides on the run chooser: the candidate's macro {macro!r} is not a blended one")
+        search_meta["route_elite"] = {"bonus": float(route_elite[0]), "hp_frac": float(route_elite[1]), "act": 1,
+                                      "rule": "an Act 1 route option's score gains bonus floors per elite room on the best path through it, while HP is at or "
+                                              "above hp_frac of max HP"}
+        elite_pair = route_elite_identity(search_meta, f"gen{target}/candidate")  # refuses what the load would refuse
+    recipe = macro_recipe.full_recipe(macro, stakes_tag, hold_per_cent, elite_pair)
     cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt), tag)
     if cand.exists() and any(cand.iterdir()):
         raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
@@ -1675,7 +1720,8 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     if export:
         doc["onnx"] = export_all(cand)
     parts = (f", searching its fights under the schedule {stakes_tag}" if stakes_tag else "") + (
-        f", holding hallway potions at {hold_per_cent} in 100 of max HP" if hold_per_cent else "")
+        f", holding hallway potions at {hold_per_cent} in 100 of max HP" if hold_per_cent else "") + (
+        f", steering its Act 1 routes by {elite_pair[0]:g} floors per elite room while HP is at {elite_pair[1]} in 100 of max or more" if elite_pair else "")
     if student_block:
         note = (f"built, not trained: the combat prior of {prior_dir.name} and generation {base_agent.generation}'s V_run fit, the run chooser "
                 f"blended with the human prior and the run student on {', '.join(sorted(student_kinds, key=macro_recipe.STUDENT_KINDS.index))} ({macro}){parts}; "
@@ -1706,6 +1752,30 @@ def build_candidate(prior_dir: Path | str, base: Path | str, agent_root: Path | 
     got = load_agent(cand)
     if (got.generation, got.macro, got.describe()["prior_sha256"]) != (target, macro, champ.policy_sha256):
         raise ValueError(f"gen{target}/{cand.name} does not load as built: {got.describe()}")
+    return cand
+
+
+def build_route_elite_candidate(base: Path | str, agent_root: Path | str, target: int, *, why: str, bonus: float, hp_frac: float = 0.6, tag: str = "elite-probe",
+                                export: bool = True) -> Path:
+    """The candidate that is the student generation `base` plus the Act 1 elite bonus and nothing else (D60 item 9, lane I): `build_candidate` with the
+    base's own combat prior, V_run fit, human prior, student file (the same bytes, merged or plain) and kind lambdas, so the macro string, the files and the
+    search are the base's and only the recipe's `+elite:<bonus>@<per cent>` part and agent.json's `route_elite` are new. The base's `run_student_legs.json` is
+    copied beside it. The base must play a student recipe. Returns the candidate's folder (gen<target>/candidate-<tag>)."""
+    import shutil  # noqa: PLC0415
+
+    base_agent = load_agent(base)
+    if base_agent.path is None or not macro_recipe.is_student(base_agent.macro) or not base_agent.student:
+        raise ValueError("the elite bonus is built on a generation that plays a student recipe (vrun+pi_s): the candidate keeps its files as they are")
+    base_dir = Path(base_agent.path)
+    cand = build_candidate(base_dir, base_dir, agent_root, target, why=why, export=export, tag=tag, student=base_agent.student,
+                           student_lams=dict(base_agent.student_lams), route_elite=(float(bonus), float(hp_frac)))
+    base_macro, got_macro = base_agent.macro, load_agent(cand).macro
+    if got_macro != base_macro:  # the same chooser number for number: a macro that differs would be another candidate
+        shutil.rmtree(cand, ignore_errors=True)
+        raise ValueError(f"the candidate's macro {got_macro!r} is not the base's {base_macro!r}")
+    legs = base_dir / STUDENT_LEGS_FILE
+    if legs.is_file():
+        shutil.copyfile(legs, cand / STUDENT_LEGS_FILE)
     return cand
 
 

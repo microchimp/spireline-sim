@@ -36,6 +36,12 @@ played and not what the chooser picks (2026-11-06, `docs/rl/STAKES_AND_HOLD.md`)
 A search config's name is `<base>[@h<H>e<E>b<B>][+hold<N>]` (`search_configs.get` reads it, so every consumer of a config name plays
 a stakes agent's schedule); the ledger's recipe is the macro, then `+stakes:<base>@h<H>e<E>b<B>`, then `+hold:<N>`, so an attempt
 counts under the schedule and the hold it was played with. An agent with neither is the recipe `recipe_of(macro)` always was.
+
+One more part changes what the chooser picks on the map and is named after the other two (2026-11-14, D60 item 9, the elite test):
+
+    elite    the Act 1 elite bonus: `+elite:<bonus>@<hp per cent>`, e.g. `+elite:1@60`. On an Act 1 route screen each room's score gains `bonus`
+             floors for each elite room on the best path through it (`imitation_chooser.elites_ahead`), while HP is at or above the per cent of max HP
+             (agent.json `route_elite`: {"bonus": 1.0, "hp_frac": 0.6, "act": 1}). Only a blended chooser carries it; absent, nothing changes.
 """
 
 from __future__ import annotations
@@ -70,6 +76,8 @@ _STAKES = re.compile(r"(" + _BASE + r")@h(\d+)e(\d+)b(\d+)")
 _CONFIG = re.compile(r"(" + _BASE + r")(?:@h(\d+)e(\d+)b(\d+))?(?:\+hold(\d+))?")
 _RECIPE_STAKES = re.compile(r"\+stakes:([^+]+)")
 _RECIPE_HOLD = re.compile(r"\+hold:(\d+)")
+_RECIPE_ELITE = re.compile(r"\+elite:(" + _LAMBDA + r")@(\d+)")
+MAX_ELITE_BONUS = 50.0  # the elite bonus is a number of floors, above 0 and at most this
 
 
 def format_lambda(lam: float) -> str:
@@ -313,11 +321,36 @@ def recipe_of(macro: str | None) -> str:
     return str(macro) if is_blended(macro) else ""
 
 
-def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None = None) -> str:
-    """The ledger's recipe of an agent: its macro's, then `+stakes:<tag>` and `+hold:<per cent>` where it has them. An agent with
-    neither is `recipe_of(macro)` (so every agent that existed before the two parts keeps its recipe). A plain macro with a part
-    names itself first (`vrun+stakes:a3-v1@h1e4b16`)."""
-    if stakes is None and hold is None:
+def elite_bonus(value) -> float:
+    """The elite bonus in floors per elite room: a finite number above 0 and at most `MAX_ELITE_BONUS`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not (math.isfinite(value) and 0 < value <= MAX_ELITE_BONUS):
+        raise ValueError(f"the elite bonus is a number of floors above 0 and at most {MAX_ELITE_BONUS:g}, not {value!r}")
+    return float(value)
+
+
+def elite_pct(value) -> int:
+    """The elite bonus's HP threshold as a whole number of per cent of max HP (1 to 100)."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
+        raise ValueError(f"the elite bonus's HP threshold is a whole number of per cent of max HP from 1 to 100, not {value!r}")
+    return value
+
+
+def elite_part(bonus, pct) -> str:
+    """The recipe's `+elite:<bonus>@<per cent>` part."""
+    return f"+elite:{format_lambda(elite_bonus(bonus))}@{elite_pct(pct)}"
+
+
+def parse_elite(recipe: str | None) -> tuple[float, int] | None:
+    """(bonus, per cent) of a recipe's `+elite:` part; None without one."""
+    m = _RECIPE_ELITE.search(recipe or "")
+    return (elite_bonus(float(m[1])), elite_pct(int(m[2]))) if m else None
+
+
+def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None = None, elite: tuple[float, int] | None = None) -> str:
+    """The ledger's recipe of an agent: its macro's, then `+stakes:<tag>`, `+hold:<per cent>` and `+elite:<bonus>@<per cent>` where it has them. An agent
+    with none is `recipe_of(macro)` (so every agent that existed before the parts keeps its recipe). A plain macro with a part names itself first
+    (`vrun+stakes:a3-v1@h1e4b16`)."""
+    if stakes is None and hold is None and elite is None:
         return recipe_of(macro)
     base = str(macro) if macro else "rules"
     if stakes is not None:
@@ -325,12 +358,16 @@ def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None =
         base += f"+stakes:{stakes}"
     if hold is not None:
         base += f"+hold:{hold_pct(hold)}"
+    if elite is not None:
+        base += elite_part(*elite)
     return base
 
 
 def split_recipe(recipe: str) -> tuple[str, str | None, int | None]:
-    """The inverse of `full_recipe`: (macro, stakes tag or None, hold per cent or None). A "" recipe is ("", None, None)."""
+    """The inverse of `full_recipe` less the elite part (`parse_elite` reads that): (macro, stakes tag or None, hold per cent or None). A "" recipe is
+    ("", None, None)."""
     stakes = _RECIPE_STAKES.search(recipe)
     hold = _RECIPE_HOLD.search(recipe)
-    cut = min((m.start() for m in (stakes, hold) if m), default=len(recipe))
+    elite = _RECIPE_ELITE.search(recipe)
+    cut = min((m.start() for m in (stakes, hold, elite) if m), default=len(recipe))
     return recipe[:cut], (stakes[1] if stakes else None), (int(hold[1]) if hold else None)

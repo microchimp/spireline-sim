@@ -44,6 +44,11 @@ The guard's probability is `min(GUARD_PROB, STUDENT_GUARD_SHARE / n)` for a scre
 option for sitting under a fixed 2 in 100. Every kind the student has not taken over is decided as before (the human prior's blend on the deck
 screens, `vrun` elsewhere): a policy without a student is the policy it was, number for number.
 
+The Act 1 elite bonus (2026-11-14, D60 item 9, the elite test; the recipe's `+elite:<bonus>@<per cent>` part, agent.json `route_elite`): on an Act 1 route
+screen, while HP is at or above the per cent of max HP, each option's score gains `bonus` floors for each elite room on the best path through the room it leads
+to (`elites_ahead`, the room itself counted), whoever decides the screen (the student's blend, or V alone when the student's lambda is 0 or there is no student).
+The recorded values stay the judgement's; the guard is unchanged. Without the option a policy is what it was, choice for choice.
+
 `BlendedPolicy` is a `run_train.policy.LookaheadPolicy` (same values, same exploration arguments) that decides the deck screens by the
 blend; `last` tells the driver which screen it decided and whether the prior's top option, V's top option, or the guard decided.
 """
@@ -54,6 +59,7 @@ import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +74,9 @@ from macro_recipe import (  # noqa: F401 -- the recipe's names live there
     PICKS,
     PREFIX,
     STUDENT_KINDS,
+    act_of_floor,
+    elite_bonus,
+    elite_pct,
     format_lambda,
     is_blended,
     macro_name,
@@ -76,8 +85,8 @@ from macro_recipe import (  # noqa: F401 -- the recipe's names live there
     parse_pick,
     student_lambda_for_floor,
 )
-from run_train import models
-from run_train.policy import LookaheadPolicy
+from run_train import models, vocab
+from run_train.policy import LookaheadPolicy, floor_probs
 from run_train.selfplay import Pick
 
 if TYPE_CHECKING:
@@ -94,6 +103,24 @@ STUDENT_GUARD_SHARE = 0.25  # the student's guard: an option under min(GUARD_PRO
 # a decision's type (`run_train.features.Decision.type`) -> the kind the run teacher and the student call it
 KIND_OF_TYPE = {"map": "route", "card_reward": "card", "rest": "rest", "shop": "shop", "neow": "ancient", "event": "event", "rewards": "reward",
                 "card_select": "select"}
+
+
+# ------------------------------------------------------------------------------------------------------------------ the elite bonus
+
+
+@lru_cache(maxsize=4096)
+def _elite_table(nodes) -> dict[tuple[int, int], int]:
+    """{(col, row): the most elite rooms on any path from the room to the boss, the room itself counted} for an act map (a tuple of `features.MapNode`)."""
+    best: dict[tuple[int, int], int] = {}
+    for n in sorted(nodes, key=lambda x: -x.row):
+        ahead = max((best[c] for c in n.children if c in best), default=0)
+        best[(n.col, n.row)] = ahead + int(n.node_type == vocab.NODE_ELITE)
+    return best
+
+
+def elites_ahead(nodes, coord) -> int:
+    """The most elite rooms on any path from the room at `coord` (col, row) to the boss, the room itself counted; 0 for a coordinate not on the map."""
+    return _elite_table(tuple(nodes)).get((int(coord[0]), int(coord[1])), 0)
 
 
 # ------------------------------------------------------------------------------------------------------------------ the blend
@@ -244,7 +271,7 @@ class BlendedPolicy(LookaheadPolicy):
     def __init__(self, checkpoint: str | Path, prior: str | Path | PriorScorer, lam: float, temperature: float = 0.0, eps: float = 0.0,
                  W: float | None = None, pick: str = PICK_ARGMAX, skip_bias: float = 0.0,  # noqa: N803
                  act_lam: Mapping[int, float] | None = None, student: str | Path | StudentScorer | None = None,
-                 student_lams: Mapping[str, Sequence[float]] | None = None):
+                 student_lams: Mapping[str, Sequence[float]] | None = None, route_elite: tuple[float, int] | None = None):
         super().__init__(checkpoint, temperature, eps, W)
         if not (lam >= 0):
             raise ValueError(f"lambda is 0 or more, not {lam}")
@@ -256,6 +283,11 @@ class BlendedPolicy(LookaheadPolicy):
             raise ValueError(f"unknown pick mode {pick!r}; one of {', '.join(PICKS)}")
         if pick != PICK_SKIPCAL and skip_bias:
             raise ValueError("a skip bias belongs to the skipcal pick mode")
+        self.route_elite: tuple[float, int] | None = None  # (floors per elite room, HP per cent at or above which it applies): Act 1 route screens only
+        if route_elite is not None:
+            if len(route_elite) != 2:
+                raise ValueError(f"the elite bonus is (floors per elite room, HP per cent), not {route_elite!r}")
+            self.route_elite = (elite_bonus(route_elite[0]), elite_pct(route_elite[1]))
         self.lam = float(lam)
         self.pick_mode = pick
         self.skip_bias = float(skip_bias)
@@ -284,6 +316,8 @@ class BlendedPolicy(LookaheadPolicy):
         if self.student is not None:
             extra["pi_s"] = self.student.sha256[:8]
             extra["student_kinds"] = {k: [format_lambda(x) for x in v] for k, v in self.student_lams.items()}
+        if self.route_elite is not None:
+            extra["route_elite"] = [self.route_elite[0], self.route_elite[1]]
         return {**super().describe(), "kind": "lookahead+pi_h", "lambda": format_lambda(self.lam), "pi_h": self.prior.sha256[:8], **extra}
 
     def lam_at(self, floor: int) -> float:
@@ -314,22 +348,49 @@ class BlendedPolicy(LookaheadPolicy):
             return None
         return kind, student_lambda_for_floor(self.student_lams[kind], (decision.view or view).floor)
 
+    def route_bonus(self, view: RunView, decision: Decision) -> list[float] | None:
+        """The elite bonus of each option of an Act 1 route screen (the bonus times `elites_ahead` of the room the option leads to), or None where it does not
+        apply: no `route_elite`, not a route screen the policy decides (two or more options, all scored), not Act 1, or HP under the threshold."""
+        if self.route_elite is None or decision.type != "map" or student_kind_of(decision) != "route":
+            return None
+        v = decision.view or view
+        bonus, pct = self.route_elite
+        if act_of_floor(v.floor) != 0 or v.max_hp <= 0 or v.hp * 100 < pct * v.max_hp:
+            return None
+        return [bonus * elites_ahead(v.map_nodes, o.node[:2]) if o.node is not None else 0.0 for o in decision.options]
+
+    def _vrun_with_bonus(self, view: RunView, decision: Decision, rng: np.random.Generator | None, extra: list[float]) -> Pick:
+        """`LookaheadPolicy.pick` on a screen whose options all score, with `extra` (one number per option) added to each option's value in the choice; the
+        recorded values and floor distributions are the judgement's."""
+        view = decision.view or view
+        options = list(decision.options)
+        probs = floor_probs(self.nets, view, options)  # as `LookaheadPolicy.pick` scores them
+        values = models.expected_floors(probs, self.W)
+        pi = self.distribution(np.asarray(values, dtype=np.float64) + np.asarray(extra, dtype=np.float64))
+        k = _draw(pi, rng)
+        return Pick(k, values=tuple(float(v) for v in values), p_chosen=float(pi[k]), p_floor=tuple(float(x) for x in probs[k]))
+
     def pick(self, view: RunView, decision: Decision, rng: np.random.Generator | None) -> Pick:
         self.last = None
+        extra = self.route_bonus(view, decision)  # None unless the elite bonus applies to this screen
         taken = self.student_at(view, decision)
         if taken is not None:
             kind, lam_s = taken
             if lam_s <= 0:  # the student's lambda is 0 here: the judgement alone, as `vrun` decides it
+                if extra is not None:
+                    return self._vrun_with_bonus(view, decision, rng, extra)
                 return LookaheadPolicy.pick(self, view, decision, rng)
-            return self._decide(view, decision, rng, kind, lam_s, self.student.scorer_for(kind), student=True)  # a merged student's net for this kind
+            return self._decide(view, decision, rng, kind, lam_s, self.student.scorer_for(kind), student=True, extra=extra)  # a merged student's net for this kind
         lam = self.lam_at(view.floor)
         screen = screen_of(decision) if lam > 0 else None
         if screen is None:
+            if extra is not None:
+                return self._vrun_with_bonus(view, decision, rng, extra)
             return super().pick(view, decision, rng)
         return self._decide(view, decision, rng, screen, lam, self.prior)
 
     def _decide(self, view: RunView, decision: Decision, rng: np.random.Generator | None, screen: str, lam: float, scorer: PriorScorer,
-                student: bool = False) -> Pick:
+                student: bool = False, extra: list[float] | None = None) -> Pick:
         """One screen decided by the blend of V and `scorer`'s log-probabilities (the human prior's, or the student's for a kind it took over)."""
         view = decision.view or view
         options = list(decision.options)
@@ -350,7 +411,7 @@ class BlendedPolicy(LookaheadPolicy):
         logp = log_softmax(logits)
         gp = guard_prob_for(len(options), student)
         skip = next((i for i, o in enumerate(options) if o.kind == "card.skip"), None) if screen == "card" else None
-        bonus = None
+        bonus = None if extra is None else [float(x) for x in extra]  # the elite bonus of a route screen (`route_bonus`): added to each score, never to the record
         if self.pick_mode == PICK_SKIPCAL and skip is not None and self.skip_bias:
             bonus = [self.skip_bias if i == skip else 0.0 for i in range(len(options))]
         if screen == "rest":

@@ -1064,7 +1064,7 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") 
     if not isinstance(named, dict):
         return False, "summary.json names no agent"
     named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
-    for key in ("generation", "prior_sha256", "macro", "stakes", "hold"):  # the last two: the search's own identity (a plain agent has neither)
+    for key in ("generation", "prior_sha256", "macro", "stakes", "hold", "route_elite"):  # the last three: the search's and the map bonus's own identity (a plain agent has none)
         if named.get(key) != agent.get(key, "rules" if key == "macro" else None):
             return False, f"names another agent ({key} {named.get(key)!r}, scored {agent.get(key)!r})"
     return True, "names the scored agent"
