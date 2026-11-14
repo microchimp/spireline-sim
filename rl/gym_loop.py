@@ -15,7 +15,8 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
    (`practice_mix`: a share of each kind's draws from fights rebuilt from human runs, `rl/human_starts.py`, the rest from the nights'
    AI runs and from the positions three decisions before the AI's own losses; within a kind and side the rank of the start's regret,
    the teacher's root value at the opening less the outcome, mixed with a staleness term; the exam's `exam/exclude_runs.json` is
-   never drawn from; the segment's log line says what was drawn). The mix follows
+   never drawn from; the segment's log line says what was drawn; with `--teacher-store` a fourth source, the run teacher's own Act 1 and 2
+   elite and boss fights, `rl/teacher_starts.py`, `teacher_share` in mix.json). The mix follows
    the nights: between steps the daemon rebuilds the start set when a night has finished since it was built (`starts_stale`; only the
    new night's runs are replayed), and recomputes the kind weights when the set or the incumbent has changed (`weights_stale`; the
    incumbent's weight games are kept and only topped up). The player is the newest checkpoint (the incumbent before the first
@@ -36,6 +37,8 @@ The daemon does, in turn, while the lab's locks allow it (`why_blocked`):
    player config (`--player-config`: a3-v1, or the judge-equipped config once it lands), paired with the incumbent on the same games
    (the incumbent's games are played once per incumbent, engine and config, and kept). Stage 1 uses a pair of seed indices the
    incumbent was not picked on, one pair per promotion, with the incumbent's games on it taken from its own promotion gate (D43).
+   `--gate-every-min N` (D60 item 5; 0, today's behaviour, by default) offers the gate only a checkpoint made N minutes after the one it last
+   played, so one in four at 120 against the trainer's 30-minute checkpoints.
    The rule (`PROMOTION_RULE`) was fixed here before the first checkpoint and amended twice (v2, 2026-11-01; v3, 2026-11-11, D57 item 2:
    stage 1 stops only a candidate clearly worse, stage 2 promotes alone by v2's test or when the candidate is not worse and the pooled
    paired difference of the last five stage-2 candidates of its incumbent is positive, at most one promotion in six hours;
@@ -542,11 +545,12 @@ def _start_ok(s: dict) -> bool:
     return False
 
 
-def assemble_starts(d: Path, sources: list[tuple[Path, set[str]]]) -> list[dict]:
+def assemble_starts(d: Path, sources: list[tuple[Path, set[str]]], stem: str = "starts") -> list[dict]:
     """The start set from the replay files, streamed: every kept start (`_start_ok`) of the given runs of each file. starts.jsonl
     holds them file by file, each file's by id (a file's lines are held as text, never the whole set); its byte index and
-    starts.lite.json (by id) are written after it. Returns the lite list."""
-    out = Path(d) / "starts.jsonl"
+    starts.lite.json (by id) are written after it. Returns the lite list. `stem` names the set: the nights' is `starts`, the teacher's
+    `teacher-starts` (`rl/teacher_starts.py`)."""
+    out = Path(d) / f"{stem}.jsonl"
     tmp = out.with_suffix(".tmp")
     index: dict[str, int] = {}
     lite: list[dict] = []
@@ -566,8 +570,8 @@ def assemble_starts(d: Path, sources: list[tuple[Path, set[str]]]) -> list[dict]
                     lite.append(chunk[sid][1])
     os.replace(tmp, out)
     lite.sort(key=lambda s: s["id"])
-    write_json(Path(d) / "starts.index.json", index)
-    write_json(Path(d) / "starts.lite.json", lite)
+    write_json(Path(d) / f"{stem}.index.json", index)
+    write_json(Path(d) / f"{stem}.lite.json", lite)
     return lite
 
 
@@ -1451,6 +1455,8 @@ def prefilter_cfg(a: argparse.Namespace | None = None) -> dict:
     cfg = {**PREFILTER, "window": 300_000}
     if a is not None:
         cfg.update(mode=a.prefilter, margin=a.prefilter_margin, floor_h=a.prefilter_floor_h, window=a.train_window)
+        if getattr(a, "gate_every_min", 0.0):
+            cfg["gate_every_min"] = float(a.gate_every_min)
     return cfg
 
 
@@ -1529,6 +1535,42 @@ def prefilter_decide(pf: dict, fig: dict, cfg: dict) -> tuple[bool, str]:
                                             else "")
 
 
+GATE_SLACK_S = 30.0  # the stamps are whole seconds: an interval short of `--gate-every-min` by less than this still counts as passed
+
+
+def checkpoint_made(d: Path) -> dt.datetime | None:
+    """When the trainer wrote a checkpoint: the `t` of its train.json, else its folder's modification time (None: neither is readable)."""
+    try:
+        return _t(str((read_json(Path(d) / "train.json", {}) or {}).get("t")))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return dt.datetime.fromtimestamp(Path(d).stat().st_mtime, dt.timezone.utc)
+    except OSError:
+        return None
+
+
+def gate_anchor(loop: Loop) -> dt.datetime | None:
+    """When the checkpoint was made that the gate last played to a verdict (a reject or a promotion: not a skip, not a supersede), read
+    from the state on disk and the checkpoint's own train.json, so a restart changes nothing. None before the first verdict."""
+    done = [n for n, v in loop.state["gated"].items() if isinstance(v, dict) and v.get("verdict") in ("reject", "promote")]
+    for n in sorted(done, reverse=True):
+        made = checkpoint_made(loop.checkpoints / n)
+        if made is not None:
+            return made
+    return None
+
+
+def gate_offered(d: Path, anchor: dt.datetime | None, every_min: float) -> bool:
+    """Whether a checkpoint is offered to the gate at `--gate-every-min` minutes: it was made that long after the checkpoint the gate last
+    played (the trainer still writes one every `--checkpoint-min`; the ones between are never decided, and the next gate supersedes them).
+    Zero minutes, or no verdict yet, offers every checkpoint, as before."""
+    if not every_min or every_min <= 0 or anchor is None:
+        return True
+    made = checkpoint_made(d)
+    return made is None or (made - anchor).total_seconds() >= every_min * 60 - GATE_SLACK_S
+
+
 def prefilter_pick(loop: Loop, cfg: dict, now: dt.datetime | None = None, scorer=None) -> tuple[str, Path] | None:
     """The checkpoint to gate now, or None. Every checkpoint without a verdict is decided once (oldest first): one that passes is a
     candidate (the newest passing one is gated, the older ones superseded as before), one that does not is marked skipped, logged
@@ -1541,6 +1583,10 @@ def prefilter_pick(loop: Loop, cfg: dict, now: dt.datetime | None = None, scorer
     gated = loop.state["gated"]
     ungated = sorted(p for p in loop.checkpoints.glob("c[0-9][0-9][0-9][0-9]")
                      if p.name not in gated and (p / "model.json").is_file() and (p / "combat_policy.pt").is_file())
+    every = float(cfg.get("gate_every_min") or 0.0)
+    if every > 0:  # D60 item 5: only a checkpoint made `every` minutes after the last one gated is decided; the ones between wait
+        anchor = gate_anchor(loop)
+        ungated = [d for d in ungated if gate_offered(d, anchor, every)]
     chosen = None
     for d in ungated:
         fig = pf["figures"].get(d.name)
@@ -1993,6 +2039,9 @@ class Daemon:
             newest = self.loop.newest_checkpoint()
             if newest is None or newest[0] in self.loop.state["gated"]:
                 return None
+            every = float(getattr(self.a, "gate_every_min", 0.0) or 0.0)
+            if every > 0 and not gate_offered(newest[1], gate_anchor(self.loop), every):
+                return None
             return newest
         return prefilter_pick(self.loop, prefilter_cfg(self.a))
 
@@ -2039,6 +2088,38 @@ class Daemon:
                 except OSError as error:
                     self.loop.log(f"gate {cand}: human bar: games not kept as {ver}'s ({type(error).__name__}: {error})")
         self.plateau(force=True)  # the alarm follows the verdict: a promotion takes it down
+
+    def teacher_step(self) -> bool:
+        """D60 item 5: the run teacher's elite and boss fights as a fourth source of the practice mix. The set follows the teacher's store the
+        way the nights' follows the nights: when it holds none yet, or `--teacher-min-new` finished runs have come since, its new runs are
+        replayed (`rl/teacher_starts.py`; only those) and the set is assembled again. Off unless `--teacher-store` names the store. A build
+        that fails is logged and left alone for an hour. True when it built (the caller waits its turn and goes round again)."""
+        store = getattr(self.a, "teacher_store", "")
+        if not store or time.time() < getattr(self, "_teacher_hold", 0.0):
+            return False
+        import teacher_starts as tst  # noqa: PLC0415
+
+        gens = tuple(int(x) for x in str(getattr(self.a, "teacher_gens", "14,15")).split(",") if x.strip())
+        try:
+            why = tst.stale(self.loop, Path(store), gens, int(getattr(self.a, "teacher_min_new", tst.MIN_NEW)))
+        except Exception as error:  # noqa: BLE001 -- an unreadable store must not end the loop
+            self.loop.log(f"teacher starts: store unreadable ({type(error).__name__}: {error})")
+            self._teacher_hold = time.time() + 3600
+            return False
+        if not why:
+            return False
+        self.status("starts", why=why)
+        self.loop.log(f"teacher starts: building ({why})")
+        try:
+            with self._span("play", "teacher-starts"):
+                res = tst.build(self.loop, Path(store), gens, procs=self.a.procs)
+        except Exception as error:  # noqa: BLE001 -- logged; the state on disk stays, the next try is an hour on
+            self.loop.log(f"teacher starts: build failed ({type(error).__name__}: {error})")
+            self._teacher_hold = time.time() + 3600
+            return False
+        if isinstance(res, dict) and res.get("stopped"):
+            self.loop.log(f"teacher starts: stopped ({res['stopped']})")
+        return True
 
     def segment(self) -> None:
         with self._span("play", "generate"):
@@ -2114,6 +2195,9 @@ class Daemon:
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
+        if getattr(self.a, "gate_every_min", 0.0):
+            self.loop.log(f"daemon: gate cadence: a checkpoint is offered to the gate {self.a.gate_every_min:g} minutes after the last one gated "
+                          f"(the trainer writes one every {self.a.checkpoint_min:g} minutes, passes capped at {self.a.max_epochs:g} a row)")
         mode = getattr(self.a, "human_bar", "promotion")
         self.loop.log(f"daemon: human bar {mode}: " + {"promotion": "a promotion", "on": "every stage-2 verdict", "off": "nothing"}.get(mode, mode)
                       + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
@@ -2122,6 +2206,9 @@ class Daemon:
         mcfg = pmix.config(self.loop.starts)
         self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
                       f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
+        if getattr(self.a, "teacher_store", ""):
+            self.loop.log(f"daemon: teacher starts: the store's generations {self.a.teacher_gens} are replayed into starts/teacher-starts "
+                          f"(a rebuild from {self.a.teacher_min_new} new runs), teacher share {json.dumps(mcfg['teacher_share'])}")
         self.clock = gclock.TimeLedger(self.loop.games / "clock.jsonl", self.loop.log, segments=self.loop.games / "segments.jsonl",
                                        ledger=self.loop.gates / "verdicts.jsonl")
         self.loop.clock = self.clock
@@ -2157,6 +2244,9 @@ class Daemon:
                     self.loop.log(f"starts: rebuilding ({stale})")
                     with self._span("play", "starts"):
                         build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
+                    self.wait_free()
+                    continue
+                if self.teacher_step():  # the teacher's fights follow the teacher's store (D60 item 5; off without --teacher-store)
                     self.wait_free()
                     continue
                 stale = weights_stale(self.loop)
@@ -2258,6 +2348,9 @@ def main(argv=None) -> int:
                            help="QUIET.lock tags the daemon plays beside, comma-separated (a lane's measurement); lab-train still holds it")
             p.add_argument("--exact-wall-s", type=float, default=0.25)
             p.add_argument("--checkpoint-min", type=float, default=30.0)
+            p.add_argument("--gate-every-min", type=float, default=0.0,
+                           help="D60 item 5: offer the gate a checkpoint only this many minutes after the checkpoint it last played "
+                                "(the trainer still writes one every --checkpoint-min; 120 offers one in four); 0: every checkpoint, as before")
             p.add_argument("--max-epochs", type=float, default=4.0, help="the trainer's pass cap over each new row")
             p.add_argument("--reset-every", type=int, default=0,
                            help="the trainer re-initialises the heads' last layers after every N-th checkpoint (0: never)")
@@ -2277,6 +2370,12 @@ def main(argv=None) -> int:
                            help="write LAB/alerts/gym-plateau.txt after five days or twenty-five gated candidates without a promotion "
                                 "(D57 addendum 2) and remove it at the next promotion")
             p.add_argument("--alerts-dir", default=str(LAB / "alerts"), help="where the plateau alarm's file goes")
+            p.add_argument("--teacher-store", default="",
+                           help="D60 item 5: the run teacher's store (its <generation>/runs.jsonl, shards and decisions.d); its elite and boss fights "
+                                "become the `teacher` source of the start mix, built and followed between steps; '' (the default): off")
+            p.add_argument("--teacher-gens", default="14,15", help="the store's generations the teacher starts are made from")
+            p.add_argument("--teacher-min-new", type=int, default=25,
+                           help="finished teacher runs that make the set stale (the first build takes any number)")
             p.add_argument("--no-preloss", action="store_true",
                            help="do not keep the position three decisions before a lost practice fight as a start")
             p.add_argument("--prefilter", choices=("best", "incumbent", "off"), default=PREFILTER["mode"],

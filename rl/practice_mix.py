@@ -6,9 +6,11 @@ tested without the emulator.
 
 Sources. `night`: the nights' AI runs (`starts.jsonl`). `human`: fights rebuilt from human runs (`human-starts.jsonl`, built by
 `rl/human_starts.py`). `preloss`: the position three decisions before the end of a practice fight the AI lost
-(`preloss-starts.jsonl`, written by `gym_loop.gen_game_steps` and merged after the segment). A draw picks the kind by the weights
-(unchanged), then the source by a configurable share per kind (`HUMAN_SHARE`; the rest is the AI side, night and preloss starts
-together), then a start by the rule below.
+(`preloss-starts.jsonl`, written by `gym_loop.gen_game_steps` and merged after the segment). `teacher`: the Act 1 and Act 2 elite and boss
+fights the run teacher's own runs reached, replayed to the fight's first decision (`teacher-starts.jsonl`, built by `rl/teacher_starts.py`).
+A draw picks the kind by the weights (unchanged), then the source by a configurable share per kind (`teacher_share` first: the teacher's
+share of the kind, none by default; then `HUMAN_SHARE` of the rest; the remainder is the AI side, night and preloss starts together),
+then a start by the rule below.
 
 Regret weighting (prioritized level replay, Jiang et al. 2021; both terms are needed, either alone did worse than uniform there):
   score    of a start = the mean, over its latest `n_last` plays in the buffer, of how far the played outcome fell short of the
@@ -48,11 +50,15 @@ from pathlib import Path
 DEATH_VALUE = -100.0  # live_search.DEATH_VALUE: what the search scores a death
 POTION_VALUE = 10.0  # live_search's and L0's potion value
 KINDS = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")
-SOURCES = ("night", "human", "preloss")
-FILES = {"night": "starts", "human": "human-starts", "preloss": "preloss-starts"}  # stem of the set, its index and its lite list
+SOURCES = ("night", "human", "preloss", "teacher")
+FILES = {"night": "starts", "human": "human-starts", "preloss": "preloss-starts",
+         "teacher": "teacher-starts"}  # stem of the set, its index and its lite list
 DEFAULTS = {
     # the share of a kind's draws that come from human runs; kinds with no human starts (or no AI starts) take the other side whole
     "human_share": {"act1-hallway": 0.25, "act1-elite": 0.25, "act1-boss": 0.5, "act2-hallway": 0.5, "act2-elite": 0.5, "act2-boss": 0.5},
+    # the share of a kind's draws that come from the teacher's runs (D60 item 5, `rl/teacher_starts.py`), taken before the human share splits
+    # the rest; none today, so a loop without `teacher-starts` (or with its shares at 0) draws exactly as it did
+    "teacher_share": {k: 0.0 for k in KINDS},
     "regret": {"temperature": 1.4, "staleness": 0.1, "n_last": 4, "mode": "shortfall"},
     "preloss": {"back": 3, "max": 4000, "min_decisions": 5},  # decisions before the end; most kept; shortest lost fight used
 }
@@ -361,7 +367,7 @@ def quartiles(xs: list[float]) -> list[float] | None:
 
 
 def load_pools(root: Path, ex: frozenset[str] | set[str]) -> tuple[dict[tuple[str, str], list[dict]], Counter]:
-    """The draw pools {(kind, side): [start]} with side `human` or `ai` (night and pre-loss starts together), every excluded
+    """The draw pools {(kind, side): [start]} with side `human`, `teacher` or `ai` (night and pre-loss starts together), every excluded
     start left out. Each entry: id, source, the set's file, and a pre-loss start's score0. Also the number of starts left out
     by source."""
     sd = Path(root) / "starts"
@@ -373,7 +379,7 @@ def load_pools(root: Path, ex: frozenset[str] | set[str]) -> tuple[dict[tuple[st
                 dropped[source] += 1
                 continue
             src = s.get("source") or source
-            pools[(s["cat"], "human" if src == "human" else "ai")].append(
+            pools[(s["cat"], src if src in ("human", "teacher") else "ai")].append(
                 {"id": s["id"], "source": src, "file": str(sd / f"{stem}.jsonl"), "score0": s.get("score0")})
     return pools, dropped
 
@@ -385,7 +391,7 @@ class Sampler:
 
     def __init__(self, pools: dict, weights: dict[str, float], cfg: dict, score: dict[str, float], last_seg: dict[str, int], seg: int) -> None:
         self.pools, self.cfg, self.score = pools, cfg, score
-        self.cats = [c for c in KINDS if weights.get(c, 0) > 0 and (pools.get((c, "ai")) or pools.get((c, "human")))]
+        self.cats = [c for c in KINDS if weights.get(c, 0) > 0 and (pools.get((c, "ai")) or pools.get((c, "human")) or pools.get((c, "teacher")))]
         if not self.cats:
             raise RuntimeError("no start mix: run `gym_loop.py starts` and `weights` first")
         self.w = [weights[c] for c in self.cats]
@@ -395,9 +401,16 @@ class Sampler:
         """One draw: the pool entry (id, source, file) with its kind and, when it has one, its score."""
         c = rnd.choices(self.cats, self.w)[0]
         ai, hu = self.pools.get((c, "ai")) or [], self.pools.get((c, "human")) or []
-        share = float(self.cfg["human_share"].get(c, 0.0))
-        side = "human" if hu and (not ai or rnd.random() < share) else "ai"
-        items, cw = (hu, self.cum[(c, "human")]) if side == "human" else (ai, self.cum[(c, "ai")])
+        te = self.pools.get((c, "teacher")) or []
+        tshare = float((self.cfg.get("teacher_share") or {}).get(c, 0.0))
+        # the teacher's share comes off the kind first (no draw from the generator unless it has a share and starts: the draws of a loop
+        # without teacher starts are the same to the byte); a kind with teacher starts only draws them whole
+        if te and ((not ai and not hu) or (tshare > 0 and rnd.random() < tshare)):
+            items, cw = te, self.cum[(c, "teacher")]
+        else:
+            share = float(self.cfg["human_share"].get(c, 0.0))
+            side = "human" if hu and (not ai or rnd.random() < share) else "ai"
+            items, cw = (hu, self.cum[(c, "human")]) if side == "human" else (ai, self.cum[(c, "ai")])
         s = items[min(bisect_left(cw, rnd.random() * cw[-1]), len(items) - 1)]
         return {**s, "cat": c, "score": self.score.get(s["id"], s.get("score0"))}
 

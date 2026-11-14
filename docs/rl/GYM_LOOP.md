@@ -120,6 +120,20 @@ down" is whatever is in neither list: retention and pruning between steps, and t
   made (counted as `refused` in `segments.jsonl`'s `preloss`). A fight shorter than five decisions, and a fight that began at a
   pre-loss start, make none. Files are written one a start under `starts/preloss-new/` by the game processes and merged after the
   segment into `starts/preloss-starts.jsonl` (index and lite list beside it); the newest 4,000 are kept. `--no-preloss` turns it off.
+- **Run-teacher starts** (D60 item 5, lane L; `rl/teacher_starts.py`, `--teacher-store`, off unless the daemon is given the store). A fourth source,
+  `teacher`: every Act 1 elite, Act 1 boss, Act 2 elite and Act 2 boss (floors up to 33) that a finished run of the run teacher's store
+  (`D:/spireline/referee/run-teacher/<generation>/`, generations 14 and 15 by `--teacher-gens`) entered, at the fight's first decision, in the
+  start format of the nights' (`starts/teacher-starts.jsonl`, its byte index and lite list, `teacher-meta.json`, the replayed rows in
+  `teacher-replays.jsonl`); ids `teacher:<seed>|f<floor>`. The builder replays each run as the teacher played it (the player's pick drawn at every
+  screen so its streams run as they did, the stored teacher pick where the screen has a record, the player's own fight search), **on the old
+  engine** (the teacher's job sets none; the same runs on core2 diverged in 2 of 3), and checks every screen with a record and every fight start
+  against the run's RunRecord (floor, options, HP, deck, the player's pick): at the first difference the run's later fights are not used. A
+  start's position is a snapshot document, played by the gym on core2 like any other. Exclusions as the nights' (the board's runs, the exam's
+  `exclude_runs.json`; the sampler leaves them out at every draw too). The daemon checks the store between steps (`Daemon.teacher_step`): a build
+  when there is no set, or `--teacher-min-new` (25) finished runs have come since the last (each run is replayed once). The mix: `teacher_share`
+  per kind in `starts/mix.json` (none by default; the teacher takes its share of a kind's draws first and the human share splits the rest), the
+  segment log's `mix` line shows `teacher <n>`. Nothing in the teacher's store is written (its records are read, never loaded through `RunFiles.load`,
+  which cuts files). `python rl/teacher_starts.py census --store STORE` counts the starts a store would give without playing.
 - **Teacher.** The newest checkpoint (the incumbent before the first) under x16, in P1's lockstep processes (`--k` 2 a process,
   six processes, the prior on the card through P1's server when allowed). The x16 rate is P1's: about 55 s of a process's own time
   per Act-1 boss game.
@@ -137,7 +151,7 @@ down" is whatever is in neither list: retention and pruning between steps, and t
 `rl/gym_loop_train.py`: `combat_net.CombatNet` with the incumbent's shape, from the incumbent's weights (later its own `state.pt`),
 AdamW at 1e-4, batches of 256 from the newest 300,000 rows (train split only). Losses as `train_combat.train`: soft cross-entropy on
 the end-HP bucket (value) and on the visit distribution over legal actions (policy); where the exact solver's value is exact and
-the search's move was worse, the solver's move is the policy target. **Freshness:** each new row adds `--max-epochs` (4) rows of
+the search's move was worse, the solver's move is the policy target. **Freshness:** each new row adds `--max-epochs` (4 by default; the daemon has run at 8 since 2026-11-08) rows of
 budget; with the budget spent the trainer idles and counts the idle time by reason. **Checkpoints** every 30 minutes when it trained,
 each scored on the held-out rows (value NLL, policy cross-entropy, top-1 agreement with the teacher), beside the incumbent's network
 on the same rows. The incumbent is the daemon's incumbent at the checkpoint (read from `state.json`, not the one the trainer was
@@ -225,6 +239,15 @@ decision: "not worse, and the trend across candidates positive", the lab's judge
 - **Statistical power is the lever left.** Pooling five candidates buys a fifth of the SE; 2,000 pairs cannot show a point. Doubling the seeds
   of stage 2 (j up to 19, the incumbent's extra 2,000 played once) halves the variance for about 10 more minutes a candidate, but the board page
   and `promote`'s `fp-vN` rows assume the board's 2,000 games, so it is a change of its own (not made here).
+
+**The gate's cadence** (D60 item 5, lane L; `--gate-every-min`, default 0 = every checkpoint, as before). The trainer writes a checkpoint every
+`--checkpoint-min` (30) and the gate used to be offered the newest one each time it was free. With `--gate-every-min 120` a checkpoint is offered
+only when it was made 120 minutes or more after the checkpoint the gate last played to a verdict (a reject or a promotion, read from `state.json`
+and the checkpoint's own `train.json`, so a restart changes nothing; a skip or a supersede is no anchor); the ones in between are never decided by
+the pre-filter and the next gate supersedes them. One checkpoint in four reaches the gate at 30-minute checkpoints; the pre-filter and its six-hour
+floor act on what is offered. Measured on the 36 candidates after v3's promotion (2026-11-09 12:01Z to 11-11 07:34Z, `FIGHT-LOOP-L.md`): the trainer
+spent 34.6 of 38.3 hours idle on the freshness budget and trained 393 s in all, so a longer gap between gated checkpoints adds no training;
+more passes per row (`--max-epochs`) does.
 
 **The plateau alarm** (D57 addendum 2; `gym_gate.plateau_update`, `Daemon.plateau`, `--plateau-alert on|off` default on, `--alerts-dir`
 default `LAB/alerts`). A loop with no promotion for 5 days or 25 gated candidates (ledger rows with a verdict of reject or promote since the last
