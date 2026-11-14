@@ -13,6 +13,10 @@ passed both legs (a finished round, not a failure: the runner's `ok_rcs` for the
 this process has exited cleanly. (4) `--teacher-prior`: the prior the teacher decided with, when it is not `--prior` (the fit of a round after a promotion
 starts from the incumbent's student file, but the teacher's recorded log-probabilities are the human prior's; the loader refuses a store for a prior it
 was not recorded under, so `jobs.student_params` names the human prior here and the loader checks the store against it). BelowNormal; one process; the fit is on the card, the legs are CPU for under half an hour.
+
+(5) The candidate keeps the incumbent's heads (D59 lane H): it is the incumbent's student with the kinds that passed replaced
+(`build_student_candidate(keep_rest=True)`), every other kind the incumbent serves kept with its net and lambdas, a merged incumbent included, so a fit that passes
+two kinds does not drop the others (the first lab student after generation 15 dropped four of six and was judged for it); `result.json` says which were `kept`.
 """
 
 from __future__ import annotations
@@ -34,6 +38,15 @@ from tools.lab import jobs  # noqa: E402
 def _write(path: Path, doc: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
+
+
+def kept_kinds(cand: Path) -> list[str]:
+    """The kinds a built candidate keeps from the incumbent's student (its agent.json's `student.kept`), [] when none or unreadable. Never raises."""
+    try:
+        doc = json.loads((cand / "agent.json").read_text(encoding="utf-8"))
+        return sorted(((doc.get("student") or {}).get("kept") or {}).get("kinds") or {})
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
 def run_bar_text(records_root: str | None, copy_dirs: list[Path] | None = None) -> str:
@@ -103,12 +116,13 @@ def main(argv: list[str] | None = None) -> int:
         _write(result_path, result)
         print("no kind passed both legs: no candidate is built")
         return 3
-    cand = rs.build_student_candidate(out, a.base, a.agent_root, a.target, why=a.why, tag=a.tag, kinds=kinds)
+    # (5) the candidate is the incumbent's student with the kinds that passed replaced: every other kind the incumbent serves is kept, net and lambdas as they are
+    cand = rs.build_student_candidate(out, a.base, a.agent_root, a.target, why=a.why, tag=a.tag, kinds=kinds, keep_rest=True)
     try:
         rel = Path(cand).resolve().relative_to(Path(a.agent_root).resolve()).as_posix()
     except ValueError:
         rel = f"gen{a.target}/candidate-{a.tag}"
-    result.update(built=True, candidate=rel, generation=a.target)
+    result.update(built=True, candidate=rel, generation=a.target, kept=kept_kinds(Path(cand)))
     _write(result_path, result)
     print(rel)
     return 0

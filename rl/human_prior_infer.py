@@ -342,11 +342,52 @@ def write_student(path: Path | str, params: dict[str, np.ndarray], *, kinds: Seq
     return file_sha256(path)
 
 
+def _merge_sources(src: Path, kinds: Sequence[str]) -> tuple[dict[str, Any], list[tuple[dict[str, np.ndarray], dict[str, Any], list[str], str, str]]]:
+    """(the file's student block, [(arrays, flags, kinds, source sha256, source prior sha256) of each net that serves a wanted kind]) of a student file: a plain
+    student is one net with the kinds asked of it; a merged student gives each of its nets that serves a wanted kind, with the kinds of the wanted that
+    net serves, its own arrays and flags, and the plain file that net was first written from (a net whose kinds are none of the wanted is left out)."""
+    with np.load(src, allow_pickle=False) as z:
+        params = {k: z[k] for k in z.files if k != "meta"}
+        meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
+    block = meta.get(STUDENT_META)
+    if not isinstance(block, dict) or block.get("format") != STUDENT_FORMAT or not block.get("kinds"):
+        raise ValueError(f"{src.name} is not a run student file")
+    unfitted = [k for k in kinds if k not in block["kinds"]]
+    if unfitted:
+        raise ValueError(f"{src.name} was not fitted for {unfitted} (its file names {block['kinds']})")
+    if block.get(NETS_KEY):  # a merged student: the net of each wanted kind, in the file's order of nets
+        out = []
+        for i, net in enumerate(block[NETS_KEY]):
+            wanted = [k for k in kinds if k in net["kinds"]]
+            if not wanted:
+                continue
+            prefix = net_prefix(i)
+            sub = {k[len(prefix):]: v for k, v in params.items() if k.startswith(prefix)}
+            missing = [k for k in _KEYS if k not in sub]
+            if missing:
+                raise ValueError(f"{src.name}'s net {i} lacks {missing}")
+            out.append((sub, dict(net.get("flags") or {}), wanted, str(net.get("source_sha256") or file_sha256(src)), str(net.get("source_prior_sha256") or "")))
+        return block, out
+    missing = [k for k in _KEYS if k not in params]
+    if missing:
+        raise ValueError(f"{src.name}'s weights lack {missing}")
+    flags: dict[str, Any] = {}
+    if map_keys_in(params):
+        flags["map_grid"] = True
+    if meta.get("state_gaps"):
+        flags.update(state_gaps=True, gaps_version=int(meta.get("gaps_version", 1)))
+    if meta.get("side_blocks"):
+        flags["side_blocks"] = list(_side_flags(meta["side_blocks"]))
+    return block, [(params, flags, list(kinds), file_sha256(src), str(block.get("prior_sha256") or ""))]
+
+
 def write_merged_student(path: Path | str, parts: Sequence[tuple[Path | str, Sequence[str]]], *, extra_meta: Mapping[str, Any] | None = None) -> str:
     """Write one student file that serves each kind with the net of the student file it comes from: `parts` is [(student file, kinds it serves)], two
-    or more, each kind in one part only and among the kinds that file was fitted for, a plain student file each (never a merged one). The first part's
-    net comes first (what a reader of a plain prior gets; its record of the prior it started from and its fit are the file's own); each net's arrays go
-    under `net<i>.` with its kinds, flags and source sha256 in the meta, nothing under a plain array name. Tmp then rename; returns the sha256."""
+    or more, each kind in one part only and among the kinds that file serves. A part may be a merged student itself (D59 lane H: the incumbent of the
+    next candidate is one): the kinds asked of it are served by the nets that file serves them with, each such net kept as it is (its flags, and the plain
+    file it was first written from) and the nets none of whose kinds is asked for are left out. The first part's net comes first (what a reader of a plain
+    prior gets; its record of the prior it started from and its fit are the file's own); each net's arrays go under `net<i>.` with its kinds, flags and source
+    sha256 in the meta, nothing under a plain array name. Tmp then rename; returns the sha256."""
     import os  # noqa: PLC0415
 
     parts = [(Path(p), tuple(str(k) for k in kinds)) for p, kinds in parts]
@@ -356,41 +397,25 @@ def write_merged_student(path: Path | str, parts: Sequence[tuple[Path | str, Seq
     nets: list[dict[str, Any]] = []
     owner: dict[str, int] = {}
     first: dict[str, Any] = {}
-    for i, (src, kinds) in enumerate(parts):
-        with np.load(src, allow_pickle=False) as z:
-            params = {k: z[k] for k in z.files if k != "meta"}
-            meta = json.loads(str(z["meta"])) if "meta" in z.files else {}
-        block = meta.get(STUDENT_META)
-        if not isinstance(block, dict) or block.get("format") != STUDENT_FORMAT or not block.get("kinds"):
-            raise ValueError(f"{src.name} is not a run student file")
-        if block.get(NETS_KEY):
-            raise ValueError(f"{src.name} is a merged student already: merge the files it was made from")
+    served: list[str] = []
+    for n, (src, kinds) in enumerate(parts):
         if not kinds:
-            raise ValueError(f"net {i} ({src.name}) serves no kind: a net serves at least one kind")
-        unfitted = [k for k in kinds if k not in block["kinds"]]
-        if unfitted:
-            raise ValueError(f"{src.name} was not fitted for {unfitted} (its file names {block['kinds']})")
-        for kind in kinds:
-            if kind in owner:
-                raise ValueError(f"the kind {kind} would be served by more than one net (nets {owner[kind]} and {i})")
-            owner[kind] = i
-        missing = [k for k in _KEYS if k not in params]
-        if missing:
-            raise ValueError(f"{src.name}'s weights lack {missing}")
-        tower = map_keys_in(params)
-        for key in (*_KEYS, *tower):
-            arrays[f"{net_prefix(i)}{key}"] = np.asarray(params[key], dtype=np.float32)
-        flags: dict[str, Any] = {}
-        if tower:
-            flags["map_grid"] = True
-        if meta.get("state_gaps"):
-            flags.update(state_gaps=True, gaps_version=int(meta.get("gaps_version", 1)))
-        if meta.get("side_blocks"):
-            flags["side_blocks"] = list(_side_flags(meta["side_blocks"]))
-        nets.append({"kinds": list(kinds), "source_sha256": file_sha256(src), "source_prior_sha256": str(block.get("prior_sha256") or ""), "flags": flags})
-        if i == 0:
+            raise ValueError(f"net {n} ({src.name}) serves no kind: a net serves at least one kind")
+        block, sources = _merge_sources(src, kinds)
+        for params, flags, net_kinds, source_sha, prior_sha in sources:
+            i = len(nets)
+            for kind in net_kinds:
+                if kind in owner:
+                    raise ValueError(f"the kind {kind} would be served by more than one net (nets {owner[kind]} and {i})")
+                owner[kind] = i
+            tower = map_keys_in(params)
+            for key in (*_KEYS, *tower):
+                arrays[f"{net_prefix(i)}{key}"] = np.asarray(params[key], dtype=np.float32)
+            nets.append({"kinds": list(net_kinds), "source_sha256": source_sha, "source_prior_sha256": prior_sha, "flags": flags})
+            served.extend(net_kinds)
+        if n == 0:
             first = block
-    doc = {**(extra_meta or {}), STUDENT_META: {"format": STUDENT_FORMAT, "kinds": [k for _, kinds in parts for k in kinds],
+    doc = {**(extra_meta or {}), STUDENT_META: {"format": STUDENT_FORMAT, "kinds": served,
                                                "prior_sha256": str(first.get("prior_sha256") or ""), "fit": first.get("fit") or {}, NETS_KEY: nets}}
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")

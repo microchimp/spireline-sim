@@ -1314,7 +1314,9 @@ def kept_legs(legs: Mapping[str, Any], base_legs: Mapping[str, Any], kept: Seque
         for cell in (f"{kind}/a1", f"{kind}/a2"):
             if cell in ((base_legs.get("lambda") or {}).get("cells") or {}):
                 lam.setdefault("cells", {})[cell] = copy.deepcopy(base_legs["lambda"]["cells"][cell])
-        out["kept"][kind] = {"student_sha256": base_legs.get("student_sha256"), "baseline": copy.deepcopy(base_legs.get("baseline")), "written": base_legs.get("written")}
+        earlier = (base_legs.get("kept") or {}).get(kind)  # a head the incumbent itself kept keeps the source it was kept from
+        out["kept"][kind] = copy.deepcopy(earlier) if earlier else {"student_sha256": base_legs.get("student_sha256"), "baseline": copy.deepcopy(base_legs.get("baseline")),
+                                                                    "written": base_legs.get("written")}
     if l2.get("measured") is not None or no_fit:
         l2["no_human_fit"] = sorted(no_fit)
     out["verdict"] = {k: kind_verdict(out, k) for k in KINDS}
@@ -1341,7 +1343,7 @@ def parse_floors(specs: Sequence[str] | None) -> dict[str, float] | None:
 
 def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path | str, target: int, *, why: str, prior_dir: Path | str | None = None,
                             tag: str = "student", export: bool = True, kinds: Sequence[str] | None = None, human_prior: Path | str | None = None,
-                            lam: float | None = None, keep: Sequence[str] = (), lambda_floor: Mapping[str, float] | None = None) -> Path:
+                            lam: float | None = None, keep: Sequence[str] = (), lambda_floor: Mapping[str, float] | None = None, keep_rest: bool = False) -> Path:
     """The candidate for a fitted student (`run_fit`'s folder `out`): `gen_loop.build_candidate` with the student on the kinds that passed
     (or `kinds`, a subset of them), at their lambdas, the base's human prior, stakes schedule and hold kept; the legs are stored beside the
     student (run_student_legs.json) for `screens.run_student`. Refuses when no kind passed. A base that plays `vrun` alone has no human prior
@@ -1350,7 +1352,11 @@ def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path 
     `keep` (D59 lane G): kinds the base's own student serves that this candidate keeps, at the base's lambdas, with the base's net (a merged student file: the new
     fit's net for its kinds, the base's for these; `gen_loop.build_candidate(student_keep=)`); the base's `run_student_legs.json` must be for its student, and the
     kept kinds' legs are carried into the stored legs (`kept_legs`). `lambda_floor` ({kind: floor}): a taken kind's lambda is at least the floor in every act; the
-    measured lambda stays in the legs and is recorded beside the floor in agent.json (`student.floored`) and in the legs (`lambda.floored`)."""
+    measured lambda stays in the legs and is recorded beside the floor in agent.json (`student.floored`) and in the legs (`lambda.floored`).
+
+    `keep_rest` (D59 lane H, what the lab's student job passes): every kind the base's student serves that this build does not take (the fit failed a leg for it,
+    the loop froze it, or `kinds` left it out) is kept as `keep` keeps it, so the candidate differs from the incumbent in the kinds that passed alone and its recipe names
+    every kind the incumbent served; a base with no student keeps nothing. The base's student may be a merged one: each kept kind is served by the net that serves it there."""
     import gen_loop  # noqa: PLC0415
 
     out = Path(out)
@@ -1381,6 +1387,8 @@ def build_student_candidate(out: Path | str, base: Path | str, agent_root: Path 
     if (file_sha256(Path(named)) if named else None) != legs["baseline"]["sha256"]:
         raise ValueError("the legs were measured against another prior than the base's (its student's if it has one, else its human prior's)")
     keep = tuple(dict.fromkeys(str(k) for k in keep))
+    if keep_rest and base_agent.student:
+        keep = tuple(dict.fromkeys((*keep, *(k for k, _ in base_agent.student_lams if k not in take))))
     base_legs = None
     if keep:
         if not base_agent.student:

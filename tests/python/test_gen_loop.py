@@ -1615,6 +1615,189 @@ class StudentCandidateTests(unittest.TestCase):
         self.assertTrue(json.loads((cand / "agent.json").read_text())["macro"].startswith("vrun+pi_s:lambda=0.5:pi_h="))
 
 
+class StudentKeepRestTests(unittest.TestCase):
+    """`build_student_candidate(keep_rest=True)` (D59 lane H), the lab's student job: the candidate is the incumbent's student with the kinds the new fit took replaced
+    and every other kind it serves kept, the incumbent being a merged student already (generation 15's: card, rest, shop, reward on one net, route and event on another)."""
+
+    SIX = ("card", "rest", "shop", "reward", "route", "event")
+
+    def setUp(self):
+        from test_run_student import random_weights
+        from test_screens import legs_doc
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.agents, _base5, self.prior, student, self.human = student_world(self.root)
+        self.legs_doc, self.weights = legs_doc, random_weights
+        sha = human_prior_infer.file_sha256
+        # generation 6 serves route and event with its own net; generation 7 (the incumbent) takes card, rest, shop, reward from a new fit and keeps those two
+        self.sb = self.fit_file("sb", seed=21, kinds=("route", "event"), prior=self.human)
+        inc0 = gen_loop.build_candidate(self.prior, self.agents / "current.json", self.agents, 6, why="inc0", export=False, tag="inc0", student=self.sb,
+                                        student_lams={"route": (0.3715, 2.0, 2.0), "event": (0.8603, 0.9014, 0.9014)})
+        legs0 = legs_doc((inc0 / "run_student.npz").read_bytes(), self.human.read_bytes(), kinds=("route", "event"), human=("route", "event"), lam=0.3)
+        legs0["student_sha256"] = sha(inc0 / "run_student.npz")
+        legs0["lambda"]["chosen"] = {"route": [0.3715, 2.0, 2.0], "event": [0.8603, 0.9014, 0.9014]}
+        (inc0 / "run_student_legs.json").write_text(json.dumps(legs0), encoding="utf-8")
+        (self.agents / "current.json").write_text(json.dumps({"generation": 6, "dir": str(inc0)}))
+        self.sa = self.fit_file("sa", seed=22, kinds=("card", "rest", "shop", "reward"), prior=inc0 / "run_student.npz")
+        out_a = self.fit_folder("fita", self.sa, ("card", "rest", "shop", "reward"), inc0 / "run_student.npz", lam=0.2)
+        self.inc = run_student.build_student_candidate(out_a, self.agents / "current.json", self.agents, 7, why="inc", export=False, tag="inc", keep=("route", "event"),
+                                                       lambda_floor={"card": 0.5})
+        (self.agents / "current.json").write_text(json.dumps({"generation": 7, "dir": str(self.inc)}))
+        self.inc_student = self.inc / "run_student.npz"
+        self.inc_meta = json.loads((self.inc / "agent.json").read_text())
+        self.inc_legs = json.loads((self.inc / "run_student_legs.json").read_text())
+        # the lab's next fit: one net for every kind, started from the incumbent's file (its first net), legs against that file
+        self.sn = self.fit_file("sn", seed=23, kinds=self.SIX, prior=self.inc_student)
+
+    def fit_file(self, name, *, seed, kinds, prior):
+        path = self.root / f"{name}.npz"
+        human_prior_infer.write_student(path, self.weights(seed=seed), kinds=kinds, prior_sha256=human_prior_infer.file_sha256(prior), fit={"test": name})
+        return path
+
+    def fit_folder(self, name, student, passing, baseline, *, lam=0.25):
+        out = self.root / name
+        out.mkdir()
+        (out / run_student.STUDENT_OUT).write_bytes(student.read_bytes())
+        human = tuple(k for k in passing if k in run_student.HUMAN_KINDS)
+        legs = self.legs_doc(student.read_bytes(), Path(baseline).read_bytes(), kinds=tuple(passing), human=human, lam=lam)
+        legs["student_sha256"] = human_prior_infer.file_sha256(student)
+        (out / run_student.LEGS_FILE).write_text(json.dumps(legs), encoding="utf-8")
+        return out
+
+    def build(self, passing, **kw):
+        out = self.fit_folder("fitn", self.sn, passing, self.inc_student, lam=0.15)
+        kw.setdefault("keep_rest", True)
+        return run_student.build_student_candidate(out, self.agents / "current.json", self.agents, 8, why="test", export=False, tag="third", **kw)
+
+    def scores(self, path, kind):
+        rng = np.random.default_rng(5)
+        dense = rng.standard_normal((5, human_prior_infer.DENSE_WIDTH)).astype(np.float32)
+        counts = rng.integers(0, 3, (5, human_prior_infer.E_SIZE + human_prior_infer.F_SIZE + human_prior_infer.G_SIZE)).astype(np.float32)
+        return human_prior_infer.load_student(path).scorer_for(kind).logits(dense, counts)
+
+    def test_the_incumbent_here_is_a_merged_student_of_two_nets_serving_six_kinds(self):
+        self.assertEqual(self.SIX, human_prior_infer.student_kinds_of(self.inc_student))
+        self.assertEqual(sorted(self.SIX), sorted(self.inc_meta["student"]["kinds"]))
+        with np.load(self.inc_student, allow_pickle=False) as z:
+            self.assertEqual([["card", "rest", "shop", "reward"], ["route", "event"]], [n["kinds"] for n in json.loads(str(z["meta"]))["student"]["nets"]])
+
+    def test_a_fit_passing_two_of_six_leaves_a_candidate_serving_six_four_of_them_the_incumbents_own_nets(self):
+        cand = self.build(("card", "route"))
+        meta = json.loads((cand / "agent.json").read_text())
+        s = meta["student"]
+        self.assertEqual(sorted(self.SIX), sorted(s["kinds"]))  # the recipe lists every kind the incumbent served
+        for kind in ("rest", "shop", "reward", "event"):
+            self.assertEqual(self.inc_meta["student"]["kinds"][kind], s["kinds"][kind], kind)  # the incumbent's lambdas, number for number
+            np.testing.assert_array_equal(self.scores(cand / "run_student.npz", kind), self.scores(self.inc_student, kind), err_msg=kind)  # its net, byte for byte
+        for kind in ("card", "route"):
+            np.testing.assert_array_equal(self.scores(cand / "run_student.npz", kind), self.scores(self.sn, kind), err_msg=kind)
+        self.assertEqual({"card": ["0.15"] * 3, "route": ["0.15"] * 3}, {k: s["kinds"][k] for k in ("card", "route")})  # the new fit's own lambdas
+        self.assertEqual(sorted(("rest", "shop", "reward", "event")), sorted(s["kept"]["kinds"]))
+        self.assertEqual(human_prior_infer.file_sha256(self.inc_student), s["kept"]["sha256"])
+        self.assertEqual(human_prior_infer.file_sha256(cand / "run_student.npz"), s["sha256"])
+        import macro_recipe
+
+        self.assertTrue(meta["macro"].endswith(":".join(f"{k}={'/'.join(s['kinds'][k])}" for k in macro_recipe.STUDENT_KINDS if k in s["kinds"])), meta["macro"])
+        agent = gen_loop.load_agent(cand)
+        self.assertEqual(set(self.SIX), {k for k, _ in agent.student_lams})
+
+    def test_the_stored_legs_cover_the_six_kinds_and_say_where_each_kept_head_came_from(self):
+        import screens
+
+        cand = self.build(("card", "route"))
+        stored = json.loads((cand / "run_student_legs.json").read_text())
+        self.assertEqual(human_prior_infer.file_sha256(cand / "run_student.npz"), stored["student_sha256"])
+        for kind in ("rest", "shop", "reward", "event"):
+            self.assertEqual(self.inc_legs["leg1"]["kinds"][kind], stored["leg1"]["kinds"][kind], kind)
+        self.assertEqual({"rest", "shop", "reward", "event"}, set(stored["kept"]))
+        inc_sha = human_prior_infer.file_sha256(self.inc_student)
+        for kind in ("rest", "shop", "reward"):  # kept from the incumbent's own net, whose legs are the incumbent's fit's
+            self.assertEqual(inc_sha, stored["kept"][kind]["student_sha256"], kind)
+        self.assertEqual(self.inc_legs["kept"]["event"], {k: stored["kept"]["event"][k] for k in self.inc_legs["kept"]["event"]})  # event was kept by the incumbent already: its source stays
+        self.assertNotEqual(inc_sha, stored["kept"]["event"]["student_sha256"])
+        r = screens.run_student(cand, self.inc)
+        self.assertNotIn("skipped", r)
+        self.assertFalse(r["rejected"], r.get("line"))
+        self.assertEqual(set(self.SIX), set(r["kinds"]))
+        self.assertEqual("student", screens.kind_of(cand, self.inc))
+
+    def test_a_kind_the_fit_passed_that_was_frozen_out_of_it_is_kept_from_the_incumbent(self):
+        cand = self.build(("card", "route", "rest"), kinds=("card",))  # the lab's frozen kinds are not in `kinds`: the fit's pass for them is not handed over
+        s = json.loads((cand / "agent.json").read_text())["student"]
+        self.assertEqual(sorted(self.SIX), sorted(s["kinds"]))
+        self.assertEqual(sorted(("rest", "shop", "reward", "route", "event")), sorted(s["kept"]["kinds"]))
+        np.testing.assert_array_equal(self.scores(cand / "run_student.npz", "route"), self.scores(self.inc_student, "route"))
+        np.testing.assert_array_equal(self.scores(cand / "run_student.npz", "card"), self.scores(self.sn, "card"))
+
+    def test_a_fit_that_takes_every_kind_the_incumbent_serves_is_a_plain_student_as_before(self):
+        cand = self.build(self.SIX)
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertNotIn("kept", meta["student"])
+        self.assertEqual(human_prior_infer.file_sha256(self.sn), meta["student"]["sha256"])
+
+    def test_without_the_flag_nothing_is_kept_and_a_base_without_a_student_keeps_nothing_and_does_not_fail(self):
+        meta = json.loads((self.build(("card", "route"), keep_rest=False) / "agent.json").read_text())
+        self.assertEqual(["card", "route"], sorted(meta["student"]["kinds"]))
+        self.assertNotIn("kept", meta["student"])
+        plain = self.root / "plain"
+        plain.mkdir()
+        agents, base, prior, student, human = student_world(plain)  # a base that plays no student
+        out = plain / "fit"
+        out.mkdir()
+        (out / run_student.STUDENT_OUT).write_bytes(student.read_bytes())
+        legs = self.legs_doc(student.read_bytes(), human.read_bytes(), kinds=("route", "shop"), human=("route", "shop"))
+        legs["student_sha256"] = human_prior_infer.file_sha256(student)
+        (out / run_student.LEGS_FILE).write_text(json.dumps(legs), encoding="utf-8")
+        cand = run_student.build_student_candidate(out, agents / "current.json", agents, 7, why="t", export=False, keep_rest=True)
+        s = json.loads((cand / "agent.json").read_text())["student"]
+        self.assertEqual(["route", "shop"], sorted(s["kinds"]))
+        self.assertNotIn("kept", s)
+
+    def test_the_lab_student_job_builds_a_candidate_serving_six_kinds_from_a_fit_that_passed_two(self):
+        """The lab's own command (`tools/lab/student_job.py`), with the fit stood in for by the fit folder of a pass of card and route and the real builder:
+        generation 15's merged incumbent, six kinds served, two passed; the first lab student after it dropped the other four."""
+        from unittest import mock
+
+        from tools.lab import student_job as sj
+
+        src = self.fit_folder("jobfit", self.sn, ("card", "route"), self.inc_student, lam=0.15)
+        legs = json.loads((src / run_student.LEGS_FILE).read_text())
+        legs["kinds_passing"] = {k: [0.15] * 3 for k in ("card", "route")}
+        legs["verdict"] = {k: {"pass": k in ("card", "route"), "leg1": True, "leg2": True if k == "card" else None, "lambda": [0.15] * 3, "why": ""} for k in run_student.KINDS}
+        out, built = self.root / "job" / "student", run_student.build_student_candidate
+
+        def fit(shards_root, prior, folder, **kw):
+            Path(folder).mkdir(parents=True)
+            (Path(folder) / run_student.STUDENT_OUT).write_bytes((src / run_student.STUDENT_OUT).read_bytes())
+            (Path(folder) / run_student.LEGS_FILE).write_text(json.dumps(legs), encoding="utf-8")
+            (Path(folder) / run_student.FIT_FILE).write_text(json.dumps({"data": {"decisions": 7}}), encoding="utf-8")
+            return legs
+
+        with mock.patch.object(run_student, "run_fit", side_effect=fit), mock.patch.object(run_student, "_priority"), \
+                mock.patch.object(run_student, "build_student_candidate", side_effect=lambda *a, **kw: built(*a, **{**kw, "export": False})):
+            rc = sj.main(["--lab", str(self.root / "LAB"), "--shards-root", str(self.root / "store"), "--prior", str(self.inc_student), "--out", str(out),
+                          "--base", str(self.agents / "current.json"), "--agent-root", str(self.agents), "--target", "8", "--tag", "student",
+                          "--result", str(self.root / "job" / "result.json")])
+        self.assertEqual(0, rc)
+        result = json.loads((self.root / "job" / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((True, "gen8/candidate-student", ["event", "rest", "reward", "shop"]), (result["built"], result["candidate"], result["kept"]))
+        cand = self.agents / "gen8" / "candidate-student"
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertEqual(sorted(self.SIX), sorted(meta["student"]["kinds"]))
+        for kind in ("rest", "shop", "reward", "event"):
+            self.assertEqual(self.inc_meta["student"]["kinds"][kind], meta["student"]["kinds"][kind], kind)
+            np.testing.assert_array_equal(self.scores(cand / "run_student.npz", kind), self.scores(self.inc_student, kind), err_msg=kind)
+        for kind in ("card", "route"):
+            np.testing.assert_array_equal(self.scores(cand / "run_student.npz", kind), self.scores(self.sn, kind), err_msg=kind)
+
+    def test_no_kind_passing_is_still_no_candidate_and_leaves_no_folder(self):
+        with self.assertRaisesRegex(ValueError, "no kind passed"):
+            self.build(())
+        self.assertFalse((self.agents / "gen8" / "candidate-third").exists())
+
+
 class StudentKeepTests(unittest.TestCase):
     """`run_student.build_student_candidate(keep=, lambda_floor=)` (D59 lane G): heads kept from the incumbent's student beside a new fit's, in one student
     file; a kind's lambda at play floored with the measured one recorded; the stored legs cover every kind the recipe names."""

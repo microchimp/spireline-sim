@@ -48,6 +48,7 @@ class Base(unittest.TestCase):
         self.fit_args: tuple = ()
         self.teacher_prior_path: object = "unset"
         self.build: dict = {}
+        self.build_kw: dict = {}
         self.loader_calls: list[dict] = []
         self.legs: dict = {"kinds_passing": {"card": [0.1, 0.1, 0.1]}, "verdict": verdict()}
         # lane 3's loader is a recorder; the command wraps it for the fit and puts it back
@@ -70,6 +71,7 @@ class Base(unittest.TestCase):
 
     def fake_build(self, out, base, agent_root, target, *, why, tag="student", kinds=None, **kw):
         self.build = {"base": str(base), "target": target, "tag": tag, "kinds": None if kinds is None else tuple(kinds)}
+        self.build_kw = kw
         cand = Path(agent_root) / f"gen{target}" / f"candidate-{tag}"
         cand.mkdir(parents=True)
         return cand
@@ -98,6 +100,24 @@ class CommandTests(Base):
         self.assertEqual({"base": str(self.agents / "current.json"), "target": 14, "tag": "student", "kinds": tuple(rs.KINDS)}, self.build)
         self.assertEqual((str(self.tmp / "store"), str(self.tmp / "prior.npz"), str(self.job / "student"), str(self.tmp / "human")), self.fit_args)
         self.assertEqual([], res["frozen"])
+
+    def test_the_candidate_keeps_the_incumbents_other_heads_and_the_result_says_which(self):
+        """D59 lane H: the first lab student after generation 15 passed the build no `keep`, so its recipe lost the four kinds its fit did not pass."""
+        sj.main(self.argv())
+        self.assertIs(True, self.build_kw.get("keep_rest"))
+        self.assertEqual([], self.result()["kept"])  # the stand-in build writes no agent.json: nothing is read from it, and nothing fails
+
+    def test_the_kinds_kept_are_read_from_the_candidates_record(self):
+        cand = self.tmp / "cand"
+        cand.mkdir()
+        self.assertEqual([], sj.kept_kinds(cand))
+        (cand / "agent.json").write_text(json.dumps({"student": {"kinds": {"card": [], "rest": []}, "kept": {"kinds": {"rest": ["0", "0.2", "0.2"], "event": ["0.8", "0.9", "0.9"]}}}}),
+                                         encoding="utf-8")
+        self.assertEqual(["event", "rest"], sj.kept_kinds(cand))
+        (cand / "agent.json").write_text(json.dumps({"student": {"kinds": {"card": []}}}), encoding="utf-8")
+        self.assertEqual([], sj.kept_kinds(cand))
+        (cand / "agent.json").write_text("{", encoding="utf-8")
+        self.assertEqual([], sj.kept_kinds(cand))
 
     def test_the_prior_the_teacher_decided_with_reaches_the_fit_and_without_the_flag_it_is_none(self):
         sj.main(self.argv())

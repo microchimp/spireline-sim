@@ -279,7 +279,8 @@ class MergedStudentTests(unittest.TestCase):
                  ([(self.a, ("event",)), (self.b, ("route",))], "was not fitted for"),
                  ([(self.a, ("card",)), (self.b, ())], "at least one kind"),
                  ([(self.a, ("card",))], "two or more"),
-                 ([(self.m, ("card",)), (self.b, ("route",))], "merged student")]
+                 ([(self.m, ("event",)), (self.b, ("event",))], "more than one net"),  # a merged source gives its nets' kinds, each once
+                 ([(self.m, ("select",)), (self.b, ("route",))], "was not fitted for")]
         for parts, why in cases:
             with self.assertRaisesRegex(ValueError, why, msg=str(parts)):
                 hpi.write_merged_student(out, parts)
@@ -288,6 +289,47 @@ class MergedStudentTests(unittest.TestCase):
         np.savez(plain_prior, meta=np.array(json.dumps({})), **plain_params())
         with self.assertRaisesRegex(ValueError, "not a run student"):
             hpi.write_merged_student(out, [(self.a, ("card",)), (plain_prior, ("route",))])
+
+    def test_a_merged_student_is_a_source_for_the_kinds_its_nets_serve_each_net_kept_as_it_is(self):
+        """The next candidate keeps heads from an incumbent that is a merged student already (D59 lane H): a kind named from a merged file is served by the
+        net that file serves it with, whatever its place in the file, and a net none of whose kinds is wanted is left out."""
+        c = self.dir / "c.npz"
+        hpi.write_student(c, plain_params(11), kinds=("card", "route", "event"), prior_sha256="dd" * 32, fit={"who": "c"})
+        out = self.dir / "mm.npz"
+        hpi.write_merged_student(out, [(c, ("card", "route")), (self.m, ("rest", "shop", "reward", "event"))])
+        with np.load(out, allow_pickle=False) as z:
+            meta = json.loads(str(z["meta"]))
+            self.assertFalse([k for k in z.files if k in hpi._KEYS])  # noqa: SLF001
+            for key in hpi._KEYS:  # noqa: SLF001
+                for i, seed in enumerate((11, 4, 7)):
+                    np.testing.assert_array_equal(z[f"net{i}.{key}"], plain_params(seed)[key], err_msg=f"net{i}")
+        nets = meta["student"]["nets"]
+        self.assertEqual([["card", "route"], ["rest", "shop", "reward"], ["event"]], [n["kinds"] for n in nets])
+        self.assertEqual([hpi.file_sha256(c), hpi.file_sha256(self.a), hpi.file_sha256(self.b)], [n["source_sha256"] for n in nets])  # the plain files the nets came from
+        self.assertEqual(("card", "route", "rest", "shop", "reward", "event"), hpi.student_kinds_of(out))
+        s = hpi.load_student(out)
+        dense, counts = self.inputs()
+        for kind, want in (("card", c), ("route", c), ("rest", self.a), ("shop", self.a), ("reward", self.a), ("event", self.b)):
+            np.testing.assert_allclose(s.scorer_for(kind).logits(dense, counts), hpi.load_student(want).logits(dense, counts), atol=1e-6, err_msg=kind)
+
+    def test_a_net_of_a_merged_source_none_of_whose_kinds_is_wanted_is_left_out(self):
+        c = self.dir / "c.npz"
+        hpi.write_student(c, plain_params(11), kinds=("card", "route"), prior_sha256="dd" * 32)
+        out = self.dir / "mm.npz"
+        hpi.write_merged_student(out, [(c, ("card", "route")), (self.m, ("rest", "shop", "reward"))])  # the route/event net is not kept at all
+        with np.load(out, allow_pickle=False) as z:
+            self.assertEqual({f"net{i}.{k}" for i in (0, 1) for k in hpi._KEYS}, {k for k in z.files if k != "meta"})  # noqa: SLF001
+            self.assertEqual([["card", "route"], ["rest", "shop", "reward"]], [n["kinds"] for n in json.loads(str(z["meta"]))["student"]["nets"]])
+
+    def test_a_kept_net_of_a_merged_source_keeps_its_own_map_tower_and_flags(self):
+        tower = self.dir / "tower.npz"
+        hpi.write_student(tower, tower_params(), kinds=("route", "event"), prior_sha256="cc" * 32)
+        m1 = self.dir / "m1.npz"
+        hpi.write_merged_student(m1, [(self.a, ("card", "shop")), (tower, ("route", "event"))])
+        m2 = self.dir / "m2.npz"
+        hpi.write_merged_student(m2, [(self.b, ("shop",)), (m1, ("card", "event"))])
+        s = hpi.load_student(m2)
+        self.assertEqual((False, False, True), (s.scorer_for("shop").map_grid, s.scorer_for("card").map_grid, s.scorer_for("event").map_grid))
 
     def test_a_file_whose_nets_name_a_kind_twice_does_not_load(self):
         with np.load(self.m, allow_pickle=False) as z:
