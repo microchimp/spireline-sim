@@ -114,7 +114,7 @@ class KeepMathTests(unittest.TestCase):
 
 
 class MacroSwitchTests(unittest.TestCase):
-    """D33: `vrun` needs a passed keep record and the export; the switch is on without any variable, and SPIRELINE_MACRO_VRUN=rules opts out."""
+    """D33, D64: `vrun` needs the export (the keep record is advisory since D64); the switch is on without any variable, and SPIRELINE_MACRO_VRUN=rules opts out."""
 
     def setUp(self):
         env = mock.patch.dict(os.environ)
@@ -122,17 +122,17 @@ class MacroSwitchTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop(gen_loop.MACRO_VRUN_FLAG, None)
 
-    def test_agent_json_gets_vrun_when_every_computable_condition_passes_and_the_export_exists_with_no_variable_set(self):
+    def test_agent_json_gets_vrun_when_the_export_exists_with_no_variable_set_whatever_the_keep_record_says(self):
         with tempfile.TemporaryDirectory() as tmp:
             cand = Path(tmp) / "gen4" / "candidate"
             cand.mkdir(parents=True)
             passed, failed = {"all_computable_pass": True}, {"all_computable_pass": False}
             self.assertEqual(gen_loop.macro_for(passed, cand), "rules")  # no run_value.npz yet
             (cand / "run_value.npz").write_bytes(b"x")
-            self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")  # passed, exported, no variable
-            self.assertEqual(gen_loop.macro_for(failed, cand), "rules")
-            self.assertEqual(gen_loop.macro_for(None, cand), "rules")
-            self.assertEqual(gen_loop.macro_for({"status": "no_split", "all_computable_pass": False}, cand), "rules")
+            self.assertEqual(gen_loop.macro_for(passed, cand), "vrun")  # exported, no variable
+            self.assertEqual(gen_loop.macro_for(failed, cand), "vrun")  # D64: a record that failed D33 is recorded, not gating
+            self.assertEqual(gen_loop.macro_for(None, cand), "vrun")
+            self.assertEqual(gen_loop.macro_for({"status": "no_split", "all_computable_pass": False}, cand), "vrun")
             self.assertEqual(gen_loop.macro_for(passed, cand, enabled=False), "rules")  # an explicit flag beats the variable
             # load_agent reads the macro the way the next promotion's E-block does
             (cand / "agent.json").write_text(json.dumps({"generation": 4, "macro": "vrun"}), encoding="utf-8")

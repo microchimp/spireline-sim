@@ -383,16 +383,16 @@ class VerdictTests(unittest.TestCase):
             got = ("A" if a["holds"] else "") + ("F" if f["holds"] else "")
             self.assertEqual(got, want, f"{block}: {got!r}, the design says {want!r}")
             self.assertEqual(bool(got), today == "promoted" or block == "E12-11-05-r3", block)  # every past verdict stands, the one change is l05
-        # the 200-seed blocks are judged by the smoke look only
+        # the 200-seed blocks were judged by the smoke look only: since D64 it refuses nothing and records what the rule of 2026-11-05 said
         looks = gen_loop.seq_looks(2000)
         for block, fm, lo95, dm, dse in (("E12-11-05-r1", -1.29, -2.42, -1.00, 1.42), ("E12-11-05-r2", -3.14, -4.27, 2.50, 2.06)):
             c = k2.seq_call(std(fm, (fm - lo95) / 1.645 * math.sqrt(200), 200, 13), std(dm, dse * math.sqrt(200), 200, 14), 0, looks)
-            self.assertEqual(c["action"], "refuse", block)
-        # the sanity block: the pure imitation is refused at 100 seeds, imit-l05 played on
+            self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", True), block)
+        # the sanity block: the pure imitation would have been refused at 100 seeds, imit-l05 played on
         c = k2.seq_call(std(-4.30, 8.0, 100, 15), std(1.0, 25.0, 100, 16), 0, looks)
-        self.assertEqual(c["action"], "refuse")
+        self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", True))
         c = k2.seq_call(std(-0.25, 8.0, 100, 15), std(6.0, 24.0, 100, 16), 0, looks)
-        self.assertEqual(c["action"], "continue")
+        self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", False))
 
 
 class SeqCallTests(unittest.TestCase):

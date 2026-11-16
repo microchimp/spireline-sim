@@ -43,7 +43,8 @@ FUTILITY_HELP = ("with --sequential: stop the block as rejected (rule futility@<
                  "of the candidate's gain reaches the gain the route needs to promote on the whole block (gen_loop.futility_check, docs/rl/KEEP_TEST_V2.md); "
                  "on unless --no-futility")
 SEQUENTIAL_HELP = ("play the E-block as the funnel (D51, gen_loop.seq_call): a 200-seed smoke block, then 300 seeds at a time, stopping at a "
-                   "look that refuses (or promotes early); a block not stopped plays every seed and is judged as without this flag")
+                   "look that refuses (or promotes early); the smoke block refuses nothing on the floor since D64 (it refuses a crashing candidate); "
+                   "a block not stopped plays every seed and is judged as without this flag")
 # The lab asks a running block to finish by writing STOP_FILE in the block's folder (tools/lab/runner.py FILLER_STOP_FILE; a test keeps the
 # names equal). A block that reads it says so by writing STOP_HONORED_FILE first, so a runner never waits for one that cannot.
 STOP_FILE = "STOP"
@@ -924,7 +925,7 @@ def build_vrun_cmd(a: argparse.Namespace) -> int:
             return 2
         marker = Path(a.marker_dir) / name
     cand = gen_loop.build_vrun_candidate(base, a.vrun_fit, a.agent_root, a.candidate_generation, why=a.why, tag=a.tag,
-                                         export=not a.no_export, without_human_leg=bool(a.without_human_leg))
+                                         export=not a.no_export, without_human_leg=bool(a.without_human_leg))  # the flag is a no-op since D64
     meta = gen_loop.read_json(cand / "agent.json")
     out = {"candidate": f"{cand.parent.name}/{cand.name}", "generation": meta["generation"], "built_on": meta["built_on"],
            "recipe": meta.get("recipe") or meta.get("macro"), "vrun_fit": {k: meta["vrun_fit"].get(k) for k in ("source", "sha256", "matched", "human_leg")}}
@@ -961,9 +962,10 @@ def parse_lambda(text: str | float | None) -> float | None:
 
 def vrun_fit_cmd(a: argparse.Namespace) -> int:
     """`vrun-fit`: V_run fit on the runs one combat prior played (`gen_loop.fit_run_value_matched`), at BelowNormal priority;
-    prints the window and the keep verdict. Nothing is promoted or written into the agent folder: `build --vrun-fit OUT` does that.
-    The keep verdict includes the ranking check (D47, D49) against `--incumbent` (default: the generation of `--gen-dir`);
-    `--ranking-only` repeats just that check on a fit already in OUT."""
+    prints the window and the keep record. Nothing is promoted or written into the agent folder: `build --vrun-fit OUT` does that.
+    The keep record includes the ranking check (D47, D49) against `--incumbent` (default: the generation of `--gen-dir`); since D64 it and
+    the D33 skill are recorded, not gating: `kept` is whether the export exists, and the exit code is 0 then. `--ranking-only` repeats just
+    that check on a fit already in OUT (and rewrites `kept` of a record made before D64)."""
     _setup()
     import gen_loop  # noqa: PLC0415
 
@@ -1405,7 +1407,7 @@ def build_parser() -> argparse.ArgumentParser:
                     "potion moves are dropped unless the kill check fails and the player would fall under that after the enemies' "
                     "announced attacks; written to agent.json `potion_hold` and carried in the recipe")
     bd.add_argument("--vrun-fit", help="a fighter-matched V_run fit (`vrun-fit`'s OUT) to carry instead of the base's; it must "
-                    "have passed the keep test")
+                    "hold its export (the keep record is recorded, not gating, since D64)")
     vf = sub.add_parser("vrun-fit", help="fit V_run on the runs one combat prior played (the fighter-matched recipe, reset order "
                         "step C): FightNet, the value head and the D33 keep record into OUT; nothing else is trained")
     vf.add_argument("--shards-root", required=True, help="the lab's job directories (LAB/runs)")
@@ -1426,20 +1428,21 @@ def build_parser() -> argparse.ArgumentParser:
     vf.add_argument("--ranking-runs-root", help="the self-play folder the ranking check's fixed set is drawn from (the lab's runs, which hold the "
                     "generation-9 pool) when --shards-root is another store, e.g. plain runs (default: --shards-root)")
     vf.add_argument("--no-human-leg", action="store_true", help="the ranking check without its human leg (the held-out human fifth): the "
-                    "shard leg only; the fit is then not kept, and only `build-vrun --without-human-leg` carries it, when that leg is all it lacks")
+                    "shard leg only, the human agreement recorded as not run; since D64 the ranking check gates nothing, so the fit is kept all the same")
     bv = sub.add_parser("build-vrun", help="generation N's candidate: the base generation with its V_run fit replaced by a `vrun-fit` OUT and "
                         "nothing else (D60 item 10); with --marker-dir the lab's train job then judges it as it is")
     bv.add_argument("--base", help="the generation the candidate copies (a generation directory or a current.json; default: --agent-root's "
                     "current.json)")
-    bv.add_argument("--vrun-fit", required=True, help="a `vrun-fit` OUT whose keep record passed")
+    bv.add_argument("--vrun-fit", required=True, help="a `vrun-fit` OUT whose export (run_value.npz) exists; its keep record (D33 skill, ranking "
+                    "check) is recorded in agent.json and gates nothing since D64")
     bv.add_argument("--agent-root", required=True)
     bv.add_argument("--candidate-generation", type=int, required=True)
     bv.add_argument("--tag", required=True, help="the recipe tag: gen<N>/candidate-<tag>, marker ready-<base generation>-g<N>-<tag>")
     bv.add_argument("--why", required=True)
     bv.add_argument("--marker-dir", help="LAB/train: write the marker once the candidate is complete")
     bv.add_argument("--no-export", action="store_true", help="no ONNX files for the new V_run (they need torch's exporter and the onnx package)")
-    bv.add_argument("--without-human-leg", action="store_true", help="also carry a fit whose ranking check passed everything but its human "
-                    "leg, which did not run (`vrun-fit --no-human-leg`); agent.json says so")
+    bv.add_argument("--without-human-leg", action="store_true", help="accepted and does nothing since D64 (a fit whose export exists is carried "
+                    "whatever its keep record says, the human leg included); agent.json still says when the leg did not run")
     rk = sub.add_parser("ranking-check", help="the V_run keep test's ranking check (D47, D49): a candidate head's options ranked against "
                         "the incumbent's on the fixed set of held-out decisions, and against the human choice on the held-out fifth")
     rk.add_argument("--candidate", required=True, help="a run_value.npz, a generation directory, a fit folder or a current.json")

@@ -202,10 +202,13 @@ class FunnelFutilityTests(unittest.TestCase):
         self.assertLess(out["looks"][-1]["futility"]["routes"]["A"]["upper95"], k2.MIN_GAIN)
 
     def test_refusals_come_first_and_are_as_they_were(self):
-        seeds, cand, base = block(self.N, pattern(self.N, -4.0, -8.0))  # -6 floors: refused at the smoke block, as without the futility stop
-        for fut in (None, 1000, 200, 1):  # even where the futility stop would look at the same seeds, the refusal is the call
+        seeds, cand, base = block(self.N, pattern(self.N, -4.0, -8.0))  # -6 floors: refused at the second look (D64: the smoke block refuses nothing)
+        for fut in (None, 1000):  # the futility stop does not look before the refusal, so the refusal is the call
             out, _ = walk(seeds, cand, base, keep_rule="v2", futility=fut)
-            self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("refuse", 200))
+            self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("refuse", 400))
+        for fut in (200, 1):  # a futility stop set to look at the smoke block's seeds is the first to ask: nothing refuses there any more
+            out, _ = walk(seeds, cand, base, keep_rule="v2", futility=fut)
+            self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("futility", 200))
         seeds, cand, base = block(self.N, pattern(self.N, 6.0, -6.0))  # level: only the futility stop ends it, where nothing refused before
         a, _ = walk(seeds, cand, base, keep_rule="v2", futility=None)
         self.assertEqual((a["stop"]["action"], a["stop"]["n"]), ("final", self.N))  # (without it: all 2,000 seeds)

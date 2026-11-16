@@ -375,10 +375,12 @@ def step_refit_judgement(ctx: Ctx) -> dict:
     lo, ln = [list(po.row_logits(i.rows)) for i in items], [list(pn.row_logits(i.rows)) for i in items]
     leg = rd.leg_picks(items, {"incumbent_blend": (v_old, lo, lam), "new_judgement_old_prior": (v_new, lo, lam),
                                "new_judgement_new_prior": (v_new, ln, new_lam), "new_judgement_alone": (v_new, ln, 0.0)}) if items else {}
-    # keep test (1), D33's out-of-fold test of the fit, decides `kept`; (2) the ranking check with its skip guard and (3) the label bound are
-    # reported (judgement.guards "report", the default after the labels-against-blocks memo) or decide too ("gate")
+    # D64: the export decides `kept`; keep test (1), D33's out-of-fold test of the fit, is recorded beside it, and (2) the ranking check with its
+    # skip guard and (3) the label bound are reported too (judgement.guards "report", the default after the labels-against-blocks memo); only an
+    # explicit "gate" in the round's config lets the guards decide
     guards = rj.guards_report(keep_doc, leg, J)
-    core = bool(keep_doc.get("all_computable_pass")) and (out / "run_value.npz").is_file()
+    gen_loop.keep_advisory(keep_doc)  # D64: the D33 skill and the ranking check are recorded, not gating
+    core = (out / "run_value.npz").is_file()
     kept = (core and (guards["pass"] if guards["decides_kept"] else True)) or bool(ctx.dry and "ranking" not in keep_doc)  # a dry run carries the fit on: it proves the handoff, not the test
     write_json(out / gen_loop.VRUN_FIT_JSON, {
         "recipe": "round1: the incumbent's FightNet and run head refit on the current player's exploring runs (pure Monte Carlo, beta "

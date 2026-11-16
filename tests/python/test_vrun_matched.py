@@ -104,19 +104,21 @@ class FighterWindowTests(unittest.TestCase):
             self.fit(sha="c" * 64, out="fit2")
         self.assertEqual([], fake_train_run_value.calls)
 
-    def test_a_fit_that_failed_the_keep_test_or_was_changed_is_never_read_as_kept(self):
+    def test_a_fit_that_failed_d33_is_kept_and_recorded_and_one_that_was_changed_is_never_read(self):
         out = Path(self.tmp.name) / "fit"
         fake_train_run_value.passes = False
-        self.assertFalse(self.fit()["kept"])
-        with self.assertRaises(ValueError):
-            gen_loop.read_vrun_fit(out)
+        doc = self.fit()
+        self.assertTrue(doc["kept"])  # D64: the export decides; "predicts at all" is recorded
+        self.assertIs(doc["keep"]["all_computable_pass"], False)
+        self.assertEqual((doc["keep"]["advisory"], doc["keep"]["gated_on"], doc["keep"]["old_rule_passed"]), (True, ["export"], False))
+        self.assertEqual(doc, gen_loop.read_vrun_fit(out))
         fake_train_run_value.passes = True
         self.fit()
         (out / "run_value.npz").write_bytes(b"another file")
         with self.assertRaises(ValueError):
             gen_loop.read_vrun_fit(out)
 
-    def test_a_fit_is_kept_only_when_the_ranking_check_passes_too(self):
+    def test_a_failed_ranking_check_is_recorded_and_the_fit_is_kept(self):
         out = Path(self.tmp.name) / "fit"
         calls: list = []
         doc = self.fit(ranking_check=fake_ranking(True, calls))
@@ -128,33 +130,36 @@ class FighterWindowTests(unittest.TestCase):
         gen_loop.read_vrun_fit(out)
         failed = self.fit(ranking_check=fake_ranking(False))
         self.assertTrue(failed["keep"]["all_computable_pass"])  # the outcome forecasts passed (D33) ...
-        self.assertFalse(failed["kept"])  # ... and the ranking did not
-        with self.assertRaises(ValueError):
-            gen_loop.read_vrun_fit(out)
+        self.assertTrue(failed["kept"])  # ... the ranking did not, and the export decides (D64)
+        self.assertEqual(failed, gen_loop.read_vrun_fit(out))
         saved = json.loads((out / gen_loop.VRUN_FIT_JSON).read_text())
         self.assertFalse(saved["keep"]["ranking"]["pass"])
+        self.assertIs(saved["keep"]["old_rule_passed"], False)
 
-    def test_a_fit_with_no_incumbent_to_rank_against_is_not_kept(self):
+    def test_a_fit_with_no_incumbent_to_rank_against_records_that_and_is_kept(self):
         doc = self.fit(incumbent=None)
-        self.assertFalse(doc["kept"])
+        self.assertTrue(doc["kept"])
         self.assertEqual((doc["keep"]["ranking"]["status"], doc["keep"]["ranking"]["pass"]), ("not_run", False))
         self.assertTrue(doc["keep"]["all_computable_pass"])
 
-    def test_a_check_that_fails_to_run_does_not_keep_the_fit_and_a_rerun_can(self):
+    def test_a_check_that_fails_to_run_is_recorded_and_a_rerun_rewrites_the_block(self):
         out = Path(self.tmp.name) / "fit"
 
         def broken(*a, **k):
             raise OSError("the corpus is not on this disk")
 
         doc = self.fit(ranking_check=broken)
-        self.assertFalse(doc["kept"])
+        self.assertTrue(doc["kept"])  # D64: the check that could not run is recorded, it keeps nothing out
+        self.assertFalse(doc["keep"]["ranking"]["pass"])
         self.assertIn("corpus", doc["keep"]["ranking"]["why"])
         again = gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(True))
         self.assertTrue(again["kept"])
         self.assertEqual(again, json.loads((out / gen_loop.VRUN_FIT_JSON).read_text()))
         self.assertEqual(gen_loop.read_vrun_fit(out)["keep"]["ranking"]["status"], "ok")
         again = gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(False))
-        self.assertFalse(again["kept"])
+        self.assertTrue(again["kept"])
+        self.assertFalse(again["keep"]["ranking"]["pass"])
+        self.assertIs(again["keep"]["old_rule_passed"], False)
         (out / "run_value.npz").write_bytes(b"another file")
         with self.assertRaises(ValueError):  # the fit changed since it was recorded
             gen_loop.rerank_vrun_fit(out, self.incumbent, self.runs, seed_dir=self.no_seeds, ranking_check=fake_ranking(True))
@@ -229,11 +234,16 @@ class BuiltWithFitTests(unittest.TestCase):
         meta = json.loads((self.build(vrun_fit=self.fit) / "agent.json").read_text())
         self.assertFalse(meta["vrun_fit"]["matched"])
 
-    def test_a_fit_that_was_not_kept_is_refused_before_anything_is_written(self):
-        self.record(kept=False, sha=self.sha)
-        with self.assertRaises(ValueError):
+    def test_a_fit_without_its_export_is_refused_before_anything_is_written(self):
+        (self.fit / "run_value.npz").unlink()
+        with self.assertRaisesRegex(ValueError, "no export"):
             self.build(vrun_fit=self.fit)
         self.assertFalse((self.agents / "gen12").exists())
+
+    def test_a_record_that_says_kept_false_is_carried_by_its_export(self):
+        self.record(kept=False, sha=self.sha)  # written under the old rule: a heal rate or a D33 interval refused it
+        meta = json.loads((self.build(vrun_fit=self.fit) / "agent.json").read_text())
+        self.assertEqual("fit", meta["vrun_fit"]["source"])
 
     def test_without_a_fit_the_build_is_as_before(self):
         meta = json.loads((self.build() / "agent.json").read_text())

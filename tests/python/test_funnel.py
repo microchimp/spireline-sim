@@ -96,7 +96,7 @@ class LooksTests(unittest.TestCase):
 
 
 class RuleTests(unittest.TestCase):
-    """`seq_call` against the rule as written: refuse on the one-sided 99% upper bound or the smoke rule, promote-eligible at the early z."""
+    """`seq_call` against the rule as written: refuse on the one-sided 99% upper bound (never at the smoke look since D64), promote-eligible at the early z."""
 
     @staticmethod
     def diffs(mean: float, n: int, sd: float = SD) -> np.ndarray:
@@ -106,18 +106,22 @@ class RuleTests(unittest.TestCase):
     def call(self, mean: float, n: int, j: int, sd: float = SD) -> dict:
         return gen_loop.seq_call(self.diffs(mean, n, sd), j, LOOKS)
 
-    def test_the_smoke_block_refuses_below_minus_one(self):
+    def test_the_smoke_block_refuses_nothing_and_records_what_the_old_rule_said(self):
         c = self.call(-1.05, 200, 0)
-        self.assertEqual(c["action"], "refuse")
+        self.assertEqual(c["action"], "continue")  # D64: it refused below -1.0 before
         self.assertIn("smoke", c["reason"])
-        self.assertEqual(self.call(-0.95, 200, 0)["action"], "continue")  # above the smoke line, and its 99% upper bound is above 0
-        self.assertEqual(self.call(-6.79, 200, 0)["action"], "refuse")  # generation 12's first 200
+        self.assertIs(c["smoke_would_refuse"], True)
+        c = self.call(-0.95, 200, 0)  # above the old smoke line, and its 99% upper bound is above 0
+        self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", False))
+        c = self.call(-6.79, 200, 0)  # generation 12's first 200
+        self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", True))
+        self.assertLess(c["upper99"], 0)  # the figures are in the call
 
-    def test_the_smoke_rules_lower_bound_clause_follows_from_the_mean_clause(self):
-        # whatever the SD, mean below -1 puts the 95% lower bound below 0, so the clause never changes a call
+    def test_the_old_smoke_rules_lower_bound_clause_follows_from_the_mean_clause(self):
+        # whatever the SD, mean below -1 puts the 95% lower bound below 0, so the clause never changes what the old rule would have said
         for sd in (0.5, 7.7, 40.0):
             c = gen_loop.seq_call(self.diffs(-1.01, 200, sd), 0, LOOKS)
-            self.assertEqual(c["action"], "refuse")
+            self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", True))
             self.assertLess(c["mean"] - 1.645 * c["se"], 0)
 
     def test_an_interim_look_refuses_on_the_99_percent_upper_bound(self):
@@ -128,7 +132,7 @@ class RuleTests(unittest.TestCase):
             self.assertEqual(self.call(-z * se * 0.98, LOOKS[j], j)["action"], "continue")  # an upper bound just above 0: play on
 
     def test_the_smoke_block_never_promotes(self):
-        self.assertEqual(self.call(5.0, 200, 0)["action"], "continue")  # z 9.1: still only a refusal look
+        self.assertEqual(self.call(5.0, 200, 0)["action"], "continue")  # z 9.1: the smoke look has no verdict to give
 
     def test_an_interim_look_is_eligible_at_the_early_z_and_not_below_it(self):
         z_e = gen_loop.seq_early_z(7)
@@ -158,7 +162,9 @@ class RuleTests(unittest.TestCase):
                     m, s = p.mean(), p.std(ddof=1) / math.sqrt(n)
                     if j == len(LOOKS) - 1:
                         want = "final"
-                    elif (j == 0 and m < -1.0 and m - z95 * s < 0) or m + z99 * s < 0:
+                    elif j == 0:  # D64: the smoke look refuses nothing
+                        want = "continue"
+                    elif m + z99 * s < 0:
                         want = "refuse"
                     elif j >= 1 and m / s >= z_e:
                         want = "eligible"
@@ -181,8 +187,8 @@ class ErrorRateTests(unittest.TestCase):
         s = np.cumsum(rng.normal(d * inc, SD * np.sqrt(inc), size=(self.N, len(LOOKS))), axis=1)
         mean, se = s / n, SD / np.sqrt(n)
         z99, z_e = NormalDist().inv_cdf(0.99), gen_loop.seq_early_z(len(LOOKS))
-        smoke = mean[:, 0] < -1.0
-        refuse_at = np.where(smoke, 0, np.where((mean[:, :-1] + z99 * se[:-1] < 0).any(axis=1), (mean[:, :-1] + z99 * se[:-1] < 0).argmax(axis=1), 99))
+        later = mean[:, 1:-1] + z99 * se[1:-1] < 0  # the refusal looks: every look but the smoke block (D64) and the last
+        refuse_at = np.where(later.any(axis=1), later.argmax(axis=1) + 1, 99)
         early = mean[:, 1:-1] / se[1:-1] >= z_e
         early_at = np.where(early.any(axis=1), early.argmax(axis=1) + 1, 99)
         final_pass = mean[:, -1] / se[-1] >= z99
@@ -207,8 +213,8 @@ class ErrorRateTests(unittest.TestCase):
         self.assertLess(self.simulate(1.07)["seeds"], 1000)  # generation 11's size of gain: about 860 seeds of 2,000
 
     def test_a_harmful_candidate_is_stopped_early(self):
-        self.assertAlmostEqual(self.simulate(-5.9)["seeds"], 200, delta=1)
-        self.assertLess(self.simulate(-1.44)["seeds"], 420)
+        self.assertAlmostEqual(self.simulate(-5.9)["seeds"], 500, delta=1)  # D64: the smoke block plays on, the next look refuses (200 before)
+        self.assertLess(self.simulate(-1.44)["seeds"], 640)
         self.assertEqual(self.simulate(-1.44)["funnel"], 0.0)
 
 
@@ -261,14 +267,15 @@ class PromoteFunnelTests(unittest.TestCase):
                                    review_guard=review_guard, sequential=sequential)
         return doc, arms
 
-    def test_a_candidate_far_below_the_incumbent_is_refused_at_the_smoke_block(self):
+    def test_a_candidate_far_below_the_incumbent_plays_the_smoke_block_on_and_is_refused_at_the_second_look(self):
         cand = stub_candidate(self.root, "c1", "sha-a")
         lab = self.root / "lab"
         doc, arms = self.run_promote(cand, -4.0, lab=lab)
-        self.assertEqual(arms.calls, [("cand", 200, True), ("base", 200, True)])  # nothing past the smoke block was played
-        self.assertEqual((doc["decision_text"], doc["n_seeds"], doc["paired_seeds"]), ("rejected", 200, 200))
+        self.assertEqual(arms.calls, [("cand", 200, True), ("base", 200, True), ("cand", 500, True), ("base", 500, True)])  # D64: the smoke block refuses nothing
+        self.assertEqual((doc["decision_text"], doc["n_seeds"], doc["paired_seeds"]), ("rejected", 500, 500))
         seq = doc["sequential"]
-        self.assertEqual((seq["block_seeds"], seq["played"], seq["stop"]["action"], seq["stop"]["n"]), (2000, 200, "refuse", 200))
+        self.assertEqual((seq["block_seeds"], seq["played"], seq["stop"]["action"], seq["stop"]["n"]), (2000, 500, "refuse", 500))
+        self.assertEqual((seq["looks"][0]["action"], seq["looks"][0]["smoke_would_refuse"]), ("continue", True))  # the smoke figures are in the record
         self.assertEqual(seq["schedule"], LOOKS)
         self.assertIs(doc["decision"]["checks"]["sequential"], False)
         self.assertTrue(doc["decision"]["rule"].endswith("+D51-funnel"))
@@ -277,8 +284,8 @@ class PromoteFunnelTests(unittest.TestCase):
         self.assertEqual(json.loads((Path(cand) / "promotion.json").read_text())["decision_text"], "rejected")
         rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
         self.assertEqual([(r["seed_block"], r["seeds"], r["decision"], r["cand_sha"], r["attempt"]) for r in rows],
-                         [("Etest-1", "200", "rejected", "sha-a", "1")])
-        self.assertIn("funnel refuse at 200 of 2000 seeds", rows[0]["guard"])
+                         [("Etest-1", "500", "rejected", "sha-a", "1")])
+        self.assertIn("funnel refuse at 500 of 2000 seeds", rows[0]["guard"])
         self.assertEqual((self.agents / "promotions.tsv").read_text().splitlines()[0].split("\t"), list(gen_loop.TSV_COLUMNS))
 
     def test_a_refusal_spends_the_attempt_as_a_block_refusal_does(self):
@@ -412,27 +419,27 @@ class PromoteFunnelTests(unittest.TestCase):
     def test_a_refused_block_is_rejudged_on_the_seeds_played_and_says_so(self):
         cand = stub_candidate(self.root, "c1", "sha-a")
         doc, _ = self.run_promote(cand, -4.0)
-        self.assertEqual(doc["n_seeds"], 200)
+        self.assertEqual(doc["n_seeds"], 500)
         seeds, cand_rows, base_rows = self.block(-4.0)
-        # the arms on disk: the 200 seeds played, and a few more in the candidate's folder that the rejudge must not take
-        self.write_arms(cand, "Etest-1", cand_rows[:230], base_rows[:200])
+        # the arms on disk: the 500 seeds played, and a few more in the candidate's folder that the rejudge must not take
+        self.write_arms(cand, "Etest-1", cand_rows[:530], base_rows[:500])
         with mock.patch.object(gen0, "run_block", side_effect=AssertionError("must not play again")):
             out = self.rejudge(cand)
-        self.assertEqual((out["decision_text"], out["n_seeds"], out["paired_seeds"]), ("rejected", 200, 200))
-        self.assertEqual(out["rejudged"]["seeds"]["judged"], 200)
-        self.assertIn("judged the 200 of 2000 seeds, where the funnel stopped on a refuse", out["rejudged"]["seeds"]["text"])
-        self.assertIn("rejudged on the 200 of 2000 seeds", out["sequential"]["note"])
+        self.assertEqual((out["decision_text"], out["n_seeds"], out["paired_seeds"]), ("rejected", 500, 500))
+        self.assertEqual(out["rejudged"]["seeds"]["judged"], 500)
+        self.assertIn("judged the 500 of 2000 seeds, where the funnel stopped on a refuse", out["rejudged"]["seeds"]["text"])
+        self.assertIn("rejudged on the 500 of 2000 seeds", out["sequential"]["note"])
         self.assertEqual(out["sequential"]["stop"]["action"], "refuse")
         self.assertIs(out["decision"]["checks"]["sequential"], False)  # the block ended on a refusal and stays refused
         self.assertTrue(out["decision"]["rule"].endswith("+D51-funnel"))
-        self.assertEqual((out["cand"]["summary"]["runs"], out["base"]["summary"]["runs"]), (200, 200))  # the 30 extra rows were left out
+        self.assertEqual((out["cand"]["summary"]["runs"], out["base"]["summary"]["runs"]), (500, 500))  # the 30 extra rows were left out
         self.assertTrue((cand / "promotion-rejected-" f"{doc['written'][:10]}.json").is_file())  # the earlier record kept beside it
         rows = gen_loop.read_promotions(self.agents / "promotions.tsv")
-        self.assertEqual([(r["seed_block"], r["seeds"], r["decision"]) for r in rows], [("Etest-1", "200", "rejected")] * 2)
-        self.assertIn("funnel refuse at 200 of 2000 seeds", rows[1]["guard"])
+        self.assertEqual([(r["seed_block"], r["seeds"], r["decision"]) for r in rows], [("Etest-1", "500", "rejected")] * 2)
+        self.assertIn("funnel refuse at 500 of 2000 seeds", rows[1]["guard"])
         self.assertFalse((self.agents / "current.json").exists())
         again = self.rejudge(cand)  # the record is carried over, so a second rejudge reads the stop again
-        self.assertEqual((again["n_seeds"], again["rejudged"]["seeds"]["judged"]), (200, 200))
+        self.assertEqual((again["n_seeds"], again["rejudged"]["seeds"]["judged"]), (500, 500))
         day = doc["written"][:10]  # the promote's record and the first rejudge's both stay, the second under a name of its own
         self.assertTrue((cand / f"promotion-rejected-{day}.json").is_file() and (cand / f"promotion-rejected-{day}-r2.json").is_file())
 
@@ -456,8 +463,8 @@ class PromoteFunnelTests(unittest.TestCase):
         cand = stub_candidate(self.root, "c1", "sha-a")
         self.run_promote(cand, -4.0)
         seeds, cand_rows, base_rows = self.block(-4.0)
-        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:150])
-        with self.assertRaisesRegex(ValueError, "only 150 of 200 seeds are paired in both cached arms"):
+        self.write_arms(cand, "Etest-1", cand_rows[:500], base_rows[:450])
+        with self.assertRaisesRegex(ValueError, "only 450 of 500 seeds are paired in both cached arms"):
             self.rejudge(cand)
         self.assertTrue((cand / "promotion.json").is_file())  # nothing renamed or written by the refused rejudge
         self.assertEqual(len(gen_loop.read_promotions(self.agents / "promotions.tsv")), 1)
@@ -475,24 +482,24 @@ class PromoteFunnelTests(unittest.TestCase):
         cand = stub_candidate(self.root, "c1", "sha-a")
         self.run_promote(cand, -4.0)
         seeds, cand_rows, base_rows = self.block(-4.0)
-        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:200])
+        self.write_arms(cand, "Etest-1", cand_rows[:500], base_rows[:500])
         self.seed_file.write_text(json.dumps({"seeds": seeds[:1500]}))  # not the 2,000-seed block the record names
-        with self.assertRaisesRegex(ValueError, "stopped block Etest-1 at 200 of 2000 seeds, but the seed file is Etest-1 with 1500"):
+        with self.assertRaisesRegex(ValueError, "stopped block Etest-1 at 500 of 2000 seeds, but the seed file is Etest-1 with 1500"):
             self.rejudge(cand)
 
     def test_the_command_says_which_seeds_were_judged(self):
         cand = stub_candidate(self.root, "c1", "sha-a")
         self.run_promote(cand, -4.0)
         seeds, cand_rows, base_rows = self.block(-4.0)
-        self.write_arms(cand, "Etest-1", cand_rows[:200], base_rows[:200])
+        self.write_arms(cand, "Etest-1", cand_rows[:500], base_rows[:500])
         args = SimpleNamespace(cand=str(cand), base=None, seeds_file=str(self.seed_file), agent_root=str(self.agents), config="a3-v1",
                                note="owner", lab=None, review_guard=True)
         buf = io.StringIO()
         with mock.patch.object(gen0, "_setup"), contextlib.redirect_stdout(buf):
             self.assertEqual(gen0.rejudge_cmd(args), 0)
         printed = json.loads(buf.getvalue())
-        self.assertEqual(printed["n_seeds"], 200)
-        self.assertIn("judged the 200 of 2000 seeds", printed["seeds_judged"])
+        self.assertEqual(printed["n_seeds"], 500)
+        self.assertIn("judged the 500 of 2000 seeds", printed["seeds_judged"])
 
 
 class RunArmResumeTests(unittest.TestCase):
@@ -618,26 +625,33 @@ def v2_call(floor_mean: float, deep_mean: float, n: int, j: int, looks=LOOKS, sd
 
 
 class V2RuleTests(unittest.TestCase):
-    def test_v2_smoke_refuses_floor_collapse_without_act2_sign(self):
+    def test_v2_smoke_refuses_nothing_and_records_the_floor_collapse_the_old_rule_refused(self):
+        # D64: the smoke look gives no verdict on the floor; `smoke_would_refuse` is the rule of 2026-11-05 (a floor collapse deep_f does not offset)
         # 200 seeds: floor SE 0.62, deep_f SE 1.98
-        self.assertEqual(v2_call(-1.5, -0.01, 200, 0)["action"], "refuse")  # the floor mean is below -1.0 and deep_f is not above 0
-        self.assertEqual(v2_call(-1.5, -3.0, 200, 0)["action"], "refuse")
-        c = v2_call(-1.5, 3.0, 200, 0)  # the same floor with Act 2 kills up: play on (the 95% upper bound -0.48 is above -1.0)
-        self.assertEqual(c["action"], "continue")
+        def smoke(*a, **kw):
+            c = v2_call(*a, **kw)
+            self.assertEqual(c["action"], "continue")
+            return c["smoke_would_refuse"]
+
+        self.assertTrue(smoke(-1.5, -0.01, 200, 0))  # the floor mean is below -1.0 and deep_f is not above 0
+        self.assertTrue(smoke(-1.5, -3.0, 200, 0))
+        c = v2_call(-1.5, 3.0, 200, 0)  # the same floor with Act 2 kills up: the old rule played on too (the 95% upper bound -0.48 is above -1.0)
+        self.assertFalse(c["smoke_would_refuse"])
         self.assertGreater(c["upper95"], -1.0)
         c = v2_call(-3.0, 5.0, 200, 0)  # a collapse no deep_f gain pays for: the floor's 95% upper bound is below -1.0, no route can pass
-        self.assertEqual(c["action"], "refuse")
+        self.assertTrue(c["smoke_would_refuse"])
         self.assertLess(c["upper95"], -1.0)
-        self.assertEqual(v2_call(-0.9, -0.01, 200, 0)["action"], "continue")  # above the smoke line
-        self.assertEqual(v2_call(-1.01, -0.01, 200, 0)["action"], "refuse")
-        self.assertEqual(v2_call(-1.01, 0.01, 200, 0)["action"], "continue")  # any sign above 0 keeps it alive
-        self.assertEqual(v2_call(8.0, 30.0, 200, 0)["action"], "continue")  # the smoke look never promotes
-        # today's smoke rule would have refused the first and the last-but-one alike (floor below -1.0 with the 95% bound below 0)
-        self.assertEqual(gen_loop.seq_call(fx.std_diffs(-1.5, SD_FLOOR_L05, 200, 3), 0, LOOKS)["action"], "refuse")
+        self.assertFalse(smoke(-0.9, -0.01, 200, 0))  # above the old smoke line
+        self.assertTrue(smoke(-1.01, -0.01, 200, 0))
+        self.assertFalse(smoke(-1.01, 0.01, 200, 0))  # any sign above 0 kept it alive
+        self.assertFalse(smoke(8.0, 30.0, 200, 0))  # the smoke look never promotes
+        # v1's old smoke rule would have refused the floor below -1.0 with the 95% bound below 0; it too only records it now
+        c = gen_loop.seq_call(fx.std_diffs(-1.5, SD_FLOOR_L05, 200, 3), 0, LOOKS)
+        self.assertEqual((c["action"], c["smoke_would_refuse"]), ("continue", True))
         # the design's three 200-seed blocks: generation 12's second attempt, the pure imitation and generation 12
-        self.assertEqual(v2_call(-1.29, -1.0, 200, 0, sd_f=9.7, sd_d=20.0)["action"], "refuse")
-        self.assertEqual(v2_call(-3.14, 2.5, 200, 0, sd_f=9.7, sd_d=29.0)["action"], "refuse")
-        self.assertEqual(v2_call(-6.79, -1.0, 200, 0)["action"], "refuse")
+        self.assertTrue(smoke(-1.29, -1.0, 200, 0, sd_f=9.7, sd_d=20.0))
+        self.assertTrue(smoke(-3.14, 2.5, 200, 0, sd_f=9.7, sd_d=29.0))
+        self.assertTrue(smoke(-6.79, -1.0, 200, 0))
 
     def test_v2_later_look_refuses_only_when_both_routes_dead(self):
         # 800 seeds (look 3): floor SE 0.31, so its 99% upper bound is the mean + 0.72; deep_f SE 0.99, its 95% upper bound the mean + 1.63
@@ -704,8 +718,8 @@ class V2RuleTests(unittest.TestCase):
                         f_dead, a_dead = m + z99 * s < 0, (m + z99 * s < -1.0) or (dm + z95 * ds < 1.0)
                         if j == len(LOOKS) - 1:
                             want = "final"
-                        elif j == 0:
-                            want = "refuse" if (m < -1.0 and not dm > 0) or m + z95 * s < -1.0 else "continue"
+                        elif j == 0:  # D64: the smoke look refuses nothing on the floor
+                            want = "continue"
                         elif f_dead and a_dead:
                             want = "refuse"
                         elif (m / s >= z_e and dm + z95 * ds >= 0) or (dm / ds >= z_e and dm >= 1.0 and m - z95 * s >= -1.0):
@@ -742,8 +756,8 @@ class V2RuleTests(unittest.TestCase):
                 route_a = (d[:, j] / se_d[j] >= z_r) & (d[:, j] >= k2.MIN_GAIN) & (m[:, j] - z95 * se_f[j] >= -k2.FLOOR_MARGIN)
                 promoted |= alive & (route_f | route_a)
                 break
-            if j == 0:
-                refuse = ((m[:, j] < k2.SMOKE_MEAN) & ~(d[:, j] > 0)) | (m[:, j] + z95 * se_f[j] < -k2.FLOOR_MARGIN)
+            if j == 0:  # D64: no refusal at the smoke look
+                refuse = np.zeros(paths, dtype=bool)
                 eligible = np.zeros(paths, dtype=bool)
             else:
                 refuse = f_dead & a_dead
@@ -878,14 +892,15 @@ class PromoteV2Tests(unittest.TestCase):
         # the Act 1 kill guard fires on these arms and blocks nothing
         self.assertIn("kill", doc["keep_v2"]["act1_review"]["fires"])
 
-    def test_a_floor_collapse_is_refused_at_the_smoke_look_without_playing_on(self):
+    def test_a_floor_collapse_plays_the_smoke_look_on_and_is_refused_at_the_second_look(self):
         collapse = ((600, 0, 1), (1400, 1, 1))  # 600 of 2,000 runs lose the Act 1 boss they used to beat
         seeds, cand, base = fx.arms(collapse, prefix="C")
         self.seed_file.write_text(json.dumps({"seeds": seeds}))
         cand_dir = stub_candidate(self.root, "c1", "sha-a", generation=4)
         doc, arms = self.run_promote(cand, base, cand_dir)
-        self.assertEqual(arms.calls, [("cand", 200, True), ("base", 200, True)])
-        self.assertEqual((doc["decision_text"], doc["n_seeds"], doc["sequential"]["stop"]["action"]), ("rejected", 200, "refuse"))
+        self.assertEqual(arms.calls, [("cand", 200, True), ("base", 200, True), ("cand", 500, True), ("base", 500, True)])
+        self.assertEqual((doc["decision_text"], doc["n_seeds"], doc["sequential"]["stop"]["action"]), ("rejected", 500, "refuse"))
+        self.assertEqual((doc["sequential"]["looks"][0]["action"], doc["sequential"]["looks"][0]["smoke_would_refuse"]), ("continue", True))
         self.assertIs(doc["decision"]["checks"]["sequential"], False)
         self.assertFalse((self.agents / "current.json").exists())
 
@@ -945,10 +960,12 @@ def replay(block: str, cand_dir: str, base_dir: str, cand_gen: int):
 class RecordedBlockTests(unittest.TestCase):
     """The lab's own E-blocks, read from their per-seed rows (nothing is played)."""
 
-    def test_generation_12s_refused_block_stops_at_the_smoke_block(self):
+    def test_generation_12s_refused_block_plays_the_smoke_block_on_and_stops_at_the_second_look(self):
         out, _, mine = replay("E12-2026-11-02", "gen12/candidate", "gen11/candidate", 12)
         self.assertEqual(mine["decision"], "rejected")  # -5.91 floors, both guards fired
-        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("refuse", 200))  # 200 seeds of 2,000: a tenth of the block's time
+        self.assertEqual(out["stop"]["action"], "refuse")  # D64: the smoke block refused it at 200 before; now the look at 500 does
+        self.assertIn(out["stop"]["n"], (500, 800))  # a quarter of the block's time
+        self.assertEqual((out["looks"][0]["action"], out["looks"][0]["smoke_would_refuse"]), ("continue", True))
         self.assertLess(out["looks"][0]["mean"], -1.0)
         self.assertLess(out["looks"][0]["upper99"], 0)
 
@@ -973,10 +990,12 @@ class RecordedBlockTests(unittest.TestCase):
         self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("final", 2000))
         self.assertEqual([x["action"] for x in out["looks"]], ["continue"] * 6 + ["final"])
 
-    def test_generation_10s_first_block_is_refused_at_the_smoke_block(self):
+    def test_generation_10s_first_block_plays_the_smoke_block_on_and_is_refused_at_a_later_look(self):
         out, _, mine = replay("E10-2026-10-29", "gen10/candidate", "gen9/candidate", 10)
         self.assertEqual(mine["decision"], "rejected")  # -1.44 floors, both guards fired
-        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("refuse", 200))
+        self.assertEqual(out["stop"]["action"], "refuse")  # D64: refused at 200 before; the smoke look only records it now
+        self.assertIn(out["stop"]["n"], (500, 800, 1100))
+        self.assertEqual((out["looks"][0]["action"], out["looks"][0]["smoke_would_refuse"]), ("continue", True))
 
 
 if __name__ == "__main__":

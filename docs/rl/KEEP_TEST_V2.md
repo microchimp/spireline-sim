@@ -23,7 +23,9 @@ win beats all four) and, for a row without the field (blocks before 2026-10-25),
   of `promotion_guard` (unchanged). The Act 1 kill guard, the Act 1 and Act 2 damage guards and D24's Act 1 boss co-primary are not checks:
   they are reported as `act1_review` and block nothing (the measure is unconditional, so an Act 1 death is already charged to it).
 * **Funnel** (looks as D51: 200, 500, then every 300): `keep_v2.seq_call` on the normal statistics of the floor and deep_f differences.
-  Smoke look: refuse when the floor mean is below -1.0 and deep_f's mean is not above 0, or the floor's 95% upper bound is below -1.0.
+  Smoke look: since D64 (2026-11-16) it refuses nothing on the floor: it plays, records its figures and `smoke_would_refuse` (the former rule:
+  the floor mean below -1.0 with deep_f's mean not above 0, or the floor's 95% upper bound below -1.0), and still refuses a candidate that crashes
+  (`gen_loop.funnel`, the crash guard below on the smoke seeds). The look after it carries the refusals.
   Later looks: refuse only when route F is dead (floor 99% upper bound below 0) and route A is dead (that bound below -1.0, or deep_f's 95%
   upper bound below +1.0). Interim looks: eligible when a route's z reaches 3.72 (0.001 split over five looks and two routes) with that
   route's other conditions; `promote` then asks `keep_v2.judge` on the seeds played and promotes only if the route that cleared the z holds

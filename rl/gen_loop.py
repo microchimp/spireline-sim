@@ -986,14 +986,14 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
 
     The keep record also carries the ranking check (D47, D49): the fit's options ranked against `incumbent`'s head (a run_value.npz,
     a generation directory or a current.json) on the fixed set of held-out decisions in the self-play shards under `shards_root`,
-    the fit window's runs left out. A fit is `kept` only when the D33 conditions and the ranking check both pass; with no
-    `incumbent` the check cannot run and the fit is not kept.
+    the fit window's runs left out. Since D64 (owner, 2026-11-16) a fit is `kept` when its export exists (`vrun_keep_passed`); the D33 conditions
+    and the ranking check are computed and recorded (the keep record says `advisory`, `gated_on` ["export"], and `old_rule_passed`, what the old
+    rule would have said) and decide nothing. With no `incumbent` the check cannot run and its block says so.
 
     `ranking_runs_root` is where the ranking check's fixed set is drawn from (the lab's self-play folder holding the generation-9 pool) when
     the window's root is not that folder (a store of plain runs, D60 item 10); default `shards_root`. `human_leg` False runs the check without
     its human leg (`run_train.ranking.run_check(human=None)`: the shard leg only), for a lane whose rules keep it off the human exam fifth: the
-    check then cannot pass, the fit is not `kept`, the record says `human_leg: false`, and only `read_vrun_fit(without_human_leg=True)`
-    reads it, when the human leg is the one check missing."""
+    check then records the human agreement as not run (`human_leg: false`; it gates nothing since D64, so the fit is `kept` all the same)."""
     mans = fighter_manifests(shards_root, prior_sha256, gens, exploring_only=exploring_only)
     if not mans:
         raise ValueError(f"no {'exploring ' if exploring_only else ''}self-play shards of prior {prior_sha256[:12]} under "
@@ -1016,6 +1016,7 @@ def fit_run_value_matched(shards_root: Path, prior_sha256: str, out: Path, *, ge
         check = ranking_check if ranking_check is not None or human_leg else _ranking_without_human_leg
         keep_doc["ranking"] = ranking_block(out / "run_value.npz", incumbent, ranking_runs_root or shards_root, out, exclude_seeds=window_seeds,
                                             check=check)
+    keep_advisory(keep_doc)
     doc = {"recipe": MATCHED_RECIPE, "written": utc_now(), "prior_sha256": prior_sha256, "beta": beta, "human_leg": bool(human_leg),
            "window": {"blocks": len(mans), "generations": generations, "exploring_only": bool(exploring_only),
                       "runs_by_generation": {str(g): sum(int(m["runs"]) for _, m in mans if int(m["generation"]) == g)
@@ -1038,7 +1039,8 @@ def fit_window_seeds(fit_doc: dict[str, Any], shards_root: Path | str) -> list[s
 def rerank_vrun_fit(fit_dir: Path | str, incumbent: Path | str | None, shards_root: Path | str, *, seed_dir: Path | None = None,
                     seed_dirs: Sequence[Path | str] = (), ranking_check: Any = None) -> dict[str, Any]:
     """Run the ranking check again on a fit `fit_run_value_matched` already wrote (the fit itself is not repeated) and rewrite its
-    `vrun_fit.json`: the ranking block and `kept`. For a check that could not run when the fit was made (the fit takes about
+    `vrun_fit.json`: the ranking block and `kept` (the export since D64, so a record written before it that says `kept` false is rewritten
+    true). For a check that could not run when the fit was made (the fit takes about
     twenty minutes, the check a few more)."""
     fit_dir = Path(fit_dir)
     doc = read_json(fit_dir / VRUN_FIT_JSON)
@@ -1048,6 +1050,7 @@ def rerank_vrun_fit(fit_dir: Path | str, incumbent: Path | str | None, shards_ro
         raise ValueError(f"{fit_dir.name}/run_value.npz is not the fit {VRUN_FIT_JSON} records")
     doc["keep"]["ranking"] = ranking_block(fit_dir / "run_value.npz", incumbent, shards_root, fit_dir, exclude_seeds=window_seeds,
                                            check=ranking_check)
+    keep_advisory(doc["keep"])
     doc["kept"] = vrun_keep_passed(doc["keep"], fit_dir)
     doc["reranked"] = utc_now()
     write_json(fit_dir / VRUN_FIT_JSON, doc)
@@ -1108,15 +1111,22 @@ def passed_but_human_leg(keep_doc: dict[str, Any] | None) -> bool:
             and human[0].get("why") == HUMAN_LEG_MISSING)
 
 
+def human_leg_missing(keep_doc: dict[str, Any] | None) -> bool:
+    """Whether a keep record's ranking block has its human agreement as not run (the fit's lane kept off the human exam fifth)."""
+    block = (keep_doc or {}).get("ranking") or {}
+    return any(str(c.get("name", "")).startswith("human_agreement") and c.get("why") == HUMAN_LEG_MISSING for c in block.get("checks") or [])
+
+
 def read_vrun_fit(fit_dir: Path | str, *, without_human_leg: bool = False) -> dict[str, Any]:
-    """A fighter-matched fit's record, checked: its keep record passed (D33) and run_value.npz is the file it names. `without_human_leg`
-    also reads a fit that passed everything but the human leg of its ranking check, which did not run (`passed_but_human_leg`)."""
+    """A fighter-matched fit's record, checked: the export (`run_value.npz`) is there and is the file the record names. Since D64 that is all:
+    nothing in the keep record gates, and a record written before it that says `kept` false (a heal rate or a D33 interval refused it) reads
+    as the fit it is. `without_human_leg` is accepted for the callers that still pass it and does nothing."""
     fit_dir = Path(fit_dir)
     doc = read_json(fit_dir / VRUN_FIT_JSON)
     npz = fit_dir / "run_value.npz"
-    if not doc.get("kept") and not (without_human_leg and passed_but_human_leg(doc.get("keep"))):
-        raise ValueError(f"the V_run fit in {fit_dir.name} did not pass the keep test (D33); a candidate never carries it")
-    if not npz.is_file() or file_sha256(npz) != doc.get("sha256"):
+    if not vrun_keep_passed(doc.get("keep"), fit_dir):
+        raise ValueError(f"the V_run fit in {fit_dir.name} has no export (run_value.npz); a candidate never carries it")
+    if file_sha256(npz) != doc.get("sha256"):
         raise ValueError(f"{fit_dir.name}/run_value.npz is not the fit {VRUN_FIT_JSON} records")
     return doc
 
@@ -1272,17 +1282,35 @@ def export_all(out: Path, probe_tokens=None) -> dict[str, Any]:
 
 def ranking_ok(keep_doc: dict[str, Any] | None) -> bool:
     """Whether the keep record's ranking block (D47, D49: how the fit ranks rest, card and map options against the head it would
-    replace; `run_train.ranking`) lets the fit stand. A record without the block (made before D49, or a synthetic one) is not judged
-    on it; a record with the block needs `pass` true, and every fit made now carries one: a check that could not run is written
-    as a failing block, never left out."""
+    replace; `run_train.ranking`) passes its old limits. Since D64 this is a diagnostic: it is computed for the record and gates nothing
+    (`vrun_keep_passed`). A record without the block (made before D49, or a synthetic one) has nothing to say and reads true; a record with
+    the block reads its `pass`, and every fit made now carries one: a check that could not run is written as a failing block, never left out."""
     block = (keep_doc or {}).get("ranking")
     return True if block is None else bool(block.get("pass"))
 
 
+KEEP_GATED_ON = ("export",)  # what decides a V_run fit since D64 (2026-11-16): the export, nothing in the keep record
+
+
 def vrun_keep_passed(keep_doc: dict[str, Any] | None, cand: Path) -> bool:
-    """Whether the V_run keep record passes every computable condition and its ranking check (`ranking_ok`), and the candidate
-    holds its export."""
-    return bool(keep_doc and keep_doc.get("all_computable_pass")) and ranking_ok(keep_doc) and (Path(cand) / "run_value.npz").is_file()
+    """Whether the candidate holds its V_run export (`run_value.npz`): the one thing that decides a fit since D64 (owner, 2026-11-16: "I think
+    this is a dumb rule and doesn't make sense hard coding this rule in").
+
+    The keep record still computes and records the D33 out-of-fold Brier skill (`all_computable_pass`, "predicts at all") and the ranking block
+    (`ranking_ok`: the heal and rest rates against the head it would replace, the human agreement), each check's `pass` written as before, so a
+    memo can read them; none of them gates. `keep_doc` is accepted for the callers that pass it and is not read: `keep_advisory` marks the record
+    `advisory` / `gated_on`. Before D64 this was `all_computable_pass and ranking_ok and export`; the judge's verdict on the E-block is the only
+    test a candidate with a fit has left to pass."""
+    return (Path(cand) / "run_value.npz").is_file()
+
+
+def keep_advisory(keep_doc: dict[str, Any]) -> dict[str, Any]:
+    """Mark a keep record as what it is since D64: `advisory` true, `gated_on` ["export"], and `old_rule_passed`, what the D33 and ranking rule
+    would have said (the verdict that used to decide). The checks inside keep their own `pass`. Returns the same dict, marked."""
+    keep_doc["advisory"] = True
+    keep_doc["gated_on"] = list(KEEP_GATED_ON)
+    keep_doc["old_rule_passed"] = bool(keep_doc.get("all_computable_pass")) and ranking_ok(keep_doc)
+    return keep_doc
 
 
 def macro_vrun_on(flag: bool | None = None) -> bool:
@@ -1293,7 +1321,8 @@ def macro_vrun_on(flag: bool | None = None) -> bool:
 
 
 def macro_for(keep_doc: dict[str, Any] | None, cand: Path, enabled: bool | None = None) -> str:
-    """`vrun` when the keep record passes (`vrun_keep_passed`) and the macro switch is on (`macro_vrun_on(enabled)`), else `rules`.
+    """`vrun` when the candidate holds its V_run export (`vrun_keep_passed`; the keep record is advisory since D64) and the macro switch is on
+    (`macro_vrun_on(enabled)`), else `rules`.
 
     The switch is on by default since D33 (2026-10-25); SPIRELINE_MACRO_VRUN=rules is the opt-out. A candidate that plays
     V_run's macro is judged with its prior and V_run together; that is the decision (VRUN_SWEEP.md 1.5), and the E-block's
@@ -1332,9 +1361,9 @@ def oof_numbers(keep_doc: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def carry_vrun_fit(cand: Path, keep_doc: dict[str, Any] | None, seed: Path | str | None) -> dict[str, Any]:
-    """Which V_run fit the candidate carries (D33). A new fit that passes the keep test is the candidate's `run_value.npz`; one that
-    fails is moved aside (`rejected-fit/`) and the seed fit (the A/B's, `train_generation(vrun_seed=)`) takes its place; with neither
-    the candidate carries no kept fit. Returns the manifest entry: source (new / seed / none), kept, sha256 of the carried file, the
+    """Which V_run fit the candidate carries (D33, D64). A new fit that exported (`vrun_keep_passed`: the keep record is advisory since D64) is
+    the candidate's `run_value.npz`; a fit that made no export is moved aside (`rejected-fit/`, whatever it left) and the seed fit (the A/B's,
+    `train_generation(vrun_seed=)`) takes its place; with neither the candidate carries no kept fit. Returns the manifest entry: source (new / seed / none), kept, sha256 of the carried file, the
     out-of-fold numbers of the new fit, and the seed's path, sha256 and its sidecar record (`<stem>.keep.json`) when there is one."""
     import shutil  # noqa: PLC0415
 
@@ -1346,7 +1375,7 @@ def carry_vrun_fit(cand: Path, keep_doc: dict[str, Any] | None, seed: Path | str
         sidecar = Path(seed).with_name(Path(seed).stem + ".keep.json")
         if sidecar.is_file():
             seed_info["record"] = read_json(sidecar)
-    entry: dict[str, Any] = {"rule": "a later fit replaces the seed fit only when it passes the keep test (D33)",
+    entry: dict[str, Any] = {"rule": "a later fit replaces the seed fit when it exported; its keep record is recorded and gates nothing (D64)",
                              "new_fit_passed_keep": passed, "new_fit_oof": oof_numbers(keep_doc), "seed": seed_info}
     if passed:
         return {**entry, "source": "new", "kept": True, "sha256": file_sha256(npz)}
@@ -1441,9 +1470,10 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
         seed_ok = vrun_seed is not None and Path(vrun_seed).is_file()
         doc["vrun_keep"]["ranking"] = (ranking_block(cand / "run_value.npz", vrun_seed, shards_root, cand, exclude_seeds=window_seeds,
                                                      check=ranking_check) if seed_ok else ranking.no_incumbent())
+    keep_advisory(doc["vrun_keep"])
     passed, enabled = vrun_keep_passed(doc["vrun_keep"], cand), macro_vrun_on()
     fit = doc["vrun_fit"] = carry_vrun_fit(cand, doc["vrun_keep"], vrun_seed) if vrun else {"source": "none", "kept": False, "sha256": None}
-    macro = macro_for({"all_computable_pass": fit["kept"]}, cand, enabled)  # a kept fit (new or seed) and the export decide
+    macro = macro_for(doc["vrun_keep"], cand, enabled) if fit["kept"] else "rules"  # a carried fit (new or seed) and its export decide (D64)
     doc["vrun_keep"]["macro_switch"] = {"passed": passed, "enabled": enabled, "carried": fit["source"], "note": MACRO_SWITCH_NOTE}
     doc["vrun_keep"]["note"] = vrun_keep_note(macro)
     lineage = lineage_note(gen, target, macro, fit["source"])
@@ -1452,12 +1482,12 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
     write_json(cand / "agent.json", {"generation": target, "macro": macro, "trained_from": gen, "written": utc_now(),
                                      **({"lineage": lineage} if lineage else {}),
                                      "mask_version": CANDIDATE_MASK_VERSION, "vrun_fit": {"source": fit["source"], "sha256": fit["sha256"]},
-                                     "note": ("V_run passed the computable keep conditions (Tier-B regret and the battery are not "
-                                              "computed) and the macro switch is on (D33): it picks macro options" if macro == "vrun" and fit["source"] == "new" else
-                                              "the seed V_run fit (the A/B's) is carried: the new fit did not pass the keep test (D33)" if macro == "vrun" else
-                                              f"V_run passed the computable keep conditions; {MACRO_VRUN_FLAG}=rules opts "
+                                     "note": ("V_run's new fit exported; its keep record (D33 skill, the ranking check) is recorded and gates nothing "
+                                              "(D64), and the macro switch is on (D33): it picks macro options" if macro == "vrun" and fit["source"] == "new" else
+                                              "the seed V_run fit (the A/B's) is carried: the new fit made no export" if macro == "vrun" else
+                                              f"V_run's new fit exported; {MACRO_VRUN_FLAG}=rules opts "
                                               "out, so macro stays rules" if passed else
-                                              "macro stays rules: V_run did not pass the keep conditions")})
+                                              "macro stays rules: V_run made no export")})
     write_json(cand / "train.json", doc)
     shutil_rmtree(cand / "work")
     return cand
@@ -1466,7 +1496,8 @@ def train_generation(gen: int, shards_root: Path, agent_root: Path, *, device: s
 def vrun_keep_note(macro: str) -> str:
     """train.json's vrun_keep note: what the macro verdict means for the candidate's E-block."""
     if macro == "vrun":
-        return ("V_run passed the computable keep conditions only (Tier-B regret and the battery are not computed); the candidate "
+        return ("V_run's fit exported; its keep record (D33 skill, ranking check) is recorded and gates nothing since D64, and Tier-B regret and "
+                "the battery are not computed; the candidate "
                 "plays a new combat prior and V_run's macro together, so its E-block judges them together and a gain or a loss "
                 "cannot be attributed to one of them")
     return "macro stays rules: the E-block judges the combat prior alone"
@@ -1827,9 +1858,9 @@ def build_vrun_candidate(base: Path | str, vrun_fit: Path | str, agent_root: Pat
     for byte (the combat prior and its ONNX, the human prior, the run student and its legs), agent.json keeps the base's macro, recipe, human
     prior, student, stakes schedule, hold and mask version, so the candidate differs from the base in the run-level judgement alone
     (`screens.differing` reads ["value"], no screen applies) and its attempts count under the base's recipe with a new run head. The base's
-    chooser must read V (the vrun macro or a blend with it). The fit must have passed the keep test (`read_vrun_fit`); `without_human_leg`
-    also takes a fit that passed everything but the ranking check's human leg, which did not run (`passed_but_human_leg`), and agent.json's
-    `vrun_fit.human_leg` and note say so. The V export (run_value.onnx, fight_net.onnx) is made anew from the fit (`export`; the combat
+    chooser must read V (the vrun macro or a blend with it). The fit must hold its export (`read_vrun_fit`; the keep record is advisory since
+    D64 and travels in agent.json's `vrun_fit`); `without_human_leg` is accepted and does nothing, and agent.json's `vrun_fit.human_leg` and note
+    say when the fit's ranking check ran without its human leg. The V export (run_value.onnx, fight_net.onnx) is made anew from the fit (`export`; the combat
     ONNX stays the base's bytes); without `export` the candidate has none, never the base's old one. Written as gen<target>/candidate-<tag>
     (`candidate_dirname`), never over an existing folder; `gen0.py build-vrun` writes the marker `ready-<base gen>-g<target>-<tag>`."""
     import shutil  # noqa: PLC0415
@@ -1843,7 +1874,7 @@ def build_vrun_candidate(base: Path | str, vrun_fit: Path | str, agent_root: Pat
     if target <= base_agent.generation:
         raise ValueError(f"a candidate built on generation {base_agent.generation} cannot be generation {target}")
     fit_doc = read_vrun_fit(vrun_fit, without_human_leg=without_human_leg)
-    human_ran = bool(fit_doc.get("kept"))
+    human_ran = fit_doc.get("human_leg") is not False and not human_leg_missing(fit_doc.get("keep"))
     base_dir, fit_dir = Path(base_agent.path), Path(vrun_fit)
     cand = agent_root / f"gen{target}" / candidate_dirname(0, int(attempt), tag)
     if cand.exists() and any(cand.iterdir()):
@@ -1865,10 +1896,11 @@ def build_vrun_candidate(base: Path | str, vrun_fit: Path | str, agent_root: Pat
     npz = cand / "run_value.npz"
     prior_sha = base_agent.describe()["prior_sha256"]
     human_text = "run" if human_ran else ("not run: the ranking check's human leg (the held-out human fifth) was left out by the fit's lane; "
-                                          "its shard leg (rest and heal rates on the fixed set) passed")
+                                          "its shard leg (rest and heal rates on the fixed set) is recorded beside it")
     fit = {"source": "fit", "sha256": file_sha256(npz), "dir": fit_dir.as_posix(), "recipe": fit_doc.get("recipe"),
            "prior_sha256": fit_doc.get("prior_sha256"), "matched": fit_doc.get("prior_sha256") == prior_sha, "window": fit_doc.get("window"),
-           "beta": fit_doc.get("beta"), "ranking": ranking_summary(fit_doc.get("keep")), "human_leg": human_text}
+           "beta": fit_doc.get("beta"), "ranking": ranking_summary(fit_doc.get("keep")), "human_leg": human_text,
+           "d33_pass": (fit_doc.get("keep") or {}).get("all_computable_pass"), "gated_on": list(KEEP_GATED_ON)}
     old_fit = file_sha256(base_dir / "run_value.npz") if (base_dir / "run_value.npz").is_file() else None
     prior = {"dir": base_dir.as_posix(), "policy_sha256": prior_sha,
              "net_sha256": file_sha256(cand / "combat_net.pt") if (cand / "combat_net.pt").is_file() else None}
@@ -2298,8 +2330,8 @@ def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = AL
 
 SEQ_SMOKE = 200  # paired seeds of the smoke block, the first look
 SEQ_BATCH = 300  # seeds added between the later looks
-SEQ_SMOKE_MEAN = -1.0  # the smoke block refuses below this mean paired floor difference ...
-SEQ_SMOKE_ALPHA = 0.05  # ... when the one-sided 95% lower bound of the mean is also below 0
+SEQ_SMOKE_MEAN = -1.0  # D64: no longer a refusal; the smoke block records `smoke_would_refuse` when its mean paired floor difference is below this ...
+SEQ_SMOKE_ALPHA = 0.05  # ... and the one-sided 95% lower bound of the mean is also below 0 (or the 99% upper bound is: the later looks' refusal)
 SEQ_REFUSE_ALPHA = ALPHA  # an interim look refuses when the one-sided 99% upper bound of the mean is below 0
 SEQ_EARLY_ALPHA = 0.001  # all the alpha early promotions may spend, split equally over the interim looks (Bonferroni)
 SEQ_RULE = "D51-funnel"
@@ -2358,32 +2390,36 @@ def seq_call(diffs: Sequence[float], j: int, looks: Sequence[int], *, alpha_refu
     2,000-seed figure of today. At look j let d_i be the candidate's floor minus the incumbent's on seed i, m their mean over the
     n_j seeds played, s = SD / sqrt(n_j) its standard error and z = m / s.
 
-    Refuse (any look but the last): m + 2.326 s < 0, the upper bound of the one-sided 99% interval of the mean below 0, so the
-    primary check cannot be met and no other check can rescue a promotion (all must hold). At the smoke look also: m < -1.0 with
-    the one-sided 95% lower bound m - 1.645 s below 0 (the second clause follows from the first, whatever s is: it is kept as
-    D51 specified it). A refusal is recorded like a block refusal (promotion.json, a promotions.tsv row, the attempt spent).
+    Refuse (any look but the first and the last): m + 2.326 s < 0, the upper bound of the one-sided 99% interval of the mean below 0,
+    so the primary check cannot be met and no other check can rescue a promotion (all must hold). The smoke look (the first) refuses
+    nothing on the floor since D64 (owner, 2026-11-16): it plays on and records its figures and `smoke_would_refuse`, what D51's smoke
+    rule (m < -1.0 with the one-sided 95% lower bound m - 1.645 s below 0; the second clause follows from the first, whatever s is) or
+    the bound above would have said; `funnel` still refuses a candidate that crashes there (the verdict's own crash guard, an
+    engineering fault and not a learning verdict). A refusal is recorded like a block refusal (promotion.json, a promotions.tsv row,
+    the attempt spent).
 
     Promote early (looks 2 to L-1; the smoke block never promotes): z >= z_e = Phi^-1(1 - 0.001 / (L - 2)), 3.54 for the seven
     looks (the one-sided 99.98% lower bound of the mean above 0), and today's decision on the seeds played says promote
     (the floor's bootstrap bound at alpha 0.01, the boss-kill and boss-damage guards, the drift check, the attempt cap) and the
     drift check is not flagged. Otherwise play on. At the last look the decision is today's, unchanged, on all N seeds.
 
-    Error rates. Promotion happens at the last look by today's test (one-sided alpha 0.01), or earlier by crossing z_e.
+    Error rates. (The table was re-run for D64, when the smoke look stopped refusing; the figures are `test_funnel.py` ErrorRateTests'
+    own model, 300,000 paths a row.) Promotion happens at the last look by today's test (one-sided alpha 0.01), or earlier by crossing z_e.
     With no improvement (true mean 0 or below) an early crossing has probability at most (L - 2) * 0.001 / (L - 2) = 0.001, a
     Bonferroni split of a tenth of today's alpha over the five interim looks (the looks are positively correlated, so the real
-    figure is lower), so P(promote) <= 0.010 + 0.001 = 0.011. Normal model, per-seed SD 7.74 floors (E11's block), 10^6 paths:
+    figure is lower), so P(promote) <= 0.010 + 0.001 = 0.011. Normal model, per-seed SD 7.74 floors (E11's block):
 
         true mean   today's P(promote)   funnel P(promote)   seeds played, mean
-          0.00        0.0101               0.0103              1917
-         +0.30        0.277                0.277               1955
-         +0.50        0.713                0.713               1830
+          0.00        0.0100               0.0102              1969
+         +0.30        0.277                0.279               1970
+         +0.50        0.713                0.714               1836
          +1.07        1.000                1.000                863      (generation 11's block)
-         -0.50        0                    0                   1183
-         -1.44        0                    0                    271      (generation 10's first block)
-         -5.90        0                    0                    200      (generation 12's block)
+         -0.50        0                    0                   1307
+         -1.44        0                    0                    510      (generation 10's first block)
+         -5.90        0                    0                    500      (generation 12's block; 200 before D64)
 
     A refusal can only turn a promotion into a refusal: a candidate whose last look would have passed is refused early with
-    probability 0.00003 (mean 0), 0.0006 (+0.3), 0.0010 (+0.5), 0.00007 (+1.07). Why Bonferroni on a small early budget and not
+    probability under 0.00001 at every mean of the table (the smoke clause, which added to it, no longer refuses). Why Bonferroni on a small early budget and not
     an O'Brien-Fleming spending: that spending raises the last look's critical value (about 2.36 for 0.01 in all, against
     2.326) and so changes the final test; spending a tenth of alpha early leaves the last look exactly as it is and adds about
     0.0002 to the error under no improvement, at the price of a hard early bar (z 3.54), which only a large improvement clears.
@@ -2396,8 +2432,11 @@ def seq_call(diffs: Sequence[float], j: int, looks: Sequence[int], *, alpha_refu
                            "z_early": z_e}
     if j >= n_looks - 1:
         return {**out, "action": "final", "reason": "every seed played: today's decision"}
-    if j == 0 and st["mean"] < smoke_mean and st["mean"] - NormalDist().inv_cdf(1 - smoke_alpha) * st["se"] < 0:
-        return {**out, "action": "refuse", "reason": f"smoke block: mean {st['mean']:+.3f} below {smoke_mean:+.1f} with the 95% lower bound below 0"}
+    if j == 0:  # D64: the smoke block refuses nothing on the floor; it records what the old rule (and the later looks' bound) would have said
+        would = bool((st["mean"] < smoke_mean and st["mean"] - NormalDist().inv_cdf(1 - smoke_alpha) * st["se"] < 0) or out["upper99"] < 0)
+        return {**out, "action": "continue", "smoke_would_refuse": would,
+                "reason": "smoke block: the floor difference refuses nothing (D64); its figures are recorded"
+                          + (f"; the old rule would have refused at mean {st['mean']:+.3f}" if would else "")}
     if out["upper99"] < 0:
         return {**out, "action": "refuse", "reason": f"the 99% upper bound {out['upper99']:+.3f} of the mean paired floor difference is below 0"}
     if j >= 1 and st["z"] >= z_e:
@@ -2453,6 +2492,14 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
             call = k2.seq_call(floors, deep_diffs, j, looks)
         else:
             call = seq_call(floors, j, looks)
+        smoke_crash = None
+        if j == 0 and call["action"] == "continue":  # D64: no floor verdict at the smoke look, but a crashing candidate is an engineering fault
+            smoke_crash = keep_v2_module().crash_guard(cand_rows, base_rows)  # the verdict's own crash guard, asked on the smoke seeds
+            if not smoke_crash["holds"]:
+                call = {**call, "action": "refuse",
+                        "reason": (f"smoke block: the candidate crashed or lost {smoke_crash['cand']} of {smoke_crash['n']} seeds against the incumbent's "
+                                   f"{smoke_crash['base']} (more than {smoke_crash['slack']:g} extra is the crash guard's limit): an engineering fault, "
+                                   "not a learning verdict")}
         fut = None
         if futility is not None and call["action"] == "continue" and n >= futility:  # the refusals and the early promotion come first
             fut = futility_check(floors, deep_diffs, len(seeds), v2=v2, measure=frontier_name)
@@ -2462,6 +2509,10 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
                 call = {**call, "action": "futility", "reason": f"{futility_rule(n)}: {fut['text']}"}
         log.append({k: call[k] for k in ("look", "n", "mean", "se", "z", "upper99", "lower99", "action", "reason")
                     + (("deep_mean", "deep_se", "deep_z", "deep_upper95", "routes") if v2 else ())})
+        if "smoke_would_refuse" in call:
+            log[-1]["smoke_would_refuse"] = call["smoke_would_refuse"]
+        if smoke_crash is not None:
+            log[-1]["crash"] = smoke_crash
         if fut is not None:
             log[-1]["futility"] = {"futile": fut["futile"], "routes": fut["routes"]}
         stop = {"n": n, "look": j + 1, "action": call["action"], "reason": call["reason"]}

@@ -380,21 +380,29 @@ class HumanLegTests(unittest.TestCase):
 
 
 class KeepPathTests(unittest.TestCase):
-    """`vrun_keep_passed` reads the ranking block; a fit is kept, carried or set aside by it."""
+    """`ranking_ok` reads the ranking block for the record; since D64 `vrun_keep_passed` reads the export alone."""
 
     def test_the_keep_test_reads_the_ranking_block(self):
         with tempfile.TemporaryDirectory() as d:
             cand = Path(d)
             (cand / "run_value.npz").write_bytes(b"x")
             ok = {"all_computable_pass": True}
-            self.assertTrue(gen_loop.vrun_keep_passed(ok, cand))  # a record from before D49 is not judged on it
-            self.assertTrue(gen_loop.vrun_keep_passed({**ok, "ranking": {"status": "ok", "pass": True}}, cand))
-            self.assertFalse(gen_loop.vrun_keep_passed({**ok, "ranking": {"status": "ok", "pass": False}}, cand))
-            self.assertFalse(gen_loop.vrun_keep_passed({**ok, "ranking": {"status": "not_run", "pass": False}}, cand))
-            self.assertFalse(gen_loop.vrun_keep_passed({**ok, "ranking": {"status": "ok"}}, cand))  # no verdict is not a pass
-            self.assertFalse(gen_loop.vrun_keep_passed({"all_computable_pass": False, "ranking": {"pass": True}}, cand))
-            self.assertTrue(gen_loop.vrun_keep_passed({**ok, "ranking": ranking.no_incumbent()}, cand))
-            self.assertEqual(gen_loop.macro_for({**ok, "ranking": {"pass": False}}, cand, enabled=True), "rules")
+            self.assertTrue(gen_loop.ranking_ok(ok))  # a record from before D49 is not judged on it
+            self.assertTrue(gen_loop.ranking_ok({**ok, "ranking": {"status": "ok", "pass": True}}))
+            self.assertFalse(gen_loop.ranking_ok({**ok, "ranking": {"status": "ok", "pass": False}}))
+            self.assertFalse(gen_loop.ranking_ok({**ok, "ranking": {"status": "not_run", "pass": False}}))
+            self.assertFalse(gen_loop.ranking_ok({**ok, "ranking": {"status": "ok"}}))  # no verdict is not a pass
+            self.assertTrue(gen_loop.ranking_ok({**ok, "ranking": ranking.no_incumbent()}))
+            # D64: the block is recorded and the export decides, whatever the block says
+            for keep in (ok, {**ok, "ranking": {"status": "ok", "pass": False}}, {**ok, "ranking": {"status": "not_run", "pass": False}},
+                         {"all_computable_pass": False, "ranking": {"pass": True}}):
+                self.assertTrue(gen_loop.vrun_keep_passed(keep, cand))
+            self.assertEqual(gen_loop.macro_for({**ok, "ranking": {"pass": False}}, cand, enabled=True), "vrun")
+            marked = gen_loop.keep_advisory({"all_computable_pass": True, "ranking": {"status": "ok", "pass": False}})
+            self.assertEqual((marked["advisory"], marked["gated_on"], marked["old_rule_passed"]), (True, ["export"], False))
+            self.assertIs(gen_loop.keep_advisory({**ok, "ranking": {"status": "ok", "pass": True}})["old_rule_passed"], True)
+            (cand / "run_value.npz").unlink()
+            self.assertFalse(gen_loop.vrun_keep_passed(ok, cand))  # nothing to keep without the export
 
     def test_a_check_that_cannot_run_is_a_failing_block_with_its_reason(self):
         with tempfile.TemporaryDirectory() as d:

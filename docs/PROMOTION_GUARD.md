@@ -222,7 +222,8 @@ candidate whose floor gain is real but which ranks options badly in a way the E-
 
 ### 6.2 The ranking check (`rl/run_train/ranking.py`, D49): a value head that forecasts well and chooses badly
 
-Refuses a V_run fit, at fit time and before any E-block is played, when it fails the keep test (`gen_loop.vrun_keep_passed`):
+*Since D64 (6.4) this check and the D33 conditions are computed and recorded, and gate nothing; what follows is the rule as it stood when it
+refused.* Refused a V_run fit, at fit time and before any E-block is played, when it fails the keep test (`gen_loop.vrun_keep_passed`):
 the D33 conditions on out-of-fold outcome forecasts (unchanged) and now also the ranking check. The fit is not kept and the
 candidate does not take the V_run macro; it is to be refit, not run through an E-block. The check compares the candidate
 head against the incumbent's on the same states, a fixed set of 11,000 decisions from the finished generation-9 self-play
@@ -254,7 +255,8 @@ generation 10's -1.4 head passes it).
 
 ### 6.3 The funnel (`gen_loop.seq_call`, `funnel`, `promote(sequential=True)`, D51): a block that has already decided
 
-Does not add a reason to refuse a candidate on the full block; it ends the block early, either way, when the seeds
+*Since D64 (6.4) the smoke look refuses nothing on the floor difference (it records `smoke_would_refuse`) and still refuses a crashing candidate;
+the later looks are as described.* Does not add a reason to refuse a candidate on the full block; it ends the block early, either way, when the seeds
 played already decide it. The E-block is played in looks at 200 (the smoke block), 500, 800, 1,100, 1,400, 1,700 and
 2,000 paired seeds (the block's own first seeds in file order, both arms to each look, resumed into the same arm folders).
 At a look before the last it:
@@ -302,3 +304,20 @@ real-game runs the night after); the mean of a block that stopped on a bound is 
 rates hold). Cost: each look restarts the prior server and the pool (14 starts for 7 looks and 2 arms), and a hung run waits
 out its 600 s per look. Not verified: a live block (the emulator path through `run_arm(resume=True)` is tested with a
 stand-in `run_block` and the real pool on fake tasks).
+
+
+### 6.4 D64 (2026-11-16): the fit's checks and the smoke block are recorded, not gating
+
+Owner, on the heal-rate check: "I think this is a dumb rule and doesn't make sense hard coding this rule in", then "get rid of judges first
+look, rest rate limit, human agreement, Predicts at all". From D64 five hard-coded gates are diagnostics: **predicts at all** (the D33 out-of-fold
+Brier skill, `all_computable_pass`), the **rest-rate limit**, the **heal-rate limit** and the **human agreement** of the ranking check (6.2), and the
+funnel's **smoke block** (6.3) on the paired floor difference. A V_run fit is `kept` when its export (`run_value.npz`) exists
+(`gen_loop.vrun_keep_passed`) and plays the `vrun` macro; `build-vrun`, `build --vrun-fit`, `read_vrun_fit` and the round chain carry any fit that
+exported, and `--without-human-leg` is accepted and does nothing. The keep record still computes every check and writes each check's `pass` as
+before, and now says `advisory: true`, `gated_on: ["export"]` and `old_rule_passed` (what D33 and the ranking check would have decided), so a memo
+reads them; `agent.json`'s `vrun_fit` carries the ranking summary and `d33_pass`. The smoke block (200 pairs) still plays and records its figures;
+each look carries `smoke_would_refuse` (the old rule's reading) and no look-one refusal is made on the floor: a candidate the old rule refused at 200
+seeds now meets the next look's 99% upper bound (500 seeds: -5.9 floors stops there, -1.44 about there). It still refuses a candidate that crashes
+or loses more seeds than the incumbent's plus max(2, 0.25% of the seeds) (the verdict's own crash guard, asked on the smoke seeds, `crash` in the look): an engineering fault, not a
+learning verdict. What decides a candidate is the export, then the judge's verdict on the E-block (the keep test, its looks after the first and
+its futility stops), all unchanged.

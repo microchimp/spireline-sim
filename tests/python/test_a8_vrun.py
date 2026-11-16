@@ -200,7 +200,7 @@ class CrossFitFitTests(unittest.TestCase):
 
 
 class SeedFitTests(unittest.TestCase):
-    """D33: the first vrun candidate ships with the A/B's fit; a later fit replaces it only when it passes the keep test."""
+    """D33, D64: the first vrun candidate ships with the A/B's fit; a later fit replaces it when it exported (its keep record is advisory)."""
 
     @classmethod
     def setUpClass(cls):
@@ -226,8 +226,8 @@ class SeedFitTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def train(self, new_passes: bool, seed, env=None, ranking_passes: bool = True):
-        """train_generation with the V fit stubbed: it writes run_value.npz (b"NEWFIT") and a keep record that passes or fails."""
+    def train(self, new_passes: bool, seed, env=None, ranking_passes: bool = True, exports: bool = True):
+        """train_generation with the V fit stubbed: it writes run_value.npz (b"NEWFIT", unless `exports` is False) and a keep record that passes or fails."""
         type(self).count += 1
         head = {"positives": 40, "positive_runs": 40, "rows": 900, "pass": new_passes,
                 "brier_skill_vs_base_rate": {"value": 0.04 if new_passes else -0.01, "ci": [0.01, 0.07] if new_passes else [-0.03, 0.01],
@@ -236,8 +236,9 @@ class SeedFitTests(unittest.TestCase):
                 "log_loss_vs_base_rate": {"pass": True}, "ece_bins_ge_30_positives": {"pass": True}}
 
         def fake_fit(paths, out, **kw):
-            Path(out, "run_value.npz").write_bytes(b"NEWFIT")
-            Path(out, "run_value.pt").write_bytes(b"PT")
+            if exports:
+                Path(out, "run_value.npz").write_bytes(b"NEWFIT")
+                Path(out, "run_value.pt").write_bytes(b"PT")
             return {"wall_min": 0.0, "cpu_min": 0.0, "fight": None, "config": None, "value": {
                 "runs": 12, "duplicates_dropped": 0, "keep": {"all_computable_pass": new_passes, "heads": {"act1_boss_kill": head}}}}
 
@@ -248,18 +249,25 @@ class SeedFitTests(unittest.TestCase):
                                              ranking_check=lambda *a, **k: {"status": "ok", "pass": ranking_passes, "set": {"digest": "d"},
                                                                             "checks": [{"name": "heal_rate", "pass": ranking_passes}]})
 
-    def test_a_failing_new_fit_keeps_the_seed_fit_and_a_passing_one_replaces_it(self):
-        failing = self.train(False, self.seed)
-        self.assertEqual((failing / "run_value.npz").read_bytes(), b"SEEDFIT")
-        self.assertEqual((failing / "rejected-fit" / "run_value.npz").read_bytes(), b"NEWFIT")
+    def test_a_new_fit_that_exported_replaces_the_seed_fit_whatever_its_d33_record_says_and_the_seed_stays_for_a_fit_with_no_export(self):
+        failing = self.train(False, self.seed)  # D33's interval straddles zero: recorded, not gating (D64)
+        self.assertEqual((failing / "run_value.npz").read_bytes(), b"NEWFIT")
+        self.assertFalse((failing / "rejected-fit").exists())
         t = json.loads((failing / "train.json").read_text())
-        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["kept"], t["vrun_keep"]["macro_switch"]["carried"]), ("seed", True, "seed"))
-        self.assertEqual(t["vrun_fit"]["sha256"], gen_loop.file_sha256(self.seed))
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["kept"], t["vrun_keep"]["macro_switch"]["carried"]), ("new", True, "new"))
+        self.assertEqual(t["vrun_fit"]["sha256"], gen_loop.file_sha256(failing / "run_value.npz"))
         self.assertEqual(t["vrun_fit"]["seed"]["record"], {"recipe_out_of_fold": {"value": 0.044}})
         self.assertEqual(t["vrun_fit"]["new_fit_oof"]["brier_skill_vs_base_rate"]["ci"], [-0.03, 0.01])
+        self.assertIs(t["vrun_keep"]["all_computable_pass"], False)  # the verdict is in the record ...
+        self.assertEqual((t["vrun_keep"]["advisory"], t["vrun_keep"]["gated_on"]), (True, ["export"]))  # ... and says it gates nothing
         meta = json.loads((failing / "agent.json").read_text())
-        self.assertEqual((meta["macro"], meta["vrun_fit"]["source"]), ("vrun", "seed"))
+        self.assertEqual((meta["macro"], meta["vrun_fit"]["source"]), ("vrun", "new"))
         self.assertEqual(gen_loop.load_agent(failing).macro, "vrun")
+        no_export = self.train(True, self.seed, exports=False)  # a fit that made no export: the seed fit takes its place
+        self.assertEqual((no_export / "run_value.npz").read_bytes(), b"SEEDFIT")
+        t = json.loads((no_export / "train.json").read_text())
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["new_fit_passed_keep"]), ("seed", False))
+        self.assertEqual(json.loads((no_export / "agent.json").read_text())["macro"], "vrun")
         passing = self.train(True, self.seed)
         self.assertEqual((passing / "run_value.npz").read_bytes(), b"NEWFIT")
         self.assertFalse((passing / "rejected-fit").exists())
@@ -268,18 +276,22 @@ class SeedFitTests(unittest.TestCase):
         self.assertEqual(t["vrun_fit"]["new_fit_oof"]["brier_skill_vs_base_rate"]["ci"], [0.01, 0.07])
         self.assertEqual(json.loads((passing / "agent.json").read_text())["macro"], "vrun")
 
-    def test_a_new_fit_that_passes_the_keep_test_but_not_the_ranking_check_keeps_the_seed_fit(self):
-        ranked = self.train(True, self.seed, ranking_passes=False)  # D47, D49
-        self.assertEqual((ranked / "run_value.npz").read_bytes(), b"SEEDFIT")
-        self.assertEqual((ranked / "rejected-fit" / "run_value.npz").read_bytes(), b"NEWFIT")
+    def test_a_new_fit_whose_ranking_check_failed_is_carried_and_the_failure_is_recorded(self):
+        ranked = self.train(True, self.seed, ranking_passes=False)  # D47, D49: advisory since D64
+        self.assertEqual((ranked / "run_value.npz").read_bytes(), b"NEWFIT")
+        self.assertFalse((ranked / "rejected-fit").exists())
         t = json.loads((ranked / "train.json").read_text())
-        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["new_fit_passed_keep"]), ("seed", False))
+        self.assertEqual((t["vrun_fit"]["source"], t["vrun_fit"]["new_fit_passed_keep"]), ("new", True))
         self.assertFalse(t["vrun_keep"]["ranking"]["pass"])
         self.assertTrue(t["vrun_keep"]["all_computable_pass"])
-        self.assertEqual(t["vrun_keep"]["macro_switch"]["passed"], False)
+        self.assertIs(t["vrun_keep"]["old_rule_passed"], False)  # the old rule would have set it aside
+        self.assertEqual(t["vrun_keep"]["macro_switch"]["passed"], True)
 
-    def test_without_a_seed_a_failing_fit_leaves_the_rules_macro_and_the_opt_out_still_wins(self):
-        none = self.train(False, None)
+    def test_without_a_seed_a_fit_with_no_export_leaves_the_rules_macro_and_the_opt_out_still_wins(self):
+        failing = self.train(False, None)  # exported, D33 failed: carried (D64)
+        self.assertEqual(json.loads((failing / "agent.json").read_text())["macro"], "vrun")
+        self.assertEqual(json.loads((failing / "train.json").read_text())["vrun_fit"]["source"], "new")
+        none = self.train(False, None, exports=False)
         self.assertEqual(json.loads((none / "agent.json").read_text())["macro"], "rules")
         self.assertEqual(json.loads((none / "train.json").read_text())["vrun_fit"]["source"], "none")
         opted_out = self.train(True, self.seed, env={gen_loop.MACRO_VRUN_FLAG: "rules"})
@@ -380,7 +392,7 @@ class NewGenerationTests(unittest.TestCase):
                                              export=False, vrun_seed=self.seed, candidate_generation=target)
 
     LINEAGE = {"from_generation": 3, "skips": [4], "decision": "D33 addendum (b)",
-               "difference": "macro vrun with the A/B's V_run fit (D33, 2026-10-25); generation 4's two attempts were rules-macro candidates"}
+               "difference": "macro vrun with its own new V_run fit (D33, 2026-10-25); generation 4's two attempts were rules-macro candidates"}
 
     def test_a_candidate_from_generation_3_shards_is_written_as_generation_5_with_its_lineage(self):
         cand = self.train(5)

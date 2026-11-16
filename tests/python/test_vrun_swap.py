@@ -98,29 +98,31 @@ class VrunSwapTests(unittest.TestCase):
         _, head_b = gen_loop.candidate_identity(b)
         self.assertNotEqual(head_a, head_b)  # a new run head: a new attempt in the ledger, under the incumbent's recipe
 
-    def test_a_fit_that_was_not_kept_is_refused_before_anything_is_written(self):
-        self.record(kept=False, d33=False)
-        with self.assertRaises(ValueError):
+    def test_a_fit_without_its_export_is_refused_before_anything_is_written(self):
+        (self.fit / "run_value.npz").unlink()
+        with self.assertRaisesRegex(ValueError, "no export"):
             self.build()
         self.assertFalse((self.agents / "gen7").exists())
 
-    def test_a_fit_whose_only_missing_check_is_the_human_leg_needs_the_flag_and_says_so(self):
-        self.record(kept=False, ranking=ranking_doc())
-        with self.assertRaisesRegex(ValueError, "keep test"):
-            self.build()
-        self.assertFalse((self.agents / "gen7").exists())
-        meta = json.loads((self.build(without_human_leg=True) / "agent.json").read_text())
+    def test_a_fit_whose_human_leg_did_not_run_builds_without_the_flag_and_says_so(self):
+        self.record(kept=False, ranking=ranking_doc())  # an old record: kept false, the human check "did not run"
+        meta = json.loads((self.build() / "agent.json").read_text())
         self.assertEqual("not run", meta["vrun_fit"]["human_leg"][:7])
         self.assertIn("human leg", meta["note"])
+        flagged = gen_loop.build_vrun_candidate(self.agents / "current.json", self.fit, self.agents, 8, why="test", tag="cheap-w", export=False,
+                                                without_human_leg=True)  # accepted, and the same candidate
+        self.assertEqual(meta["vrun_fit"], json.loads((flagged / "agent.json").read_text())["vrun_fit"])
 
-    def test_the_flag_never_passes_a_fit_that_failed_anything_else(self):
-        for kw in ({"ranking": ranking_doc(heal=False)}, {"ranking": ranking_doc(rest=False)}, {"d33": False, "ranking": ranking_doc()},
-                   {"ranking": ranking_doc(status="not_run")},
-                   {"ranking": ranking_doc(human={"name": "human_agreement_rest", "pass": False, "diff": -0.05, "limit": -0.01})}):
+    def test_no_failing_check_keeps_a_fit_from_building(self):
+        for i, kw in enumerate(({"ranking": ranking_doc(heal=False)}, {"ranking": ranking_doc(rest=False)}, {"d33": False, "ranking": ranking_doc()},
+                                {"ranking": ranking_doc(status="not_run")},
+                                {"ranking": ranking_doc(human={"name": "human_agreement_rest", "pass": False, "diff": -0.05, "limit": -0.01})})):
             self.record(kept=False, **kw)
-            with self.assertRaises(ValueError, msg=str(kw)):
-                self.build(without_human_leg=True)
-        self.assertFalse((self.agents / "gen7").exists())
+            cand = gen_loop.build_vrun_candidate(self.agents / "current.json", self.fit, self.agents, 7 + i, why="test", tag="cheap-" + "abcde"[i], export=False,
+                                                 without_human_leg=bool(i % 2))
+            self.assertTrue((cand / "run_value.npz").is_file(), str(kw))
+            meta = json.loads((cand / "agent.json").read_text())
+            self.assertEqual(meta["vrun_fit"]["gated_on"], ["export"])  # the failures travel in the record, they stop nothing
 
     def test_an_existing_folder_or_a_lower_generation_is_refused(self):
         self.build()
@@ -142,11 +144,8 @@ class VrunSwapTests(unittest.TestCase):
         self.record(kept=False, ranking=ranking_doc())
         argv = ["build-vrun", "--base", str(self.inc), "--vrun-fit", str(self.fit), "--agent-root", str(self.agents), "--candidate-generation", "7",
                 "--tag", "cheap-v", "--why", "test", "--no-export", "--marker-dir", str(self.lab / "train")]
-        with mock.patch("sys.stdout"), self.assertRaises(ValueError):
-            gen0.main(argv)
-        self.assertFalse((self.lab / "train" / "ready-6-g7-cheap-v").exists())
         with mock.patch("sys.stdout"):
-            self.assertEqual(0, gen0.main([*argv, "--without-human-leg"]))
+            self.assertEqual(0, gen0.main(argv))  # D64: no flag needed, the export decides
         marker = self.lab / "train" / "ready-6-g7-cheap-v"
         self.assertTrue(marker.is_file())
         self.assertEqual((7, "cheap-v"), (gen_loop.marker_target(marker), gen_loop.marker_tag(marker)))
@@ -191,13 +190,12 @@ class RankingWithoutHumanLegTests(unittest.TestCase):
         self.assertEqual(self.pool, seen[0]["runs_root"])
         self.assertIsNone(seen[0]["human"])
         self.assertEqual(["A000000001", "A000000002"], sorted(seen[0]["exclude_seeds"]))
-        self.assertFalse(doc["kept"])  # a missing check never keeps the fit ...
-        self.assertFalse(doc["human_leg"])
+        self.assertTrue(doc["kept"])  # D64: a missing check keeps nothing out ...
+        self.assertFalse(doc["human_leg"])  # ... and the record says the leg did not run
         self.assertEqual(0.3, doc["beta"])
         out = Path(self.tmp.name) / "fit"
-        with self.assertRaises(ValueError):
-            gen_loop.read_vrun_fit(out)
-        self.assertEqual(doc, gen_loop.read_vrun_fit(out, without_human_leg=True))  # ... the flag reads it, the human leg alone missing
+        self.assertEqual(doc, gen_loop.read_vrun_fit(out))
+        self.assertEqual(doc, gen_loop.read_vrun_fit(out, without_human_leg=True))  # the flag is accepted and does nothing
 
     def test_by_default_the_check_is_as_before(self):
         doc, seen = self.fit()
@@ -216,7 +214,7 @@ class RankingWithoutHumanLegTests(unittest.TestCase):
         with mock.patch.object(gen_loop, "fit_run_value_matched", side_effect=fake), mock.patch("sys.stdout"):
             rc = gen0.main(["vrun-fit", "--shards-root", str(self.runs), "--prior-sha", OLD, "--incumbent", str(self.incumbent), "--beta", "0.3",
                             "--out", str(Path(self.tmp.name) / "fit"), "--ranking-runs-root", str(self.pool), "--no-human-leg"])
-        self.assertEqual(3, rc)
+        self.assertEqual(3, rc)  # the stub's record says kept false (no export), which the command's exit code reports
         self.assertEqual((self.pool, False, 0.3), (got["ranking_runs_root"], got["human_leg"], got["beta"]))
 
 

@@ -47,7 +47,7 @@ LINEAGE_BLOCKS = 3  # blocks of the promoted lineage pooled for the frontier (an
 CRASH_SLACK = (2, 0.0025)  # the candidate may crash or lose this many seeds more than the incumbent: max(2, 0.25% of the block)
 EARLY_ALPHA = 0.001  # all the alpha early promotions may spend, split over the interim looks and the two routes
 REFUSE_ALPHA = 0.01  # an interim look refuses when the floor's one-sided 99% upper bound is below 0 (route F dead)
-SMOKE_MEAN = -1.0  # the smoke look refuses a floor mean below this when deep_f's mean is not above 0
+SMOKE_MEAN = -1.0  # D64: no longer a refusal; the smoke look records `smoke_would_refuse` for a floor mean below this when deep_f's mean is not above 0
 WIN_GATE = 0.10  # wins join the co-primaries once both arms reach this rate (gen_loop.WIN_GATE)
 WIN_ALPHA = 0.01  # the wins co-primary's alpha (gen_loop.ALPHA)
 BOSSES = ("B1", "B2", "B3a", "win")
@@ -345,7 +345,8 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
     or "final" (the last look: `judge` on all the seeds). With m, s, z the floor differences' mean, SE and z, and d, t, u the deep_f
     differences' mean, SE and z:
 
-      smoke look (j = 0)  refuse when m < -1.0 and d is not above 0, or when m + 1.645 s < -1.0 (no route can pass); never promote.
+      smoke look (j = 0)  never refuses or promotes on these figures (D64); `smoke_would_refuse` records the old rule: m < -1.0 and d is not
+                          above 0, or m + 1.645 s < -1.0 (no route can pass). The funnel (`gen_loop.funnel`) still refuses a crashing candidate here.
       later looks         refuse when route F is dead (m + 2.326 s < 0) and route A is dead (m + 2.326 s < -1.0, or d + 1.645 t < 1.0).
       interim looks       eligible when route F's z reaches z_e with d + 1.645 t >= 0, or route A's u reaches z_e with d >= 1.0 and
                           m - 1.645 s >= -1.0; z_e = `early_z` (3.72 for seven looks).
@@ -361,11 +362,11 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
                            "z_early": z_e, "routes": []}
     if j >= n_looks - 1:
         return {**out, "action": "final", "reason": "every seed played: the keep test on all of them"}
-    if j == 0:
-        if (m < SMOKE_MEAN and not d > 0) or m + z95 * s < -FLOOR_MARGIN:
-            return {**out, "action": "refuse", "reason": f"smoke block: floor mean {m:+.3f} with deep_f mean {d:+.2f} per 100 (below {SMOKE_MEAN:+.1f} "
-                                                         f"and not above 0), or the floor's 95% upper bound {m + z95 * s:+.3f} is below {-FLOOR_MARGIN:+.1f}"}
-        return {**out, "action": "continue", "reason": "smoke block passed"}
+    if j == 0:  # D64: the smoke look refuses nothing on the floor; it records what the old rule would have said
+        would = bool((m < SMOKE_MEAN and not d > 0) or m + z95 * s < -FLOOR_MARGIN)
+        return {**out, "action": "continue", "smoke_would_refuse": would,
+                "reason": "smoke block: the floor refuses nothing (D64); its figures are recorded"
+                          + (f"; the old rule would have refused at floor mean {m:+.3f} with deep_f mean {d:+.2f} per 100" if would else "")}
     f_dead = out["upper99"] < 0
     a_dead = out["upper99"] < -FLOOR_MARGIN or out["deep_upper95"] < MIN_GAIN
     if f_dead and a_dead:
