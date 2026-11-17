@@ -11,6 +11,8 @@ No game and no emulator: stub arms, synthetic options, the stored shards of the 
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import os
@@ -555,7 +557,8 @@ class AttemptCountTests(unittest.TestCase):
         self.assertTrue(gen_loop.block_used_by_another(self.tsv, "E12-2026-11-0A", sha, head, gen_loop.load_agent(l05).macro))
         self.assertTrue(gen_loop.block_used_by_another(self.tsv, "E12-2026-11-0A", sha, head, ""))
 
-    def test_a_recipe_has_its_own_cap_of_two_and_the_closed_line_still_does(self):
+    def test_a_recipe_has_its_own_attempt_count_and_the_closed_line_still_has_its_own(self):
+        """D65 addendum 2: the counts are per recipe as ever, and the old cap of two they were held to is recorded, not gating."""
         imit = blended_stub(self.root, "candidate-imit", math.inf, self.PRIOR_BYTES)
         second = blended_stub(self.root, "candidate-imit-b", math.inf, self.PRIOR_BYTES, head=b"another head")
         third = blended_stub(self.root, "candidate-imit-c", math.inf, self.PRIOR_BYTES, head=b"a third head")
@@ -568,15 +571,23 @@ class AttemptCountTests(unittest.TestCase):
         fresh = self.root / "seeds" / "E12-2026-11-0Z.json"
         fresh.write_text(json.dumps({"seeds": seeds}))
         arms = StubArms(cand_rows, base_rows)
-        with mock.patch.object(gen_loop, "run_arm", arms), self.assertRaisesRegex(ValueError, "already had 2 promotion attempts"):
-            gen_loop.promote(third, None, fresh, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
-        self.assertEqual([], arms.calls)
-        # the plain line is still at its cap, as it was
+        with mock.patch.object(gen_loop, "run_arm", arms):
+            doc = gen_loop.promote(third, None, fresh, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
+        self.assertTrue(arms.calls)  # played: the old cap refused the recipe's third candidate before any seed
+        self.assertEqual((3, True), (doc["review_guard"]["attempt"]["attempt"], doc["review_guard"]["attempt"]["would_refuse"]))
+        self.assertEqual("3", gen_loop.read_promotions(self.tsv)[-1]["attempt"])
+        # the plain line counts on its own: its two refusals make the next plain candidate its third attempt, recorded the same way
         plain = stub_candidate(self.root, "plain", PRIOR_SHA, 12)
         (plain / "agent.json").write_text(json.dumps({"generation": 12, "macro": "vrun"}))
         (plain / "run_value.npz").write_bytes(b"a plain third head")
-        with mock.patch.object(gen_loop, "run_arm", arms), self.assertRaisesRegex(ValueError, "already had 2 promotion attempts"):
-            gen_loop.promote(plain, None, fresh, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
+        seeds2, cand_rows2, base_rows2 = make_block(-4.0, prefix="Y")
+        fresh2 = self.root / "seeds" / "E12-2026-11-0Y.json"
+        fresh2.write_text(json.dumps({"seeds": seeds2}))
+        arms2 = StubArms(cand_rows2, base_rows2)
+        with mock.patch.object(gen_loop, "run_arm", arms2):
+            doc2 = gen_loop.promote(plain, None, fresh2, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
+        self.assertTrue(arms2.calls)
+        self.assertEqual((3, True), (doc2["review_guard"]["attempt"]["attempt"], doc2["review_guard"]["attempt"]["would_refuse"]))
 
     def test_resolve_e_block_gives_each_recipe_a_block_that_no_other_recipe_used(self):
         seeds = self.root / "seeds"
@@ -593,8 +604,8 @@ class AttemptCountTests(unittest.TestCase):
         self.assertNotEqual("E12-2026-11-0A.json", other.name)
 
     def test_the_train_job_counts_the_tagged_candidates_recipe(self):
-        """`gen0.py train` with a tagged marker: the cap check reads the built candidate's recipe, so the two refusals of the closed
-        line do not stop the round, and a recipe at its own cap does."""
+        """`gen0.py train` with a tagged marker: the attempt count reads the built candidate's recipe, so the two refusals of the closed
+        line are not this recipe's, and a recipe with two judged candidates of its own is told so (D65 addendum 2: the round goes on)."""
         agents = self.agents
         imit_dir = agents / "gen12" / "candidate-imit"
         imit_dir.parent.mkdir(parents=True)
@@ -619,10 +630,14 @@ class AttemptCountTests(unittest.TestCase):
         for i in (1, 2):  # the recipe's own two attempts spent
             gen_loop.append_promotion(self.tsv, {"cand_gen": 12, "seed_block": f"E12-x{i}", "cand_sha": PRIOR_SHA, "run_head_sha": f"head{i}",
                                                  "macro": recipe, "decision": "rejected", "attempt": i})
-        with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess") as rp:
+        err = io.StringIO()
+        with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp, \
+                mock.patch.object(gen_loop, "COMMITTED_SEEDS", self.root / "seeds"), contextlib.redirect_stderr(err):
             self.assertEqual(0, gen0.main(args))
-        rp.assert_not_called()
-        self.assertTrue((markers / "done-11-g12-imit").exists())
+        tg.assert_not_called()
+        rp.assert_called_once()  # judged: the recipe's own two attempts are recorded, not gating
+        self.assertIn("already had 2 judged candidates", err.getvalue())
+        self.assertTrue((markers / "ready-11-g12-imit").exists())
 
 
 class MarkerAndPlacementTests(unittest.TestCase):

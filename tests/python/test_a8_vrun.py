@@ -421,9 +421,9 @@ class NewGenerationTests(unittest.TestCase):
 
         rows = [{"cand_gen": "4", "cand_sha": "a", "decision": "rejected"}, {"cand_gen": "4", "cand_sha": "b", "decision": "rejected"}]
         self.assertEqual(gen_loop.attempts_before(rows, 4, "c"), 2)
-        self.assertFalse(pg.retry_cap(gen_loop.attempts_before(rows, 4, "c"))["allowed"])  # generation 4's refusal stands
+        self.assertTrue(pg.retry_cap(gen_loop.attempts_before(rows, 4, "c"))["would_refuse"])  # generation 4 is past the old cap (recorded since D65 addendum 2)
         self.assertEqual(gen_loop.attempts_before(rows, 5, "c"), 0)
-        self.assertTrue(pg.retry_cap(gen_loop.attempts_before(rows, 5, "c"))["allowed"])
+        self.assertTrue(pg.retry_cap(gen_loop.attempts_before(rows, 5, "c"))["within_cap"])
         with tempfile.TemporaryDirectory() as tmp:
             agents = Path(tmp) / "agent"
             agents.mkdir()

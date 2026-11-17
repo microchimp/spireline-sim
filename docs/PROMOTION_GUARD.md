@@ -41,14 +41,21 @@ per-seed outcomes of the two arms on the block:
    the decision, `flagged` in the tsv). *Blocked*, and the promotion refused, when that happens twice in a row. The
    lineage's kills on a block are the promoted candidate's where the block promoted it, else the incumbent's; a block judged
    again (`rejudge`) counts once, by its last row.
-4. **The retry cap.** At most two promotion attempts per generation. The lab grants no third self-play budget (no
-   `ready-<gen>-r2` marker) after a generation's second rejection, `promote` refuses a third candidate before any run is
-   played, and every tsv row records the attempt number. The review's arithmetic: with two attempts per generation the
-   expected false promotions over 20 generations are about 0.4, not 0.2, and without a cap they grow without bound.
+4. **The retry cap (recorded, not gating since D65 addendum 2).** The review proposed at most two promotion attempts per generation
+   (the attempt being the distinct candidates of the generation under one recipe in `promotions.tsv`), refusing a third before any run was played
+   and granting no third self-play budget (no `ready-<gen>-r2` marker). On 2026-11-17 the owner said "Lift the cap": the attempt number and the old
+   cap of two (`promotion_guard.ATTEMPT_CAP`) are still computed and written, but no path refuses a candidate, a training round, a built candidate or
+   a marker for being the third attempt or later, the pattern of D64 (6.4). The decision keeps `checks["attempt"]` at the value the old cap gave
+   (false for attempt 3 and later) and adds `attempt_advisory: true`; `promote` ignores that check (`promotion_guard.checks_hold`, and the loop's
+   own copy, `gen_loop.checks_hold`); the verdict's attempt block carries `within_cap`, `would_refuse` (what the old cap said), `allowed: true`,
+   `blocks: false` and `advisory: true`; the row's `attempt` column and `guard` cell show "attempt 3/2 (over the old cap: recorded, gates nothing)".
+   `train` and `promote` print one line when a round goes on past it. What it cost: the review's arithmetic put the expected false promotions over
+   20 generations at about 0.4 with two attempts and growing without a cap, so the false-promotion budget now rests on each candidate's own
+   judgement (its looks, its stops and the other guards), with the number of attempts in the record for a reader to weigh.
 
 The decision with the flag on: promote when the primary (and the co-primaries, where active) pass and no guard blocks:
-the kill guard does not fire, the damage guard does not fire, the drift check is not blocked, and the attempt is within
-the cap. The verdict and every number it used go into the candidate's `promotion.json` under `review_guard`, and three
+the kill guard does not fire, the damage guard does not fire, and the drift check is not blocked (the attempt number is recorded
+and decides nothing: item 4). The verdict and every number it used go into the candidate's `promotion.json` under `review_guard`, and three
 columns join `promotions.tsv`: `attempt`, `drift` (clear / flagged / blocked / skipped; empty while the flag is off) and
 `guard` (one line: each part's verdict and its key number; `off` while the flag is off). The decision's `rule` reads
 `D24+review-2026-10-24-4.3` instead of `D24`.
@@ -132,9 +139,9 @@ either of two ways, and it is **off** unless set to `1`, `on`, `true` or `yes`:
   variable switches the decision, the tsv columns and the retry cap together.
 - **`--review-guard`** on `python rl/gen0.py train --promote ...`, `promote`, `rejudge` and `emu` (the `train` and `selfplay`
   jobs' commands in `LAB/jobs.json` carry it). The explicit switch wins over the variable; without it the variable decides.
-  Both halves of the retry cap must read it the same way: `emu` (through `mark_ready`) issues no `ready-<gen>-r<n>` marker
-  past the cap, and `train` stops before it trains (rc 0, marker renamed `done-...`, one line) when the candidate generation
-  already had `ATTEMPT_CAP` judged candidates in `promotions.tsv`, since `promote` would refuse the round after the training.
+  The retry cap no longer limits anything (D65 addendum 2, item 4 above): `emu` (through `mark_ready`) issues a `ready-<gen>-r<n>` marker
+  whenever the generation's earlier candidate was rejected and its runs reach the next budget, and `train` goes on with a note on stderr when the
+  candidate generation already had `ATTEMPT_CAP` judged candidates in `promotions.tsv`.
 
 Flip it between generations, never while a block is being judged (the review: rule changes apply from the next block).
 Flip it back by unsetting the variable and dropping the switch; nothing else changes, and the tsv rows written while it
@@ -204,7 +211,7 @@ Refuses, on a finished paired block of the E-block's seeds, any of: the floor pr
 one-sided 0.01); the boss-kill co-primary not met where both arms kill the Act-1 boss in 10% or more of runs; the
 boss-kill not-worse guard firing (exact McNemar, one-sided 0.05, `c > b`); the boss-damage paired guard firing (one-sided
 0.05, the upper bound of candidate minus incumbent below 0); the drift check blocked (twice in a row below the lineage's
-pooled kill rate); a third attempt for the generation (the cap is two, counted as the distinct candidates of the
+pooled kill rate); a third attempt for the generation (until D65 addendum 2 the cap was two, now recorded and not gating; the attempt is the distinct candidates of the
 generation in `promotions.tsv`: a candidate is its combat prior's sha and its run head's sha, columns `cand_sha` and
 `run_head_sha`; a row from before the second column reads as its prior alone, so no old row is rewritten. Generation 12's second
 attempt keeps generation 11's fight player and changes the head: by the prior alone it read as attempt 1 on attempt 1's refused block).

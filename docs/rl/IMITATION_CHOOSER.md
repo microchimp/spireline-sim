@@ -50,7 +50,7 @@ The blended macro takes, on the deck decisions the prior was fitted on,
   **Attempts are counted per recipe:** `attempts_before(rows, gen, sha, head, recipe)` counts the distinct (fight player, run head) pairs of
   the generation judged under the same recipe; `block_used_by_another` and `resolve_e_block` take the recipe too, so two recipes of one
   generation number never share a block. Generation 12's closed self-play line (two refusals, recipe "") does not count against the
-  imitation line; a lambda or a prior of its own is a recipe of its own with its own cap of two (the review guard's `ATTEMPT_CAP`).
+  imitation line; a lambda or a prior of its own is a recipe of its own with its own count of attempts (the review guard's `ATTEMPT_CAP` of two, recorded and not gating since D65 addendum 2).
 * Tagged candidates: `gen<N>/candidate-<tag>` (the tag starts with three letters, lowercase words joined by hyphens, never beside
   `--attempt`) and the marker `ready-<base>-g<N>-<tag>` (`done-...` once consumed). `gen0.py train` reads the built candidate's recipe for the cap check
   before it asks `promote` to judge it as it is.

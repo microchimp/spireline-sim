@@ -808,14 +808,10 @@ def train_cmd(a: argparse.Namespace) -> int:
     recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
     spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe,
                                     keep_rule=gen_loop.keep_rule_of(getattr(a, "keep_rule", None)))
-    if spent is not None:  # the review guard's cap: `promote` would refuse this candidate, so nothing is trained (rc 0: a finished round)
-        from tools.lab import jobs  # noqa: PLC0415
-
-        done = jobs.consume_marker(marks[0][1]) if a.marker_dir else None
-        print(f"nothing trained: generation {cand_gen} already had {spent} judged candidates (the review guard caps promotion attempts at "
-              f"{gen_loop.review_guard_module().ATTEMPT_CAP}), so a further candidate could not be judged"
-              + (f"; {marks[0][1].name} renamed {done.name}" if done else ""))
-        return 0
+    if spent is not None:  # D65 addendum 2: the old cap (two candidates a generation) is recorded, not gating; the round goes on
+        print(f"generation {cand_gen} already had {spent} judged candidates (the old review-guard cap of "
+              f"{gen_loop.review_guard_module().ATTEMPT_CAP} is recorded, not gating): the round goes on",
+              file=sys.stderr)
     if (attempt > 1 or tag) and built is None:  # an attempt or tag marker is written by `build`; training would write over the first attempt's folder
         print(f"{marks[0][1].name} names {'tag ' + tag if tag else 'attempt ' + str(attempt)} of generation {cand_gen}, but gen{cand_gen}/"
               f"{gen_loop.candidate_dirname(0, attempt, tag)} is not a built candidate: nothing trained", file=sys.stderr)
@@ -1333,7 +1329,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--lab", help="the lab folder: write LAB/train/ready-<gen> once the generation's self-play budget is spent")
     e.add_argument("--shards-root", help="where the lab's job directories (with shards) are, to count the budget")
     e.add_argument("--budget-runs", type=int, default=2000)
-    e.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)  # the cap on the ready- markers it writes (mark_ready)
+    e.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)  # handed to mark_ready, which no longer caps the ready- markers (D65 addendum 2)
     add_prior_server_flags(e)
     t = sub.add_parser("train", help="train generation N's candidate from the last 3 generations' shards. Since D33 (2026-10-25) a "
                        "candidate whose V_run is kept plays the value-head macro (agent.json macro vrun, no environment variable); "

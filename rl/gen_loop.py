@@ -2082,15 +2082,15 @@ def mark_ready(lab: Path, gen: int, shards_root: Path, budget: int = BUDGET_RUNS
     After a rejection the generation gets another budget: once its candidate was rejected (a rejected row for generation
     gen + 1 in `promotions.tsv`) and the generation's runs reach (markers so far + 1) x budget, `ready-<gen>-r<n>` follows, and
     `train` retrains on the larger window. A promotion moves self-play to the next generation, so no further marker appears.
-    With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable) a generation gets at most
-    `promotion_guard.ATTEMPT_CAP` budgets: no marker after its second rejection.
+    There is no limit on the number of budgets (D65 addendum 2, owner: "Lift the cap"): the review guard's cap of two promotion
+    attempts per generation (`promotion_guard.ATTEMPT_CAP`) used to stop the markers after the second rejection and is now only
+    recorded with each judgement. `review_guard` is accepted for the callers that pass it and changes nothing here.
     """
     d = Path(lab) / "train"
     issued = sum(1 for p in (d.glob("*") if d.is_dir() else []) if (m := _MARKER.fullmatch(p.name)) and int(m[2]) == gen)
     if issued and rejections(tsv, gen + 1) < issued:
         return None
-    if issued and review_guard_on(review_guard) and issued >= review_guard_module().ATTEMPT_CAP:
-        return None  # the review guard's cap: no third promotion attempt (budget) for this generation
+    del review_guard  # the old cap's switch: nothing is refused for the attempt number any more
     if runs_in_generation(shards_root, gen) < budget * (issued + 1):
         return None
     d.mkdir(parents=True, exist_ok=True)
@@ -2267,11 +2267,11 @@ def attempts_before(rows: list[dict[str, str]], cand_gen: int, cand_sha: str, he
 
 
 def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = None, recipe: str = "", keep_rule: str = "v1") -> int | None:
-    """With the review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; the keep rule v2 has the cap in it, so it is
-    on whatever the flag says) and `cand_gen` already judged at the
-    guard's cap (distinct candidates in `promotions.tsv` by prior sha and run head sha, `attempts_before` with no sha): that count, the number `promote` would
-    refuse a further candidate at. None otherwise (guard off, or attempts left). `train` asks before it trains, so a round that
-    could not be judged costs no training."""
+    """Where the old cap would have stopped a round (D65 addendum 2: recorded, not gating; nothing asks this to refuse any more). With the
+    review guard on (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; the keep rule v2 carried the cap, so it counted whatever
+    the flag said) and `cand_gen` already judged at the old cap (distinct candidates in `promotions.tsv` by prior sha and run head sha,
+    `attempts_before` with no sha): that count, the number the old cap refused a further candidate at. None otherwise (guard off, or
+    attempts left). `train` still asks, to say in one line that the round goes on past it."""
     if keep_rule != "v2" and not review_guard_on(review_guard):
         return None
     n = attempts_before(read_promotions(tsv), cand_gen, "", recipe=recipe)
@@ -2287,15 +2287,16 @@ def review_guard_verdict(cand_rows: list[dict], base_rows: list[dict], rows: lis
                          block: str, boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "", recipe: str = "") -> dict[str, Any]:
     """The review's guard (promotion_guard.judge) on two arms, with the lineage, the drift history and the attempt count
     from the promotions.tsv rows written before this judgement (`rows`; this block's own rows do not count as lineage).
-    With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap but allowed."""
+    The attempt is recorded against the old cap (D65 addendum 2) and refuses nothing. With `apply_cap` false (`rejudge`: a re-read is not
+    a new attempt) the attempt is reported against the cap as within it, as before."""
     pg = review_guard_module()
     kills_c, kills_b, dmg_c, dmg_b = pg.from_rows(cand_rows, base_rows, kill=boss_kill)
     history = [r for r in rows if r.get("seed_block") != block]
     prior = attempts_before(rows, cand_gen, cand_sha, head_sha, recipe)
-    cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
+    cap = pg.ATTEMPT_CAP if apply_cap else max(pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed would not have refused it
     verdict = pg.judge(kills_c, kills_b, dmg_c, dmg_b, lineage=lineage_blocks(history), previous_flagged=previous_drift_flagged(history),
                        prior_attempts=prior, cap=cap, boot=boot)
-    verdict["attempt"]["cap"] = pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), allowed or not
+    verdict["attempt"]["cap"] = pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), within it or not
     return verdict
 
 
@@ -2303,16 +2304,17 @@ def decide_review(floor: dict, boss: dict, wins: dict, cand_win_rate: float, bas
                   alpha: float = ALPHA) -> dict[str, Any]:
     """D24 with the review's guard (docs/PROMOTION_GUARD.md): the floor primary and the 10% co-primary clauses as `decide`;
     in guard mode the boss kill is the review's McNemar guard at its own alpha (0.05); the boss-damage guard, the drift
-    check's block and the attempt cap are further not-worse checks. A flagged (not blocked) drift sets `review`."""
+    check's block are further not-worse checks. The attempt cap is recorded as a check (`checks["attempt"]`, what the old cap said) and
+    gates nothing (`attempt_advisory`; D65 addendum 2). A flagged (not blocked) drift sets `review`."""
     d = decide(floor, boss, wins, cand_win_rate, base_win_rate, alpha)
     checks = dict(d["checks"])
     if d["boss_kill_mode"] == "guard":
         checks["boss_kill"] = not guard["kill"]["fires"]
     checks["boss_damage"] = not guard["damage"]["fires"]
     checks["drift"] = not guard["drift"]["blocks"]
-    checks["attempt"] = bool(guard["attempt"]["allowed"])
-    return {**d, "checks": checks, "promote": all(checks.values()), "rule": "D24+" + guard["rule"], "guard_alpha": guard["alpha"],
-            "review": bool(guard["review"])}
+    checks["attempt"] = bool(guard["attempt"]["within_cap"])
+    return {**d, "checks": checks, "promote": checks_hold(checks), "rule": "D24+" + guard["rule"], "guard_alpha": guard["alpha"],
+            "attempt_advisory": True, "review": bool(guard["review"])}
 
 
 def incumbent_frontier(agent_root: Path | str, rows: list[dict[str, str]], config: str = "a3-v1", *, block: str | None = None,
@@ -2352,24 +2354,24 @@ def keep_v2_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dic
                     recipe: str = "") -> dict[str, Any]:
     """The keep test v2 (`keep_v2.judge`) on two arms at the frontier `frontier_info` (`incumbent_frontier`), with the lineage, the drift
     history and the attempt count from the promotions.tsv `rows` written before this judgement (this block's own rows do not count),
-    exactly as `review_guard_verdict` reads them. With `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is
-    reported against the cap but allowed."""
+    exactly as `review_guard_verdict` reads them. The attempt is recorded against the old cap and refuses nothing (D65 addendum 2). With
+    `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap as within it, as before."""
     k2 = keep_v2_module()
     history = [r for r in rows if r.get("seed_block") != block]
     prior = attempts_before(rows, cand_gen, cand_sha, head_sha, recipe)
-    cap = k2.pg.ATTEMPT_CAP if apply_cap else max(k2.pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed blocks nothing
+    cap = k2.pg.ATTEMPT_CAP if apply_cap else max(k2.pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed would not have refused it
     verdict = k2.judge(cand_rows, base_rows, frontier=int(frontier_info["index"]), frontier_info=frontier_info, lineage=lineage_blocks(history),
                        previous_flagged=previous_drift_flagged(history), prior_attempts=prior, cap=cap, boot=boot)
-    verdict["attempt"]["cap"] = k2.pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), allowed or not
+    verdict["attempt"]["cap"] = k2.pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), within it or not
     return verdict
 
 
 def decide_v2(keep: dict[str, Any]) -> dict[str, Any]:
-    """The decision of the keep test v2 as `compare_arms` carries it: `keep_v2.judge`'s checks (a route holds, wins, crash, drift,
-    attempt) under the rule's name. The Act 1 kill, Act 1 damage and D24's Act 1 boss co-primary are not checks here (`act1_review`
+    """The decision of the keep test v2 as `compare_arms` carries it: `keep_v2.judge`'s checks (a route holds, wins, crash, drift, and the
+    attempt, recorded and advisory: `attempt_advisory`) under the rule's name. The Act 1 kill, Act 1 damage and D24's Act 1 boss co-primary are not checks here (`act1_review`
     reports them)."""
     return {"checks": dict(keep["checks"]), "wins_co_primary": bool(keep["wins"]["active"]), "promote": bool(keep["promote"]),
-            "alpha": keep["alpha"], "rule": keep["rule"], "route": keep["route"], "frontier": keep["frontier"]["name"],
+            "attempt_advisory": bool(keep.get("attempt_advisory", True)), "alpha": keep["alpha"], "rule": keep["rule"], "route": keep["route"], "frontier": keep["frontier"]["name"],
             "review": bool(keep["review"])}
 
 
@@ -2421,6 +2423,24 @@ SEQ_RULE = "D51-funnel"
 FUTILITY_MIN_SEEDS = 500  # the futility stop (D55 addendum 18) looks from this many paired seeds on (1,000 in its first landing); `--futility-min-seeds`, round1_config `futility`
 SCREEN_ON = True  # the cheap screens before the arms (rl/screens.py); `--no-screen` switches them off
 FUTILITY_ON = True  # ... and is on unless `--no-futility` / `futility.enabled` false
+ADVISORY_CHECKS = ("attempt",)  # as promotion_guard.ADVISORY_CHECKS (tested equal): checks recorded with their value that decide nothing (D65 addendum 2)
+
+
+def gating_checks(checks: dict[str, bool]) -> dict[str, bool]:
+    """A decision's checks without the advisory ones."""
+    return {k: bool(v) for k, v in checks.items() if k not in ADVISORY_CHECKS}
+
+
+def checks_hold(checks: dict[str, bool]) -> bool:
+    """Whether every gating check of a decision holds (the advisory attempt check keeps its value in the record and is not asked)."""
+    return all(gating_checks(checks).values())
+
+
+def failed_checks(checks: dict[str, bool]) -> list[str]:
+    """The gating checks of a decision that do not hold."""
+    return [k for k, v in gating_checks(checks).items() if not v]
+
+
 STOP_FAILS = ("refuse", "futility")  # the stops of a block that did not promote: the decision's `sequential` check is false for both
 
 
@@ -2483,8 +2503,8 @@ def seq_call(diffs: Sequence[float], j: int, looks: Sequence[int], *, alpha_refu
 
     Promote early (looks 2 to L-1; the smoke block never promotes): z >= z_e = Phi^-1(1 - 0.001 / (L - 2)), 3.54 for the seven
     looks (the one-sided 99.98% lower bound of the mean above 0), and today's decision on the seeds played says promote
-    (the floor's bootstrap bound at alpha 0.01, the boss-kill and boss-damage guards, the drift check, the attempt cap) and the
-    drift check is not flagged. Otherwise play on. At the last look the decision is today's, unchanged, on all N seeds.
+    (the floor's bootstrap bound at alpha 0.01, the boss-kill and boss-damage guards, the drift check; the attempt cap is recorded only) and
+    the drift check is not flagged. Otherwise play on. At the last look the decision is today's, unchanged, on all N seeds.
 
     Error rates. (The table was re-run for D64, when the smoke look stopped refusing; the figures are `test_funnel.py` ErrorRateTests'
     own model, 300,000 paths a row.) Promotion happens at the last look by today's test (one-sided alpha 0.01), or earlier by crossing z_e.
@@ -2611,7 +2631,7 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
                 stop["action"] = "promote"
                 stop["reason"] += "; every check holds on the seeds played"
             else:
-                held = ([k for k, v in d["checks"].items() if not v] + (["drift flagged"] if flagged else [])
+                held = (failed_checks(d["checks"]) + (["drift flagged"] if flagged else [])
                         + ([] if route_ok else [f"route {''.join(call['routes'])}"]))
                 log[-1]["held"] = held
                 log[-1]["reason"] += f"; played on: {', '.join(held)} did not hold"
@@ -2864,8 +2884,10 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
             futility_min_seeds: int | None = None, screen: bool | None = None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
-    (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s, a third attempt
-    of a generation is refused before any run is played, and the tsv row carries the attempt and the guard's verdict.
+    (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s and the tsv row carries the attempt
+    and the guard's verdict. A third attempt of a generation is played and judged like any other (D65 addendum 2): the old cap of two
+    is recorded in the decision (`checks["attempt"]`, `attempt_advisory`), in the verdict's attempt block and in the row's guard cell, and
+    refuses nothing.
     `server_opts` puts both arms on a prior server each (one policy per server); the default is the CPU path.
 
     With `sequential` (the funnel, D51; see `seq_call` for the rule and its error rates) the block is played in looks: the first
@@ -2913,9 +2935,9 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     rows = read_promotions(tsv)
     guard_on = review_guard_on(review_guard)
     attempt = attempts_before(rows, cand_agent.generation, cand_sha, head_sha, recipe) + 1
-    if (guard_on or v2) and attempt > review_guard_module().ATTEMPT_CAP:
-        raise ValueError(f"generation {cand_agent.generation} already had {attempt - 1} promotion attempts "
-                         f"(the review guard caps them at {review_guard_module().ATTEMPT_CAP}); no block is played")
+    if (guard_on or v2) and attempt > review_guard_module().ATTEMPT_CAP:  # D65 addendum 2: the old cap is recorded, not gating
+        print(f"generation {cand_agent.generation}: attempt {attempt}, over the old cap of {review_guard_module().ATTEMPT_CAP}; "
+              "the cap is recorded and gates nothing, so the block is played", flush=True)
     frontier_info = incumbent_frontier(agent_root, rows, config, block=name) if v2 else None  # fixed before a seed is played
     guard_on = guard_on and not v2  # the keep test v2 carries its own guards
     arm = f"{name}-{config}"
@@ -2959,7 +2981,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if stopped_early:  # the funnel's own check joins the others, so the decision names why the block ended before its last seed
         d = res["decision"]
         d["checks"]["sequential"] = seq["stop"]["action"] not in STOP_FAILS
-        d["promote"] = all(d["checks"].values())
+        d["promote"] = checks_hold(d["checks"])
         d["rule"] = f"{d['rule']}+{SEQ_RULE}" + (f"+{seq['stop']['rule']}" if seq["stop"]["action"] == "futility" else "")
     doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "procs": procs,
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
@@ -3031,7 +3053,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     stop, `sequential` carried over with a note), the decision carries the funnel's own check as `promote` writes it (a refusal
     stays refused: the block ended on it) and the tsv `guard` cell ends with the stop. The earlier promotion.json is kept
     beside the new one; the tsv gets a second row for the same candidate and block. `review_guard` as in `promote` (a re-read is
-    not a new attempt: the attempt number is reported against the cap, never applied here; the other checks decide).
+    not a new attempt: the attempt number is reported against the old cap as within it; the cap gates nothing anyway, the other checks decide).
 
     `keep_rule` as in `promote`: under "v2" the frontier is read from the incumbent's arms on the ledger's rows before this block, and
     the keep test v2 decides (the funnel stop, if any, is carried as above). With `out`, a dry run: the judgement reads the agent folder
@@ -3079,7 +3101,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if stop is not None:  # the funnel's own check joins the others, as `promote` writes it for the same stop
         d = res["decision"]
         d["checks"]["sequential"] = stop["action"] not in STOP_FAILS
-        d["promote"] = all(d["checks"].values())
+        d["promote"] = checks_hold(d["checks"])
         d["rule"] = f"{d['rule']}+{SEQ_RULE}" + (f"+{futility_rule(played)}" if stop["action"] == "futility" else "")
     if before is not None and out is None:  # the earlier record stays beside the new one, under a name not yet taken (a second rejudge of a day)
         stem = f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}"

@@ -113,7 +113,8 @@ class CandidateIdentityTests(unittest.TestCase):
 
     def test_attempt_2_is_judged_as_attempt_2_with_its_own_row_and_the_cap_then_counts_both(self):
         """The whole judgement on a promotions.tsv of the old shape: the row of attempt 2 says attempt 2, names the head, the old row is
-        unchanged, the block of attempt 1 is refused to it, and a third candidate is refused before a seed is played."""
+        unchanged, the block of attempt 1 is refused to it, and a third candidate is played and judged as attempt 3 (D65 addendum 2: the
+        old cap of two is recorded, not gating)."""
         a2 = vrun_stub(self.root, "g12-a2", b"head of attempt two")
         with self.assertRaisesRegex(ValueError, "already judged another candidate"):
             self.promote(a2, "E12-2026-11-02")  # the refused block: not for the second attempt
@@ -128,12 +129,14 @@ class CandidateIdentityTests(unittest.TestCase):
         self.assertEqual(2, gen_loop.attempts_spent(self.tsv, 12, True))  # the cap counts both attempts of the pair
         a3 = vrun_stub(self.root, "g12-a3", b"head of attempt three")
         seeds, cand_rows, base_rows = make_block(-4.0, prefix="Y")
-        fresh = self.root / "seeds" / "E12-2026-11-0Y.json"  # a block no one used: only the cap can refuse it
+        fresh = self.root / "seeds" / "E12-2026-11-0Y.json"  # a block no one used
         fresh.write_text(json.dumps({"seeds": seeds}))
         arms = StubArms(cand_rows, base_rows)
-        with mock.patch.object(gen_loop, "run_arm", arms), self.assertRaisesRegex(ValueError, "already had 2 promotion attempts"):
-            gen_loop.promote(a3, None, fresh, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
-        self.assertEqual([], arms.calls)  # refused before any seed was played
+        with mock.patch.object(gen_loop, "run_arm", arms):
+            doc = gen_loop.promote(a3, None, fresh, agent_root=self.agents, boot=500, review_guard=True, sequential=True)
+        self.assertTrue(arms.calls)  # played: the old cap refused it before any seed
+        self.assertEqual((3, True), (doc["review_guard"]["attempt"]["attempt"], doc["review_guard"]["attempt"]["would_refuse"]))
+        self.assertEqual(["1", "2", "3"], [r["attempt"] for r in gen_loop.read_promotions(self.tsv)])
 
     def test_the_same_pair_judged_again_is_not_a_new_attempt(self):
         a2 = vrun_stub(self.root, "g12-a2", b"head of attempt two")

@@ -288,10 +288,14 @@ class DriftCheckTests(unittest.TestCase):
 
 
 class RetryCapTests(unittest.TestCase):
-    def test_two_attempts_per_generation(self):
-        self.assertEqual(pg.retry_cap(0), {"attempt": 1, "cap": 2, "allowed": True, "blocks": False})
-        self.assertEqual(pg.retry_cap(1), {"attempt": 2, "cap": 2, "allowed": True, "blocks": False})
-        self.assertEqual(pg.retry_cap(2), {"attempt": 3, "cap": 2, "allowed": False, "blocks": True})
+    def test_two_attempts_per_generation_are_counted_and_the_cap_is_recorded_not_gating(self):
+        """D65 addendum 2: the old cap of two is still computed (`within_cap`, `would_refuse`) and refuses nothing (`allowed`, `blocks`)."""
+        self.assertEqual(pg.retry_cap(0), {"attempt": 1, "cap": 2, "within_cap": True, "would_refuse": False, "allowed": True, "blocks": False,
+                                           "advisory": True})
+        self.assertEqual(pg.retry_cap(1), {"attempt": 2, "cap": 2, "within_cap": True, "would_refuse": False, "allowed": True, "blocks": False,
+                                           "advisory": True})
+        self.assertEqual(pg.retry_cap(2), {"attempt": 3, "cap": 2, "within_cap": False, "would_refuse": True, "allowed": True, "blocks": False,
+                                           "advisory": True})
         rows = [{"cand_gen": "2", "cand_sha": "a", "decision": "rejected"}, {"cand_gen": "2", "cand_sha": "a", "decision": "rejected"},
                 {"cand_gen": "2", "cand_sha": "b", "decision": "rejected"}, {"cand_gen": "3", "cand_sha": "z", "decision": "rejected"}]
         self.assertEqual(gen_loop.attempts_before(rows, 2, "c"), 2)  # two other candidates (a judged twice counts once)
@@ -304,7 +308,8 @@ class RetryCapTests(unittest.TestCase):
             sink.add({"seed": f"R{gen}{tag}{i:05d}"[:10], "generation": gen}, None)
         sink.close()
 
-    def test_the_lab_grants_no_third_budget_with_the_guard_on_and_still_does_with_it_off(self):
+    def test_the_lab_grants_a_third_budget_with_the_guard_on_or_off(self):
+        """D65 addendum 2: the old cap no longer stops the markers; a budget still waits for the earlier rejection and for the runs."""
         for on in (False, True):
             with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {pg.FLAG: "1" if on else "0"}):
                 lab, runs, tsv = Path(d) / "lab", Path(d) / "runs", Path(d) / "promotions.tsv"
@@ -314,8 +319,8 @@ class RetryCapTests(unittest.TestCase):
                 self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r1")
                 gen_loop.append_promotion(tsv, {"cand_gen": 2, "decision": "rejected", "seed_block": "E1-r1", "cand_sha": "b"})
                 third = gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv)
-                self.assertEqual(third, None if on else lab / "train" / "ready-1-r2", f"flag on={on}")
-                # the explicit argument wins over the variable
+                self.assertEqual(third, lab / "train" / "ready-1-r2", f"flag on={on}")
+                # the explicit argument changes nothing; a fourth budget needs its own rejection first
                 self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv, review_guard=True), None)
 
 
@@ -444,8 +449,10 @@ class FlagOnTests(PromoteBase):
         self.assertAlmostEqual(g["damage"]["diff_mean"], 0.05)
         self.assertFalse(g["damage"]["fires"])
         self.assertEqual(g["drift"]["verdict"], "skipped")  # no lineage block yet
-        self.assertEqual(g["attempt"], {"attempt": 1, "cap": 2, "allowed": True, "blocks": False})
+        self.assertEqual(g["attempt"], {"attempt": 1, "cap": 2, "within_cap": True, "would_refuse": False, "allowed": True, "blocks": False,
+                                        "advisory": True})
         self.assertEqual(set(doc["decision"]["checks"]), {"floor", "boss_kill", "boss_damage", "drift", "attempt"})
+        self.assertTrue(doc["decision"]["attempt_advisory"])
         self.assertEqual(doc["decision"]["guard_alpha"], 0.05)
         row = gen_loop.read_promotions(self.agents / "promotions.tsv")[0]
         self.assertEqual((row["decision"], row["attempt"], row["drift"]), ("promoted", "1", "skipped"))
@@ -487,19 +494,24 @@ class FlagOnTests(PromoteBase):
         self.assertEqual(gen_loop.read_promotions(tsv)[-1]["drift"], "blocked")
         self.assertFalse((self.agents / "current.json").exists())
 
-    def test_a_third_attempt_is_refused_before_a_run_is_played(self):
+    def test_a_third_attempt_is_played_and_judged_with_the_old_cap_recorded(self):
+        """D65 addendum 2 (was: refused before a run was played). The full set is in test_attempt_cap_advisory.py."""
         tsv = self.agents / "promotions.tsv"
         gen_loop.append_promotion(tsv, {"cand_gen": 5, "seed_block": "Ex", "seeds": 400, "decision": "rejected", "cand_sha": "s1"})
         gen_loop.append_promotion(tsv, {"cand_gen": 5, "seed_block": "Ey", "seeds": 400, "decision": "rejected", "cand_sha": "s2"})
         cand = self.candidate("gen5c", "sha-a")
-        with mock.patch.object(gen_loop, "run_arm", side_effect=AssertionError("must not play")), \
-                self.assertRaisesRegex(ValueError, "already had 2 promotion attempts"):
-            gen_loop.promote(cand, None, self.seed_file, agent_root=self.agents, boot=500)
-        self.assertEqual(len(gen_loop.read_promotions(tsv)), 2)
-        # with the flag off the third attempt is played and judged as before (D24 has no cap)
         cand_rows, base_rows = self.arms(30, 20)
-        doc = self.run_promote(cand, cand_rows, base_rows, review_guard=False)
-        self.assertEqual((doc["decision"]["rule"], gen_loop.read_promotions(tsv)[-1]["attempt"]), ("D24", "3"))
+        doc = self.run_promote(cand, cand_rows, base_rows)  # the flag is on in this class
+        self.assertEqual((doc["decision_text"], doc["review_guard"]["attempt"]["attempt"], doc["review_guard"]["attempt"]["would_refuse"]),
+                         ("promoted", 3, True))
+        self.assertEqual((doc["decision"]["checks"]["attempt"], doc["decision"]["attempt_advisory"]), (False, True))
+        self.assertEqual(len(gen_loop.read_promotions(tsv)), 3)
+        # with the flag off the third attempt is played and judged as before (D24 has no cap)
+        (self.agents / "current.json").unlink()
+        block2, sd2 = self.block("Etest-2")
+        cand_rows, base_rows = self.arms(30, 20, sd=sd2)
+        doc = self.run_promote(self.candidate("gen5d", "sha-b"), cand_rows, base_rows, block2, review_guard=False)
+        self.assertEqual((doc["decision"]["rule"], gen_loop.read_promotions(tsv)[-1]["attempt"]), ("D24", "4"))
 
     def test_rejudge_reads_the_block_under_the_guard_without_counting_an_attempt(self):
         cand = self.candidate("gen5c", "sha-a")
@@ -554,8 +566,8 @@ class FlagOnTests(PromoteBase):
 
 
 class CappedRoundTests(unittest.TestCase):
-    """No training round past the review guard's cap: the issuing half (`emu` -> `mark_ready`) and the training half (`train`)
-    read the same flag, and a stale marker costs seconds, not a training run that `promote` then refuses to judge."""
+    """Rounds past the old review-guard cap (D65 addendum 2: recorded, not gating): the issuing half (`emu` -> `mark_ready`) and the training
+    half (`train`) go on past two judged candidates. The tests were written for the cap (a round stopped at it); they now say it does not."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -600,16 +612,16 @@ class CappedRoundTests(unittest.TestCase):
         return sorted(p.name for p in self.train_dir.iterdir())
 
     # (a) the issuing half: the old behaviour is only the default
-    def test_mark_ready_writes_nothing_past_the_cap_with_the_flag_and_still_writes_without_it(self):
+    def test_mark_ready_writes_the_third_budget_with_the_flag_and_without_it(self):
         lab, runs, tsv = self.root / "lab", self.root / "runs", self.agents / "promotions.tsv"
         (lab / "train").mkdir(parents=True)
         for name in ("done-1", "done-1-r1"):
             (lab / "train" / name).write_text("x")
         self.judged(2, "a", "b")
         with mock.patch.object(gen_loop, "runs_in_generation", return_value=15):  # three budgets of 5 spent: no shards written here
-            self.assertIsNone(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv, review_guard=True))
-            self.assertEqual(sorted(p.name for p in (lab / "train").iterdir()), ["done-1", "done-1-r1"])
-            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r2")  # variable unset: the old default
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv, review_guard=True), lab / "train" / "ready-1-r2")
+            (lab / "train" / "ready-1-r2").unlink()
+            self.assertEqual(gen_loop.mark_ready(lab, 1, runs, budget=5, tsv=tsv), lab / "train" / "ready-1-r2")  # variable unset
         self.assertTrue((lab / "train" / "ready-1-r2").is_file())
 
     # (b) the issuing half's command line
@@ -637,34 +649,33 @@ class CappedRoundTests(unittest.TestCase):
             self.assertEqual(mr.call_args.args[:2], (self.root / "lab", 9))
 
     # (c) the training half refuses a round that could not be judged
-    def test_train_with_the_flag_stops_at_once_when_the_cap_is_reached_and_renames_the_marker(self):
+    def test_train_with_the_flag_goes_on_when_the_old_cap_is_reached_and_leaves_the_marker_to_the_lab(self):
         self.judged(10, "a5801c02", "e9d89ea6")
         rc, calls, out = self.train("--review-guard")
-        self.assertEqual((rc, calls), (0, []))
-        self.assertEqual(self.markers(), ["done-9-r2"])
-        lines = out.strip().splitlines()
-        self.assertEqual(len(lines), 1)
-        self.assertIn("generation 10", lines[0])
-        self.assertIn("2 ", lines[0])
+        self.assertEqual((rc, len(calls)), (0, 1))
+        self.assertEqual(self.markers(), ["ready-9-r2"])
+        self.assertNotIn("nothing trained", out)
+        self.assertIn('"candidate"', out)
 
     def test_the_variable_stands_in_for_the_flag(self):
         self.judged(10, "a", "b")
         os.environ[pg.FLAG] = "1"
         rc, calls, _ = self.train()
-        self.assertEqual((rc, calls, self.markers()), (0, [], ["done-9-r2"]))
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-r2"]))
+        self.assertEqual(gen_loop.attempts_spent(self.agents / "promotions.tsv", 10, None), 2)  # where the old cap stood: still read
 
-    def test_a_marker_naming_its_candidate_generation_counts_that_generation(self):
-        self.judged(5, "a", "b")  # generation 5 is spent; generation 10 (= 9 + 1) is not
+    def test_a_marker_naming_its_candidate_generation_trains_whatever_that_generation_had(self):
+        self.judged(5, "a", "b")  # generation 5 had two judged candidates; generation 10 (= 9 + 1) had none
         rc, calls, _ = self.train("--review-guard", marker="ready-9-g5")
-        self.assertEqual((rc, calls, self.markers()), (0, [], ["done-9-g5"]))
-        (self.train_dir / "done-9-g5").unlink()
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-g5"]))
+        (self.train_dir / "ready-9-g5").unlink()
         rc, calls, _ = self.train("--review-guard", marker="ready-9-g6")  # generation 6 had no attempt
         self.assertEqual((rc, len(calls), self.markers()), (0, 1, ["ready-9-g6"]))
 
-    def test_a_manual_gen_run_stops_too_and_has_no_marker_to_rename(self):
+    def test_a_manual_gen_run_goes_on_too_and_has_no_marker(self):
         self.judged(10, "a", "b")
         rc, calls, _ = self.train("--review-guard", marker=None)
-        self.assertEqual((rc, calls, self.markers()), (0, [], []))
+        self.assertEqual((rc, len(calls), self.markers()), (0, 1, []))
 
     # (d) below the cap the round runs as before
     def test_one_judged_candidate_trains_as_before_and_leaves_the_marker_to_the_lab(self):

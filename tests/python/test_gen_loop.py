@@ -703,18 +703,19 @@ class BuiltCandidateTests(unittest.TestCase):
                 self.assertEqual(0, gen0.main([*args, "--keep-rule", "v1"]))
                 self.assertEqual(rp.call_args[1]["keep_rule"], "v1")
                 tg.assert_not_called()
-            # the cap before training: v2 has it in the rule, so two judged candidates of the generation stop the round without --review-guard
+            # D65 addendum 2: the old cap (v2 carried it in the rule) is recorded, not gating: two judged candidates of the generation
+            # no longer stop the round, with or without --review-guard
             tsv = self.agents / "promotions.tsv"
             for i in range(2):
                 gen_loop.append_promotion(tsv, {"cand_gen": 7, "seed_block": f"E7-{i}", "cand_sha": f"sha-{i}", "decision": "rejected"})
             with mock.patch.object(gen_loop, "train_generation") as tg, mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp:
-                self.assertEqual(0, gen0.main(args))  # v1 without the review guard has no cap: the candidate goes on to be judged
+                self.assertEqual(0, gen0.main(args))  # v1 without the review guard: the candidate goes on to be judged
                 rp.assert_called_once()
                 rp.reset_mock()
-                self.assertEqual(0, gen0.main([*args, "--keep-rule", "v2"]))  # the marker is renamed done-, nothing is judged or trained
-                rp.assert_not_called()
+                self.assertEqual(0, gen0.main([*args, "--keep-rule", "v2"]))  # v2 too: judged, nothing trained
+                rp.assert_called_once()
                 tg.assert_not_called()
-                self.assertTrue((marker_dir / "done-5-g7").exists())
+                self.assertTrue((marker_dir / "ready-5-g7").exists())  # the lab renames it after the job, not the train command
 
     def test_a_judged_built_candidate_is_not_judged_again_or_trained_over(self):
         cand = self.build()

@@ -17,7 +17,8 @@ Two routes, one alpha (0.005 one-sided):
 
 Promote when route A or route F holds and the guards hold: the wins co-primary (once both arms win 10 in 100), the crash guard
 (the candidate's crashed or lost seeds at most the incumbent's plus max(2, 0.25% of the block)), the drift check (the review
-guard's, unchanged) and the attempt cap. The Act 1 kill guard and the damage guards (Act 1 and Act 2 boss) are *reported*
+guard's, unchanged). The attempt cap (two candidates per generation under one recipe) is recorded and gates nothing since D65 addendum 2
+(`checks["attempt"]` keeps the value the cap gave; `attempt_advisory`). The Act 1 kill guard and the damage guards (Act 1 and Act 2 boss) are *reported*
 (`act1_review`) and block nothing; so is D24's Act 1 boss co-primary (the rule's measure is unconditional: an Act 1 death is
 already charged to it).
 
@@ -262,11 +263,12 @@ def wins_clause(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapp
 def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
           frontier_info: Mapping[str, Any] | None = None, lineage: Sequence[tuple[int, int]] = (), previous_flagged: bool = False,
           prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, Any]:
-    """The keep test v2 on one block: both routes, the wins clause, the crash guard, the drift check and the attempt cap, with the
-    Act 1 guards reported. `frontier` is the frontier's index (`frontier_record` for the lineage); `lineage` the promoted lineage's
+    """The keep test v2 on one block: both routes, the wins clause, the crash guard and the drift check, with the Act 1 guards reported and
+    the attempt cap recorded (D65 addendum 2: `checks["attempt"]` is what the old cap said, `attempt_advisory` is true, nothing refuses on
+    it). `frontier` is the frontier's index (`frontier_record` for the lineage); `lineage` the promoted lineage's
     (Act 1 kills, runs) on its last blocks for the drift check, `previous_flagged` and `prior_attempts` as for
-    `promotion_guard.judge`. `promote` is true when route A or F holds and every check holds; `route` reads "A", "F", "AF" or "";
-    `blocks` is true when a check other than the routes fails (the promotion would be refused even on a route)."""
+    `promotion_guard.judge`. `promote` is true when route A or F holds and every gating check holds; `route` reads "A", "F", "AF" or "";
+    `blocks` is true when a check other than the routes and the advisory attempt fails (the promotion would be refused even on a route)."""
     d = paired_diffs(cand_rows, base_rows, frontier)
     st = diff_stats(d["floor"], d["deep"], boot, seed)
     ra, rf = route_a(d["floor"], d["deep"], stats=st), route_f(d["floor"], d["deep"], stats=st)
@@ -279,13 +281,13 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
     seeds, c, b = paired_rows(cand_rows, base_rows)
     kills = {name: [sum(bosses_beaten(c[s])[j] for s in seeds), sum(bosses_beaten(b[s])[j] for s in seeds)] for j, name in enumerate(BOSSES)}
     checks = {"route": bool(route), "wins": bool(wins["holds"]), "crash": bool(crash["holds"]), "drift": not drift["blocks"],
-              "attempt": bool(attempt["allowed"])}
-    blocking = [k for k, v in checks.items() if not v and k != "route"]
+              "attempt": bool(attempt["within_cap"])}
+    blocking = [k for k in pg.failed_checks(checks) if k != "route"]
     return {"rule": RULE, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
             "route": route, "routes": {"A": ra, "F": rf}, "floor": st["floor"], "deep": st["deep"], "kills": kills,
             "alpha": ROUTE_ALPHA, "floor_margin": FLOOR_MARGIN, "min_gain": MIN_GAIN, "wins": wins, "crash": crash, "drift": drift,
-            "attempt": attempt, "act1_review": a1, "checks": checks, "promote": all(checks.values()), "blocks": bool(blocking),
-            "blocking": blocking, "review": drift["verdict"] == "flagged"}
+            "attempt": attempt, "act1_review": a1, "checks": checks, "promote": pg.checks_hold(checks), "blocks": bool(blocking),
+            "blocking": blocking, "attempt_advisory": True, "review": drift["verdict"] == "flagged"}
 
 
 def ledger_cells(verdict: Mapping[str, Any]) -> dict[str, Any]:
@@ -309,7 +311,7 @@ def summary(verdict: Mapping[str, Any]) -> str:
              f"crash {'ok' if cr['holds'] else 'FAILS'} ({cr['cand']}/{cr['base']})",
              "wins " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
              f"drift {d['verdict']}" + (f" ({d['cand_rate']:.4f} vs pooled {d['pooled_rate']:.4f})" if "cand_rate" in d else ""),
-             f"attempt {a['attempt']}/{a['cap']}",
+             f"attempt {a['attempt']}/{a['cap']}{pg.attempt_note(a)}",
              "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none")]
     return " | ".join(parts).replace("\t", " ")
 

@@ -300,7 +300,7 @@ class GuardTests(unittest.TestCase):
         self.assertFalse(v["promote"])
         self.assertEqual(v["blocking"], ["wins"])
 
-    def test_drift_and_attempt_cap_are_the_review_guards(self):
+    def test_drift_is_a_review_guard_and_the_attempt_cap_is_recorded_not_gating(self):
         seeds, cand, base = fx.arms()
         lineage = [(1100, 2000), (1130, 2000), (1120, 2000)]  # the lineage's Act 1 rate 0.56: the candidate's 0.4825 is wholly below
         flagged = k2.judge(cand, base, frontier=1, lineage=lineage, boot=1000)
@@ -311,10 +311,11 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(blocked["drift"]["verdict"], "blocked")
         self.assertFalse(blocked["promote"])
         self.assertEqual(blocked["blocking"], ["drift"])
-        third = k2.judge(cand, base, frontier=1, prior_attempts=2, boot=1000)  # a third candidate of the generation
-        self.assertFalse(third["promote"])
-        self.assertEqual(third["blocking"], ["attempt"])
-        self.assertTrue(k2.judge(cand, base, frontier=1, prior_attempts=2, cap=3, boot=1000)["promote"])
+        third = k2.judge(cand, base, frontier=1, prior_attempts=2, boot=1000)  # a third candidate of the generation (D65 addendum 2)
+        self.assertTrue(third["promote"])  # the old cap refused it (`blocking` was ["attempt"]); it is recorded now and decides nothing
+        self.assertEqual(third["blocking"], [])
+        self.assertEqual((third["checks"]["attempt"], third["attempt_advisory"], third["attempt"]["would_refuse"]), (False, True, True))
+        self.assertTrue(k2.judge(cand, base, frontier=1, prior_attempts=2, cap=3, boot=1000)["checks"]["attempt"])
 
 
 class VerdictTests(unittest.TestCase):

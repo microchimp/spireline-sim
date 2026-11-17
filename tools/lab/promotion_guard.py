@@ -16,11 +16,13 @@ The four parts, each a dict with a verdict and the numbers it used:
   drift_check    the candidate's kill rate on its block against the promoted lineage's pooled rate over its last three
                  blocks (unpaired; Wilson 95% intervals): flagged for the weekly review when the candidate's upper
                  bound is below the pooled lower bound; blocked when that happens twice in a row.
-  retry_cap      at most two promotion attempts per generation.
+  retry_cap      the attempt number of the generation and the old cap of two. Since D65 addendum 2 (2026-11-17, owner:
+                 "Lift the cap") it is recorded and gates nothing: the attempt, the cap and whether the old cap would
+                 have refused (``would_refuse``) are written, ``allowed`` is always true and ``blocks`` always false.
 
 `judge` composes them. ``blocks`` is true when any part says the promotion must not go through: the kill or the damage
-guard fires, the drift check blocks, or the attempt is over the cap. A flagged drift alone does not block: it marks the
-promotion for the weekly review (``review``).
+guard fires or the drift check blocks. The attempt never blocks (``attempt_advisory``). A flagged drift alone does not
+block: it marks the promotion for the weekly review (``review``).
 
 The power arithmetic of the review's appendix A is here too (`guard_power`, `coprimary_power`, `seeds_for_power`), so
 the tables in docs/PROMOTION_GUARD.md can be re-run: ``python -m tools.lab.promotion_guard --table``.
@@ -39,7 +41,8 @@ FLAG = "SPIRELINE_REVIEW_GUARD"  # the environment variable (and the name of the
 ON_VALUES = ("1", "on", "true", "yes")
 RULE = "review-2026-10-24-4.3"  # the review's section that proposed this guard
 GUARD_ALPHA = 0.05  # the guards' one-sided level (the review: a guard should lean toward firing)
-ATTEMPT_CAP = 2  # promotion attempts per generation
+ATTEMPT_CAP = 2  # the old cap on promotion attempts per generation: computed and recorded, never gating (D65 addendum 2)
+ADVISORY_CHECKS = ("attempt",)  # decision checks that are recorded with their value and left out of `promote` and of the refusals
 LINEAGE_BLOCKS = 3  # blocks of the promoted lineage pooled by the drift check
 DAMAGE_FIELD = "boss_damage"  # the runs.jsonl field the damage guard needs: damage to the Act-1 boss / its HP, 0 if not reached
 ACT1_LAST_FLOOR = 17  # as rl/gen_loop.py: a run past floor 17 killed the Act 1 boss
@@ -156,9 +159,35 @@ def drift_check(cand_kills: int, cand_n: int, lineage: Sequence[tuple[int, int]]
 
 
 def retry_cap(prior_attempts: int, cap: int = ATTEMPT_CAP) -> dict[str, Any]:
-    """Attempt number `prior_attempts` + 1 of a generation, and whether the cap allows it."""
+    """Attempt number `prior_attempts` + 1 of a generation against the old cap (D65 addendum 2: recorded, not gating). `within_cap` and
+    `would_refuse` are what the old cap said (it refused attempt 3 and later); `allowed` is always true and `blocks` always false, so no
+    reader refuses on them, and `advisory` says so in the record."""
     attempt = int(prior_attempts) + 1
-    return {"attempt": attempt, "cap": int(cap), "allowed": attempt <= cap, "blocks": attempt > cap}
+    within = attempt <= cap
+    return {"attempt": attempt, "cap": int(cap), "within_cap": within, "would_refuse": not within, "allowed": True, "blocks": False,
+            "advisory": True}
+
+
+def gating_checks(checks: Mapping[str, bool]) -> dict[str, bool]:
+    """The checks of a decision that decide: all but the advisory ones (`ADVISORY_CHECKS`, today the attempt), which keep their value in
+    the record only."""
+    return {k: bool(v) for k, v in checks.items() if k not in ADVISORY_CHECKS}
+
+
+def checks_hold(checks: Mapping[str, bool]) -> bool:
+    """Whether every gating check of a decision holds."""
+    return all(gating_checks(checks).values())
+
+
+def failed_checks(checks: Mapping[str, bool]) -> list[str]:
+    """The gating checks of a decision that do not hold, in the decision's order."""
+    return [k for k, v in gating_checks(checks).items() if not v]
+
+
+def attempt_note(attempt: Mapping[str, Any]) -> str:
+    """The words a summary line adds after "attempt n/cap": empty within the cap; over it, that the old cap would have refused and
+    that the record is all it does now."""
+    return " (over the old cap: recorded, gates nothing)" if attempt.get("would_refuse") else ""
 
 
 # ------------------------------------------------------------------ the composed verdict
@@ -191,7 +220,7 @@ def judge(cand_kills: Mapping[str, bool], base_kills: Mapping[str, bool], cand_d
     blocking = [name for name, part in (("kill", kill), ("damage", damage), ("drift", drift), ("attempt", attempt))
                 if part.get("fires") or part.get("blocks")]
     return {"rule": RULE, "alpha": alpha, "kill": kill, "damage": damage, "drift": drift, "attempt": attempt,
-            "blocks": bool(blocking), "blocking": blocking, "review": drift["verdict"] == "flagged"}
+            "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "review": drift["verdict"] == "flagged"}
 
 
 def summary(verdict: Mapping[str, Any]) -> str:
@@ -201,7 +230,7 @@ def summary(verdict: Mapping[str, Any]) -> str:
     dmg = (f"damage {'FIRES' if d['fires'] else 'ok'} (diff {d['diff_mean']:+.4f} upper {d['diff_upper']:+.4f})" if d.get("available")
            else "damage n/a")
     drift = f"drift {r['verdict']}" + (f" ({r['cand_rate']:.4f} vs pooled {r['pooled_rate']:.4f})" if "cand_rate" in r else "")
-    return " | ".join([kill, dmg, drift, f"attempt {a['attempt']}/{a['cap']}"]).replace("\t", " ")
+    return " | ".join([kill, dmg, drift, f"attempt {a['attempt']}/{a['cap']}{attempt_note(a)}"]).replace("\t", " ")
 
 
 # ------------------------------------------------------------------ power (the review's appendix A)

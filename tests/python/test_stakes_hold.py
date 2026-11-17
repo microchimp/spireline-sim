@@ -12,8 +12,10 @@ No game: synthetic positions, stub arms, the emulator's library for the real-fig
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
+import io
 import json
 import math
 import os
@@ -408,7 +410,8 @@ class LedgerPerRecipeTests(unittest.TestCase):
         self.assertEqual("1", rows[-1]["attempt"])
 
     def test_the_train_job_counts_the_built_candidates_schedule_recipe(self):
-        """`gen0.py train` reads the built candidate's recipe (schedule and hold included) for the review guard's cap check."""
+        """`gen0.py train` reads the built candidate's recipe (schedule and hold included) for the attempt count the old review-guard cap
+        read (D65 addendum 2: recorded, not gating: the round goes on and says so)."""
         import shutil
 
         cand = self.agents / "gen12" / "candidate-stakes-hold"
@@ -431,10 +434,13 @@ class LedgerPerRecipeTests(unittest.TestCase):
         for i in (1, 2):
             gen_loop.append_promotion(self.tsv, {"cand_gen": 12, "seed_block": f"E12-x{i}", "cand_sha": PRIOR_SHA, "run_head_sha": f"head{i}",
                                                  "macro": recipe, "decision": "rejected", "attempt": i})
-        with mock.patch.object(gen_loop, "train_generation"), mock.patch.object(gen_loop, "run_promote_subprocess") as rp:
+        err = io.StringIO()
+        with mock.patch.object(gen_loop, "train_generation"), mock.patch.object(gen_loop, "run_promote_subprocess", return_value=0) as rp, \
+                mock.patch.object(gen_loop, "COMMITTED_SEEDS", self.root / "seeds"), contextlib.redirect_stderr(err):
             self.assertEqual(0, gen0.main(args))
-        rp.assert_not_called()  # the recipe at its own cap of two
-        self.assertTrue((markers / "done-11-g12-stakes-hold").exists())
+        rp.assert_called_once()  # judged all the same: the recipe's two attempts are recorded, not gating
+        self.assertIn("already had 2 judged candidates", err.getvalue())
+        self.assertTrue((markers / "ready-11-g12-stakes-hold").exists())
 
 
 # ------------------------------------------------------------------------------------------------------------------ the build

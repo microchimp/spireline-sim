@@ -289,7 +289,8 @@ class PromoteFunnelTests(unittest.TestCase):
         self.assertEqual((self.agents / "promotions.tsv").read_text().splitlines()[0].split("\t"), list(gen_loop.TSV_COLUMNS))
 
     def test_a_refusal_spends_the_attempt_as_a_block_refusal_does(self):
-        """The attempt of a generation is the number of distinct candidate shas it has in promotions.tsv (`attempts_before`): two spent, a third not played."""
+        """The attempt of a generation is the number of distinct candidate shas it has in promotions.tsv (`attempts_before`): two spent, a third
+        played and judged all the same (D65 addendum 2: the old cap of two is recorded, not gating)."""
         tsv = self.agents / "promotions.tsv"
         self.assertEqual(gen_loop.attempts_spent(tsv, 5, True), None)
         self.run_promote(stub_candidate(self.root, "c1", "sha-a"), -4.0)
@@ -298,12 +299,13 @@ class PromoteFunnelTests(unittest.TestCase):
         doc, _ = self.run_promote(stub_candidate(self.root, "c2", "sha-b"), -4.0, name="Etest-2")  # a fresh block, as `resolve_e_block` gives
         self.assertEqual(doc["decision_text"], "rejected")
         self.assertEqual([r["attempt"] for r in gen_loop.read_promotions(tsv)], ["1", "2"])
-        self.assertEqual((gen_loop.rejections(tsv, 5), gen_loop.attempts_spent(tsv, 5, True)), (2, 2))  # the loop writes no third marker, `train` trains nothing
-        arms = StubArms(*self.block(-4.0, "Etest-3")[1:])
-        with mock.patch.object(gen_loop, "run_arm", arms), self.assertRaisesRegex(ValueError, "already had 2 promotion attempts"):
-            gen_loop.promote(stub_candidate(self.root, "c3", "sha-c"), None, self.seed_file, agent_root=self.agents, boot=500,
-                             review_guard=True, sequential=True)
-        self.assertEqual(arms.calls, [])  # refused before any run was played
+        self.assertEqual((gen_loop.rejections(tsv, 5), gen_loop.attempts_spent(tsv, 5, True)), (2, 2))  # where the old cap stood: still read
+        doc, arms = self.run_promote(stub_candidate(self.root, "c3", "sha-c"), -4.0, name="Etest-3", review_guard=True)
+        self.assertTrue(arms.calls)  # the third candidate is played (the old cap refused it before any run) and judged on its figures
+        self.assertEqual(doc["decision_text"], "rejected")
+        self.assertEqual([r["attempt"] for r in gen_loop.read_promotions(tsv)], ["1", "2", "3"])
+        self.assertEqual(doc["review_guard"]["attempt"]["attempt"], 3)
+        self.assertTrue(doc["review_guard"]["attempt"]["would_refuse"])
 
     def test_the_same_candidate_resumes_and_another_may_not_reuse_the_block(self):
         self.run_promote(stub_candidate(self.root, "c1", "sha-a"), -4.0)
