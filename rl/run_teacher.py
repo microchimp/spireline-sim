@@ -84,6 +84,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import fight_rows  # noqa: E402 -- pure: numpy only
 from sts2_gym import faults  # noqa: E402 -- pure: loads no native code
 
 VERSION = 1
@@ -1283,6 +1284,29 @@ def write_json(path: Path, doc: Any) -> None:
     os.replace(tmp, path)
 
 
+def write_combat_rows(files: "RunFiles", arrays: dict) -> None:
+    """A finished run's fight rows (`gen_loop.CombatSamples.arrays`) beside its record, whole or not at all."""
+    import numpy as np  # noqa: PLC0415
+
+    files.combat.parent.mkdir(parents=True, exist_ok=True)
+    tmp = files.combat.with_name(files.combat.stem + f".tmp{os.getpid()}.npz")
+    np.savez_compressed(tmp, **arrays)
+    os.replace(tmp, files.combat)
+
+
+def read_combat_rows(files: "RunFiles") -> dict | None:
+    """The run's fight rows, or None (the run recorded none, or its file cannot be read: the run's record stands without them)."""
+    import numpy as np  # noqa: PLC0415
+
+    if not files.combat.is_file():
+        return None
+    try:
+        with np.load(files.combat, allow_pickle=False) as z:
+            return {k: z[k] for k in z.files}
+    except (OSError, ValueError, EOFError):
+        return None
+
+
 def clean_path(value: Any) -> Any:
     """A manifest or result value without absolute paths (the last two parts of a path stay)."""
     if isinstance(value, str) and (value[1:3] in (":/", ":\\") or value.startswith("/")):
@@ -1303,11 +1327,13 @@ class RunFiles:
     the same way (`<seed>.rows_gaps.f32`, float32, `GAPS_WIDTH` a row; `gaps_ok`; `rows_gaps.npz`). The Act 1 boss door's rows of a screen's draws (D59:
     `<seed>.rows_door.f16`, float16, `ROWS_WIDTH` a row) are written before its record, which names them (`door.row0`, `door.draws`): a screen with
     no door rows (a draw that reached no Act 1 door, or one played by an earlier build) has no `door` and takes no part of the file; `load` cuts the file
-    back with the screens like the others."""
+    back with the screens like the others. With `--combat-rows` a run that ended leaves `<seed>.combat.npz` (the fight rows `gen_loop.FightTap` kept,
+    written before the record; `consolidate` puts them in the job's combat part and removes the file)."""
 
     def __init__(self, gen_dir: Path | str, seed: str) -> None:
         d = Path(gen_dir) / "decisions.d"
         self.recs, self.rows, self.record = d / f"{seed}.jsonl", d / f"{seed}.rows.f32", d / f"{seed}.record.json"
+        self.combat = d / f"{seed}.combat.npz"
         self.grid = d / f"{seed}.rows_map.i8"
         self.grid_ok = True
         self.gaps = d / f"{seed}.rows_gaps.f32"
@@ -1810,6 +1836,10 @@ def new_run(task: tuple) -> dict:
     explore = np.random.default_rng([AGENT_SEED, int(ix), 1])
     cfg = player.agent.search_config("a3-v1")
     rec = gen_loop.RunRecorder(seed, player.agent.generation, policy.describe(), cfg.sims, cfg.c, hindsight.ASCENSION)
+    tap = None  # D65: with --combat-rows the fights' searched decisions are kept as graded rows; without, nothing below is touched
+    if _J.get("combat_rows", "none") != "none":
+        fighter = player.play_fight
+        tap = rec.tap(fight_rows.KINDS_OF[_J["combat_rows"]], getattr(fighter, "cfg", cfg), probe=bool(getattr(fighter, "probe", False)))
     s = hindsight.session_for(seed, player.agent, "a3-v1", own_schedule=True)
     row: dict[str, Any] = {"_task": list(task[:3]), "arm": "teacher", "source": "new", "job": _J["job"], "judge_sha256": _J.get("judge_sha256"),
                            "seed": seed, "ix": int(ix), "end": "?",
@@ -1862,14 +1892,21 @@ def new_run(task: tuple) -> dict:
                     boss["p_death"] = ((hindsight.door_of(s, player) or {}).get("judge") or {}).get("p_death")
             if rec.fight is None:
                 rec.open_fight(s, s.combat())
-            moves += player.play_fight(s, rng, None)
+            moves += player.play_fight(s, rng, None) if tap is None else player.play_fight(s, rng, None, tap=tap)
         row["floor"] = int(s.info["floor"])
         if row["end"] in ("win", "death"):
             _, calls, _ = gen0.prior_path_of(player.agent, None, None)
+            kept = rec.samples.arrays() if tap is not None else None
+            if kept is not None:
+                write_combat_rows(files, kept)  # before the record: a record that is there has its rows beside it
+                row["fight_rows"] = dict(tap.rows)
             record = rec.finish(s, moves, won=row["end"] == "win", prior_path="cpu", prior_calls=calls)
             write_json(files.record, record)
     finally:
         s.close()
+    if tap is not None:
+        row.setdefault("fight_rows", {})
+        row["rows_s"] = round(tap.seconds, 3)  # the seconds encoding and keeping the rows took in this run (its `cpu` includes them)
     row["screens"] = dict(row["screens"])
     row["teacher_cpu"] = round(row["teacher_cpu"], 2)
     row["reused_screens"] = counters["reused"]
@@ -1972,9 +2009,16 @@ def consolidate(gen_dir: Path, job_name: str, ctx: dict, agent: Any) -> dict:
         cfg = agent.search_config("a3-v1")
         sink = gen_loop.ShardSink(gen_dir / "jobs" / job_name, agent.generation, config=cfg.name, base_sims=cfg.sims, ascension=10,
                                   agent=agent.describe())
-        for _, p in recs:
-            sink.add(json.loads(p.read_text(encoding="utf-8")), None)
+        kept: list[RunFiles] = []
+        for s, p in recs:
+            rows = read_combat_rows(RunFiles(gen_dir, s))  # D65: the fight rows a `--combat-rows` run left beside its record (None: it recorded none)
+            if rows is not None:
+                kept.append(RunFiles(gen_dir, s))
+                sink.meta["combat_rows"] = "kept"  # the manifest says the parts hold fight rows (and `fight_rows.part_to_buffer` can read them)
+            sink.add(json.loads(p.read_text(encoding="utf-8")), rows)
         sink.close()
+        for files in kept:
+            files.combat.unlink(missing_ok=True)  # the rows are in the part now
     return doc
 
 
@@ -2060,6 +2104,8 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
         res["a2"] = {"sha256": a2_sha, "note": a2_note} if (a.door_rows or a.grade != DEFAULT_GRADE) else None
         res["grade"] = a.grade
         res["door_rows"] = bool(a.door_rows)
+        if getattr(a, "combat_rows", "none") != "none" and mode == "new":
+            res["combat_rows"] = a.combat_rows  # D65: only said when asked for (a plain job's result is as it was)
         if a.grade != DEFAULT_GRADE:
             check_grade(a.grade, a2_path)
         worker_cfg = {"agent_dir": str(agent_dir), "replay_agent": str(a.replay_agent or agent_dir), "judge": a.judge, "judge_sha256": judge_sha, "lib": lib, "gen_dir": str(gen_dir),
@@ -2068,7 +2114,8 @@ def job_block(a: argparse.Namespace, cfg: dict, *, hold_fn: Any, store: Path, ge
                       "stop_file": str(job_dir / "STOP"), "stop_floor": a.stop_floor, "label_rate": a.label_rate, "per_run": a.per_run,
                       "kinds": kinds_of(a.kinds), "target_screens": a.target_screens if mode == "stored" else 0,
                       "est_new_s": jobs.TEACHER_EST_CPU_S, "est_label_s": 60.0 + 45.0 * a.per_run,
-                      "grade": a.grade, "door_rows": bool(a.door_rows), "a2": a2_path if (a.door_rows or a.grade != DEFAULT_GRADE) else None}
+                      "grade": a.grade, "door_rows": bool(a.door_rows), "a2": a2_path if (a.door_rows or a.grade != DEFAULT_GRADE) else None,
+                      "combat_rows": getattr(a, "combat_rows", "none") if mode == "new" else "none"}  # D65: only whole new runs have fights of their own to keep
         if mode == "stored" and gen_loop.load_agent(worker_cfg["replay_agent"]).generation != generation:
             raise SystemExit("the stored runs are of generation %d: --replay-agent must be that generation's player" % generation)
         ctx = {"generation": generation, "identity": agent_identity(agent_dir, agent), "judge": a.judge, "lib": lib, "tree": _git_head(),
@@ -3208,6 +3255,9 @@ def build_parser() -> argparse.ArgumentParser:
         jp.add_argument("--door-rows", action=argparse.BooleanOptionalAction, default=True,
                         help="keep the Act 1 boss door's row of every draw that reaches it (rows_door.npz; default on): a regrade then grades Act 1 routes and events exactly")
         jp.add_argument("--a2", default="auto", help="the Act 2 model file read at the Act 1 door (auto: the default place if the file is there, else no reading)")
+        jp.add_argument("--combat-rows", choices=fight_rows.COMBAT_ROWS, default="none",
+                        help="source new: keep the searched decisions of the runs' fights as fight-trainer rows in the job's combat parts (D65): none (default: nothing "
+                             "changes), elite-boss (elite and boss fights, searched at x4 and x16) or all (hallway fights too, at x1); see rl/fight_rows.py")
         if name == "label":  # round 0: one long block over the stored runs, not under the daily budget
             jp.set_defaults(block_min=ROUND0_BLOCK_MIN, max_runs=ROUND0_MAX_RUNS)
     return p

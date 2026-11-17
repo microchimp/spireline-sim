@@ -161,6 +161,14 @@ figures of c0020 to c0048 were an older version's (the trainer's start-up base) 
 are the newest 20,000 held-out rows of the window, so they move a little with each checkpoint: only a candidate figure and an
 incumbent figure scored in the same call compare.
 
+**Rows from plain runs (D65, lane R).** The data step's plain runs play about 35,000 fights an hour with real outcomes and, until D65, kept none
+of their decisions. `run_teacher.py job --combat-rows elite-boss` (default `none`: nothing changes) keeps the searched decisions of the elite and boss
+fights as rows in the job's combat parts (`<store>/<generation>/jobs/<job>/shards/combat-g<N>-NNNN.npz`, `prior_loop`'s layout plus `fight_kind`,
+`grade` and `grade_sims`; `all` adds the hallway fights), and the trainer's `--extra-rows-root <store>/<generation>` (repeatable) reads them beside
+its own shards: newest first under the same `--window`, held out by the run's seed, a row searched at the loop's own grade (x16, the boss fights)
+a policy and value row, a shallower one (x4, the elites) a value row only. The format, the rule and the measured cost are in
+`rl/fight_rows.py` and the lane's memo; the tests are `tests/python/test_fight_rows.py`.
+
 ## 5. The gate and the board (decided before the first checkpoint)
 
 **Since 2026-11-11 the rule is v3 (`gym-loop-promote-v3`, D57 item 2; the block "Gate rule v3" below). The next paragraph describes v1 and v2,

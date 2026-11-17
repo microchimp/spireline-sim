@@ -268,8 +268,11 @@ class SearchFighter:
         # own_schedule (the round's labels): the agent's own stakes schedule and hold, as `gen0.play_emu_run` plays them
         self.cfg = agent.search_config(config) if own_schedule else search_configs.get(config)
         self.extra = agent.search_extra()
+        self.probe = bool(getattr(self.extra.get("prior_fn"), "probe", False))  # whether the prior reads the end-turn probe: the rows are encoded as it reads them
 
-    def __call__(self, s: Any, rng: Any, deadline: float | None = None) -> int:
+    def __call__(self, s: Any, rng: Any, deadline: float | None = None, tap: Any = None) -> int:
+        """Play the open fight to its end; returns the combat decisions made. With a `gen_loop.FightTap` the searched decisions it asks for are
+        kept as rows (it reads the root before the search and the result after, and changes nothing the search does)."""
         import live_search  # noqa: PLC0415
         import search_configs  # noqa: PLC0415
         from run_train import engine  # noqa: PLC0415
@@ -281,10 +284,14 @@ class SearchFighter:
                 raise Timeout("the continuation outlived its wall cap")
             root = s.combat(fork_combat=True).combat_fork(None)
             try:
-                pos = search_configs.position_of(root, s.info) if (self.cfg.schedule or self.cfg.needs_position) else None
+                pos = search_configs.position_of(root, s.info) if (self.cfg.schedule or self.cfg.needs_position or tap is not None) else None
+                want = tap is not None and tap.wants(pos)
+                tokens = tap.encode(root) if want else None
                 kw = self.cfg.search_kwargs(pos, env_prior=False)  # the agent argument alone decides the prior
                 kw.update(self.extra)
                 res = live_search.search_live(root.handle, seed=int(rng.integers(1 << 30)), **kw)
+                if want:
+                    tap.record(root, res, tokens, pos)
             finally:
                 native.destroy(root.handle) if not hasattr(root, "close") else root.close()
             st = native.run_step(s.handle, res.best.action, res.best.target, env._run_obs_buf, env._run_rew_buf,

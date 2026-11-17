@@ -45,6 +45,7 @@ from typing import Any
 
 import numpy as np
 
+import fight_rows
 import macro_recipe
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +92,7 @@ PRIOR_SEARCH = {"c_puct": 0.2, "prior_min_visits": 3}  # prior_loop's PriorConfi
 TOKEN_KEYS = ("types", "ids", "owners", "feats")
 ROW_KEYS = ("lengths", "labels", "encounters", "deck_sizes", "relic_counts", "visits", "legal", "returns",
             "qvals", "sims", "fight_ix")
+ROW_EXTRA_KEYS = fight_rows.ROW_EXTRA_KEYS  # fight_kind, grade, grade_sims: in a part only when its rows were recorded with a grade (D65)
 
 
 def utc_now() -> str:
@@ -419,10 +421,15 @@ class CombatSamples:
         self.max_hp = 0
 
     def add(self, tokens, visits: np.ndarray, qvals: np.ndarray, legal: np.ndarray, encounter: int, deck: int, relics: int,
-            sims: int) -> None:
+            sims: int, *, kind: int | None = None, grade: int | None = None, grade_sims: int | None = None) -> None:
+        """One searched decision. `kind` (a `fight_rows.KIND_NAMES` index), `grade` (the stakes multiplier of the fight's search) and
+        `grade_sims` (the simulations the config asked for here) are the plain job's (D65); a row without them is as it always was."""
         self._open.append(len(self.rows))
-        self.rows.append({"tokens": tokens, "visits": visits, "qvals": qvals, "legal": legal, "encounter": int(encounter),
-                          "deck": int(deck), "relics": int(relics), "sims": int(sims), "fight": self.fight, "label": 0})
+        row = {"tokens": tokens, "visits": visits, "qvals": qvals, "legal": legal, "encounter": int(encounter),
+               "deck": int(deck), "relics": int(relics), "sims": int(sims), "fight": self.fight, "label": 0}
+        if kind is not None:
+            row.update(kind=int(kind), grade=int(grade), grade_sims=int(grade_sims))
+        self.rows.append(row)
 
     def end_fight(self, end_hp: int, max_hp: int) -> None:
         for i in self._open:
@@ -436,7 +443,10 @@ class CombatSamples:
             return None
         r = self.rows
         n_act = len(r[0]["visits"])
-        return {
+        graded = [x for x in r if "kind" in x]
+        if graded and len(graded) != len(r):
+            raise ValueError("a run's rows are all graded or none of them is")
+        out = {
             "types": np.concatenate([x["tokens"].types for x in r]).astype(np.int64),
             "ids": np.concatenate([x["tokens"].ids for x in r]).astype(np.int64),
             "owners": np.concatenate([x["tokens"].owners for x in r]).astype(np.int64),
@@ -454,6 +464,11 @@ class CombatSamples:
             "fight_ix": np.array([x["fight"] for x in r], dtype=np.int64),
             "max_hp": np.array([self.max_hp], dtype=np.int64),
         }
+        if graded:
+            out["fight_kind"] = np.array([x["kind"] for x in r], dtype=np.int8)
+            out["grade"] = np.array([x["grade"] for x in r], dtype=np.int16)
+            out["grade_sims"] = np.array([x["grade_sims"] for x in r], dtype=np.int32)
+        return out
 
 
 def root_targets(children, n_actions: int) -> tuple[np.ndarray, np.ndarray]:
@@ -538,6 +553,10 @@ class RunRecorder:
         visits, q = root_targets(res.children, MAX_ACTIONS)
         self.samples.add(tokens, visits, q, legal, f["encounter"], f["deck"], f["relics"], res.sims)
 
+    def tap(self, kinds, cfg, *, probe: bool = False) -> "FightTap":
+        """The tap that keeps this run's searched decisions of the fight `kinds` as graded rows (the plain job's `--combat-rows`)."""
+        return FightTap(self, kinds, cfg, probe=probe)
+
     def finish(self, session, moves: int, won: bool, steps_cap_hit: bool = False, prior_path: str | None = None,
                prior_calls: dict | None = None) -> dict[str, Any]:
         """The run's RunRecord. `prior_path` ("none", "cpu", "server", "mixed" or "uniform") and `prior_calls` say which prior played it."""
@@ -565,6 +584,65 @@ class RunRecorder:
         return record
 
 
+class FightTap:
+    """What a fight player calls around each of its searches to keep the position as a graded training row (D65, the plain job's
+    `--combat-rows`): `wants(pos)` before the search, `encode(root)` the tokens before it (the search must not have touched the
+    root), `record(root, res, tokens, pos)` after it with the search's result. It reads the position and the result and nothing else:
+    the search, its random draws and the move taken are the ones a run without a tap makes. The rows go to the run recorder's
+    `samples` (`rec.samples`, the open fight's encounter, deck and relics from `rec.fight`), graded by the config the fighter searches
+    with: the fight's kind, the stakes multiplier of its search and the simulations the config asked for at this decision. The
+    recorder's own count of a fight's decisions is not touched, so the run's RunRecord is the same with and without the tap.
+
+    `kinds` are `search_configs.Position.fight_kind` names (`fight_rows.KINDS_OF`). `encode_fn(root, probe)` and `legal_fn(root)` are the
+    native readers by default (tests pass stand-ins)."""
+
+    def __init__(self, rec, kinds, cfg, *, probe: bool = False, encode_fn: Callable | None = None, legal_fn: Callable | None = None) -> None:
+        self.rec, self.kinds, self.cfg, self.probe = rec, tuple(kinds), cfg, bool(probe)
+        self._encode, self._legal = encode_fn, legal_fn
+        self.rows: dict[str, int] = {}
+        self.seconds = 0.0  # perf_counter time spent in encode and record: process_time ticks at 15.6 ms on Windows, coarser than a call
+
+    def wants(self, pos) -> bool:
+        return pos is not None and pos.fight_kind in self.kinds
+
+    def encode(self, root):
+        t0 = time.perf_counter()
+        try:
+            if self._encode is not None:
+                return self._encode(root, self.probe)
+            from combat_tokens import encode  # noqa: PLC0415
+
+            return encode(root.handle, root.obs, root.encounter_id, probe=self.probe)
+        finally:
+            self.seconds += time.perf_counter() - t0
+
+    def record(self, root, res, tokens, pos) -> None:
+        if len(res.children) < 2:
+            return  # a forced move teaches the policy nothing
+        t0 = time.perf_counter()
+        try:
+            if self._legal is not None:
+                legal = np.asarray(self._legal(root), dtype=np.int8)
+            else:
+                from sts2_gym import native  # noqa: PLC0415
+
+                mask = native.valid_actions(root.handle, fight_rows.MAX_ACTIONS)
+                legal = np.array([1 if mask[a] else 0 for a in range(fight_rows.MAX_ACTIONS)], dtype=np.int8)
+            visits, q = root_targets(res.children, fight_rows.MAX_ACTIONS)
+            f = self.rec.fight
+            kind = fight_rows.KINDS_OF["all"].index(pos.fight_kind)
+            self.rec.samples.add(tokens, visits, q, legal, f["encounter"], f["deck"], f["relics"], res.sims, kind=kind,
+                                 grade=self.cfg.stakes_mult(pos), grade_sims=self.cfg.sims_for(pos))
+            name = fight_rows.KIND_NAMES[kind]
+            self.rows[name] = self.rows.get(name, 0) + 1
+        finally:
+            self.seconds += time.perf_counter() - t0
+
+    def stats(self) -> dict[str, Any]:
+        """The rows kept by kind and the seconds the tap itself took (encoding, the legal mask, the root's targets)."""
+        return {"rows": dict(self.rows), "seconds": round(self.seconds, 4)}
+
+
 # ------------------------------------------------------------------ shards of a self-play block
 
 
@@ -581,6 +659,11 @@ def write_part(path: Path, runs: list[tuple[str, dict | None]], generation: int,
     out: dict[str, np.ndarray] = {}
     for key in TOKEN_KEYS + ROW_KEYS:
         if have:
+            out[key] = np.concatenate([a[key] for _, a in have])
+    for key in ROW_EXTRA_KEYS:  # the plain job's grade columns (D65): all of a part's runs carry them, or the part says nothing it cannot back
+        if have and any(key in a for _, a in have):
+            if not all(key in a for _, a in have):
+                raise ValueError(f"{key!r} is in some runs' rows of a part and not in others'")
             out[key] = np.concatenate([a[key] for _, a in have])
     n = int(out["lengths"].size) if have else 0
     if have:

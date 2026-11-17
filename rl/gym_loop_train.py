@@ -16,6 +16,17 @@ memory, and fits `combat_net.CombatNet` from the weights it last saved (at the f
 
 Rows from the held-out run seeds (gym_loop.is_val_seed) are never trained on; each checkpoint is scored on them.
 
+**Rows from plain runs** (D65 lane R; `--extra-rows-root PATH`, repeatable): the data step's plain runs, played with `run_teacher.py job
+--combat-rows elite-boss`, keep their elite and boss fights' searched decisions in the store's combat parts
+(`PATH/jobs/*/shards/combat-g*-*.npz`, PATH a generation folder of the store or the store). They are merged into the buffer by the time
+the part was written, newest first, under the same `--window` (`--extra-window N` caps the rows taken from these roots; 0: no cap of
+their own), and held out by the run's seed as the gym's own are. A row carries the grade of its search (the stakes multiplier: x16 a
+boss fight, x4 an elite) and the buffer two weights per row, `w_policy` and `w_value` (`rl/fight_rows.row_weights`): a row searched at
+`--policy-min-grade` (16, the gym's own) or deeper is a policy and value row, a shallower one a value row only (its policy loss is
+masked). Without the flag nothing is read from outside the loop's own shards and every weight is 1. With it a checkpoint's train.json
+names another split (`gym-loop-val:0.1+plain-rows`, so the gate's pre-filter scores the checkpoint on the gym's own held-out rows
+itself) and counts the plain rows it saw (`extra_rows`).
+
 **Freshness guard.** Every row that arrives adds `--max-epochs` rows' worth of training samples to a budget; training spends it, so
 on unchanged data the trainer stops after `--max-epochs` epochs of what was added and idles (the idle time is logged), however long
 generation takes (`--max-epochs` is the pass cap, any number; 4 today, and the replay below tests 8 and 16). **Checkpoints** every
@@ -51,9 +62,11 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+import fight_rows as fr  # noqa: E402 -- pure: numpy only
 import gym_loop as gl  # noqa: E402 -- pure at import
 
 MAX_ACTIONS = gl.MAX_ACTIONS
+PLAIN_SPLIT_SUFFIX = "+plain-rows"  # a checkpoint trained and scored with plain-run rows names this split, not the gate's
 CHUNK_S = 20.0  # training between two looks at the locks, the buffer and the parent
 
 
@@ -66,19 +79,36 @@ def _log(root: Path, msg: str) -> None:
 
 
 class Buffer:
-    """The newest `window` rows of the replay buffer as flat arrays (each row's tokens one after another, with offsets)."""
+    """The newest `window` rows of the replay buffer as flat arrays (each row's tokens one after another, with offsets).
 
-    KEYS = ("visits", "legal", "label", "value_ok", "val", "exact", "exact_value", "q_played", "solver_best", "played")
+    With `extra_roots` (plain stores: `--extra-rows-root`) the combat parts of their plain runs join the shards, ordered with them by the time
+    each file was written, so the window keeps the newest rows whatever their source. Extra parts are read newest first and no more than the
+    window (or `extra_window`, a cap of the extra rows' own) can hold are read at all. Every row has `w_policy`, `w_value` (the loss weights
+    of `fight_rows.row_weights`; 1 for a row of the loop's own shards), `src` (0 the loop's, 1 a plain run's) and `grade`."""
 
-    def __init__(self, shards: Path, window: int) -> None:
+    KEYS = ("visits", "legal", "label", "value_ok", "val", "exact", "exact_value", "q_played", "solver_best", "played",
+            "w_policy", "w_value", "src", "grade")
+
+    def __init__(self, shards: Path, window: int, *, extra_roots=(), extra_window: int = 0, policy_min_grade: int = fr.POLICY_MIN_GRADE) -> None:
         self.dir, self.window = Path(shards), int(window)
+        self.extra_roots = [Path(p) for p in extra_roots]
+        self.extra_window = int(extra_window or 0)
+        self.policy_min_grade = int(policy_min_grade)
         self.parts: list[tuple[str, dict]] = []
+        self.stamp: dict[str, int] = {}  # when each part's file was written (ns): the order the window keeps
         self.known: set[str] = set()
         self.rows = 0
+        self.extra_skipped = 0  # extra parts the window had no room for: never read
         self.flat: dict | None = None
 
+    @staticmethod
+    def _extra_rows(parts) -> int:
+        return sum(int(p["lengths"].size) for name, p in parts if name.startswith("x"))
+
     def refresh(self) -> int:
-        """Load the shards that appeared since the last call; drop the oldest beyond the window. Returns the rows added."""
+        """Load the parts that appeared since the last call; drop the oldest beyond the window. Returns the rows added."""
+        import zipfile  # noqa: PLC0415
+
         import numpy as np  # noqa: PLC0415
 
         names = sorted(p.name for p in self.dir.glob("s*.npz") if ".tmp" not in p.name)
@@ -90,17 +120,63 @@ class Buffer:
             try:
                 with np.load(self.dir / name) as z:
                     a = {k: z[k] for k in z.files if k not in ("fights_meta",)}
+                self.stamp[name] = (self.dir / name).stat().st_mtime_ns
             except (OSError, ValueError, EOFError):
                 continue
-            self.parts.append((name, a))
             n = int(a["lengths"].size)
+            a.setdefault("w_policy", np.ones(n, np.float32))  # the loop's own rows: a policy and a value row each, searched at its teacher's grade
+            a.setdefault("w_value", np.ones(n, np.float32))
+            a.setdefault("src", np.zeros(n, np.int8))
+            a.setdefault("grade", np.full(n, fr.GYM_GRADE, np.int16))
+            self.parts.append((name, a))
             self.rows += n
             added += n
+        if self.extra_roots:
+            cands = []
+            for i, root in enumerate(self.extra_roots):
+                for p in fr.part_paths(root):
+                    name = f"x{i}:" + p.relative_to(root).as_posix()
+                    if name in self.known:
+                        continue
+                    try:
+                        cands.append((p.stat().st_mtime_ns, name, p))
+                    except OSError:
+                        continue  # gone since the listing
+            cands.sort(key=lambda c: c[0], reverse=True)  # newest first
+            cap = self.extra_window or self.window
+            newer = 0  # the extra rows newer than the candidate in hand: held already, or read in this call
+            held = [(self.stamp[n], int(p["lengths"].size)) for n, p in self.parts if n.startswith("x")]
+            for t, name, path in cands:
+                self.known.add(name)  # looked at once: read, or aged out, or not a part of rows
+                if newer + sum(r for s, r in held if s > t) >= cap:
+                    self.extra_skipped += 1
+                    continue
+                try:
+                    with np.load(path, allow_pickle=False) as z:
+                        blob = {k: z[k] for k in z.files}
+                except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+                    continue
+                a = fr.part_to_buffer(blob, is_val=gl.is_val_seed, min_policy_grade=self.policy_min_grade)
+                if a is None:
+                    continue
+                n = int(a["lengths"].size)
+                self.parts.append((name, a))
+                self.stamp[name] = t
+                self.rows += n
+                added += n
+                newer += n
+            self.parts.sort(key=lambda kv: (self.stamp.get(kv[0], 0), kv[0]))
+            while self.extra_window and self._extra_rows(self.parts) - self._first_extra_rows() >= self.extra_window:
+                i = next(i for i, (n, _) in enumerate(self.parts) if n.startswith("x"))
+                self.rows -= int(self.parts.pop(i)[1]["lengths"].size)
         while len(self.parts) > 1 and self.rows - int(self.parts[0][1]["lengths"].size) >= self.window:
             self.rows -= int(self.parts.pop(0)[1]["lengths"].size)
         if added:
             self.flat = None
         return added
+
+    def _first_extra_rows(self) -> int:
+        return next((int(p["lengths"].size) for n, p in self.parts if n.startswith("x")), 0)
 
     def arrays(self) -> dict:
         import numpy as np  # noqa: PLC0415
@@ -149,8 +225,13 @@ def batch_tensors(flat: dict, rows, device, width: int, n_buckets: int, solver_o
             visits = np.where(ok[:, None], one, visits)
     total = visits.sum(axis=1, keepdims=True)
     policy = visits / np.maximum(total, 1e-9)
-    return inputs, {"bucket": t(bucket), "value_ok": t(flat["value_ok"][rows].astype(np.float32)), "legal": t(legal),
-                    "policy": t(policy.astype(np.float32)), "has_policy": t((total[:, 0] > 0).astype(np.float32)),
+    value_ok = flat["value_ok"][rows].astype(np.float32)
+    has_policy = (total[:, 0] > 0).astype(np.float32)
+    if "w_value" in flat:  # the per-row weights (fight_rows.row_weights): a row searched shallower than the loop's teacher teaches the value only
+        value_ok = value_ok * flat["w_value"][rows].astype(np.float32)
+        has_policy = has_policy * flat["w_policy"][rows].astype(np.float32)
+    return inputs, {"bucket": t(bucket), "value_ok": t(value_ok), "legal": t(legal),
+                    "policy": t(policy.astype(np.float32)), "has_policy": t(has_policy),
                     "most": t(np.argmax(visits, axis=1).astype(np.int64))}
 
 
@@ -358,7 +439,10 @@ class Trainer:
             self.model.load_state_dict(blob["model"])
             _log(self.root, f"started from {Path(a.base).name}")
         self.base_meta = json.loads((Path(a.base) / "model.json").read_text(encoding="utf-8"))
-        self.buffer = Buffer(self.root / "buffer" / "shards", a.window)
+        extra = [str(p) for p in (getattr(a, "extra_rows_root", None) or [])]
+        self.buffer = Buffer(self.root / "buffer" / "shards", a.window, extra_roots=extra, extra_window=getattr(a, "extra_window", 0) or 0,
+                             policy_min_grade=getattr(a, "policy_min_grade", fr.POLICY_MIN_GRADE))
+        self.split_id = gl.val_split_id() + (PLAIN_SPLIT_SUFFIX if extra else "")  # a held-out set with plain-run rows is not the gate's
         self.counted = set(self.st.get("known") or [])  # shards whose rows are in the budget already (a restart loads them again)
         self.device = "cpu"
         self.last_ck = time.time()
@@ -451,6 +535,18 @@ class Trainer:
         return {"base_version": name, "base_sha256": gl.sha256_file(d / "combat_policy.pt"),
                 **{f"base_{k}": v for k, v in self.evaluate(m).items() if k != "val_rows"}}
 
+    def extra_summary(self) -> dict:
+        """What the plain runs' rows are in the window now (a checkpoint's train.json carries it)."""
+        import numpy as np  # noqa: PLC0415
+
+        flat = self.buffer.arrays()
+        src = flat["src"] == 1
+        return {"roots": len(self.buffer.extra_roots), "rows": int(src.sum()), "policy_rows": int((src & (flat["w_policy"] > 0)).sum()),
+                "held_out_rows": int((src & (flat["val"] != 0)).sum()), "by_grade": {str(int(g)): int((src & (flat["grade"] == g)).sum())
+                                                                                      for g in np.unique(flat["grade"][src])},
+                "window_rows": self.buffer.rows, "extra_window": self.buffer.extra_window, "policy_min_grade": self.buffer.policy_min_grade,
+                "parts_not_read": self.buffer.extra_skipped}
+
     def checkpoint(self) -> str:
         import combat_prior  # noqa: PLC0415
 
@@ -472,7 +568,9 @@ class Trainer:
         info = {"checkpoint": name, "t": gl.stamp(), "steps": self.st["steps"], "samples": self.st["samples"],
                 "rows_seen": self.st["rows_seen"], "window_rows": self.buffer.rows, "train_s": self.st["train_s"],
                 "idle_s": self.st["idle_s"], "device": self.device, "ema_value": self.st.get("ema_value"),
-                "ema_policy": self.st.get("ema_policy"), "split": gl.val_split_id(), **ev}
+                "ema_policy": self.st.get("ema_policy"), "split": self.split_id, **ev}
+        if self.buffer.extra_roots:
+            info["extra_rows"] = self.extra_summary()
         (tmp / "train.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
         os.replace(tmp, self.ckdir / name)
         self.st["ck"] = n
@@ -763,6 +861,10 @@ def main(argv=None) -> int:
         s = sp.parse_args(argv[1:])
         print(json.dumps(score_pair(Path(s.root), Path(s.candidate), Path(s.base), s.window)))
         return 0
+    return Trainer(trainer_parser().parse_args(argv)).run()
+
+
+def trainer_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", required=True)
     ap.add_argument("--base", required=True, help="the incumbent's folder: its combat_policy.pt is the first weights")
@@ -776,8 +878,12 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--reset-every", type=int, default=0,
                     help="re-initialise the heads' last linear layers after every N-th checkpoint (0: never)")
-    a = ap.parse_args(argv)
-    return Trainer(a).run()
+    ap.add_argument("--extra-rows-root", action="append", default=[], metavar="PATH",
+                    help="a plain store's generation folder (or the store) whose runs' fight rows (run_teacher.py job --combat-rows) join the buffer; repeatable")
+    ap.add_argument("--extra-window", type=int, default=0, help="at most this many rows from the --extra-rows-root parts (0: no cap of their own beyond --window)")
+    ap.add_argument("--policy-min-grade", type=int, default=fr.POLICY_MIN_GRADE,
+                    help="a plain row's policy is learned from when its search's grade (stakes multiplier) is at least this (16: the loop's own teacher); shallower rows teach the value only")
+    return ap
 
 
 if __name__ == "__main__":

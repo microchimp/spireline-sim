@@ -337,6 +337,8 @@ screens at floors 1 to 2 for 271 CPU-s (68 a screen). The shard of both jobs loa
 (the one with an option that has no row is counted incomplete), 106 rows, 4 runs, 7 kinds. A plain player run (`--kinds none`) is 38 to 48
 CPU-s here, with the door's P(death) recorded.
 
+`--combat-rows {none,elite-boss,all}` (D65, source `new` only; default `none`, which changes nothing a job writes): a run that ends keeps its fights' searched decisions as graded rows (`rl/fight_rows.py`) in the job's combat parts (`jobs/<job>/shards/combat-g<N>-NNNN.npz`, which held only the run seeds before); `rows_s` and `fight_rows` in a run's row say what recording took and kept. The fight trainer reads them (`gym_loop_train.py --extra-rows-root`, docs/rl/GYM_LOOP.md section 4).
+
 ## Checks and failure modes
 
 * `python rl/run_student.py check --shards-root <store>/<generation>` loads every shard under it with lane 3's loader (the smoke's shard
