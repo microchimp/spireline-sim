@@ -169,6 +169,15 @@ its own shards: newest first under the same `--window`, held out by the run's se
 a policy and value row, a shallower one (x4, the elites) a value row only. The format, the rule and the measured cost are in
 `rl/fight_rows.py` and the lane's memo; the tests are `tests/python/test_fight_rows.py`.
 
+**The daemon on those rows, generation off (D65 addendum 4, lane T).** `gym_loop.py run --trainer-extra-rows-root PATH` (repeatable),
+`--trainer-extra-window N` and `--trainer-policy-min-grade N` are handed to the trainer's command line (`trainer_argv`; a flag not given is not
+passed, so the line is what it was) and written to `state.json["run"]` and the start line of `loop.log`. `--procs 0` is generation off: no segment,
+no start set, weights or teacher-starts step, no retention (the loop's own shards stay as the trainer's older rows), no start-mix draws. The
+trainer, the pre-filter (which still scores on the loop's own held-out rows, whatever split the plain-rows trainer names) and the gate run as
+before; with nothing to gate the daemon waits `--idle-s` (60) and looks again, timed as the wait `idle` in `waits_today`, and keeps the newest 48
+checkpoints. `--gate-procs N` (default `--procs`) is the processes of the gate's games and the human bar; `--procs 0` without it is refused (or
+`--no-gate`). The status file carries `procs`, `gate_procs` and `generation`. The tests are `tests/python/test_gym_loop_extra_rows.py`.
+
 ## 5. The gate and the board (decided before the first checkpoint)
 
 **Since 2026-11-11 the rule is v3 (`gym-loop-promote-v3`, D57 item 2; the block "Gate rule v3" below). The next paragraph describes v1 and v2,

@@ -3,6 +3,8 @@
     python rl/gym_loop.py starts  --root ROOT [--runs-per-night 250] [--procs 6]    the training start set (resumable)
     python rl/gym_loop.py weights --root ROOT [--procs 6]                           the start mix's kind weights (a3-v1 pass)
     python rl/gym_loop.py run     --root ROOT [--player-config a3-v1] [--procs 6]   the daemon (detached: see GYM_LOOP.md)
+        [--procs 0 --gate-procs 4]   generation off: only the trainer, the pre-filter and the gate run (D65 addendum 4)
+        [--trainer-extra-rows-root PATH ... --trainer-extra-window N --trainer-policy-min-grade N]   the plain runs' fight rows
     python rl/gym_loop.py gate    --root ROOT --candidate DIR                      one promotion gate, by hand
     python rl/gym_loop.py stop    --root ROOT                                       stop the daemon (its STOP file, then its PID)
     python rl/gym_loop.py status  --root ROOT
@@ -1908,6 +1910,35 @@ def gpu_split(loop: Loop, since: str | None = None) -> dict:
 # ---------------------------------------------------------------------------------------------------------- the daemon
 
 
+def generating(a) -> bool:
+    """The daemon plays its own practice segments (`--procs` of 1 or more). `--procs 0` is generation off (D65 addendum 4): the rows the
+    trainer learns from come from elsewhere (`--trainer-extra-rows-root`), and the daemon only trains, filters and gates."""
+    return int(getattr(a, "procs", 1)) > 0
+
+
+def gate_procs(a) -> int:
+    """The processes the gate's games and the human bar's play with: `--gate-procs`, else `--procs` (what they always were)."""
+    n = getattr(a, "gate_procs", None)
+    return int(a.procs if n is None else n)
+
+
+def trainer_argv(a, root: Path, inc_dir: Path, parent_pid: int) -> list[str]:
+    """The fight trainer's command line. The three `--trainer-*` flags are handed on only when given, so a daemon started without them
+    starts the trainer with the line it always had."""
+    argv = [GPU_PYTHON, str(ROOT / "rl" / "gym_loop_train.py"), "--root", str(root), "--base", str(inc_dir),
+            "--parent-pid", str(parent_pid), "--every-min", str(a.checkpoint_min), "--max-epochs", str(a.max_epochs),
+            "--window", str(a.train_window)]
+    if getattr(a, "reset_every", 0):
+        argv += ["--reset-every", str(a.reset_every)]
+    for p in getattr(a, "trainer_extra_rows_root", None) or []:
+        argv += ["--extra-rows-root", str(p)]
+    if getattr(a, "trainer_extra_window", None):
+        argv += ["--extra-window", str(int(a.trainer_extra_window))]
+    if getattr(a, "trainer_policy_min_grade", None) is not None:
+        argv += ["--policy-min-grade", str(int(a.trainer_policy_min_grade))]
+    return argv
+
+
 class ClockWatch:
     """Every 30 s: past midnight the daily line is written, and the status file's `waiting_s_today` and `playing_s_today` are fresh even in
     the middle of a twenty-minute step (the main thread writes the status only when the phase changes)."""
@@ -1958,6 +1989,8 @@ class Daemon:
         doc = {"pid": os.getpid(), "phase": self.phase, "t": stamp(), "root": str(self.loop.root), "commit": self.commit,
                "segment": self.loop.state["segment"], "incumbent": self.loop.state["incumbent"],
                "server_pid": self.server_pid, "trainer_pid": self.trainer_pid, **getattr(self, "_status_kw", {})}
+        if getattr(self, "a", None) is not None and hasattr(self.a, "procs"):  # a reader sees at once that generation is off
+            doc.update(procs=int(self.a.procs), gate_procs=gate_procs(self.a), generation="on" if generating(self.a) else "off")
         if self.clock is not None:
             doc.update(self.clock.status_fields())
         with self._status_lock:
@@ -2010,11 +2043,7 @@ class Daemon:
         from tools.lab import winsys  # noqa: PLC0415
 
         inc, inc_dir = self.loop.incumbent()
-        argv = [GPU_PYTHON, str(ROOT / "rl" / "gym_loop_train.py"), "--root", str(self.loop.root), "--base", str(inc_dir),
-                "--parent-pid", str(os.getpid()), "--every-min", str(self.a.checkpoint_min), "--max-epochs", str(self.a.max_epochs),
-                "--window", str(self.a.train_window)]
-        if getattr(self.a, "reset_every", 0):
-            argv += ["--reset-every", str(self.a.reset_every)]
+        argv = trainer_argv(self.a, self.loop.root, inc_dir, os.getpid())
         logf = open(self.loop.trainer / "trainer.out", "a", encoding="utf-8")  # noqa: SIM115 -- the child's for its life
         self.trainer = winsys.suspended_popen(argv, self.job, stdout=logf, stderr=subprocess.STDOUT, cwd=str(ROOT),
                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -2048,7 +2077,7 @@ class Daemon:
     def gate(self, cand: str, cand_dir: Path) -> None:
         self.status("gate", candidate=cand)
         with self._span("play", "gate"):
-            v = run_gate(self.loop, cand, cand_dir, self.a.player_config, self.a.procs, self.a.gate_k, self.a.prior, daemon=self,
+            v = run_gate(self.loop, cand, cand_dir, self.a.player_config, gate_procs(self.a), self.a.gate_k, self.a.prior, daemon=self,
                          judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
@@ -2063,7 +2092,8 @@ class Daemon:
             self.status("gate", candidate=cand, part="human bar")
             try:
                 with self._span("play", "human-bar"):
-                    v["human"] = human_bar(self.loop, cand, cand_dir, v["incumbent"], self.a.procs, self.a.gate_k, HUMAN_BAR["prior"], daemon=self)
+                    v["human"] = human_bar(self.loop, cand, cand_dir, v["incumbent"], gate_procs(self.a), self.a.gate_k, HUMAN_BAR["prior"],
+                                           daemon=self)
             except Exception as error:  # noqa: BLE001 -- a reading that fails must never change or lose the verdict
                 v["human"] = f"error: {type(error).__name__}"
                 self.loop.log(f"gate {cand}: human bar: {type(error).__name__}: {error}")
@@ -2124,6 +2154,38 @@ class Daemon:
     def segment(self) -> None:
         with self._span("play", "generate"):
             self._segment()
+
+    def idle(self) -> None:
+        """Generation is off (`--procs 0`) and no checkpoint is offered to the gate: the trainer is the only worker. Keep the newest
+        checkpoints (the step after a segment does it when generating), then wait `--idle-s` for the next one: timed as the wait `idle`
+        (counted in `waits_today`, not logged line by line, as the yield), cut short by the loop's STOP."""
+        hold_quiet(False)
+        prune_checkpoints(self.loop)
+        self.status("idle", why="generation off: no checkpoint offered to the gate")
+        if self.clock is not None:
+            self.clock.wait("idle", log=False)
+        end = time.time() + float(getattr(self.a, "idle_s", 60.0))
+        while time.time() < end and not (self.loop.root / "STOP").exists():
+            time.sleep(5)
+        self._unblock()
+
+    def run_record(self) -> dict:
+        """What this run of the daemon was started with that a reader of `state.json` needs: who generates, who gates, what the trainer reads."""
+        a = self.a
+        return {"t": stamp(), "generation": "on" if generating(a) else "off", "procs": int(a.procs), "gate_procs": gate_procs(a),
+                "trainer": {"extra_rows_root": [str(p) for p in (getattr(a, "trainer_extra_rows_root", None) or [])],
+                            "extra_window": getattr(a, "trainer_extra_window", None),
+                            "policy_min_grade": getattr(a, "trainer_policy_min_grade", None),
+                            "window": a.train_window, "max_epochs": a.max_epochs, "checkpoint_min": a.checkpoint_min}}
+
+    def run_line(self) -> str:
+        """The start line's account of the processes and of what the trainer reads."""
+        a, rec = self.a, self.run_record()["trainer"]
+        who = (f"generation {a.procs} processes K={a.k}, gate {gate_procs(a)} processes" if generating(a)
+               else f"generation off (--procs 0), gate {gate_procs(a)} processes")
+        reads = (f"the plain rows of {', '.join(rec['extra_rows_root'])} (extra window {rec['extra_window'] or 'none'}, policy from grade "
+                 f"{'16' if rec['policy_min_grade'] is None else rec['policy_min_grade']})" if rec["extra_rows_root"] else "its own shards only")
+        return f"{who}; the trainer reads {reads}"
 
     def _segment(self) -> None:
         loop = self.loop
@@ -2188,7 +2250,12 @@ class Daemon:
         self.commit = _git("rev-parse", "--short", "HEAD", cwd=ROOT).strip()
         (self.loop.root / "STOP").unlink(missing_ok=True)
         self.loop.log(f"daemon: start pid {os.getpid()} at {self.commit} player config {self.a.player_config}, teacher "
-                      f"{self.a.teacher}, {self.a.procs} processes K={self.a.k}")
+                      f"{self.a.teacher}, {self.run_line()}")
+        self.loop.state["run"] = self.run_record()  # what this run was started with: who generates, who gates, what the trainer reads
+        self.loop.save()
+        for root in getattr(self.a, "trainer_extra_rows_root", None) or []:
+            if not Path(root).is_dir():
+                self.loop.log(f"daemon: the trainer's plain-rows root {root} is not there (yet): it reads what appears")
         self.loop.log(f"daemon: state reloaded: incumbent {self.loop.state['incumbent']}, {len(self.loop.state['gated'])} checkpoints "
                       f"with a verdict, segment {self.loop.state['segment']}; {PROMOTION_RULE['name']}: stage 1 plays j "
                       f"{list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}")
@@ -2203,12 +2270,18 @@ class Daemon:
                       + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
         self.loop.log(f"daemon: plateau alarm {'on' if getattr(self.a, 'plateau_alert', False) in (True, 'on') else 'off'}: {gg.PLATEAU['days']:g} days or "
                       f"{gg.PLATEAU['candidates']} gated candidates without a promotion writes {gg.PLATEAU['file']}")
-        mcfg = pmix.config(self.loop.starts)
-        self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
-                      f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
-        if getattr(self.a, "teacher_store", ""):
-            self.loop.log(f"daemon: teacher starts: the store's generations {self.a.teacher_gens} are replayed into starts/teacher-starts "
-                          f"(a rebuild from {self.a.teacher_min_new} new runs), teacher share {json.dumps(mcfg['teacher_share'])}")
+        if generating(self.a):
+            mcfg = pmix.config(self.loop.starts)
+            self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
+                          f"pre-loss starts {'off' if getattr(self.a, 'no_preloss', False) else 'on, ' + json.dumps(mcfg['preloss'])}")
+            if getattr(self.a, "teacher_store", ""):
+                self.loop.log(f"daemon: teacher starts: the store's generations {self.a.teacher_gens} are replayed into starts/teacher-starts "
+                              f"(a rebuild from {self.a.teacher_min_new} new runs), teacher share {json.dumps(mcfg['teacher_share'])}")
+        else:
+            self.loop.log("daemon: generation off: no segment is played, no start set, weights or retention step runs; the trainer, the "
+                          "pre-filter and the gate do (the loop's own shards stay as the older rows)")
+            if getattr(self.a, "teacher_store", ""):
+                self.loop.log(f"daemon: teacher starts: skipped (generation off; {self.a.teacher_store} feeds only the practice's start mix)")
         self.clock = gclock.TimeLedger(self.loop.games / "clock.jsonl", self.loop.log, segments=self.loop.games / "segments.jsonl",
                                        ledger=self.loop.gates / "verdicts.jsonl")
         self.loop.clock = self.clock
@@ -2237,33 +2310,38 @@ class Daemon:
                     time.sleep(30)
                     continue
                 self._unblock()
-                nights = nights_available(max_nights=self.a.max_nights)
-                stale = starts_stale(self.loop, nights, self.a.runs_per_night)
-                if stale:  # the set follows the nights: a finished night's runs join it (only theirs are replayed)
-                    self.status("starts", why=stale)
-                    self.loop.log(f"starts: rebuilding ({stale})")
-                    with self._span("play", "starts"):
-                        build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
-                    self.wait_free()
-                    continue
-                if self.teacher_step():  # the teacher's fights follow the teacher's store (D60 item 5; off without --teacher-store)
-                    self.wait_free()
-                    continue
-                stale = weights_stale(self.loop)
-                if stale:
-                    self.status("weights", why=stale)
-                    self.loop.log(f"weights: computing ({stale})")
-                    with self._span("play", "weights"):
-                        kind_weights(self.loop, procs=self.a.procs, prior=self.a.prior)
-                    self.wait_free()
-                    continue
+                generate = generating(self.a)  # --procs 0: the start set, the weights and the segments feed only the generation
+                if generate:
+                    nights = nights_available(max_nights=self.a.max_nights)
+                    stale = starts_stale(self.loop, nights, self.a.runs_per_night)
+                    if stale:  # the set follows the nights: a finished night's runs join it (only theirs are replayed)
+                        self.status("starts", why=stale)
+                        self.loop.log(f"starts: rebuilding ({stale})")
+                        with self._span("play", "starts"):
+                            build_starts(self.loop, nights, runs_per_night=self.a.runs_per_night, procs=self.a.procs)
+                        self.wait_free()
+                        continue
+                    if self.teacher_step():  # the teacher's fights follow the teacher's store (D60 item 5; off without --teacher-store)
+                        self.wait_free()
+                        continue
+                    stale = weights_stale(self.loop)
+                    if stale:
+                        self.status("weights", why=stale)
+                        self.loop.log(f"weights: computing ({stale})")
+                        with self._span("play", "weights"):
+                            kind_weights(self.loop, procs=self.a.procs, prior=self.a.prior)
+                        self.wait_free()
+                        continue
                 self.start_trainer()
                 with self._span("play", "prefilter"):  # who enters the gate (it can score a checkpoint on the CPU for minutes)
                     cand = self.next_gate()
                 if cand is not None and not self.a.no_gate:
                     self.gate(*cand)
-                else:
+                elif generate:
                     self.segment()
+                else:
+                    self.idle()  # nothing to gate and nothing to generate: wait for the trainer's next checkpoint
+                    continue
                 self.wait_free()
         except Exception:  # noqa: BLE001 -- logged; the state on disk stays for the restart
             import traceback  # noqa: PLC0415
@@ -2317,19 +2395,24 @@ def cmd_status(a) -> int:
     return 0
 
 
-def main(argv=None) -> int:
-    global QUIET_ALLOW
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("starts", "weights", "run", "gate", "stop", "status"):
         p = sub.add_parser(name)
         p.add_argument("--root", default=str(DEFAULT_ROOT))
-        p.add_argument("--procs", type=int, default=6)
+        p.add_argument("--procs", type=int, default=6,
+                       help="processes the generation plays with (and the start set's and weights' builds); `run --procs 0` is generation "
+                            "off: no segment, start set, weights or teacher-starts step, only the trainer, the pre-filter and the gate "
+                            "(then `--gate-procs` is needed)")
         p.add_argument("--prior", choices=("server", "cpu"), default="server")
         if name in ("starts", "run"):
             p.add_argument("--runs-per-night", type=int, default=RUNS_PER_NIGHT)
             p.add_argument("--max-nights", type=int, default=MAX_NIGHTS, help="the newest finished nights the set takes (0: all)")
         if name in ("run", "gate"):
+            p.add_argument("--gate-procs", type=int, default=None,
+                           help="processes the gate's games and the human bar play with (default: --procs); lets a gate play with 4 "
+                                "while the generation has none")
             p.add_argument("--player-config", default="judge-v0",
                            help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
             p.add_argument("--gate-k", type=int, default=32)
@@ -2355,6 +2438,17 @@ def main(argv=None) -> int:
             p.add_argument("--reset-every", type=int, default=0,
                            help="the trainer re-initialises the heads' last layers after every N-th checkpoint (0: never)")
             p.add_argument("--train-window", type=int, default=300_000)
+            p.add_argument("--idle-s", type=float, default=60.0,
+                           help="with --procs 0 and no checkpoint to gate: seconds between two looks for one (timed as the wait `idle`)")
+            p.add_argument("--trainer-extra-rows-root", action="append", default=[], metavar="PATH",
+                           help="D65 addendum 4: a plain-runs store (or one generation folder of it) whose fight rows the trainer reads "
+                                "beside its own shards (gym_loop_train.py --extra-rows-root; repeatable)")
+            p.add_argument("--trainer-extra-window", type=int, default=None, metavar="N",
+                           help="at most N rows from the --trainer-extra-rows-root parts (the trainer's --extra-window; not given: no cap "
+                                "of their own)")
+            p.add_argument("--trainer-policy-min-grade", type=int, default=None, metavar="N",
+                           help="a plain row's policy is learned from at this grade (stakes multiplier) or deeper (the trainer's "
+                                "--policy-min-grade; not given: its default, 16)")
             p.add_argument("--buffer-rows", type=int, default=3_000_000)
             p.add_argument("--buffer-days", type=float, default=21.0)
             p.add_argument("--buffer-gb", type=float, default=20.0)
@@ -2385,7 +2479,26 @@ def main(argv=None) -> int:
                            help="nats a checkpoint's held-out policy CE must be below the incumbent's")
             p.add_argument("--prefilter-floor-h", type=float, default=PREFILTER["floor_h"],
                            help="hours after which the best skipped checkpoint is gated whatever its figures")
+    return ap
+
+
+def check_args(ap: argparse.ArgumentParser, a: argparse.Namespace) -> None:
+    """The combinations that cannot work: a pool of no processes where one is needed, a trainer option with nothing to apply to."""
+    if a.procs < 0:
+        ap.error("--procs must be 0 or more")
+    if a.cmd in ("starts", "weights") and a.procs < 1:
+        ap.error(f"--procs must be 1 or more for `{a.cmd}` (it plays games)")
+    if a.cmd in ("run", "gate") and gate_procs(a) < 1 and not (a.cmd == "run" and a.no_gate):
+        ap.error("--procs 0 (generation off) needs --gate-procs N of 1 or more: the gate plays with them (or --no-gate)")
+    if a.cmd == "run" and not a.trainer_extra_rows_root and (a.trainer_extra_window or a.trainer_policy_min_grade is not None):
+        ap.error("--trainer-extra-window and --trainer-policy-min-grade apply to the rows of --trainer-extra-rows-root, which is not given")
+
+
+def main(argv=None) -> int:
+    global QUIET_ALLOW
+    ap = build_parser()
     a = ap.parse_args(argv)
+    check_args(ap, a)
     if a.cmd == "starts":
         loop = Loop(a.root)
         meta = build_starts(loop, runs_per_night=a.runs_per_night, procs=a.procs, max_nights=a.max_nights)
@@ -2397,7 +2510,7 @@ def main(argv=None) -> int:
     if a.cmd == "gate":
         loop = Loop(a.root)
         d = Path(a.candidate)
-        print(json.dumps(run_gate(loop, d.name, d, a.player_config, a.procs, a.gate_k, a.prior, judge=a.judge or None), indent=1))
+        print(json.dumps(run_gate(loop, d.name, d, a.player_config, gate_procs(a), a.gate_k, a.prior, judge=a.judge or None), indent=1))
         return 0
     if a.cmd == "stop":
         return cmd_stop(a)
