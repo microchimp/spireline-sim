@@ -37,8 +37,11 @@ RUN_TIMEOUT_S = 600.0  # the dispatcher's wall limit per emulator run (was the i
 REVIEW_GUARD_HELP = ("decide with the review's promotion guard (tools/lab/promotion_guard.py, docs/PROMOTION_GUARD.md); "
                      "default: the SPIRELINE_REVIEW_GUARD variable, off")  # emu, train, promote and rejudge: one reading of the flag
 KEEP_RULE_HELP = ("the promotion rule: v1 (default: D24's floor primary and the review guard) or v2 (the keep test v2, tools/lab/keep_v2.py, "
-                  "docs/rl/KEEP_TEST_V2.md: promote on the deepest boss the lineage reaches, or on the floor, with the guards); "
-                  "default: the SPIRELINE_KEEP_RULE variable, else v1")  # train, promote and rejudge
+                  "docs/rl/KEEP_TEST_V2.md: promote on the deepest boss the lineage reaches, or on the floor, with the guards) or v3 (the keep rule "
+                  "v3, D66, docs/rl/KEEP_TEST_V3.md: route A alone, floors refuse only a collapse, the drift check advisory, an extension "
+                  "for a gain that needs more seeds); default: the SPIRELINE_KEEP_RULE variable, else v1")  # train, promote and rejudge
+POOL_BLOCK_HELP = ("keep rule v3: pool this block's finished arms (the candidate's and the base's, arms/<block>-<config>) with the judged block's; "
+                   "route A is judged on all the pairs; repeatable")
 FUTILITY_HELP = ("with --sequential: stop the block as rejected (rule futility@<seeds>) at a look from --futility-min-seeds on when no route's 95% upper bound "
                  "of the candidate's gain reaches the gain the route needs to promote on the whole block (gen_loop.futility_check, docs/rl/KEEP_TEST_V2.md); "
                  "on unless --no-futility")
@@ -847,14 +850,27 @@ def train_cmd(a: argparse.Namespace) -> int:
             if "{k}" in a.seeds_file else Path(a.seeds_file)
         import prior_launch  # noqa: PLC0415
 
-        return gen_loop.run_promote_subprocess(a.emu_python, cand, None, seeds_file, Path(a.agent_root), a.procs, a.lib,
-                                               Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
-                                               prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
-                                               sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
-                                               keep_rule=getattr(a, "keep_rule", None),  # None: the child reads SPIRELINE_KEEP_RULE, else v1
-                                               futility=False if getattr(a, "no_futility", False) else None,
-                                               futility_min_seeds=getattr(a, "futility_min_seeds", None),
-                                               screen=False if getattr(a, "no_screen", False) else None)
+        def play(block: Path, pool: tuple[str, ...] = ()) -> int:
+            return gen_loop.run_promote_subprocess(a.emu_python, cand, None, block, Path(a.agent_root), a.procs, a.lib,
+                                                   Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
+                                                   prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
+                                                   sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
+                                                   keep_rule=getattr(a, "keep_rule", None),  # None: the child reads SPIRELINE_KEEP_RULE, else v1
+                                                   futility=False if getattr(a, "no_futility", False) else None,
+                                                   futility_min_seeds=getattr(a, "futility_min_seeds", None),
+                                                   screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool)
+
+        rc = play(seeds_file)
+        # The keep rule v3 extends a candidate whose deep_f gain is +1.0 per 100 or more but whose 0.005 bound is not above 0 (D66): the
+        # candidate is played on the date's next fresh block, judged pooled with the first, and that judgement is the verdict. The pooled
+        # judgement never extends again, so this runs once.
+        if rc == 0 and not getattr(a, "no_requeue", False) and gen_loop.keep_rule_of(getattr(a, "keep_rule", None)) == "v3":
+            first = gen_loop.extension_of(cand)
+            if first is not None:
+                second = gen_loop.next_extension_block(seeds_file, Path(a.agent_root) / "promotions.tsv")
+                print(f"the keep rule v3 extended gen{target}/{cand.name} on {seeds_file.stem}: playing it on {second.stem} and judging both pooled", flush=True)
+                rc = play(second, (str(first.get("seed_block") or seeds_file.stem),))
+        return rc
     return 0
 
 
@@ -1031,7 +1047,7 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
                            smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
-                           screen=False if getattr(a, "no_screen", False) else None,
+                           screen=False if getattr(a, "no_screen", False) else None, pool_blocks=list(getattr(a, "pool_block", None) or ()),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
     out = {k: doc.get(k) for k in ("decision_text", "floor", "boss_kill", "wins")}  # (a screen's rejection played no arm: no figures)
     if "human_bar" in doc:  # the keep test v2's report-only line on the fight exam's human stratum
@@ -1048,13 +1064,18 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
 
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
-                           review_guard=True if a.review_guard else None, keep_rule=getattr(a, "keep_rule", None), out=Path(a.out) if getattr(a, "out", None) else None)
+                           review_guard=True if a.review_guard else None, keep_rule=getattr(a, "keep_rule", None), out=Path(a.out) if getattr(a, "out", None) else None,
+                           pool_blocks=list(getattr(a, "pool_block", None) or ()))
     out = {k: doc[k] for k in ("decision_text", "n_seeds", "floor", "boss_kill", "wins", "decision")}
-    if "keep_v2" in doc:  # the keep test v2: the route, the frontier and the headline figures beside the usual ones
+    if "keep_v2" in doc:  # the keep test v2 (or v3): the route, the frontier and the headline figures beside the usual ones
         k2 = doc["keep_v2"]
-        out["keep_v2"] = {"route": k2["route"], "frontier": k2["frontier"]["name"], "k2": k2["kills"]["B2"], "d_deep": k2["deep"]["mean"],
+        out["keep_v2"] = {"route": k2["route"], "frontier": k2["frontier"]["name"], "k2": k2["kills"]["B2"], "kills": k2["kills"], "d_deep": k2["deep"]["mean"],
                           "deep_lower": k2["deep"]["lower_route"], "floor_lower95": k2["floor"]["lower95"], "crash": k2["crash"],
                           "drift": k2["drift"]["verdict"], "act1_review": k2["act1_review"]["fires"]}
+        if "extend" in k2:  # the keep rule v3
+            out["keep_v2"].update({"extend": k2["extend"], "extended": k2["extended"], "floor_collapse": k2["collapse"]})
+    if "pooled" in doc:  # the blocks a v3 judgement pooled, each with its pairs
+        out["pooled"] = doc["pooled"]
     if "human_bar" in doc:  # report-only: the judged player's fight network against the human on the fight exam's human stratum
         out["human_bar"] = doc["human_bar"]["line"]
     if "seeds" in doc["rejudged"]:  # a block the funnel stopped early: say which seeds were judged
@@ -1364,10 +1385,12 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--lab")
     t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     t.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
-    t.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
+    t.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     t.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     t.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
     t.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
+    t.add_argument("--no-requeue", action="store_true", help="with --promote and the keep rule v3: do not play an extended candidate on a second block "
+                   "(the extension verdict then ends the job)")
     bd = sub.add_parser("build", help="assemble generation N's candidate from a combat prior export and a generation's V_run fit and "
                         "macro, nothing trained (D44 step A); with --marker-dir the lab's train job then judges it as it is")
     bd.add_argument("--prior", required=True, help="a combat prior export: model.json, combat_policy.pt, combat_net.pt (the fight "
@@ -1461,7 +1484,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "the E-block must not contain their seeds; repeatable")
     pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
-    pr.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
+    pr.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    pr.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP + " (the keep rule v3's second look at an extended candidate)")
     pr.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     pr.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
     pr.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
@@ -1477,7 +1501,8 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--note", required=True, help="why the block is judged again (the decision that changed the rule)")
     rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     rj.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
-    rj.add_argument("--keep-rule", choices=("v1", "v2"), default=None, help=KEEP_RULE_HELP)
+    rj.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    rj.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP)
     rj.add_argument("--out", help="a dry run: write promotion.json, a copy of promotions.tsv with the new row and (on a promotion) current.json "
                     "to this folder instead of the agent folder, which is only read; refused together with --lab")
     sc = sub.add_parser("score")

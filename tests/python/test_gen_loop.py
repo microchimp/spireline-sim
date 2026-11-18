@@ -1126,7 +1126,8 @@ class KeepRuleV2Tests(unittest.TestCase):
             self.assertEqual(gen_loop.keep_rule_of("v1"), "v1")  # the flag beats the variable
             os.environ[gen_loop.KEEP_RULE_FLAG] = ""
             self.assertEqual(gen_loop.keep_rule_of(), "v1")
-            for bad in ("v3", "on", "2"):
+            self.assertEqual(gen_loop.keep_rule_of("v3"), "v3")  # D66: the keep rule v3 is a rule now (the test named it as the first unknown one)
+            for bad in ("v4", "on", "2"):
                 os.environ[gen_loop.KEEP_RULE_FLAG] = bad
                 with self.assertRaises(ValueError):
                     gen_loop.keep_rule_of()
@@ -1137,7 +1138,8 @@ class KeepRuleV2Tests(unittest.TestCase):
                 self.assertIsNone(p.parse_args([cmd, *extra]).keep_rule, cmd)
                 self.assertEqual(p.parse_args([cmd, *extra, "--keep-rule", "v2"]).keep_rule, "v2", cmd)
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-                    p.parse_args([cmd, *extra, "--keep-rule", "v3"])
+                    p.parse_args([cmd, *extra, "--keep-rule", "v4"])
+                self.assertEqual(p.parse_args([cmd, *extra, "--keep-rule", "v3"]).keep_rule, "v3", cmd)
             self.assertIsNone(p.parse_args(["rejudge", "--cand", "c", "--seeds-file", "s", "--agent-root", "a", "--note", "n"]).out)
         # the child process is told only when the caller names a rule
         ran = []

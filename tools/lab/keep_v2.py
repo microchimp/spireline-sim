@@ -26,6 +26,12 @@ The funnel (`seq_call`) keeps D51's looks and judges each look on normal statist
 the smoke look refuses a floor collapse that deep_f does not offset, a later look refuses only when both routes are dead, and an
 interim look is eligible to promote when a route's z reaches the early z (the 0.001 split over the interim looks and the two
 routes); the caller then asks `judge` on the seeds played.
+
+Keep rule v3 (D66, 2026-11-18; docs/rl/KEEP_TEST_V3.md) is a mode of this module (``judge(..., rule="v3")``, ``seq_call(..., rule="v3")``;
+``--keep-rule v3``): route A (deeper) is the only route to a promotion and it carries no floor margin, route F is gone, the floors refuse
+only a collapse (the paired mean floor difference's one-sided 99% upper bound below -5.0 floors), the drift check is recorded and decides
+nothing, and a block whose deep_f gain is at least +1.0 per 100 but whose 0.005 bound is not above 0 is *extended* (route "X"), not refused:
+the candidate is played on a second fresh block and judged on both pooled. Rule v2 is unchanged.
 """
 
 from __future__ import annotations
@@ -55,6 +61,14 @@ BOSSES = ("B1", "B2", "B3a", "win")
 ACT_BOSS_FLOORS = (17, 33, 48)  # rl/run_fields.ACT_BOSS_FLOORS: the floor cuts of rows that carry no `boss_damage_acts`
 BOOT_B = pg.BOOT_B
 BOOT_SEED = pg.BOOT_SEED
+
+RULE_V3 = "keep-v3-2026-11-18"
+LEDGER_RULE_V3 = "v3"  # the `rule` column of a promotions.tsv row judged by the keep rule v3
+RULE_VERSIONS = ("v2", "v3")  # the `rule` argument of `judge` and `seq_call`
+COLLAPSE_FLOORS = -5.0  # v3: the floors refuse only a collapsed player: the paired mean floor difference's one-sided 99% upper bound below this
+COLLAPSE_ALPHA = 0.01  # the one-sided level of that bound
+EXTEND_ROUTE = "X"  # v3: the ledger's route for a block that is extended, not decided
+ADVISORY_V3 = ("attempt", "drift")  # v3: checks recorded with their value that decide nothing (the attempt cap since D65 addendum 2, the drift check since D66)
 
 
 # ------------------------------------------------------------------ bosses beaten, the frontier, deep_f
@@ -146,27 +160,34 @@ def _bootstrap_means(diffs: Sequence[float], b: int, seed: int):
     return x, means
 
 
-def diff_summary(diffs: Sequence[float], b: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, float]:
+def diff_summary(diffs: Sequence[float], b: int = BOOT_B, seed: int = BOOT_SEED, *, upper99: bool = False) -> dict[str, float]:
     """Seeds, mean, SE (SD with n - 1 over the root of n) and the cluster bootstrap's bounds of the mean of paired differences, all from
     one resampling: `lower_route` (one-sided 0.005 lower bound), `lower95` and `upper95` (one-sided 95%), and `p` (the share of
     resampled means at or below 0, as `promotion_guard.cluster_bootstrap_lower`). `lower_route` and `lower95` equal that function's
-    `lower` at ROUTE_ALPHA and GUARD_ALPHA for the same inputs."""
+    `lower` at ROUTE_ALPHA and GUARD_ALPHA for the same inputs. With `upper99` (the keep rule v3's collapse check) the one-sided 99% upper
+    bound of the same resampling is added as `upper99`; without it the summary is exactly what v2 always had."""
     import numpy as np  # noqa: PLC0415
 
     n = len(diffs)
     if n == 0:
         nan = float("nan")
-        return {"n": 0, "mean": nan, "se": nan, "lower_route": nan, "lower95": nan, "upper95": nan, "p": 1.0, "boot": 0}
+        return {"n": 0, "mean": nan, "se": nan, "lower_route": nan, "lower95": nan, "upper95": nan, "p": 1.0, "boot": 0,
+                **({"upper99": nan} if upper99 else {})}
     x, means = _bootstrap_means(diffs, b, seed)
     se = float(x.std(ddof=1)) / math.sqrt(n) if n > 1 else math.inf
-    return {"n": int(n), "mean": float(x.mean()), "se": se, "lower_route": float(np.quantile(means, ROUTE_ALPHA)),
-            "lower95": float(np.quantile(means, GUARD_ALPHA)), "upper95": float(np.quantile(means, 1 - GUARD_ALPHA)),
-            "p": float((np.sum(means <= 0) + 1) / (b + 1)), "boot": int(b)}
+    out = {"n": int(n), "mean": float(x.mean()), "se": se, "lower_route": float(np.quantile(means, ROUTE_ALPHA)),
+           "lower95": float(np.quantile(means, GUARD_ALPHA)), "upper95": float(np.quantile(means, 1 - GUARD_ALPHA)),
+           "p": float((np.sum(means <= 0) + 1) / (b + 1)), "boot": int(b)}
+    if upper99:
+        out["upper99"] = float(np.quantile(means, 1 - COLLAPSE_ALPHA))
+    return out
 
 
-def diff_stats(floor_diffs: Sequence[float], deep_diffs: Sequence[float], b: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, dict[str, float]]:
-    """`diff_summary` of the floor and of the deep_f differences (two resamplings; both routes read them)."""
-    return {"floor": diff_summary(floor_diffs, b, seed), "deep": diff_summary(deep_diffs, b, seed)}
+def diff_stats(floor_diffs: Sequence[float], deep_diffs: Sequence[float], b: int = BOOT_B, seed: int = BOOT_SEED, *,
+               floor_upper99: bool = False) -> dict[str, dict[str, float]]:
+    """`diff_summary` of the floor and of the deep_f differences (two resamplings; both routes read them). `floor_upper99` adds the floor's
+    99% upper bound (the keep rule v3's collapse check)."""
+    return {"floor": diff_summary(floor_diffs, b, seed, upper99=floor_upper99), "deep": diff_summary(deep_diffs, b, seed)}
 
 
 def route_a(floor_diffs: Sequence[float], deep_diffs: Sequence[float], *, boot: int = BOOT_B, seed: int = BOOT_SEED,
@@ -190,6 +211,26 @@ def route_f(floor_diffs: Sequence[float], deep_diffs: Sequence[float], *, boot: 
     checks = {"floor_bound": bool(fl["lower_route"] > 0), "deep_not_worse": bool(dp["upper95"] >= 0)}
     return {"holds": all(checks.values()), "checks": checks, "alpha": ROUTE_ALPHA, "d_floor": fl["mean"], "floor_lower": fl["lower_route"],
             "p_floor": fl["p"], "deep_upper95": dp["upper95"]}
+
+
+def route_a_v3(floor_diffs: Sequence[float], deep_diffs: Sequence[float], *, boot: int = BOOT_B, seed: int = BOOT_SEED,
+               stats: Mapping[str, Mapping[str, float]] | None = None) -> dict[str, Any]:
+    """Route A under the keep rule v3 (D66): deep_f's bootstrap lower bound at ROUTE_ALPHA above 0 and its mean at least MIN_GAIN, and nothing
+    else: no floor margin. (`floor_lower95` is recorded, as the ledger's column.) `stats` from `diff_stats` skips the resampling."""
+    st = stats or diff_stats(floor_diffs, deep_diffs, boot, seed)
+    fl, dp = st["floor"], st["deep"]
+    checks = {"deep_bound": bool(dp["lower_route"] > 0), "min_gain": bool(dp["mean"] >= MIN_GAIN)}
+    return {"holds": all(checks.values()), "checks": checks, "alpha": ROUTE_ALPHA, "min_gain": MIN_GAIN, "floor_margin": None,
+            "d_deep": dp["mean"], "deep_lower": dp["lower_route"], "p_deep": dp["p"], "floor_lower95": fl["lower95"]}
+
+
+def floor_collapse(floor: Mapping[str, float]) -> dict[str, Any]:
+    """The keep rule v3's floor check: floors catch breakage only. `floor` is `diff_summary(..., upper99=True)` of the floor differences;
+    the player is collapsed when the one-sided 99% upper bound of the paired mean floor difference is below COLLAPSE_FLOORS (-5.0 floors).
+    Anything above that is recorded and decides nothing."""
+    up = float(floor["upper99"])
+    return {"collapsed": bool(up < COLLAPSE_FLOORS), "upper99": up, "limit": COLLAPSE_FLOORS, "alpha": COLLAPSE_ALPHA, "mean": float(floor["mean"]),
+            "n": int(floor["n"])}
 
 
 # ------------------------------------------------------------------ the guards
@@ -262,13 +303,19 @@ def wins_clause(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapp
 
 def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
           frontier_info: Mapping[str, Any] | None = None, lineage: Sequence[tuple[int, int]] = (), previous_flagged: bool = False,
-          prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, Any]:
-    """The keep test v2 on one block: both routes, the wins clause, the crash guard and the drift check, with the Act 1 guards reported and
+          prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED, rule: str = "v2",
+          extended: bool = False, final: bool = True) -> dict[str, Any]:
+    """The keep test v2 on one block (`rule` "v3": the keep rule v3, `judge_v3`; `extended` and `final` are read by v3 alone): both routes, the wins clause, the crash guard and the drift check, with the Act 1 guards reported and
     the attempt cap recorded (D65 addendum 2: `checks["attempt"]` is what the old cap said, `attempt_advisory` is true, nothing refuses on
     it). `frontier` is the frontier's index (`frontier_record` for the lineage); `lineage` the promoted lineage's
     (Act 1 kills, runs) on its last blocks for the drift check, `previous_flagged` and `prior_attempts` as for
     `promotion_guard.judge`. `promote` is true when route A or F holds and every gating check holds; `route` reads "A", "F", "AF" or "";
     `blocks` is true when a check other than the routes and the advisory attempt fails (the promotion would be refused even on a route)."""
+    if rule == "v3":
+        return judge_v3(cand_rows, base_rows, frontier=frontier, frontier_info=frontier_info, lineage=lineage, previous_flagged=previous_flagged,
+                        prior_attempts=prior_attempts, cap=cap, boot=boot, seed=seed, extended=extended, final=final)
+    if rule != "v2":
+        raise ValueError(f"unknown keep rule {rule!r} (the rules of this module are {', '.join(RULE_VERSIONS)})")
     d = paired_diffs(cand_rows, base_rows, frontier)
     st = diff_stats(d["floor"], d["deep"], boot, seed)
     ra, rf = route_a(d["floor"], d["deep"], stats=st), route_f(d["floor"], d["deep"], stats=st)
@@ -290,12 +337,53 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
             "blocking": blocking, "attempt_advisory": True, "review": drift["verdict"] == "flagged"}
 
 
+def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
+             frontier_info: Mapping[str, Any] | None = None, lineage: Sequence[tuple[int, int]] = (), previous_flagged: bool = False,
+             prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED, extended: bool = False,
+             final: bool = True) -> dict[str, Any]:
+    """The keep rule v3 (D66) on the paired arms of one judgement (one block, or the pooled blocks of an extended candidate: the rows are
+    all the pairs). Route A alone promotes: deep_f's gain per 100 runs has its one-sided 0.005 bound above 0 and a point gain of at least
+    +1.0, with no floor margin; route F is gone. The floors decide nothing but a collapse: `checks["floor_collapse"]` fails when the paired
+    mean floor difference's one-sided 99% upper bound is below -5.0 floors. The crash guard and the wins co-primary hold as in v2. The
+    drift check and the attempt cap are recorded (`checks["drift"]`, `checks["attempt"]` keep what each would have said, `advisory_checks`
+    names them) and decide nothing; `review` still flags a flagged drift.
+
+    A candidate is *extended*, not refused, when `final` (every seed of the block is played; a block the funnel stopped is not) and not
+    `extended` (it was extended before, or this judgement already pools a second block) and route A's point gain is at least +1.0 while its
+    0.005 bound is not above 0, and no guard fails (no collapse, no crash, no wins failure): `extend` is true, `route` reads "X", and
+    `promote` is false. Anything else that does not promote is a refusal. `route` reads "A" when route A holds (also when a guard blocks the
+    promotion, as in v2), "X" for an extension, "" otherwise."""
+    d = paired_diffs(cand_rows, base_rows, frontier)
+    st = diff_stats(d["floor"], d["deep"], boot, seed, floor_upper99=True)
+    ra = route_a_v3(d["floor"], d["deep"], stats=st)
+    collapse = floor_collapse(st["floor"])
+    wins = wins_clause(cand_rows, base_rows)
+    crash = crash_guard(cand_rows, base_rows)
+    a1 = act1_report(cand_rows, base_rows, boot=boot, seed=seed)
+    drift = {**pg.drift_check(a1["kill"]["cand"], a1["kill"]["pairs"], lineage, previous_flagged), "advisory": True}
+    attempt = pg.retry_cap(prior_attempts, cap)
+    seeds, c, b = paired_rows(cand_rows, base_rows)
+    kills = {name: [sum(bosses_beaten(c[s])[j] for s in seeds), sum(bosses_beaten(b[s])[j] for s in seeds)] for j, name in enumerate(BOSSES)}
+    checks = {"route": bool(ra["holds"]), "floor_collapse": not collapse["collapsed"], "wins": bool(wins["holds"]), "crash": bool(crash["holds"]),
+              "drift": not drift["blocks"], "attempt": bool(attempt["within_cap"])}
+    gating = {k: v for k, v in checks.items() if k not in ADVISORY_V3}
+    blocking = [k for k, v in gating.items() if not v and k != "route"]
+    extend = bool(final and not extended and not ra["holds"] and ra["checks"]["min_gain"] and not ra["checks"]["deep_bound"] and not blocking)
+    route = "A" if ra["holds"] else EXTEND_ROUTE if extend else ""
+    return {"rule": RULE_V3, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
+            "route": route, "routes": {"A": ra}, "floor": st["floor"], "deep": st["deep"], "kills": kills, "alpha": ROUTE_ALPHA,
+            "min_gain": MIN_GAIN, "collapse": collapse, "wins": wins, "crash": crash, "drift": drift, "attempt": attempt, "act1_review": a1,
+            "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),
+            "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "advisory_checks": list(ADVISORY_V3),
+            "review": drift["verdict"] == "flagged"}
+
+
 def ledger_cells(verdict: Mapping[str, Any]) -> dict[str, Any]:
-    """The nine promotions.tsv columns a v2 row adds after `macro`: rule, frontier, route (A, F, AF or empty), k2_cand and k2_base (the
-    Act 2 boss's kills, the headline, written whatever the verdict), d_deep and deep_lower (per 100 runs; the 0.005 bound), p_deep,
-    floor_lower95."""
+    """The nine promotions.tsv columns a v2 row adds after `macro`: rule, frontier, route (A, F, AF or empty; v3: A, X for an extension, or
+    empty), k2_cand and k2_base (the Act 2 boss's kills, the headline, written whatever the verdict), d_deep and deep_lower (per 100 runs; the
+    0.005 bound), p_deep, floor_lower95."""
     k2 = verdict["kills"]["B2"]
-    return {"rule": LEDGER_RULE, "frontier": verdict["frontier"]["name"], "route": verdict["route"], "k2_cand": k2[0], "k2_base": k2[1],
+    return {"rule": LEDGER_RULE_V3 if verdict.get("rule") == RULE_V3 else LEDGER_RULE, "frontier": verdict["frontier"]["name"], "route": verdict["route"], "k2_cand": k2[0], "k2_base": k2[1],
             "d_deep": f"{verdict['deep']['mean']:.4f}", "deep_lower": f"{verdict['deep']['lower_route']:.4f}", "p_deep": f"{verdict['deep']['p']:.5f}",
             "floor_lower95": f"{verdict['floor']['lower95']:.4f}"}
 
@@ -305,6 +393,17 @@ def summary(verdict: Mapping[str, Any]) -> str:
     wins, drift and attempt checks, then the Act 1 guards that would have fired (reported only)."""
     dp, fl, k2 = verdict["deep"], verdict["floor"], verdict["kills"]["B2"]
     r, w, cr, d, a = verdict["route"] or "none", verdict["wins"], verdict["crash"], verdict["drift"], verdict["attempt"]
+    if verdict.get("rule") == RULE_V3:
+        co = verdict["collapse"]
+        parts = [f"v3 route {r}" + (" (extend)" if verdict["extend"] else ""), f"frontier {verdict['frontier']['name']}",
+                 f"deep {dp['mean']:+.2f} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
+                 f"floor {fl['mean']:+.2f} (99% upper {co['upper99']:+.2f}, collapse below {co['limit']:+.1f}: {'COLLAPSED' if co['collapsed'] else 'ok'})",
+                 f"crash {'ok' if cr['holds'] else 'FAILS'} ({cr['cand']}/{cr['base']})",
+                 "wins " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
+                 f"drift {d['verdict']} (advisory)" + (f" ({d['cand_rate']:.4f} vs pooled {d['pooled_rate']:.4f})" if "cand_rate" in d else ""),
+                 f"attempt {a['attempt']}/{a['cap']}{pg.attempt_note(a)}",
+                 "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none")]
+        return " | ".join(parts).replace("\t", " ")
     parts = [f"v2 route {r}", f"frontier {verdict['frontier']['name']}",
              f"deep {dp['mean']:+.2f} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
              f"floor lower95 {fl['lower95']:+.2f}",
@@ -340,8 +439,44 @@ def normal_stats(diffs: Sequence[float]) -> dict[str, float]:
     return {"n": n, "mean": mean, "se": se, "z": z}
 
 
+def seq_call_v3(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, looks: Sequence[int], *,
+                alpha_early: float = EARLY_ALPHA) -> dict[str, Any]:
+    """The funnel's call at look `j` of `looks` under the keep rule v3 (normal statistics, as `seq_call`). The smoke look (j = 0) refuses
+    nothing on these figures (D64; `funnel` still refuses a crashing candidate there); a later look refuses when route A is dead (deep_f's
+    one-sided 99% upper bound below +1.0 per 100: not even an extension is in reach) or the floors have collapsed (their 99% upper bound
+    below -5.0); an interim look is eligible to promote when route A's z reaches the early z (`early_z`, 3.72 for seven looks) with a gain of at
+    least +1.0. Nothing else about the floors is asked: no floor route, no floor margin. The last look is `final`."""
+    fl, dp = normal_stats(floor_diffs), normal_stats(deep_diffs)
+    n_looks = len(looks)
+    nd = NormalDist()
+    z95, z99 = nd.inv_cdf(1 - GUARD_ALPHA), nd.inv_cdf(1 - COLLAPSE_ALPHA)
+    z_e = early_z(n_looks, alpha_early)
+    m, s, d, t = fl["mean"], fl["se"], dp["mean"], dp["se"]
+    out: dict[str, Any] = {**fl, "look": j + 1, "of": n_looks, "upper99": m + z99 * s, "lower99": m - z99 * s, "lower95": m - z95 * s,
+                           "upper95": m + z95 * s, "deep_mean": d, "deep_se": t, "deep_z": dp["z"], "deep_upper95": d + z95 * t,
+                           "deep_upper99": d + z99 * t, "z_early": z_e, "routes": []}
+    if j >= n_looks - 1:
+        return {**out, "action": "final", "reason": "every seed played: the keep rule v3 on all of them"}
+    if j == 0:  # D64: the smoke look refuses nothing on the floor or on deep_f; the figures are recorded
+        return {**out, "action": "continue", "smoke_would_refuse": False,
+                "reason": "smoke block: refuses nothing on these figures (D64; v3 asks the floors for a collapse and deep_f for route A at the later looks)"}
+    collapsed = out["upper99"] < COLLAPSE_FLOORS
+    a_dead = out["deep_upper99"] < MIN_GAIN
+    if collapsed or a_dead:
+        why = []
+        if collapsed:
+            why.append(f"the floors collapsed (99% upper bound {out['upper99']:+.2f} below {COLLAPSE_FLOORS:+.1f})")
+        if a_dead:
+            why.append(f"route A is dead (deep_f's 99% upper bound {out['deep_upper99']:+.2f} below {MIN_GAIN:+.1f})")
+        return {**out, "action": "refuse", "reason": " and ".join(why)}
+    if dp["z"] >= z_e and d >= MIN_GAIN:
+        return {**out, "action": "eligible", "routes": ["A"],
+                "reason": f"route A clears the early z {z_e:.2f} (deep_f z {dp['z']:.2f}, gain {d:+.2f} per 100)"}
+    return {**out, "action": "continue", "reason": "route A is not dead and is not eligible"}
+
+
 def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, looks: Sequence[int], *,
-             alpha_early: float = EARLY_ALPHA) -> dict[str, Any]:
+             alpha_early: float = EARLY_ALPHA, rule: str = "v2") -> dict[str, Any]:
     """The funnel's call at look `j` (0-based) of `looks` on the seeds played, normal statistics throughout: `action` is "refuse",
     "eligible" (a route clears the early z and its other conditions; `routes` names them; the caller still asks `judge`), "continue"
     or "final" (the last look: `judge` on all the seeds). With m, s, z the floor differences' mean, SE and z, and d, t, u the deep_f
@@ -352,7 +487,13 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
       later looks         refuse when route F is dead (m + 2.326 s < 0) and route A is dead (m + 2.326 s < -1.0, or d + 1.645 t < 1.0).
       interim looks       eligible when route F's z reaches z_e with d + 1.645 t >= 0, or route A's u reaches z_e with d >= 1.0 and
                           m - 1.645 s >= -1.0; z_e = `early_z` (3.72 for seven looks).
+
+    `rule` "v3" is `seq_call_v3`.
     """
+    if rule == "v3":
+        return seq_call_v3(floor_diffs, deep_diffs, j, looks, alpha_early=alpha_early)
+    if rule != "v2":
+        raise ValueError(f"unknown keep rule {rule!r} (the rules of this module are {', '.join(RULE_VERSIONS)})")
     fl, dp = normal_stats(floor_diffs), normal_stats(deep_diffs)
     n_looks = len(looks)
     nd = NormalDist()
@@ -400,13 +541,15 @@ def critical_gain(se: float, n: int, n_block: int, alpha: float) -> float:
 
 
 def futility_routes(floor: Mapping[str, float], deep: Mapping[str, float] | None, n: int, n_block: int, *, floor_alpha: float = ROUTE_ALPHA,
-                    routes: Sequence[str] = ("A", "F"), measure: str = "deep_f") -> dict[str, Any]:
+                    routes: Sequence[str] = ("A", "F"), measure: str = "deep_f", extend_possible: bool = False) -> dict[str, Any]:
     """Whether any route can still promote, from the summaries (`diff_summary`: mean, se, upper95) of the floor and deep_f differences
     on `n` of `n_block` paired seeds. For each route the 95% upper bound of the candidate's gain is set against the gain the route
     needs to promote on all the seeds:
 
       route A (deeper)   deep_f's upper95 against max(MIN_GAIN, the critical gain of deep_f at ROUTE_ALPHA): the rule asks a point gain of
-                         +1.0 per 100 and a lower bound above 0
+                         +1.0 per 100 and a lower bound above 0. With `extend_possible` (the keep rule v3, a block that may still be
+                         extended: this candidate was not extended before and no second block is pooled) the need is MIN_GAIN alone,
+                         the gain that earns an extension: a block that cannot promote on its own is not futile while it can extend
       route F (further)  the floor's upper95 against the critical gain of the floor at `floor_alpha` (ROUTE_ALPHA for the keep test v2;
                          D24's 0.01 for v1, which has this route alone)
 
@@ -419,7 +562,8 @@ def futility_routes(floor: Mapping[str, float], deep: Mapping[str, float] | None
         if name == "A":
             if deep is None:
                 continue
-            need, got, mean, label = max(MIN_GAIN, critical_gain(deep["se"], n, n_block, ROUTE_ALPHA)), deep["upper95"], deep["mean"], f"{measure} per 100 runs"
+            need = MIN_GAIN if extend_possible else max(MIN_GAIN, critical_gain(deep["se"], n, n_block, ROUTE_ALPHA))
+            got, mean, label = deep["upper95"], deep["mean"], f"{measure} per 100 runs"
         else:
             need, got, mean, label = critical_gain(floor["se"], n, n_block, floor_alpha), floor["upper95"], floor["mean"], "floors"
         known = math.isfinite(need) and math.isfinite(got)
@@ -432,9 +576,10 @@ def futility_routes(floor: Mapping[str, float], deep: Mapping[str, float] | None
 
 
 def futility_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float] | None, n_block: int, *, floor_alpha: float = ROUTE_ALPHA,
-                  routes: Sequence[str] = ("A", "F"), measure: str = "deep_f", boot: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, Any]:
+                  routes: Sequence[str] = ("A", "F"), measure: str = "deep_f", boot: int = BOOT_B, seed: int = BOOT_SEED,
+                  extend_possible: bool = False) -> dict[str, Any]:
     """`futility_routes` on the paired differences of the seeds played: the bounds are the cluster bootstrap's (`diff_summary`, the
     method of the routes' own lower bounds). `deep_diffs` None: the floor route alone (the v1 rule)."""
     fl = diff_summary(floor_diffs, boot, seed)
     dp = diff_summary(deep_diffs, boot, seed) if deep_diffs is not None and "A" in routes else None
-    return futility_routes(fl, dp, len(floor_diffs), n_block, floor_alpha=floor_alpha, routes=routes, measure=measure)
+    return futility_routes(fl, dp, len(floor_diffs), n_block, floor_alpha=floor_alpha, routes=routes, measure=measure, extend_possible=extend_possible)

@@ -16,7 +16,7 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `frozen.py` | D52: the frozen copy of the lab tree the practice filler runs from (one per presorted build, outside the lab folder) |
 | `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
-| `keep_v2.py` | the keep test v2 (promotion on the deepest boss the lineage reaches: frontier, deep_f, routes A and F, crash guard, the funnel's call at each look); `rl/gen_loop.py` calls it behind `--keep-rule v2` / `SPIRELINE_KEEP_RULE` (default v1), see `docs/rl/KEEP_TEST_V2.md` |
+| `keep_v2.py` | the keep test v2 (promotion on the deepest boss the lineage reaches: frontier, deep_f, routes A and F, crash guard, the funnel's call at each look); `rl/gen_loop.py` calls it behind `--keep-rule v2` / `SPIRELINE_KEEP_RULE` (default v1), see `docs/rl/KEEP_TEST_V2.md`; its v3 mode (D66: route A alone, floors refuse only a collapse, drift advisory, extension and pooled judgement) is `docs/rl/KEEP_TEST_V3.md` |
 | `pairing_check.py` | `docs/PROMOTION_GUARD.md` section 4 points 1 and 2 on two arms' `runs.jsonl` (seed sets, config, crashes, discordant kills, floor-difference SD), with a permutation reference; read-only |
 | `prune.py` | what may be deleted, in what order, and what never (recordings the corpus already holds go first) |
 | `corpus_import.py` | adds a job's exact and divergent fights to the regression corpus (last step of a fights job) |

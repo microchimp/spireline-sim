@@ -70,8 +70,9 @@ BOOT_B = 20000
 ENV_GEN_DIR = "SPIRELINE_GEN_DIR"
 REVIEW_GUARD_FLAG = "SPIRELINE_REVIEW_GUARD"  # tools/lab/promotion_guard.FLAG: the review's guard decides when set; off by default
 REVIEW_GUARD_ON_VALUES = ("1", "on", "true", "yes")  # tools/lab/promotion_guard.ON_VALUES (a test keeps them equal)
-KEEP_RULE_FLAG = "SPIRELINE_KEEP_RULE"  # the promotion rule: "v1" (the floor primary, the default) or "v2" (tools/lab/keep_v2.py, docs/rl/KEEP_TEST_V2.md)
-KEEP_RULES = ("v1", "v2")
+KEEP_RULE_FLAG = "SPIRELINE_KEEP_RULE"  # the promotion rule: "v1" (the floor primary, the default), "v2" (tools/lab/keep_v2.py, docs/rl/KEEP_TEST_V2.md) or "v3" (D66, docs/rl/KEEP_TEST_V3.md)
+KEEP_RULES = ("v1", "v2", "v3")
+KEEP_TESTS = ("v2", "v3")  # the rules that run through tools/lab/keep_v2.py (frontier, deep_f, the funnel's looks): v3 is a mode of v2's module
 # D33 (2026-10-25): the paired rules-against-vrun A/B (VRUN_SWEEP.md 1.5) was decided, so the value-head macro is the macro of every new
 # candidate whose V_run is kept, with no environment variable. SPIRELINE_MACRO_VRUN stays as an explicit opt-out: "rules" (or off, 0,
 # false, no) makes `train_generation` write macro rules; anything else, or unset, leaves the default.
@@ -2187,7 +2188,7 @@ def review_guard_on(flag: bool | None = None) -> bool:
 
 
 def keep_rule_of(flag: str | None = None) -> str:
-    """The promotion rule: `flag` ("v1" or "v2") when given, else the SPIRELINE_KEEP_RULE variable, else "v1" (today's floor primary,
+    """The promotion rule: `flag` ("v1", "v2" or "v3") when given, else the SPIRELINE_KEEP_RULE variable, else "v1" (today's floor primary,
     the default until the lab's train job names v2). Any other value is an error and not a silent v1: a rule that decides a promotion
     is never guessed."""
     value = flag if flag is not None else os.environ.get(KEEP_RULE_FLAG, "")
@@ -2272,7 +2273,7 @@ def attempts_spent(tsv: Path | None, cand_gen: int, review_guard: bool | None = 
     the flag said) and `cand_gen` already judged at the old cap (distinct candidates in `promotions.tsv` by prior sha and run head sha,
     `attempts_before` with no sha): that count, the number the old cap refused a further candidate at. None otherwise (guard off, or
     attempts left). `train` still asks, to say in one line that the round goes on past it."""
-    if keep_rule != "v2" and not review_guard_on(review_guard):
+    if keep_rule not in KEEP_TESTS and not review_guard_on(review_guard):
         return None
     n = attempts_before(read_promotions(tsv), cand_gen, "", recipe=recipe)
     return n if n >= review_guard_module().ATTEMPT_CAP else None
@@ -2317,7 +2318,7 @@ def decide_review(floor: dict, boss: dict, wins: dict, cand_win_rate: float, bas
             "attempt_advisory": True, "review": bool(guard["review"])}
 
 
-def incumbent_frontier(agent_root: Path | str, rows: list[dict[str, str]], config: str = "a3-v1", *, block: str | None = None,
+def incumbent_frontier(agent_root: Path | str, rows: list[dict[str, str]], config: str = "a3-v1", *, block: str | Sequence[str] | None = None,
                        blocks: int = 3) -> dict[str, Any]:
     """The keep test v2's frontier (`keep_v2.frontier_record`) for a block, read from the incumbent's own arms: the promoted lineage's
     player on each of its last `blocks` judged blocks (the candidate's arm where it was promoted, the incumbent's where it stayed:
@@ -2329,7 +2330,8 @@ def incumbent_frontier(agent_root: Path | str, rows: list[dict[str, str]], confi
     root = Path(agent_root)
     current = "gen0"  # the lineage's player before any promotion, relative to the agent folder
     by_block: dict[Any, tuple[str, str]] = {}
-    for i, r in enumerate([x for x in rows if x.get("seed_block") != block]):
+    left_out = {block} if isinstance(block, str) else set(block or ())  # a pooled judgement (keep rule v3) leaves out every block it pools
+    for i, r in enumerate([x for x in rows if x.get("seed_block") not in left_out]):
         mine = f"gen{r.get('cand_gen')}/{r.get('cand_dir') or 'candidate'}"
         promoted = r.get("decision") == "promoted"
         by_block[r.get("seed_block") or ("row", i)] = (r.get("seed_block") or "", mine if promoted else current)
@@ -2349,30 +2351,91 @@ def incumbent_frontier(agent_root: Path | str, rows: list[dict[str, str]], confi
     return {**k2.frontier_record(counts, blocks), "config": config, "used": used, "missing": missing}
 
 
+def extended_before(rows: list[dict[str, str]], cand_sha: str, head_sha: str = "", recipe: str = "", block: str | None = None) -> bool:
+    """Whether the keep rule v3 already extended this candidate (its prior, run head and recipe) on another block: a ledger row of its
+    identity with rule v3 and route X (`keep_v2.EXTEND_ROUTE`). The block being judged is left out, so reading the extending block again
+    gives the extension again."""
+    k2 = keep_v2_module()
+    return any(row_identity(r) == (cand_sha, head_sha) and row_recipe(r) == recipe and r.get("rule") == k2.LEDGER_RULE_V3
+               and r.get("route") == k2.EXTEND_ROUTE and r.get("seed_block") != block for r in rows)
+
+
+def pooled_arm_rows(cand: Path, base_dir: Path, config: str, blocks: Sequence[str], taken: Sequence[str] = ()) -> tuple[list[dict], list[dict], list[dict[str, Any]]]:
+    """The arms of the blocks a v3 judgement pools with its own (`--pool-block`): for each block the candidate's `arms/<block>-<config>` and
+    the base's, only the seeds both played (the pairs), the rows of every block in one list per side, and a record per block (`block`, `pairs`,
+    both arms' runs, and each side's kills per boss). A block with no arm, no pair, or a seed that another block (or `taken`) already holds is
+    an error: a seed counted twice would be a pair counted twice."""
+    k2 = keep_v2_module()
+    seen = set(taken)
+    cand_rows: list[dict] = []
+    base_rows: list[dict] = []
+    info: list[dict[str, Any]] = []
+    for name in blocks:
+        paths = (Path(cand) / "arms" / f"{name}-{config}", Path(base_dir) / "arms" / f"{name}-{config}")
+        if not all((p / "runs.jsonl").is_file() for p in paths):
+            raise ValueError(f"pooled block {name}: an arm is missing ({', '.join(p.parent.parent.name + '/arms/' + p.name for p in paths if not (p / 'runs.jsonl').is_file())})")
+        cr, br = arm_rows(paths[0]), arm_rows(paths[1])
+        paired = {r["seed"] for r in cr} & {r["seed"] for r in br}
+        if not paired:
+            raise ValueError(f"pooled block {name}: no seed is in both arms")
+        both = paired & seen
+        if both:
+            raise ValueError(f"pooled block {name}: {len(both)} seeds are in another block of the judgement")
+        seen |= paired
+        pc, pb = [r for r in cr if r["seed"] in paired], [r for r in br if r["seed"] in paired]
+        cand_rows += pc
+        base_rows += pb
+        info.append({"block": name, "pairs": len(paired), "cand_runs": len(cr), "base_runs": len(br),
+                     "kills": {"cand": k2.block_counts(pc)[0], "base": k2.block_counts(pb)[0]}})
+    return cand_rows, base_rows, info
+
+
+def pooled_record(main: str, main_pairs: int, main_rows: tuple[list[dict], list[dict]], info: list[dict[str, Any]]) -> dict[str, Any]:
+    """The `pooled` entry of a promotion.json: every block of the judgement (the judged block first), its pairs and each side's kills per boss
+    (B1, B2, B3a, win), and the pairs in all."""
+    k2 = keep_v2_module()
+    seeds = {r["seed"] for r in main_rows[0]} & {r["seed"] for r in main_rows[1]}
+    own_c = [r for r in main_rows[0] if r["seed"] in seeds]
+    own_b = [r for r in main_rows[1] if r["seed"] in seeds]
+    blocks = [{"block": main, "role": "judged", "pairs": len(seeds), "kills": {"cand": k2.block_counts(own_c)[0], "base": k2.block_counts(own_b)[0]}},
+              *[{"block": i["block"], "role": "pooled", "pairs": i["pairs"], "kills": i["kills"]} for i in info]]
+    return {"blocks": blocks, "pairs": sum(b["pairs"] for b in blocks), "main_pairs": main_pairs}
+
+
 def keep_v2_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
                     block: str, frontier_info: dict[str, Any], boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "",
-                    recipe: str = "") -> dict[str, Any]:
+                    recipe: str = "", rule: str = "v2", pooled: Sequence[str] = (), final: bool = True) -> dict[str, Any]:
     """The keep test v2 (`keep_v2.judge`) on two arms at the frontier `frontier_info` (`incumbent_frontier`), with the lineage, the drift
     history and the attempt count from the promotions.tsv `rows` written before this judgement (this block's own rows do not count),
     exactly as `review_guard_verdict` reads them. The attempt is recorded against the old cap and refuses nothing (D65 addendum 2). With
-    `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap as within it, as before."""
+    `apply_cap` false (`rejudge`: a re-read is not a new attempt) the attempt is reported against the cap as within it, as before.
+
+    `rule` "v3" is the keep rule v3 (D66, `keep_v2.judge_v3`): `pooled` names the blocks whose arms are pooled with `block`'s (they are left out of
+    the history as `block` is), the candidate counts as extended already when the ledger says so or a block is pooled (`extended_before`), and
+    `final` says every seed of the block was played (only a final judgement extends)."""
     k2 = keep_v2_module()
-    history = [r for r in rows if r.get("seed_block") != block]
+    left_out = {block, *pooled}
+    history = [r for r in rows if r.get("seed_block") not in left_out]
     prior = attempts_before(rows, cand_gen, cand_sha, head_sha, recipe)
     cap = k2.pg.ATTEMPT_CAP if apply_cap else max(k2.pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed would not have refused it
+    extra = {"rule": "v3", "extended": bool(pooled) or extended_before(rows, cand_sha, head_sha, recipe, block), "final": final} if rule == "v3" else {}
     verdict = k2.judge(cand_rows, base_rows, frontier=int(frontier_info["index"]), frontier_info=frontier_info, lineage=lineage_blocks(history),
-                       previous_flagged=previous_drift_flagged(history), prior_attempts=prior, cap=cap, boot=boot)
+                       previous_flagged=previous_drift_flagged(history), prior_attempts=prior, cap=cap, boot=boot, **extra)
     verdict["attempt"]["cap"] = k2.pg.ATTEMPT_CAP  # report the real cap ("attempt 3/2"), within it or not
     return verdict
 
 
 def decide_v2(keep: dict[str, Any]) -> dict[str, Any]:
-    """The decision of the keep test v2 as `compare_arms` carries it: `keep_v2.judge`'s checks (a route holds, wins, crash, drift, and the
-    attempt, recorded and advisory: `attempt_advisory`) under the rule's name. The Act 1 kill, Act 1 damage and D24's Act 1 boss co-primary are not checks here (`act1_review`
+    """The decision of the keep test v2 (or v3) as `compare_arms` carries it: `keep_v2.judge`'s checks (a route holds, wins, crash, drift, and the
+    attempt, recorded and advisory: `attempt_advisory`; under v3 also the floor collapse, `extend`, and `advisory_checks` naming the drift check
+    beside the attempt) under the rule's name. The Act 1 kill, Act 1 damage and D24's Act 1 boss co-primary are not checks here (`act1_review`
     reports them)."""
-    return {"checks": dict(keep["checks"]), "wins_co_primary": bool(keep["wins"]["active"]), "promote": bool(keep["promote"]),
-            "attempt_advisory": bool(keep.get("attempt_advisory", True)), "alpha": keep["alpha"], "rule": keep["rule"], "route": keep["route"], "frontier": keep["frontier"]["name"],
-            "review": bool(keep["review"])}
+    out = {"checks": dict(keep["checks"]), "wins_co_primary": bool(keep["wins"]["active"]), "promote": bool(keep["promote"]),
+           "attempt_advisory": bool(keep.get("attempt_advisory", True)), "alpha": keep["alpha"], "rule": keep["rule"], "route": keep["route"],
+           "frontier": keep["frontier"]["name"], "review": bool(keep["review"])}
+    if "extend" in keep:  # the keep rule v3: an extension is neither a promotion nor a refusal, and the drift check is advisory beside the attempt cap
+        out.update({"extend": bool(keep["extend"]), "advisory_checks": list(keep["advisory_checks"])})
+    return out
 
 
 def arm_rows(arm_dir: Path) -> list[dict]:
@@ -2426,19 +2489,21 @@ FUTILITY_ON = True  # ... and is on unless `--no-futility` / `futility.enabled` 
 ADVISORY_CHECKS = ("attempt",)  # as promotion_guard.ADVISORY_CHECKS (tested equal): checks recorded with their value that decide nothing (D65 addendum 2)
 
 
-def gating_checks(checks: dict[str, bool]) -> dict[str, bool]:
-    """A decision's checks without the advisory ones."""
-    return {k: bool(v) for k, v in checks.items() if k not in ADVISORY_CHECKS}
+def gating_checks(checks: dict[str, bool], advisory: Sequence[str] | None = None) -> dict[str, bool]:
+    """A decision's checks without the advisory ones: `advisory` is the decision's own list (`decision["advisory_checks"]`; the keep rule v3
+    adds the drift check to the attempt cap), ADVISORY_CHECKS when the decision names none."""
+    skip = ADVISORY_CHECKS if advisory is None else tuple(advisory)
+    return {k: bool(v) for k, v in checks.items() if k not in skip}
 
 
-def checks_hold(checks: dict[str, bool]) -> bool:
-    """Whether every gating check of a decision holds (the advisory attempt check keeps its value in the record and is not asked)."""
-    return all(gating_checks(checks).values())
+def checks_hold(checks: dict[str, bool], advisory: Sequence[str] | None = None) -> bool:
+    """Whether every gating check of a decision holds (the advisory checks keep their value in the record and are not asked)."""
+    return all(gating_checks(checks, advisory).values())
 
 
-def failed_checks(checks: dict[str, bool]) -> list[str]:
+def failed_checks(checks: dict[str, bool], advisory: Sequence[str] | None = None) -> list[str]:
     """The gating checks of a decision that do not hold."""
-    return [k for k, v in gating_checks(checks).items() if not v]
+    return [k for k, v in gating_checks(checks, advisory).items() if not v]
 
 
 STOP_FAILS = ("refuse", "futility")  # the stops of a block that did not promote: the decision's `sequential` check is false for both
@@ -2548,12 +2613,16 @@ def seq_call(diffs: Sequence[float], j: int, looks: Sequence[int], *, alpha_refu
 
 
 def futility_check(floors: Sequence[float], deep_diffs: Sequence[float] | None, n_block: int, *, v2: bool, measure: str = "deep_f",
-                   boot: int | None = None) -> dict[str, Any]:
+                   boot: int | None = None, rule: str | None = None, extend_possible: bool = False) -> dict[str, Any]:
     """The futility stop's reading of the seeds played (`keep_v2.futility_call`): under the keep test v2 both routes (deeper on deep_f, further
     on the floor, each at the keep test's own alpha), under v1 the floor route alone at D24's alpha. `futile` when no route's 95% upper bound
-    reaches the gain the route needs to promote on all `n_block` seeds."""
+    reaches the gain the route needs to promote on all `n_block` seeds. Under the keep rule v3 (`rule`) route A is the only route, `n_block` is the
+    pairs of the whole judgement (the pooled N when a block extends another) and `extend_possible` lowers its need to the gain that earns an
+    extension (`keep_v2.futility_routes`)."""
     k2 = keep_v2_module()
     b = BOOT_B if boot is None else boot
+    if rule == "v3":
+        return k2.futility_call(floors, deep_diffs, n_block, routes=("A",), measure=measure, boot=b, extend_possible=extend_possible)
     if v2:
         return k2.futility_call(floors, deep_diffs, n_block, measure=measure, boot=b)
     return k2.futility_call(floors, None, n_block, floor_alpha=ALPHA, routes=("F",), boot=b)
@@ -2561,7 +2630,8 @@ def futility_check(floors: Sequence[float], deep_diffs: Sequence[float] | None, 
 
 def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list[dict]]], judge: Callable[[list[dict], list[dict]], dict],
            *, smoke: int = SEQ_SMOKE, batch: int = SEQ_BATCH, keep_rule: str = "v1", frontier: int = 0, futility: int | None = None,
-           frontier_name: str = "deep_f", say: Callable[[str], None] | None = None) -> dict[str, Any]:
+           frontier_name: str = "deep_f", say: Callable[[str], None] | None = None, prefix: tuple[list[dict], list[dict]] | None = None,
+           extend_possible: bool = False) -> dict[str, Any]:
     """Walk the looks of `seeds` (see `seq_call` for the rule). `rows_at(n)` gives both arms' rows with at least the first n seeds (it
     plays them, or reads recorded rows: a replay is the same walk); `judge(cand_rows, base_rows)` is today's decision on rows
     (`compare_arms` with the guard), asked only at an eligible look. Returns `looks` (one dict per look reached: `seq_call`'s
@@ -2570,6 +2640,11 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
 
     With `keep_rule` "v2" each look is `keep_v2.seq_call` on the floor and the deep_f differences at the boss `frontier` (an index,
     0 = B1), and an eligible look promotes only when the route that cleared the early z holds in `judge`'s verdict (`keep_v2`).
+    "v3" is the same walk with the keep rule v3's calls (`keep_v2.seq_call_v3`: refuse on a dead route A or a floor collapse, promote early by
+    route A alone). `prefix` (both arms' rows, the keep rule v3's pooled blocks) joins every look's pairs: the statistics, the verdicts and
+    the futility's whole-judgement N are those of the pooled pairs, the looks still those of `seeds`; the rows returned include it, and a
+    look's `n` is the pooled pairs (`own` the block's seeds). `extend_possible` (a first block of the keep rule v3: an extension is still
+    available) lets the futility stop ask route A for the gain that earns an extension alone (`keep_v2.futility_routes`).
 
     With `futility` (a number of paired seeds; None: off) a look at that many seeds or more that would play on ("continue") also asks
     `futility_check`: when no route's 95% upper bound reaches the gain it needs to promote on the whole block, the walk stops with action
@@ -2578,6 +2653,10 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
     seeds = list(seeds)
     looks = seq_looks(len(seeds), smoke, batch)
     log: list[dict[str, Any]] = []
+    pre_c, pre_b = ({r["seed"]: r for r in rows} for rows in (prefix or ([], [])))
+    pre_seeds = sorted(set(pre_c) & set(pre_b))
+    pre_rows = ([pre_c[s] for s in pre_seeds], [pre_b[s] for s in pre_seeds])
+    n_judged = len(seeds) + len(pre_seeds)  # the pairs of the whole judgement: the block's own and the pooled
     for j, n in enumerate(looks):
         part = set(seeds[:n])
         cand_all, base_all = rows_at(n)
@@ -2586,13 +2665,17 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
         paired = [s for s in seeds[:n] if s in c and s in b]
         if len(paired) != n:
             raise ValueError(f"only {len(paired)} of {n} seeds are paired in both arms at look {j + 1} of {len(looks)}")
+        if pre_seeds:
+            c, b = {**c, **pre_c}, {**b, **pre_b}
+            cand_rows, base_rows = cand_rows + pre_rows[0], base_rows + pre_rows[1]
+            paired = pre_seeds + paired
         floors = [float(c[s]["floor"]) - float(b[s]["floor"]) for s in paired]
-        v2 = keep_rule == "v2"
+        v2 = keep_rule in KEEP_TESTS
         deep_diffs = None
         if v2:
             k2 = keep_v2_module()
             deep_diffs = [100.0 * (k2.deep(c[s], frontier) - k2.deep(b[s], frontier)) for s in paired]
-            call = k2.seq_call(floors, deep_diffs, j, looks)
+            call = k2.seq_call(floors, deep_diffs, j, looks, **({"rule": "v3"} if keep_rule == "v3" else {}))
         else:
             call = seq_call(floors, j, looks)
         smoke_crash = None
@@ -2605,7 +2688,7 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
                                    "not a learning verdict")}
         fut = None
         if futility is not None and call["action"] == "continue" and n >= futility:  # the refusals and the early promotion come first
-            fut = futility_check(floors, deep_diffs, len(seeds), v2=v2, measure=frontier_name)
+            fut = futility_check(floors, deep_diffs, n_judged, v2=v2, measure=frontier_name, rule=keep_rule, extend_possible=extend_possible)
             if say:
                 say(f"futility look at {n} of {len(seeds)} seeds: {fut['text']}" + ("; no route can reach it: the judgement stops" if fut["futile"] else ""))
             if fut["futile"]:
@@ -2618,7 +2701,7 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
             log[-1]["crash"] = smoke_crash
         if fut is not None:
             log[-1]["futility"] = {"futile": fut["futile"], "routes": fut["routes"]}
-        stop = {"n": n, "look": j + 1, "action": call["action"], "reason": call["reason"]}
+        stop = {"n": n, "look": j + 1, "action": call["action"], "reason": call["reason"], **({"pooled_pairs": len(paired)} if pre_seeds else {})}
         if call["action"] == "futility":
             stop["rule"] = futility_rule(n)
             stop["futility"] = {"min_seeds": futility, "routes": fut["routes"]}
@@ -2631,7 +2714,7 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
                 stop["action"] = "promote"
                 stop["reason"] += "; every check holds on the seeds played"
             else:
-                held = (failed_checks(d["checks"]) + (["drift flagged"] if flagged else [])
+                held = (failed_checks(d["checks"], d.get("advisory_checks")) + (["drift flagged"] if flagged else [])
                         + ([] if route_ok else [f"route {''.join(call['routes'])}"]))
                 log[-1]["held"] = held
                 log[-1]["reason"] += f"; played on: {', '.join(held)} did not hold"
@@ -2689,9 +2772,10 @@ def human_bar_note(cand_agent: Agent, base_agent: Agent | None = None) -> dict[s
 
 
 def row_rule(row: dict[str, str]) -> str:
-    """The keep rule a promotions.tsv row was judged under: "v2" where the `rule` column says so, "v1" in every other row (older rows
+    """The keep rule a promotions.tsv row was judged under: "v2" or "v3" where the `rule` column says so, "v1" in every other row (older rows
     have no such column)."""
-    return "v2" if (row.get("rule") or "") == "v2" else "v1"
+    rule = row.get("rule") or ""
+    return rule if rule in KEEP_TESTS else "v1"
 
 
 def read_promotions(tsv: Path | None) -> list[dict[str, str]]:
@@ -2882,7 +2966,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
             review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
-            futility_min_seeds: int | None = None, screen: bool | None = None) -> dict[str, Any]:
+            futility_min_seeds: int | None = None, screen: bool | None = None, pool_blocks: Sequence[str] = ()) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s and the tsv row carries the attempt
     and the guard's verdict. A third attempt of a generation is played and judged like any other (D65 addendum 2): the old cap of two
@@ -2903,6 +2987,13 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     before anything is played (`incumbent_frontier`), the funnel calls each look on the floor and deep_f, the cap and the drift check
     are part of the rule (the review-guard flag is not needed), and promotion.json gains `keep_v2` and the tsv row its nine columns.
 
+    `keep_rule` "v3" (D66, docs/rl/KEEP_TEST_V3.md) is the same machinery with the keep rule v3's verdict (`keep_v2.judge_v3`): route A alone
+    promotes, the floors refuse only a collapse, the drift check is advisory, and a final judgement whose deep_f gain is at least +1.0 per 100
+    but whose 0.005 bound is not above 0 is an *extension*: decision `extend` (promotion.json `decision_text`, the ledger's `decision`
+    column), route X, nothing promoted. `pool_blocks` (v3 only) names earlier blocks whose arms, the candidate's and the base's, are pooled with
+    this block's: the judgement is route A on all the pairs (the funnel's looks and its futility's N count them too), and promotion.json's
+    `pooled` names every block and its pairs. The pooled judgement is the second look: a candidate that was extended is not extended again.
+
     The futility stop (`futility`, default on; `futility_min_seeds`, default FUTILITY_MIN_SEEDS; only with `sequential`; docs/rl/KEEP_TEST_V2.md):
     from that many paired seeds on, a look that would play on also asks whether any route's 95% upper bound of the candidate's gain
     reaches the gain the route needs to promote on the whole block (`futility_check`); when none does the block ends there, rejected,
@@ -2918,7 +3009,9 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
-    v2 = rule == "v2"
+    v2 = rule in KEEP_TESTS
+    if pool_blocks and rule != "v3":
+        raise ValueError("pooling blocks is the keep rule v3's (--keep-rule v3)")
     fut_min = None if futility is False or (futility is None and not FUTILITY_ON) else int(futility_min_seeds or FUTILITY_MIN_SEEDS)
     seeds = gen0.load_seeds(seeds_file)
     name = Path(seeds_file).stem
@@ -2938,20 +3031,23 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if (guard_on or v2) and attempt > review_guard_module().ATTEMPT_CAP:  # D65 addendum 2: the old cap is recorded, not gating
         print(f"generation {cand_agent.generation}: attempt {attempt}, over the old cap of {review_guard_module().ATTEMPT_CAP}; "
               "the cap is recorded and gates nothing, so the block is played", flush=True)
-    frontier_info = incumbent_frontier(agent_root, rows, config, block=name) if v2 else None  # fixed before a seed is played
+    frontier_info = incumbent_frontier(agent_root, rows, config, block=[name, *pool_blocks]) if v2 else None  # fixed before a seed is played
     guard_on = guard_on and not v2  # the keep test v2 carries its own guards
     arm = f"{name}-{config}"
     arm_kw = {"server_opts": server_opts} if server_opts is not None else {}  # the CPU path passes nothing new
     base_dir = Path(base_agent.path) if base_agent.path else Path(agent_root) / "gen0"
+    pool_c, pool_b, pool_info = pooled_arm_rows(Path(cand), base_dir, config, list(pool_blocks), taken=seeds) if pool_blocks else ([], [], [])  # before a seed is played
+    pre_n = len({r["seed"] for r in pool_c} & {r["seed"] for r in pool_b})  # the pooled pairs
+    may_extend = rule == "v3" and not pool_blocks and not extended_before(rows, cand_sha, head_sha, recipe, name)  # an extension is still available
     screen_doc = run_screen(Path(cand), base_dir, cand_agent, base_agent, procs=procs) if (SCREEN_ON if screen is None else screen) else None
     if screen_doc is not None and screen_doc.get("rejected") and not screen_doc.get("skipped"):
         return screen_rejection(Path(cand), cand_agent, base_agent, screen_doc, name=name, config=config, procs=procs, agent_root=Path(agent_root),
                                 attempt=attempt, cand_sha=cand_sha, head_sha=head_sha, recipe=recipe, rule=rule if v2 else None, lab=lab)
     seq: dict[str, Any] | None = None
 
-    def keep_of(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
+    def keep_of(cr: list[dict], br: list[dict], final: bool = False) -> dict[str, Any] | None:
         return (keep_v2_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, frontier_info=frontier_info,
-                                boot=boot, head_sha=head_sha, recipe=recipe) if v2 else None)
+                                boot=boot, head_sha=head_sha, recipe=recipe, rule=rule, pooled=list(pool_blocks), final=final) if v2 else None)
 
     if sequential:
         def verdict(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
@@ -2965,31 +3061,36 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
 
         seq = funnel(seeds, rows_at, lambda cr, br: compare_arms(cr, br, ALPHA, boot, verdict(cr, br), **({"keep": keep_of(cr, br)} if v2 else {})),
                      smoke=smoke, batch=batch, futility=fut_min, say=lambda m: print(m, flush=True),
-                     **({"keep_rule": "v2", "frontier": frontier_info["index"], "frontier_name": frontier_info["name"]} if v2 else {}))
-        cand_rows, base_rows, played = seq["cand_rows"], seq["base_rows"], seq["stop"]["n"]
+                     **({"keep_rule": rule, "frontier": frontier_info["index"], "frontier_name": frontier_info["name"],
+                         "prefix": (pool_c, pool_b), "extend_possible": may_extend} if v2 else {}))
+        cand_rows, base_rows, played = seq["cand_rows"], seq["base_rows"], seq["stop"]["n"]  # (the funnel's rows hold the pooled blocks' too)
     else:
         cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
         base_rows = run_arm(seeds, base_dir / "arms" / arm, base_agent, config, procs, ascension, **arm_kw)
         played = len(seeds)
+        cand_rows, base_rows = cand_rows + pool_c, base_rows + pool_b
+    stopped_early = seq is not None and seq["stop"]["action"] != "final"
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
                                   head_sha=head_sha, recipe=recipe) if guard_on else None)
-    keep = keep_of(cand_rows, base_rows)
+    keep = keep_of(cand_rows, base_rows, final=not stopped_early)  # only a judgement of every seed of the block extends
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard, **({"keep": keep} if v2 else {}))  # a call under v1 is as it always was
-    if res["paired_seeds"] != played:  # a partial arm must not promote on fewer pairs than the block
-        raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both arms")
-    stopped_early = seq is not None and seq["stop"]["action"] != "final"
+    if res["paired_seeds"] != played + pre_n:  # a partial arm must not promote on fewer pairs than the block
+        raise ValueError(f"only {res['paired_seeds']} of {played + pre_n} seeds are paired in both arms")
     if stopped_early:  # the funnel's own check joins the others, so the decision names why the block ended before its last seed
         d = res["decision"]
         d["checks"]["sequential"] = seq["stop"]["action"] not in STOP_FAILS
-        d["promote"] = checks_hold(d["checks"])
+        d["promote"] = checks_hold(d["checks"], d.get("advisory_checks"))
         d["rule"] = f"{d['rule']}+{SEQ_RULE}" + (f"+{seq['stop']['rule']}" if seq["stop"]["action"] == "futility" else "")
-    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "procs": procs,
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played + pre_n, "config": config, "procs": procs,
            "alpha": ALPHA, "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
-           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha,
+           "decision_text": decision_text(res["decision"]), "cand_sha": cand_sha,
            "run_head_sha": head_sha, **({"macro": recipe} if recipe else {}), **({"keep_rule": rule} if v2 else {}),
            # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
            "f7": "not run", "matched_wall_clock": False}
+    if pool_blocks:
+        own_seeds = set(seeds)
+        doc["pooled"] = pooled_record(name, played, ([r for r in cand_rows if r["seed"] in own_seeds], [r for r in base_rows if r["seed"] in own_seeds]), pool_info)
     if seq is not None:
         doc["sequential"] = {"rule": SEQ_RULE, "block_seeds": len(seeds), "played": played, "smoke": smoke, "batch": batch,
                              "schedule": seq_looks(len(seeds), smoke, batch),
@@ -3007,6 +3108,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
+    if pool_blocks:
+        cells["guard"] = f"{cells['guard']} | {pooled_say(doc['pooled'])}".replace("\t", " ")
     if screen_doc is not None and screen_doc.get("line"):  # a screen that passed leaves its figures in the row
         cells["guard"] = f"{cells['guard']} | {screen_doc['line']}".replace("\t", " ")
     if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
@@ -3029,6 +3132,17 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     return doc
 
 
+def decision_text(decision: Mapping[str, Any]) -> str:
+    """The word a promotion.json and the ledger's `decision` column carry: "promoted", "extend" (the keep rule v3 asks for a second block; nothing
+    is promoted) or "rejected"."""
+    return "promoted" if decision["promote"] else "extend" if decision.get("extend") else "rejected"
+
+
+def pooled_say(pooled: Mapping[str, Any]) -> str:
+    """A pooled judgement's words for the ledger's `guard` cell: the pairs of each block and in all."""
+    return "pooled " + " + ".join(f"{b['block']} ({b['pairs']})" for b in pooled["blocks"]) + f" = {pooled['pairs']} pairs"
+
+
 def funnel_stop_record(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     """The funnel's early stop recorded in a promotion.json: `{"action", "played", "block_seeds", "sequential"}` (`sequential` the
     whole `sequential` key, to be carried forward), or None for a block that was not played as the funnel, or that played every seed
@@ -3044,7 +3158,7 @@ def funnel_stop_record(doc: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, config: str = "a3-v1", note: str,
             lab: Path | None = None, boot: int = BOOT_B, review_guard: bool | None = None, keep_rule: str | None = None,
-            out: Path | None = None) -> dict[str, Any]:
+            out: Path | None = None, pool_blocks: Sequence[str] = ()) -> dict[str, Any]:
     """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
     decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block, except a block
     the funnel stopped early (the earlier promotion.json carries `sequential` with a stop before the last look,
@@ -3059,11 +3173,20 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     the keep test v2 decides (the funnel stop, if any, is carried as above). With `out`, a dry run: the judgement reads the agent folder
     (the ledger, the candidate's and the incumbent's arms, the earlier promotion.json) and writes nothing there; promotion.json, a
     copy of promotions.tsv with the new row and, on a promotion, current.json go to the `out` folder, and no lab marker is written
-    (`lab` is refused)."""
+    (`lab` is refused).
+
+    `keep_rule` "v3" is the keep rule v3 (D66, docs/rl/KEEP_TEST_V3.md). `pool_blocks` (v3 only; repeatable on the command line as `--pool-block`)
+    names other blocks of the same two players whose finished arms (`arms/<block>-<config>` of the candidate and of the base) are pooled with
+    the seed file's block: route A is judged on every pair of all the blocks, the frontier and the lineage leave all of them out, the pooled
+    judgement is the second look (the candidate counts as extended, so it is promoted or refused, never extended again), and promotion.json's
+    `pooled` names each block and its pairs (and each side's kills per boss). A block the funnel stopped has its verdict and is not pooled.
+    The ledger row is the seed file's block with the pooled pairs in `seeds` and the pooled blocks named in the `guard` cell."""
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
-    v2 = rule == "v2"
+    v2 = rule in KEEP_TESTS
+    if pool_blocks and rule != "v3":
+        raise ValueError("pooling blocks is the keep rule v3's (--keep-rule v3)")
     if out is not None and lab is not None:
         raise ValueError("a dry run (out) writes no lab marker: do not name the lab folder")
     seeds = gen0.load_seeds(seeds_file)
@@ -3079,10 +3202,16 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         raise ValueError(f"the funnel stopped block {before.get('seed_block')} at {stop['played']} of {stop['block_seeds']} seeds, "
                          f"but the seed file is {name} with {len(seeds)}")
     played = stop["played"] if stop is not None else len(seeds)
+    if pool_blocks and stop is not None:
+        raise ValueError(f"the funnel stopped block {name}: it has its verdict and is not pooled")
     cand_rows, base_rows = arm_rows(Path(cand) / "arms" / arm), arm_rows(base_dir / "arms" / arm)
     if stop is not None:  # the arms of a stopped block hold the seeds played and no others; judge those, by place in the block
         part = set(seeds[:played])
         cand_rows, base_rows = [r for r in cand_rows if r["seed"] in part], [r for r in base_rows if r["seed"] in part]
+    pool_c, pool_b, pool_info = pooled_arm_rows(Path(cand), base_dir, config, list(pool_blocks), taken=[r["seed"] for r in cand_rows]) if pool_blocks else ([], [], [])
+    pre_n = len({r["seed"] for r in pool_c} & {r["seed"] for r in pool_b})  # the pooled pairs
+    own = (cand_rows, base_rows)  # the judged block's own rows, before the pooled blocks are added
+    cand_rows, base_rows = cand_rows + pool_c, base_rows + pool_b
     cand_sha, head_sha = candidate_identity(cand_agent)
     recipe = candidate_recipe(cand_agent)
     ledger = Path(agent_root) / "promotions.tsv"
@@ -3092,16 +3221,17 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                                   apply_cap=False, head_sha=head_sha, recipe=recipe) if review_guard_on(review_guard) and not v2 else None)
     keep = None
     if v2:
-        frontier_info = incumbent_frontier(agent_root, rows, config, block=name)
+        frontier_info = incumbent_frontier(agent_root, rows, config, block=[name, *pool_blocks])
         keep = keep_v2_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name,
-                               frontier_info=frontier_info, boot=boot, apply_cap=False, head_sha=head_sha, recipe=recipe)
+                               frontier_info=frontier_info, boot=boot, apply_cap=False, head_sha=head_sha, recipe=recipe,
+                               rule=rule, pooled=list(pool_blocks), final=stop is None)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard, **({"keep": keep} if v2 else {}))
-    if res["paired_seeds"] != played:
-        raise ValueError(f"only {res['paired_seeds']} of {played} seeds are paired in both cached arms")
+    if res["paired_seeds"] != played + pre_n:
+        raise ValueError(f"only {res['paired_seeds']} of {played + pre_n} seeds are paired in both cached arms")
     if stop is not None:  # the funnel's own check joins the others, as `promote` writes it for the same stop
         d = res["decision"]
         d["checks"]["sequential"] = stop["action"] not in STOP_FAILS
-        d["promote"] = checks_hold(d["checks"])
+        d["promote"] = checks_hold(d["checks"], d.get("advisory_checks"))
         d["rule"] = f"{d['rule']}+{SEQ_RULE}" + (f"+{futility_rule(played)}" if stop["action"] == "futility" else "")
     if before is not None and out is None:  # the earlier record stays beside the new one, under a name not yet taken (a second rejudge of a day)
         stem = f"promotion-{before.get('decision_text', 'earlier')}-{str(before.get('written', 'x'))[:10]}"
@@ -3110,13 +3240,17 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             j += 1
             kept = Path(cand) / f"{stem}-r{j}.json"
         old.rename(kept)
-    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played, "config": config, "alpha": ALPHA,
+    doc = {"written": utc_now(), "seed_block": name, "n_seeds": played + pre_n, "config": config, "alpha": ALPHA,
            "cand": {"agent": cand_agent.describe(), "summary": arm_summary(cand_rows)},
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
-           "decision_text": "promoted" if res["decision"]["promote"] else "rejected", "cand_sha": cand_sha, "run_head_sha": head_sha,
+           "decision_text": decision_text(res["decision"]), "cand_sha": cand_sha, "run_head_sha": head_sha,
            **({"macro": recipe} if recipe else {}), "rejudged": {"note": note, "earlier_decision": (before or {}).get("decision_text")},
            **({"keep_rule": rule} if v2 else {}), "f7": "not run", "matched_wall_clock": False}
+    if pool_blocks:
+        doc["pooled"] = pooled_record(name, played, own, pool_info)
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
+    if pool_blocks:
+        cells["guard"] = f"{cells['guard']} | {pooled_say(doc['pooled'])}".replace("\t", " ")
     if stop is not None:
         said = f"{played} of {len(seeds)} seeds, where the funnel stopped on a {stop['action']}"
         doc["rejudged"]["seeds"] = {"judged": played, "block": len(seeds), "funnel_stop": stop["action"],
@@ -3184,15 +3318,45 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
     return path
 
 
+def extension_of(cand: Path) -> dict[str, Any] | None:
+    """The candidate's promotion.json when the keep rule v3 extended it (its decision says `extend` and promotes nothing), else None: the
+    train job's cue to play the candidate on a second fresh block and judge both pooled."""
+    p = Path(cand) / "promotion.json"
+    if not p.is_file():
+        return None
+    doc = json.loads(p.read_text(encoding="utf-8"))
+    d = doc.get("decision") or {}
+    return doc if d.get("extend") and not d.get("promote") else None
+
+
+def next_extension_block(first: Path, tsv: Path | None = None, *, n: int | None = None) -> Path:
+    """The fresh E-block of an extension, written beside `first` (the block that extended the candidate): the date's next `-r<j>` name
+    (`E18-2026-11-18-r1` -> `E18-2026-11-18-r2`), the first `j` that is no file in the folder or the checkout's committed blocks and no block of
+    `tsv`'s rows, with as many seeds as `first` (`n` when named). The seeds derive from the name, so they are fresh and disjoint as every
+    E-block's are (`promote` checks that again). An existing file is never reused: it may have judged another candidate."""
+    import gen0  # noqa: PLC0415
+
+    first = Path(first)
+    stem = re.sub(r"-r\d+$", "", first.stem)
+    judged = {r.get("seed_block") for r in read_promotions(tsv)}
+    j = 1
+    while (first.parent / f"{stem}-r{j}.json").exists() or (COMMITTED_SEEDS / f"{stem}-r{j}.json").exists() or f"{stem}-r{j}" in judged:
+        j += 1
+    path = first.parent / f"{stem}-r{j}.json"
+    gen0.write_seed_file(path.stem, int(n or len(gen0.load_seeds(first))), path)
+    return path
+
+
 def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds_file: Path, agent_root: Path, procs: int,
                            lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
                            prior_server_flags: tuple[str, ...] = (), sequential: bool = False, keep_rule: str | None = None,
-                           futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None) -> int:
+                           futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None,
+                           pool_blocks: Sequence[str] = ()) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
     `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
-    funnel (`promote(sequential=True)`); `keep_rule` ("v1" or "v2") is passed on as `--keep-rule` when named, and the child reads the
-    SPIRELINE_KEEP_RULE variable otherwise."""
+    funnel (`promote(sequential=True)`); `keep_rule` ("v1", "v2" or "v3") is passed on as `--keep-rule` when named, and the child reads the
+    SPIRELINE_KEEP_RULE variable otherwise; `pool_blocks` (v3) are passed on as `--pool-block`, one each."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -3215,6 +3379,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--futility-min-seeds", str(int(futility_min_seeds))]
     if screen is False:
         cmd += ["--no-screen"]
+    for block in pool_blocks:
+        cmd += ["--pool-block", str(block)]
     cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise
     return subprocess.run(cmd, check=False).returncode
 

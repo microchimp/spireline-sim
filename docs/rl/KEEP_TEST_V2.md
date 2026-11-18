@@ -4,6 +4,9 @@ The design, its figures and the retroactive verdicts are in Spireline's `docs/de
 the switches and the ledger columns as built. The default is unchanged: `--keep-rule v1` (D24's paired mean floor, plus the review
 guard when `--review-guard` is on) stays the rule until the lab's train job is told otherwise.
 
+The keep rule v3 (D66, 2026-11-18: route A alone, floors refuse only a collapse, the drift check advisory, an extension for a gain that
+needs more seeds) is a mode of the same module: see [KEEP_TEST_V3.md](KEEP_TEST_V3.md). Rule v2 below is unchanged.
+
 ## The rule
 
 `tools/lab/keep_v2.py` (pure, like `promotion_guard.py`: no file read, no run played). A run beats up to four bosses, **B1, B2, B3a** (the
