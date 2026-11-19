@@ -146,5 +146,16 @@ class BossTableTests(unittest.TestCase):
         self.assertEqual(k2.bosses_beaten(run("x", "past"))[:3], (True, True, True))
 
 
+class BarTraceToolTests(unittest.TestCase):
+    def test_the_replay_tool_loads_without_the_emulator_and_says_what_it_needs(self):
+        from tools.lab import act3_bar_trace as tr  # noqa: PLC0415 -- stdlib only at import time; the emulator is loaded by main()
+
+        with self.assertRaises(SystemExit) as cm:
+            tr.main(["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        with self.assertRaises(SystemExit):
+            tr.main([])  # --gen-dir, --seed and --ix are required
+
+
 if __name__ == "__main__":
     unittest.main()
