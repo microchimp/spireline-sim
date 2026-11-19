@@ -132,7 +132,7 @@ QUIET_ALLOW: tuple[str, ...] = ("run-teacher", "judge-corpus", "judge-train")
 NIGHT_WINDOW = fg.NIGHT_WINDOW
 # Own seconds per x16 game by kind before any is measured (M2 and P1's numbers; a hallway fight is a short elite's).
 MEAN_X16_S = {"act1-hallway": 12.0, "act1-elite": 25.0, "act1-boss": 74.0, "act2-hallway": 14.0, "act2-elite": 16.0,
-              "act2-boss": 95.0}
+              "act2-boss": 95.0, "act3-boss": 120.0}  # act3-boss: the Act 3 stratum (practice_mix, off by default); no measure yet
 
 # The promotion rule. v1 was fixed 2026-10-30 before the first checkpoint, v2 on 2026-11-01 (D43), v3 on 2026-11-11 (D57 item 2).
 # Both arms play the same games: the board's 200 Act-1 boss starts, game j of each with the gym's seeds (namespace "g"), the same

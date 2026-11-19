@@ -30,6 +30,13 @@ ten a held potion, a death -100: the search's currency). With the regret mode `h
 mean over its latest plays of how far the played outcome fell short of the human's (max(0, human - played)); `max` takes the larger
 of that and the teacher-root shortfall per play; starts without an entry keep the root rule.
 
+The Act 3 stratum (the Act 3 week, lane 5; off by default). The practice's kinds are the Act 1 and Act 2 fights; the two Act 3 bosses (floors 48
+and 49) were never practised, and they are where the loop's runs end. `rl/act3_starts.py` writes `starts/human-starts-act3.*` (human openings
+from the corpus's training fifths, with `human-outcomes-act3.json`) and `starts/own-starts-act3.*` (our own arrivals from the plain runs). With
+`mix.json` `{"act3": {"share": 0.1}}` that share of a segment's draws is one Act 3 boss start (kind `act3-boss`), `act3.human_share` of them
+human (the rest ours: our arrivals at the bosses `act3.own_encounters` names, the Test Subject, 80, by default), by the same regret rule as every kind; the exam's Act 3 runs (`exam/exclude_runs.json`) are never drawn. Share 0 (the
+default) reads none of those files and draws exactly as before, to the byte.
+
 Settings live in `<loop root>/starts/mix.json` when it exists (merged over `DEFAULTS`, read at every segment).
 """
 
@@ -50,9 +57,11 @@ from pathlib import Path
 DEATH_VALUE = -100.0  # live_search.DEATH_VALUE: what the search scores a death
 POTION_VALUE = 10.0  # live_search's and L0's potion value
 KINDS = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")
-SOURCES = ("night", "human", "preloss", "teacher")
+SOURCES = ("night", "human", "preloss", "teacher", "own")
 FILES = {"night": "starts", "human": "human-starts", "preloss": "preloss-starts",
          "teacher": "teacher-starts"}  # stem of the set, its index and its lite list
+ACT3_KIND = "act3-boss"
+ACT3_FILES = {"human": "human-starts-act3", "own": "own-starts-act3"}  # the Act 3 stratum's sets (rl/act3_starts.py), read only when its share is above zero
 DEFAULTS = {
     # the share of a kind's draws that come from human runs; kinds with no human starts (or no AI starts) take the other side whole
     "human_share": {"act1-hallway": 0.25, "act1-elite": 0.25, "act1-boss": 0.5, "act2-hallway": 0.5, "act2-elite": 0.5, "act2-boss": 0.5},
@@ -61,6 +70,8 @@ DEFAULTS = {
     "teacher_share": {k: 0.0 for k in KINDS},
     "regret": {"temperature": 1.4, "staleness": 0.1, "n_last": 4, "mode": "shortfall"},
     "preloss": {"back": 3, "max": 4000, "min_decisions": 5},  # decisions before the end; most kept; shortest lost fight used
+    # the Act 3 boss stratum: the share of a segment's draws that are Act 3 boss starts (0: off) and the part of them from human runs
+    "act3": {"share": 0.0, "human_share": 0.5, "own_encounters": [80]},
 }
 
 
@@ -242,6 +253,7 @@ def sync_plays(root: Path, log=None) -> list[dict]:
 
 
 HUMAN_OUTCOMES = "human-outcomes.json"  # starts/: the human's own result of each human start (rl/human_starts.py outcomes)
+HUMAN_OUTCOMES_ACT3 = "human-outcomes-act3.json"  # the same for the Act 3 human starts (rl/act3_starts.py human); read when present
 HUMAN_MODES = ("human-shortfall", "max")  # the regret modes that read it
 _HUMAN_CACHE: dict = {}
 
@@ -255,15 +267,23 @@ def read_human_values(starts_dir: Path) -> dict[str, float]:
         st = p.stat()
     except OSError:
         return {}
-    key = (str(p), st.st_mtime_ns, st.st_size)
+    key = [str(p), st.st_mtime_ns, st.st_size]
+    p3 = Path(starts_dir) / HUMAN_OUTCOMES_ACT3
+    try:
+        st3 = p3.stat()
+        key += [st3.st_mtime_ns, st3.st_size]
+    except OSError:
+        p3 = None
+    key = tuple(key)
     if _HUMAN_CACHE.get("key") != key:
-        doc = _read_json(p, None)
-        outs = doc.get("outcomes") if isinstance(doc, dict) else None
         vals: dict[str, float] = {}
-        for sid, o in (outs or {}).items():
-            v = o.get("human_l0") if isinstance(o, dict) else None
-            if isinstance(v, (int, float)) and math.isfinite(v):
-                vals[sid] = float(v)
+        for path in (p, p3):
+            doc = _read_json(path, None) if path is not None else None
+            outs = doc.get("outcomes") if isinstance(doc, dict) else None
+            for sid, o in (outs or {}).items():
+                v = o.get("human_l0") if isinstance(o, dict) else None
+                if isinstance(v, (int, float)) and math.isfinite(v):
+                    vals[sid] = float(v)
         _HUMAN_CACHE.clear()
         _HUMAN_CACHE.update(key=key, vals=vals)
     return _HUMAN_CACHE["vals"]
@@ -369,14 +389,22 @@ def quartiles(xs: list[float]) -> list[float] | None:
 def load_pools(root: Path, ex: frozenset[str] | set[str]) -> tuple[dict[tuple[str, str], list[dict]], Counter]:
     """The draw pools {(kind, side): [start]} with side `human`, `teacher` or `ai` (night and pre-loss starts together), every excluded
     start left out. Each entry: id, source, the set's file, and a pre-loss start's score0. Also the number of starts left out
-    by source."""
+    by source. The Act 3 stratum's sets are read only when `mix.json`'s `act3.share` is above zero."""
     sd = Path(root) / "starts"
     pools: dict[tuple[str, str], list[dict]] = defaultdict(list)
     dropped: Counter = Counter()
-    for source, stem in FILES.items():
+    files = dict(FILES)
+    a3 = config(sd).get("act3") or {}
+    own3 = {int(x) for x in a3.get("own_encounters") or []}  # our own Act 3 arrivals the practice takes (the Test Subject, 80, by default); empty: all
+    if float(a3.get("share", 0.0)) > 0:
+        files.update({"act3-" + k: v for k, v in ACT3_FILES.items()})
+    for source, stem in files.items():
         for s in _read_json(sd / f"{stem}.lite.json", []) or []:
             if excluded(s, ex):
                 dropped[source] += 1
+                continue
+            if source == "act3-own" and own3 and int(s.get("encounter_id", -1)) not in own3:
+                dropped[source + " (another boss)"] += 1
                 continue
             src = s.get("source") or source
             pools[(s["cat"], src if src in ("human", "teacher") else "ai")].append(
@@ -399,6 +427,15 @@ class Sampler:
 
     def draw(self, rnd: random.Random) -> dict:
         """One draw: the pool entry (id, source, file) with its kind and, when it has one, its score."""
+        a3 = self.cfg.get("act3") or {}
+        share3 = float(a3.get("share", 0.0))
+        if share3 > 0:  # the Act 3 stratum first (no draw from the generator unless it is on and has starts: the default draws are the same to the byte)
+            h3, o3 = self.pools.get((ACT3_KIND, "human")) or [], self.pools.get((ACT3_KIND, "ai")) or []
+            if (h3 or o3) and rnd.random() < share3:
+                side = "human" if h3 and (not o3 or rnd.random() < float(a3.get("human_share", 0.5))) else "ai"
+                items, cw = (h3, self.cum[(ACT3_KIND, "human")]) if side == "human" else (o3, self.cum[(ACT3_KIND, "ai")])
+                s = items[min(bisect_left(cw, rnd.random() * cw[-1]), len(items) - 1)]
+                return {**s, "cat": ACT3_KIND, "score": self.score.get(s["id"], s.get("score0"))}
         c = rnd.choices(self.cats, self.w)[0]
         ai, hu = self.pools.get((c, "ai")) or [], self.pools.get((c, "human")) or []
         te = self.pools.get((c, "teacher")) or []

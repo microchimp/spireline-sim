@@ -4,6 +4,7 @@ played on four paired draws, scored by more than win or loss. A parallel instrum
 
     python rl/fight_exam.py select   [--extra-starts PATH] [--per-cell 100] [--allow-practised] [--rebuild]   build the exam
     python rl/fight_exam.py add-human [--per-cell 50] [--total 400] [--rebuild]               add the human stratum (a second file)
+    python rl/fight_exam.py add-act3  --starts-dir DIR [--rebuild] [--stand-alone]             add the Act 3 boss stratum (a third file)
     python rl/fight_exam.py baseline [--judge PATH]                                the judge's value of every opening position
     python rl/fight_exam.py play     --player v2 | --player-dir DIR [--half A|B|all] [--stratum all|ai|human] [--until STAMP]  one player on the exam
     python rl/fight_exam.py report   [--player v2]                                 the readings of one player's games
@@ -73,6 +74,18 @@ the judged player's fight network (sha256 of its `combat_policy.pt`) to the gym 
 player's latest reading with the date of its games file, or says there are no human-stratum games for it; a network no gym player holds gets
 the gym incumbent's reading, labelled as the incumbent's.
 
+The Act 3 stratum (`add-act3`; the Act 3 week, lane 5). The two Act 3 bosses (floors 48 and 49) hold nine tenths of the gap to the average
+human, and the Acts 1 and 2 exam had no cell for them. `rl/act3_starts.py` builds the positions (human openings rebuilt from the corpus's
+training fifths, with the human's own result; our own arrivals from the plain runs' saved fight states); `add-act3` picks the exam's cells from
+them: a boss per cell *and the boss's turn* (`act3-boss1-80`: the Test Subject as the first Act 3 boss; `act3-boss2-80`: as the second), with
+quotas weighted to where our runs die (`act3_starts.HUMAN_QUOTA`, `OWN_QUOTA`), at most one start a run, the human side from runs the loop never
+played. It is a third file in the exam's folder (`starts-act3.jsonl` with index and lite list, `act3-meta.json`); nothing of the AI exam or the
+Acts 1 and 2 human stratum is rewritten (their files' hashes are checked before and after), the runs go on `exclude_runs.json` so the
+practice's Act 3 stratum (`practice_mix`, off by default) never draws them, and `play`/`compare`/`report` leave the stratum alone (`--stratum
+all` is the AI exam and the Acts 1 and 2 human stratum, as before). The stratum is played by `rl/act3_exam.py`: the champion's fight network on
+the copy at the champion's own boss budget (the one the plain runs play), four draws a start, a report of kills by cell and by side (the human's
+positions against ours) with the human bar beside.
+
 The lock protocol. A run takes a `fight-exam` line in QUIET.lock (rewritten every ten minutes, removed at the end). It starts
 only when no other tag but the loop's own (`gym-loop`, `gym-loop-train`) and `w3-blocks` stands, not while LAB/nightly/active
 exists, in the night window, with LAB/HALT, LAB/PAUSE or (to start) main.lock; the loop sees the line, stops its running step and
@@ -133,10 +146,14 @@ EXAM_DIR = Path(os.environ.get("FIGHT_EXAM_DIR", str(gl.DEFAULT_ROOT / "exam")))
 LOOP_ROOT = gl.DEFAULT_ROOT
 # Names for display only (the env's encounter table, copied: the pure parts load no library).
 ENCOUNTER_NAMES = {74: "ceremonial-beast", 77: "lagavulin-matriarch", 79: "soul-fysh", 82: "kin", 83: "vantom",
-                   84: "waterfall-giant", 75: "kaiser-crab", 76: "knowledge-demon", 81: "insatiable"}
+                   84: "waterfall-giant", 75: "kaiser-crab", 76: "knowledge-demon", 81: "insatiable",
+                   73: "aeonglass", 78: "queen", 80: "test-subject"}
 SENTINEL_HP = 100_000  # an enemy standing for a phase nothing can damage (a billion HP in the game's data) is not counted as HP to remove
 MEASURES = ("won", "L0", "hp_lost", "potions_used", "turns", "dealt", "energy", "wasted")
-CELL_ORDER = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss")
+CELL_ORDER = ("act1-hallway", "act1-elite", "act1-boss", "act2-hallway", "act2-elite", "act2-boss", "act3-boss")
+ACT3_STEM = "starts-act3"  # the Act 3 stratum's start file (and its index and lite list) beside the AI exam's
+ACT3_RULE = "fight-exam-act3-v1"
+ACT3_SEED = 20261119
 
 
 # ---------------------------------------------------------------------------------------------------------- the pure parts
@@ -153,8 +170,12 @@ def kind_cell(s: dict) -> str:
 
 
 def cell_of(s: dict) -> str:
-    """The cell: the stratum, and for a boss the boss too (act1-boss-74)."""
-    return f"{kind_cell(s)}-{s['encounter_id']}" if s["kind"] == "boss" else kind_cell(s)
+    """The cell: the stratum, and for a boss the boss too (act1-boss-74); a start that carries its boss's turn (`boss_no`, the Act 3 starts:
+    the first of the two bosses or the second) puts it after the kind (act3-boss1-80)."""
+    if s["kind"] != "boss":
+        return kind_cell(s)
+    no = s.get("boss_no")
+    return f"{kind_cell(s)}{int(no)}-{s['encounter_id']}" if no else f"{kind_cell(s)}-{s['encounter_id']}"
 
 
 def cell_label(cell: str) -> str:
@@ -484,7 +505,8 @@ def exam_paths(d: Path) -> dict:
     d = Path(d)
     return {"dir": d, "starts": d / "starts.jsonl", "meta": d / "meta.json", "exclude": d / "exclude_runs.json",
             "baseline": d / "baseline.jsonl", "log": d / "exam.log", "human_starts": d / f"{HUMAN_STEM}.jsonl",
-            "human_lite": d / f"{HUMAN_STEM}.lite.json", "human_meta": d / "human-meta.json"}
+            "human_lite": d / f"{HUMAN_STEM}.lite.json", "human_meta": d / "human-meta.json", "act3_starts": d / f"{ACT3_STEM}.jsonl",
+            "act3_lite": d / f"{ACT3_STEM}.lite.json", "act3_meta": d / "act3-meta.json"}
 
 
 def load_exam(d: Path = EXAM_DIR) -> dict:
@@ -499,6 +521,12 @@ def load_exam(d: Path = EXAM_DIR) -> dict:
 def load_human_exam(d: Path = EXAM_DIR) -> dict:
     """{start id: lite record} of the human stratum (empty when `add-human` has not been run); the records carry the human's result."""
     lite = gl.read_json(exam_paths(d)["human_lite"], None)
+    return {} if lite is None else {s["id"]: s for s in lite}
+
+
+def load_act3_exam(d: Path = EXAM_DIR) -> dict:
+    """{start id: lite record} of the Act 3 stratum (empty when `add-act3` has not been run); a human start carries the human's result."""
+    lite = gl.read_json(exam_paths(d)["act3_lite"], None)
     return {} if lite is None else {s["id"]: s for s in lite}
 
 
@@ -721,6 +749,87 @@ def build_human(loop_root: Path = LOOP_ROOT, out: Path = EXAM_DIR, *, starts_dir
             "ai_files_sha256": before, "half_rule": HALF_PREFIX + "<start id>: the AI exam's rule"}
     gl.write_json(p["human_meta"], meta)
     say(out, f"add-human: {len(full)} human starts, {len(runs)} runs added to exclude_runs.json, short cells {meta['short_cells']}")
+    return meta
+
+
+def build_act3(out: Path = EXAM_DIR, *, starts_dir: Path, seed: int = ACT3_SEED, rebuild: bool = False, stand_alone: bool = False,
+               human_quota: dict | None = None, own_quota: dict | None = None) -> dict:
+    """Add the Act 3 stratum to the exam folder as a third file; returns its meta. `starts_dir` holds `human-starts-act3.*`,
+    `human-outcomes-act3.json` and `own-starts-act3.*` (`rl/act3_starts.py`). The human side is the clean starts (their run never played by the
+    loop, an outcome in the sidecar) by cell, at most one start a run across both sides; the own side is our arrivals by cell. The AI exam's
+    files and the Acts 1 and 2 human stratum's are checked unchanged; the runs go on `exclude_runs.json` (merged, the old file kept as
+    `.pre-act3.bak` once). `stand_alone`: the folder need not hold an AI exam (a staging folder). An existing stratum is kept unless `rebuild`."""
+    import act3_starts as a3  # noqa: PLC0415 -- pure Python
+
+    p = exam_paths(out)
+    if not stand_alone and not p["starts"].exists():
+        raise FileNotFoundError(f"no exam in {out}: the Act 3 stratum is added to an exam (--stand-alone for a staging folder)")
+    if p["act3_starts"].exists() and not rebuild:
+        raise FileExistsError(f"{p['act3_starts']} exists: the stratum is a fixed ruler; --rebuild replaces it")
+    sd = Path(starts_dir)
+    human_lite = gl.read_json(sd / f"{a3.HUMAN_STEM}.lite.json", [])
+    outcomes = (gl.read_json(sd / a3.OUTCOME_FILE, {}) or {}).get("outcomes") or {}
+    own_lite = gl.read_json(sd / f"{a3.OWN_STEM}.lite.json", [])
+    if not human_lite or not outcomes:
+        raise FileNotFoundError(f"no human Act 3 starts or no outcomes in {sd}: run `act3_starts.py human`")
+
+    def human_skip(r: dict) -> str | None:
+        return None if r["id"] in outcomes else "no outcome in the sidecar"
+
+    taken: set = set()
+    hq = a3.HUMAN_QUOTA if human_quota is None else human_quota
+    oq = a3.OWN_QUOTA if own_quota is None else own_quota
+    # clean first: a run the loop never played a start of; a cell the clean runs cannot fill is topped up with played runs, marked `practised`
+    # (the practice never drew an Act 3 start, so what a played run carries over is its Acts 1 and 2 only)
+    chosen_h, rep_h = a3.pick_quota(human_lite, hq, seed=seed, taken=taken, skip=human_skip, prefer=lambda r: not r.get("loop_played"))
+    chosen_o, rep_o = a3.pick_quota(own_lite, oq, seed=seed, taken=taken) if own_lite else ([], {"_left_out": {"no own starts": 1}})
+    if not chosen_h and not chosen_o:
+        raise ValueError("no Act 3 start to add")
+    guarded = ai_exam_files(p) + [p["human_starts"], p["human_starts"].with_name(f"{HUMAN_STEM}.index.json"), p["human_lite"], p["human_meta"]]
+    before_files = [f for f in guarded if f.exists()]
+    before = {f.name: gl.sha256_file(f) for f in before_files}
+    full = []
+    for stem, chosen in ((a3.HUMAN_STEM, chosen_h), (a3.OWN_STEM, chosen_o)):
+        src = str(sd / f"{stem}.jsonl")
+        for s in chosen:
+            doc = gl.load_start(src, s["id"])
+            extra = {"cell": s["cell"], "kind_cell": kind_cell(doc), "half": half_of(s["id"]), "practised": 0 if s["clean"] else 1, "clean": s["clean"],
+                     "stratum": doc.get("stratum") or ("human" if stem == a3.HUMAN_STEM else "own")}
+            if stem == a3.HUMAN_STEM:
+                extra.update(outcomes[s["id"]])
+            full.append({**doc, **extra})
+    if p["act3_starts"].exists():
+        stamp = gl.stamp().replace(":", "")
+        for f in (p["act3_starts"], p["act3_starts"].with_name(f"{ACT3_STEM}.index.json"), p["act3_lite"], p["act3_meta"]):
+            if f.exists():
+                f.rename(f.with_name(f.name + f".{stamp}.bak"))
+    p["dir"].mkdir(parents=True, exist_ok=True)
+    write_stem_set(p["dir"], ACT3_STEM, full)
+    ex = gl.read_json(p["exclude"], {}) or {}
+    backup = p["exclude"].with_name(p["exclude"].name + ".pre-act3.bak")
+    if p["exclude"].exists() and not backup.exists():
+        backup.write_bytes(p["exclude"].read_bytes())
+    runs = sorted({s["run"] for s in full})
+    ex["run_seeds"] = sorted(set(ex.get("run_seeds") or []) | set(runs))
+    ex["start_ids"] = sorted(set(ex.get("start_ids") or []) | {s["id"] for s in full})
+    ex["by_stratum"] = {**(ex.get("by_stratum") or {}), "act3-human": len(chosen_h), "act3-own": len(chosen_o)}
+    ex["starts"] = int(ex.get("starts") or 0) + len(full)
+    ex["act3_stratum"] = {"rule": ACT3_RULE, "written": gl.stamp(), "starts": len(full), "runs": len(runs)}
+    gl.write_json(p["exclude"], ex)
+    after = {f.name: gl.sha256_file(f) for f in before_files if f.exists()}
+    if after != before:
+        raise RuntimeError(f"the exam's files moved while the Act 3 stratum was added: {sorted(k for k in after if after[k] != before.get(k))}")
+    by_cell = Counter(s["cell"] for s in full)
+    meta = {"rule": ACT3_RULE, "written": gl.stamp(), "seed": seed, "draws": DRAWS, "namespace": NS, "starts": len(full), "runs": len(runs),
+            "halves": dict(Counter(s["half"] for s in full)), "by_stratum": dict(Counter(s["stratum"] for s in full)),
+            "by_cell": {c: {"chosen_total": by_cell.get(c, 0), "human": dict(rep_h.get(c, {})), "own": dict(rep_o.get(c, {}))}
+                        for c in sorted(set(hq) | set(oq))},
+            "left_out": {"human": rep_h.get("_left_out"), "own": rep_o.get("_left_out")},
+            "practised_starts": sum(1 for s in full if not s["clean"]),
+            "human_survived": sum(1 for s in full if s.get("stratum") == "human" and s.get("human_survived")),
+            "quota": {"human": hq, "own": oq}, "files_sha256": before}
+    gl.write_json(p["act3_meta"], meta)
+    say(out, f"add-act3: {len(chosen_h)} human and {len(chosen_o)} own starts, {len(runs)} runs added to exclude_runs.json")
     return meta
 
 
@@ -1135,7 +1244,7 @@ def cell_rows(games: dict, starts: dict, weights: dict | None = None) -> dict:
 
 
 def cell_sort(c: str) -> tuple:
-    kc = "-".join(c.split("-")[:2])
+    kc = kind_of_cell(c)
     return (CELL_ORDER.index(kc) if kc in CELL_ORDER else 99, c.count("-"), c)
 
 
@@ -1308,7 +1417,8 @@ def human_items(games: dict, human: dict) -> dict[str, list[dict]]:
 
 
 def kind_of_cell(cell: str) -> str:
-    return "-".join(cell.split("-")[:2])
+    k = "-".join(cell.split("-")[:2])
+    return k.rstrip("0123456789") if k.startswith("act3-boss") else k  # act3-boss1-80 and act3-boss2-80 are one kind
 
 
 def human_row(label: str, groups: dict, boot: int) -> dict:
@@ -1663,6 +1773,27 @@ def cmd_add_human(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add_act3(a: argparse.Namespace) -> int:
+    """Add the Act 3 stratum. The loop is paused while it runs (the lock), as for the human stratum."""
+    kw = dict(starts_dir=Path(a.starts_dir), rebuild=a.rebuild, stand_alone=a.stand_alone)
+    try:
+        if a.no_lock:
+            meta = build_act3(Path(a.exam_dir), **kw)
+        else:
+            with ExamLock(until=None, stop_file=Path(a.exam_dir) / "STOP"):
+                meta = build_act3(Path(a.exam_dir), **kw)
+    except Blocked as why:
+        print(f"not started: {why}")
+        return 3
+    print(json.dumps({k: meta[k] for k in ("starts", "runs", "halves", "by_stratum", "left_out", "human_survived", "practised_starts")}, indent=1))
+    print("cell                              chosen   human: pool clean quota chosen clean    own: pool quota chosen")
+    for c, v in meta["by_cell"].items():
+        h, o = v["human"], v["own"]
+        print(f"{cell_label(c):<32}{v['chosen_total']:>7}   {h.get('pool', 0):>16}{h.get('clean_pool', 0):>6}{h.get('quota', 0):>6}{h.get('chosen', 0):>7}"
+              f"{h.get('clean', 0):>6}   {o.get('pool', 0):>10}{o.get('quota', 0):>6}{o.get('chosen', 0):>7}{'  SHORT' if h.get('short') or o.get('short') else ''}")
+    return 0
+
+
 def cmd_baseline(a: argparse.Namespace) -> int:
     d = Path(a.exam_dir)
     starts = load_exam(d)
@@ -1724,6 +1855,12 @@ def main(argv=None) -> int:
     p.add_argument("--starts-dir", default="", help="the folder of human-starts.* and human-outcomes.json (default: the loop's starts/)")
     p.add_argument("--rebuild", action="store_true", help="replace an existing stratum (its files get a dated backup name)")
     p.add_argument("--no-lock", action="store_true", help="do not pause the loop (a scratch folder, the tests)")
+    p = sub.add_parser("add-act3", help="add the Act 3 boss stratum (human openings and our own arrivals) as a third file")
+    common(p)
+    p.add_argument("--starts-dir", required=True, help="the folder of human-starts-act3.*, human-outcomes-act3.json and own-starts-act3.* (rl/act3_starts.py)")
+    p.add_argument("--rebuild", action="store_true", help="replace an existing stratum (its files get a dated backup name)")
+    p.add_argument("--stand-alone", action="store_true", help="the folder holds no AI exam (a staging folder)")
+    p.add_argument("--no-lock", action="store_true", help="do not pause the loop (a scratch folder, the tests)")
     p = sub.add_parser("baseline")
     common(p, True)
     p = sub.add_parser("play")
@@ -1745,7 +1882,7 @@ def main(argv=None) -> int:
     p.add_argument("--boot", type=int, default=BOOT)
     a = ap.parse_args(argv)
     ALLOW_QUIET[:] = list(getattr(a, "allow_quiet", None) or [])
-    return {"select": cmd_select, "add-human": cmd_add_human, "baseline": cmd_baseline, "play": cmd_play, "report": cmd_report,
+    return {"select": cmd_select, "add-human": cmd_add_human, "add-act3": cmd_add_act3, "baseline": cmd_baseline, "play": cmd_play, "report": cmd_report,
             "compare": cmd_compare}[a.cmd](a)
 
 

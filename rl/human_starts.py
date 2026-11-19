@@ -75,6 +75,7 @@ NODE_TYPE = {"hallway": 1, "elite": 2, "boss": 6}  # run_train.vocab's node type
 KINDS = ("hallway", "elite", "boss")
 STARTER_RELIC, BLACK_BLOOD = "BURNING_BLOOD", "BLACK_BLOOD"
 BOSS_FLOOR = {1: 17, 2: 33}  # the floors of the Act 1 and Act 2 bosses on the copy (rl/run_fields.ACT_BOSS_FLOORS)
+BOSS_FLOORS = {1: (17,), 2: (33,), 3: (48, 49)}  # every boss floor of an act: Act 3 has two bosses in a row at Ascension 10 (rl/act3_starts.py)
 VANILLA_ACTS = ("ACT.OVERGROWTH", "ACT.UNDERDOCKS"), "ACT.HIVE", "ACT.GLORY"
 ROSTER_TRIES = 32  # seeds tried for a fight whose roster the copy rolls (slimes, bowlbugs, raiders) until it is the human's
 WEAK_ROOMS = 0  # `reset_arena`'s completed_combat_rooms for a weak Corpse Slugs or Seapunk (-1 deals their normal twin)
@@ -355,9 +356,11 @@ def relic_timeline(flat: list) -> tuple[dict[str, int], dict[str, int]]:
     return gains, removed
 
 
-def rebuild_run(r: dict, tables: Tables, fail: Counter, seen: Counter | None = None) -> list[dict]:
-    """The fight specs of one run: for every Act 1 and Act 2 fight, the state the human walked in with. `fail` counts the fights
-    and runs that could not be rebuilt, by reason; `seen` counts every fight the run entered by act and kind (rebuilt or not)."""
+def rebuild_run(r: dict, tables: Tables, fail: Counter, seen: Counter | None = None, acts: tuple = (1, 2),
+                kinds: tuple | None = None) -> list[dict]:
+    """The fight specs of one run: for every Act 1 and Act 2 fight (`acts`: the acts to build; (3,) builds the Act 3 boss fights, which carry
+    `boss_no` 1 or 2; `kinds`: only fights of these kinds, "hallway", "elite" or "boss"), the state the human walked in with. `fail` counts the fights and runs that could not be rebuilt, by reason;
+    `seen` counts every fight the run entered by act and kind (rebuilt or not)."""
     flat = [(a, pt) for a, act in enumerate(r.get("map_point_history") or []) for pt in act]
     rid = run_id(r)
     deck: list = [("ASCENDERS_BANE", 0, None, 0)] + [("STRIKE_IRONCLAD", 0, None, 0)] * 5 + [("DEFEND_IRONCLAD", 0, None, 0)] * 4 \
@@ -366,6 +369,7 @@ def rebuild_run(r: dict, tables: Tables, fail: Counter, seen: Counter | None = N
     gains, removed = relic_timeline(flat)
     specs: list[dict] = []
     hp = max_hp = gold = None
+    bosses_in_act: Counter = Counter()
     for f, (a, pt) in enumerate(flat, 1):
         ps = (pt.get("player_stats") or [{}])[0]
         fight = point_fight(pt)
@@ -373,17 +377,25 @@ def rebuild_run(r: dict, tables: Tables, fail: Counter, seen: Counter | None = N
             kind, model = fight
             act = a + 1
             cell = f"act{act}-{'hallway' if kind == 'event' else kind}"
+            if kind == "boss":
+                bosses_in_act[act] += 1
             if seen is not None and kind != "event":
                 seen[cell] += 1
-            if act > 2:
-                fail["act 3 or later: not built"] += 1
+            if act not in acts:
+                if act > 2 and 3 not in acts:
+                    fail["act 3 or later: not built"] += 1
+            elif kinds is not None and kind not in kinds:
+                pass
             elif kind == "event":
                 fail["an event page before the fight: HP going in not known"] += 1
             elif hp is None:
                 fail["no HP before the fight"] += 1
             else:
-                spec = _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed, hp, max_hp, gold, fail, last=f == len(flat))
+                spec = _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed, hp, max_hp, gold, fail, last=f == len(flat),
+                             won=bool(r.get("win")), boss_no=bosses_in_act[act])
                 if spec is not None:
+                    if act == 3 and kind == "boss":
+                        spec["boss_no"] = bosses_in_act[act]
                     specs.append(spec)
         apply_point(deck, ps)
         apply_potions(potions, pt, ps)
@@ -394,12 +406,13 @@ def rebuild_run(r: dict, tables: Tables, fail: Counter, seen: Counter | None = N
     return specs
 
 
-def _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed, hp, max_hp, gold, fail, last: bool = False) -> dict | None:
+def _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed, hp, max_hp, gold, fail, last: bool = False,
+          won: bool = False, boss_no: int = 0) -> dict | None:
     eid = tables.encounter_id(model)
     if eid is None:
         fail["encounter unknown to the copy"] += 1
         return None
-    if kind == "boss" and f != BOSS_FLOOR[act]:
+    if kind == "boss" and (f not in BOSS_FLOORS[act] or (act == 3 and f != BOSS_FLOORS[3][0] + boss_no - 1)):  # Act 3: the first boss is floor 48, the second 49
         fail["boss at an unusual floor: the route is not the copy's"] += 1
         return None
     if not 0 < int(hp or 0) <= int(max_hp or 0):
@@ -431,7 +444,7 @@ def _spec(r, rid, tables, f, act, kind, model, pt, deck, potions, gains, removed
     pots = [tables.potions[p] for p in potions if p in tables.potions]
     room = (pt.get("rooms") or [{}])[-1]
     slots = A10_POTION_SLOTS + (2 if "POTION_BELT" in held else 0)
-    outcome = fight_outcome(hp_in=int(hp), max_hp_in=int(max_hp), survived=not last, ps=(pt.get("player_stats") or [{}])[0], room=room,
+    outcome = fight_outcome(hp_in=int(hp), max_hp_in=int(max_hp), survived=not last or won, ps=(pt.get("player_stats") or [{}])[0], room=room,
                             held=held, potions_in=len(pots))
     return {"id": f"human:{rid}|f{f:02d}", "run": rid, "seed": rid, "act": act, "floor": f, "kind": kind, "cat": f"act{act}-{kind}",
             "node_type": NODE_TYPE[kind], "enemy": _cid(room["model_id"]), "encounter_id": eid,
@@ -523,8 +536,8 @@ def fight_outcome(*, hp_in, max_hp_in, survived: bool, ps: dict, room: dict, hel
     return out
 
 
-def outcomes_of_run(r: dict) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
-    """The results of a run's Act 1 and 2 fight floors, by the start ids `rebuild_run` gives them (an event page before the fight
+def outcomes_of_run(r: dict, acts: tuple = (1, 2)) -> tuple[dict[str, dict], dict[str, str], dict[str, dict]]:
+    """The results of a run's Act 1 and 2 fight floors (`acts`), by the start ids `rebuild_run` gives them (an event page before the fight
     leaves no start): ({id: outcome}, {id: why there is none}, {id: the floor's numbers for the checks}). Needs no copy and no
     tables, only the record's own HP, relics and potions."""
     flat = [(a, pt) for a, act in enumerate(r.get("map_point_history") or []) for pt in act]
@@ -538,10 +551,10 @@ def outcomes_of_run(r: dict) -> tuple[dict[str, dict], dict[str, str], dict[str,
     for f, (a, pt) in enumerate(flat, 1):
         ps = (pt.get("player_stats") or [{}])[0]
         fight = point_fight(pt)
-        if fight is not None and f >= 2 and a + 1 <= 2 and fight[0] != "event":
+        if fight is not None and f >= 2 and a + 1 in acts and fight[0] != "event":
             sid = f"human:{rid}|f{f:02d}"
             held = relics_at(r, f, gains, removed)
-            res = fight_outcome(hp_in=hp, max_hp_in=max_hp, survived=f < len(flat), ps=ps, room=(pt.get("rooms") or [{}])[-1], held=held,
+            res = fight_outcome(hp_in=hp, max_hp_in=max_hp, survived=f < len(flat) or bool(r.get("win")), ps=ps, room=(pt.get("rooms") or [{}])[-1], held=held,
                                 potions_in=len(potions))
             if isinstance(res, dict):
                 outs[sid] = res
@@ -575,7 +588,11 @@ def below_normal() -> None:
 def _init_worker() -> None:
     """A pool worker: BelowNormal, the engine of the gym (core2), the library loaded once."""
     below_normal()
-    os.environ.setdefault("STS2_ENGINE", ENGINE)
+    engine = os.environ.get("HUMAN_STARTS_ENGINE", ENGINE)  # the Act 3 build deals on the engine the plain runs play (old)
+    if engine == "old":
+        os.environ.pop("STS2_ENGINE", None)
+    else:
+        os.environ.setdefault("STS2_ENGINE", engine)
     from sts2_gym import names, native  # noqa: PLC0415
 
     _W["native"] = native
@@ -674,10 +691,11 @@ class SetWriter:
     """human-starts.jsonl written as the openings arrive (one start a line), with its byte index and the list without documents.
     Nothing is kept in memory but the lite records; the files replace the old set only when `close` is called."""
 
-    def __init__(self, out_dir: Path) -> None:
+    def __init__(self, out_dir: Path, stem: str = STEM) -> None:
         self.dir = Path(out_dir)
+        self.stem = stem
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.path = self.dir / f"{STEM}.jsonl"
+        self.path = self.dir / f"{stem}.jsonl"
         self.tmp = self.path.with_suffix(".tmp")
         self.fh = open(self.tmp, "wb")  # noqa: SIM115 -- closed in `close`
         self.index: dict[str, int] = {}
@@ -698,7 +716,7 @@ class SetWriter:
         self.fh.close()
         os.replace(self.tmp, self.path)
         self.lite.sort(key=lambda r: r["id"])
-        for name, obj in ((f"{STEM}.index.json", self.index), (f"{STEM}.lite.json", self.lite)):
+        for name, obj in ((f"{self.stem}.index.json", self.index), (f"{self.stem}.lite.json", self.lite)):
             t = self.dir / (name + ".tmp")
             t.write_text(json.dumps(obj, separators=(",", ":")), encoding="utf-8")
             os.replace(t, self.dir / name)
