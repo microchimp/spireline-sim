@@ -598,9 +598,9 @@ class TraceTests(unittest.TestCase):
         self.assertEqual((f["forms_reached"], f["turns"]), (3, 5))
         self.assertEqual({k: v["turns"] for k, v in f["per_form"].items()}, {1: 2, 2: 1, 3: 2})
         # health lost over a turn: the next turn's first reading less this one's; the last turn is left out (its loss is the death)
-        self.assertEqual(f["per_form"][1], {"turns": 2, "hp_lost": 10 + 15, "lost_turns": 2})
-        self.assertEqual(f["per_form"][2], {"turns": 1, "hp_lost": 15, "lost_turns": 1})
-        self.assertEqual(f["per_form"][3], {"turns": 2, "hp_lost": 20, "lost_turns": 1})
+        self.assertEqual(f["per_form"][1], {"turns": 2, "hp_lost": 10 + 15, "lost_turns": 2, "strength_in": 0})
+        self.assertEqual(f["per_form"][2], {"turns": 1, "hp_lost": 15, "lost_turns": 1, "strength_in": 0})
+        self.assertEqual(f["per_form"][3], {"turns": 2, "hp_lost": 20, "lost_turns": 1, "strength_in": 0})
         self.assertEqual(f["last"], {"form": 3, "move": [0, 45, 1], "hp": 20, "boss_strength": 6, "boss_hp": 250, "boss_max": 313})
 
     def test_a_game_without_the_boss_has_no_story(self):
@@ -618,6 +618,7 @@ class TraceTests(unittest.TestCase):
         self.assertAlmostEqual(a["forms"][3]["share"], 2 / 3)
         self.assertAlmostEqual(a["forms"][3]["turns_mean"], 2.0)
         self.assertAlmostEqual(a["forms"][3]["hp_lost_per_turn"], 20.0)
+        self.assertAlmostEqual(a["forms"][3]["strength_in_mean"], 0.0)
         self.assertEqual(a["death_forms"], {3: 2})
         self.assertAlmostEqual(a["death_boss_strength_mean"], 6.0)
         self.assertAlmostEqual(a["death_boss_hp_share_mean"], 250 / 313)
@@ -742,6 +743,25 @@ class ReportTests(unittest.TestCase):
         d = ax.report_data(rows, boot=50)
         self.assertEqual(d["trace"]["own"]["forms"][3]["games"], 1)
         self.assertIn("killed by form 3 move type 0 45 x 1", ax.report_text(d))
+
+
+class DeckTests(unittest.TestCase):
+    TYPES = {1: "Attack", 2: "Skill", 3: "Power", 4: "Curse"}
+
+    def test_a_deck_is_counted_by_card_type_and_an_upgraded_card_is_a_negative_id(self):
+        m = a3.deck_mix([1, -1, 2, 2, 2, 3, 4, 99], self.TYPES)
+        self.assertEqual(m, {"size": 8, "attack": 2, "skill": 3, "power": 1, "curse": 1, "?": 1})
+
+    def test_the_table_splits_by_side_boss_and_result_and_drops_a_small_cell(self):
+        human = [{"boss_no": 1, "encounter_id": 80, "deck": [1, 2, 2, 3], "outcome": {"human_survived": i < 12}} for i in range(30)]
+        own = [(1, 80, i < 3, [1, 1, 1, 2]) for i in range(40)]
+        t = a3.decks_table(human, iter(own), self.TYPES)
+        self.assertEqual(sorted(t), ["human|boss1|test-subject|all", "human|boss1|test-subject|died", "own|boss1|test-subject|all",
+                                     "own|boss1|test-subject|lost"])  # 12 went past and 3 won: under 20, not shown
+        h = t["human|boss1|test-subject|all"]
+        self.assertEqual((h["n"], h["size"], h["skill"], h["attack"], h["power"]), (30, 4.0, 2.0, 1.0, 1.0))
+        o = t["own|boss1|test-subject|lost"]
+        self.assertEqual((o["n"], o["skill"], o["attack"]), (37, 1.0, 3.0))
 
 
 class PureTests(unittest.TestCase):

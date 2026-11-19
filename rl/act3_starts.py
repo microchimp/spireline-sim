@@ -3,6 +3,7 @@
 
     python rl/act3_starts.py scan   --out DIR [--corpus FILE] [--limit-runs N] [--cache FILE]   read the corpus once: the human bar and the positions
     python rl/act3_starts.py table  --out DIR [--stores S ...]                                  the per-boss table: humans against our runs
+    python rl/act3_starts.py decks  --out DIR                                                   the decks walked in with: skills, attacks, powers by boss and result
     python rl/act3_starts.py human  --out DIR [--procs 4] [--engine old|core2] [--only-ids FILE]  deal the human positions' openings on the copy
     python rl/act3_starts.py own    --out DIR [--stores S ...] [--n-first N] [--n-second N]       our own Act 3 boss arrivals, from the plain-run stores
 
@@ -373,6 +374,61 @@ def _tables_text(rows: list[dict], own: dict, agg: dict) -> str:
     return "\n".join(L)
 
 
+def deck_mix(card_ids, types: dict[int, str]) -> dict[str, int]:
+    """The deck as counts: its size, Skills, Attacks, Powers, and the starter Defends (a card's id may be negative: upgraded)."""
+    c: Counter = Counter()
+    for i in card_ids:
+        t = types.get(abs(int(i)), "?")
+        c["size"] += 1
+        c[t.lower()] += 1
+    return dict(c)
+
+
+def decks_table(human_specs: list[dict], own_docs, types: dict[int, str]) -> dict[str, dict]:
+    """Aggregates of the decks walked into the first and second Act 3 boss: by side (human, own), boss turn, boss and the result (went past or
+    died for a human; fight won or lost for ours), the number of fights and the mean count of Skills, Attacks, Powers and the deck's size.
+    `own_docs`: (boss turn, encounter id, fight won, the opening's card list `[def_id, ...]`) for each of our arrivals. A cell under `MIN_CELL` is left out."""
+    cells: dict[str, dict] = {}
+
+    def add(key: str, ids) -> None:
+        m = deck_mix(ids, types)
+        c = cells.setdefault(key, {"n": 0, "size": 0, "skill": 0, "attack": 0, "power": 0})
+        c["n"] += 1
+        for k in ("size", "skill", "attack", "power"):
+            c[k] += m.get(k, 0)
+
+    for s in human_specs:
+        name = BOSS_SLUG.get(int(s["encounter_id"]), "other")
+        res = "past" if (s.get("outcome") or {}).get("human_survived") else "died"
+        for k in (f"human|boss{s['boss_no']}|{name}|all", f"human|boss{s['boss_no']}|{name}|{res}"):
+            add(k, s["deck"])
+    for no, eid, won, ids in own_docs:
+        name = BOSS_SLUG.get(int(eid), "other")
+        for k in (f"own|boss{no}|{name}|all", f"own|boss{no}|{name}|{'won' if won else 'lost'}"):
+            add(k, ids)
+    return {k: {"n": c["n"], **{m: c[m] / c["n"] for m in ("size", "skill", "attack", "power")}} for k, c in sorted(cells.items()) if c["n"] >= MIN_CELL}
+
+
+def cmd_decks(a: argparse.Namespace) -> int:
+    from sts2_gym import names  # noqa: PLC0415 -- reads the copy's C# tables as text
+
+    out = Path(a.out)
+    types = {int(i): c.card_type for i, c in names.cards().items()}
+    res = json.loads((out / SPECS_FILE).read_text(encoding="utf-8"))
+
+    def own_docs():
+        for line in open(out / f"{OWN_STEM}.jsonl", encoding="utf-8"):
+            r = json.loads(line)
+            yield int(r["boss_no"]), int(r["encounter_id"]), bool(r.get("own_run_won")), [c["def_id"] for c in hs.doc_cards(r["doc"])]
+
+    t = decks_table(res["specs"], own_docs(), types)
+    print("Decks walked into the Act 3 bosses (mean cards a deck; a cell under %d fights is not shown)" % MIN_CELL)
+    print(f"  {'side | turn | boss | result':<44}{'fights':>7}{'cards':>7}{'skills':>8}{'attacks':>9}{'powers':>8}")
+    for k, v in t.items():
+        print(f"  {k.replace('|', ' | '):<44}{v['n']:>7}{v['size']:>7.1f}{v['skill']:>8.1f}{v['attack']:>9.1f}{v['power']:>8.1f}")
+    return 0
+
+
 def cmd_scan(a: argparse.Namespace) -> int:
     import fight_exam as fe  # noqa: PLC0415
 
@@ -473,6 +529,9 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--stores", nargs="+", default=list(OWN_STORES))
     p.set_defaults(fn=cmd_table)
+    p = sub.add_parser("decks")
+    p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_decks)
     p = sub.add_parser("human")
     p.add_argument("--out", required=True)
     p.add_argument("--procs", type=int, default=4)

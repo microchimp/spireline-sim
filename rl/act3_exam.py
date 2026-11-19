@@ -153,7 +153,8 @@ class TraceGrader:
 def forms_of(trace: list[list], def_id: int = TS_DEF) -> dict:
     """The Test Subject's story of one traced game: for each form (the boss's distinct maximum health in order of appearance), the player turns
     that began in it, the player's health lost over the turns that began in it (health at the turn's first decision less health at the next
-    turn's first, the last turn's health to 0 when the player died), and the form and move at the last decision. A trace row is
+    turn's first, the last turn's health to 0 when the player died), the boss's Strength when the form's first turn began, and the form and move
+    at the last decision. A trace row is
     [k, kind, turn, hp, max_hp, block, energy, strength, vulnerable, weak, [[def, hp, max_hp, block, intent type, magnitude, hits, strength]]]."""
     form_of_hp: dict[int, int] = {}
     turns: list[dict] = []
@@ -168,7 +169,7 @@ def forms_of(trace: list[list], def_id: int = TS_DEF) -> dict:
         form = form_of_hp[boss[2]]
         if cur is None or cur["turn"] != turn:
             cur = {"turn": turn, "form": form, "hp0": hp, "last_form": form, "last_move": (boss[4], boss[5], boss[6]), "boss_hp": boss[1],
-                   "boss_max": boss[2], "boss_strength": boss[7], "last_hp": hp}
+                   "boss_max": boss[2], "boss_strength": boss[7], "strength0": boss[7], "last_hp": hp}
             turns.append(cur)
         cur["last_form"] = form
         cur["last_move"] = (boss[4], boss[5], boss[6])
@@ -177,7 +178,7 @@ def forms_of(trace: list[list], def_id: int = TS_DEF) -> dict:
     per_form: dict[int, dict] = {}
     for i, t in enumerate(turns):
         nxt = turns[i + 1]["hp0"] if i + 1 < len(turns) else None
-        pf = per_form.setdefault(t["form"], {"turns": 0, "hp_lost": 0.0, "lost_turns": 0})
+        pf = per_form.setdefault(t["form"], {"turns": 0, "hp_lost": 0.0, "lost_turns": 0, "strength_in": t["strength0"]})
         pf["turns"] += 1
         if nxt is not None:
             pf["hp_lost"] += max(0, t["hp0"] - nxt)
@@ -197,7 +198,7 @@ def trace_summary(rows: list[dict]) -> dict:
         games = [r for r in rows if r.get("trace") and (side == "all" or r.get("stratum") == side)]
         if not games:
             continue
-        agg: dict[int, dict] = defaultdict(lambda: {"games": 0, "turns": 0, "hp_lost": 0.0, "lost_turns": 0})
+        agg: dict[int, dict] = defaultdict(lambda: {"games": 0, "turns": 0, "hp_lost": 0.0, "lost_turns": 0, "strength_in": 0.0})
         deaths: Counter = Counter()
         death_forms: Counter = Counter()
         strengths: list = []
@@ -213,6 +214,7 @@ def trace_summary(rows: list[dict]) -> dict:
                 a["turns"] += v["turns"]
                 a["hp_lost"] += v["hp_lost"]
                 a["lost_turns"] += v["lost_turns"]
+                a["strength_in"] += v["strength_in"]
             reached[f["forms_reached"]] += 1
             turn_counts.append(f["turns"])
             if not won_of(r) and f["last"] is not None:
@@ -226,7 +228,8 @@ def trace_summary(rows: list[dict]) -> dict:
                      "death_boss_strength_mean": sum(strengths) / len(strengths) if strengths else None,
                      "death_boss_hp_share_mean": sum(boss_left) / len(boss_left) if boss_left else None,
                      "forms": {form: {"games": v["games"], "share": v["games"] / len(games), "turns_mean": v["turns"] / v["games"],
-                                      "hp_lost_per_turn": v["hp_lost"] / v["lost_turns"] if v["lost_turns"] else None}
+                                      "hp_lost_per_turn": v["hp_lost"] / v["lost_turns"] if v["lost_turns"] else None,
+                                      "strength_in_mean": v["strength_in"] / v["games"]}
                                for form, v in sorted(agg.items())},
                      "death_forms": {k: n for k, n in sorted(death_forms.items())},
                      "death_moves": [{"form": k[0], "intent_type": k[1], "magnitude": k[2], "hits": k[3], "games": n} for k, n in deaths.most_common(6)]}
@@ -323,7 +326,8 @@ def report_text(d: dict) -> str:
         L += ["", f"The Test Subject, {side} positions: {t['games']} traced games, {t['lost']} lost"]
         for form, v in t["forms"].items():
             hpl = "-" if v["hp_lost_per_turn"] is None else f"{v['hp_lost_per_turn']:.1f}"
-            L.append(f"  form {form}: reached in {pct(v['share'])}% of games, {v['turns_mean']:.1f} turns when reached, health lost a turn {hpl}")
+            L.append(f"  form {form}: reached in {pct(v['share'])}% of games, {v['turns_mean']:.1f} turns when reached, health lost a turn {hpl}, "
+                     f"the boss's Strength when it began {v['strength_in_mean']:.1f}")
         bs, bl = t["death_boss_strength_mean"], t["death_boss_hp_share_mean"]
         L.append(f"  fights last {t['turns_mean']:.1f} turns; lost in form: {t['death_forms']}"
                  + ("" if bs is None else f"; at the end of lost games the boss had {bs:.1f} Strength and {100 * bl:.0f}% of its last form's health"))
