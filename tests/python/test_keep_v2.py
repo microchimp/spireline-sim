@@ -40,34 +40,77 @@ def row(floor=None, win=False, acts=None):
     return r
 
 
+def nodes_of(*, long_act2: bool = False, act3_boss: bool = True, second: bool = False) -> str:
+    """A run's node string: Act 1 is 16 letters (floors 2 to 17), Act 2 is an 'A' and 14 rooms and its boss (floors 18 to 33; 16 rooms in
+    the odd long Act 2, whose boss is on 35), Act 3 an 'A', 13 rooms and the first boss (floors 34 to 48), then the second boss."""
+    return "M" * 15 + "B" + "A" + "M" * (16 if long_act2 else 14) + "B" + "A" + "M" * 13 + ("B" if act3_boss else "") + ("B" if second else "")
+
+
 class BossesBeatenTests(unittest.TestCase):
-    def test_bosses_beaten_reads_acts_first_and_floor_cuts_without(self):
-        won = [[0, 1.0], [1, 1.0], [2, 1.0]]
+    def test_bosses_beaten_is_the_run_going_past_the_boss(self):
+        full_bar = [[0, 1.0], [1, 1.0], [2, 1.0]]
         self.assertEqual(k2.bosses_beaten(row(51, win=True)), (True, True, True, True))  # a win beats all four, whatever else the row says
         self.assertEqual(k2.bosses_beaten(row(51, win=True, acts=[[0, 0.3]])), (True, True, True, True))
-        # the field where the row has it: a run that ended on floor 35 without beating the Act 2 boss (two such runs in generation 11's arm)
-        lost_at_b2 = row(35, acts=[[0, 1.0], [1, 0.8]])
-        self.assertEqual(k2.bosses_beaten(lost_at_b2), (True, False, False, False))
-        without = {"seed": "S", "floor": 35, "win": False}
-        self.assertEqual(k2.bosses_beaten(without), (True, True, False, False))  # the floor cut says the Act 2 boss fell
-        # A10 has two Act 3 bosses: beating the first ends the run on floor 48, which the cut (> 48) misses
-        self.assertEqual(k2.bosses_beaten(row(48, acts=won)), (True, True, True, False))
+        # the strict reading (2026-11-19): a first Act 3 boss entry of 1.0 on a run that ended on floor 48 is NOT a kill (the Test Subject's
+        # first form emptied, the boss back with two more); a run on floor 49, whose second boss's fight began, did beat it
+        self.assertEqual(k2.bosses_beaten(row(48, acts=full_bar)), (True, True, False, False))
+        self.assertEqual(k2.bosses_beaten(row(49, acts=full_bar + [[2, 0.4]])), (True, True, True, False))
         self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 48, "win": False}), (True, True, False, False))
-        # exactly 1.0 is a boss beaten; the first entry of an act decides; an empty field is a run that reached no boss
+        # a lost fight (the act's first entry below 1.0, or unknown) is never a boss beaten, whatever the floor says (rows without `nodes`):
+        # a run that ended on floor 35 without beating the Act 2 boss of the odd long Act 2
+        self.assertEqual(k2.bosses_beaten(row(35, acts=[[0, 1.0], [1, 0.8]])), (True, False, False, False))
+        self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 35, "win": False}), (True, True, False, False))  # no record: the cut says it fell
         self.assertEqual(k2.bosses_beaten(row(20, acts=[[0, 0.999]])), (False, False, False, False))
-        self.assertEqual(k2.bosses_beaten(row(20, acts=[[0, 0.4], [0, 1.0]])), (False, False, False, False))
+        self.assertEqual(k2.bosses_beaten(row(20, acts=[[0, 0.4], [0, 1.0]])), (False, False, False, False))  # the first entry decides
         self.assertEqual(k2.bosses_beaten(row(20, acts=[[0, 1.0], [1, None]])), (True, False, False, False))  # an unknown damage is not a win
-        self.assertEqual(k2.bosses_beaten(row(40, acts=[])), (False, False, False, False))
+        self.assertEqual(k2.bosses_beaten(row(40, acts=[])), (True, True, False, False))  # an empty record says nothing: the floor does
         self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 0, "win": False, "crash": True}), (False, False, False, False))
+        self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 40, "win": False, "crash": True}), (False, False, False, False))  # a crash is a loss
+        self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 40, "win": False, "lost": True}), (False, False, False, False))
         # the floor cuts, 17 / 33 / 48
         for floor, want in ((17, (False, False, False)), (18, (True, False, False)), (33, (True, False, False)), (34, (True, True, False)),
                             (48, (True, True, False)), (49, (True, True, True))):
             self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": floor, "win": False})[:3], want, floor)
         self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": None, "win": False}), (False, False, False, False))
+        # a run ended by a deadline reads by its floor like any other
+        self.assertEqual(k2.bosses_beaten({"seed": "S", "floor": 40, "win": False, "end": "timeout"}), (True, True, False, False))
+
+    def test_the_node_string_names_each_boss_floor(self):
+        self.assertEqual(k2.boss_floors(nodes_of()), [17, 33, 48])
+        self.assertEqual(k2.boss_floors(nodes_of(second=True)), [17, 33, 48, 49])
+        self.assertEqual(k2.boss_floors(nodes_of(long_act2=True)), [17, 35, 50])  # the odd Act 2 of 18 floors moves the Act 3 boss to 50 too
+        self.assertEqual(k2.boss_floors(None), [])
+        full = nodes_of(second=True)
+        for floor, want in ((48, (True, True, False)), (49, (True, True, True))):  # the string cut where the run's last room was
+            self.assertEqual(k2.bosses_beaten(row(floor) | {"nodes": full[:floor - 1]})[:3], want, floor)
+        long_act2 = nodes_of(long_act2=True, second=True)
+        for floor, want in ((34, (True, False, False)), (35, (True, False, False)), (36, (True, True, False)), (49, (True, True, False)),
+                            (50, (True, True, False)), (51, (True, True, True))):
+            self.assertEqual(k2.bosses_beaten(row(floor) | {"nodes": long_act2[:floor - 1]})[:3], want, floor)
+        # a boss the run never entered was not passed; a string with no boss at all (died before the Act 1 boss) beats nothing
+        self.assertEqual(k2.bosses_beaten(row(10) | {"nodes": "M" * 9})[:3], (False, False, False))
+        self.assertEqual(k2.bosses_beaten(row(1) | {"nodes": ""})[:3], (False, False, False))
+        # a row with a complete string is read by it alone: the bar's fraction is not consulted
+        self.assertEqual(k2.bosses_beaten(row(48, acts=[[0, 1.0], [1, 1.0], [2, 1.0]]) | {"nodes": nodes_of()})[:3], (True, True, False))
+        # a string that leaves rooms out (the real game's) is not read: the floor cuts and a lost fight's entry decide
+        self.assertTrue(k2.complete_nodes(row(48) | {"nodes": nodes_of()}))
+        self.assertFalse(k2.complete_nodes(row(22) | {"nodes": "MM???S?MM"}))
+        self.assertFalse(k2.complete_nodes(row(22)))
+        self.assertEqual(k2.bosses_beaten(row(22) | {"nodes": "MM???S?MM"})[:3], (True, False, False))
+        self.assertEqual(k2.bosses_beaten(row(17, acts=[[0, None]]) | {"nodes": "MMS?T?"})[:3], (False, False, False))
+
+    def test_the_loose_reading_is_kept_for_the_comparison_tables(self):
+        full_bar = [[0, 1.0], [1, 1.0], [2, 1.0]]
+        self.assertEqual(k2.bosses_beaten_loose(row(48, acts=full_bar)), (True, True, True, False))  # the old, three-times-too-high reading
+        self.assertEqual(k2.bosses_beaten_loose(row(35, acts=[[0, 1.0], [1, 0.8]])), (True, False, False, False))
+        self.assertEqual(k2.bosses_beaten_loose({"seed": "S", "floor": 48, "win": False}), (True, True, False, False))
+        self.assertEqual(k2.bosses_beaten_loose(row(51, win=True)), (True, True, True, True))
+        self.assertEqual(k2.bosses_beaten_loose(row(40, acts=[])), (False, False, False, False))
 
     def test_deep_counts_the_bosses_from_the_frontier_on(self):
-        r = row(48, acts=[[0, 1.0], [1, 1.0], [2, 1.0]])  # B1, B2, B3a
+        r = row(49, acts=[[0, 1.0], [1, 1.0], [2, 1.0], [2, 0.3]])  # B1, B2, B3a
         self.assertEqual([k2.deep(r, f) for f in range(4)], [3, 2, 1, 0])
+        self.assertEqual([k2.deep(row(48, acts=[[0, 1.0], [1, 1.0], [2, 1.0]]), f) for f in range(4)], [2, 1, 0, 0])  # full bar, still on 48
         self.assertEqual([k2.deep(row(51, win=True), f) for f in range(4)], [4, 3, 2, 1])
         self.assertEqual(k2.deep(row(10, acts=[[0, 0.5]]), 0), 0)
 

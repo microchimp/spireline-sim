@@ -10,8 +10,17 @@ needs more seeds) is a mode of the same module: see [KEEP_TEST_V3.md](KEEP_TEST_
 ## The rule
 
 `tools/lab/keep_v2.py` (pure, like `promotion_guard.py`: no file read, no run played). A run beats up to four bosses, **B1, B2, B3a** (the
-first of A10's two Act 3 bosses) and **B3b** (the win), read from `boss_damage_acts` (the first entry of each act, fraction exactly 1.0; a
-win beats all four) and, for a row without the field (blocks before 2026-10-25), from the floor cuts 17 / 33 / 48.
+first of A10's two Act 3 bosses) and **B3b** (the win). **A boss is beaten when the run went past it** (`keep_v2.went_past`, the strict
+reading of 2026-11-19; a win beats all four): the run's floor is above the boss's floor, which is read from the row's own node string when
+that is complete (floor = its length + 1: the bosses are on 17 and 33 and 48, but one run in about four hundred that reaches Act 2 has an
+Act 2 of 18 floors and its bosses on 35 and 50) and is the cut 17 / 33 / 48 otherwise; a crashed or lost seed beat nothing; a row ended by
+a deadline is read by its floor. **The health bar's fraction (`boss_damage_acts`, "damage dealt to the creatures the fight began with")
+is not read as a kill**: until 2026-11-19 a first entry of exactly 1.0 counted as a boss beaten (`keep_v2.bosses_beaten_loose`, kept for
+comparison tables only). That agrees with going past the boss at Acts 1 and 2 on every one of the 89,893 judged runs that carry the field (generations 5 to 18), but
+at the first Act 3 boss it was three times too high: the Test Subject (a boss with three forms, each with more health than the last) empties
+the bar when its first form falls (the fight is not over: it returns twice), so 957 of the 989 runs of generations 16 to 18 that met it read
+1.0 and 18 went past it; the Queen and the Aeonglass read 1.0 only when they died (287 of 1,068 and 219 of 1,067). Generation 18's judged
+block read 158 kills of 2,000, 52 went past (`tools/lab/ledger_strict.py` re-scores every ledger judgement; `tools/lab/act3_boss_table.py` tabulates the bosses).
 
 * **Frontier f** = the deepest boss the promoted lineage beats in at least 1.5 of 100 runs, pooled over its last three judged blocks (the
   blocks `lineage_blocks` pools for the drift check; the candidate's arm where it was promoted, the incumbent's where it stayed, never a

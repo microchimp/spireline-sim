@@ -26,7 +26,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "rl"))
+sys.path.insert(0, str(ROOT))
 import run_fields  # noqa: E402
+
+from tools.lab import keep_v2  # noqa: E402  (the one strict rule for "the run went past the boss", `keep_v2.went_past`)
 
 # The act (0-based) of each boss encounter (rl/run_train/vocab.BOSSES by region: Overgrowth and Underdocks act 1, Hive act 2, Glory act 3).
 BOSS_ACT = {"CEREMONIAL_BEAST_BOSS": 0, "THE_KIN_BOSS": 0, "VANTOM_BOSS": 0, "LAGAVULIN_MATRIARCH_BOSS": 0, "SOUL_FYSH_BOSS": 0,
@@ -57,15 +60,19 @@ def parse_log(lines) -> dict[str, dict]:
 
 
 def boss_fights(row: dict, bosses: list[str]) -> list[list]:
-    """[[act, fraction | None], ...] of a run's boss fights: 1.0 for one won, None for the one lost (HP not logged)."""
+    """[[act, fraction | None], ...] of a run's boss fights: 1.0 for one won, None for the one lost (HP not logged). A fight is won when
+    a later fight was logged, the run won, or it is the first boss of its act and the run went past it (`keep_v2.went_past`, the one
+    strict rule: the floor above the boss's floor); the second Act 3 boss, lost or won, is a win of the run or a loss."""
     fights = []
+    seen = [0] * len(run_fields.ACT_BOSS_FLOORS)
     for i, name in enumerate(bosses):
         act = BOSS_ACT.get(name)
         if act is None:
             continue
         last = i == len(bosses) - 1
-        floor = row.get("floor") or 0
-        won = (not last) or row.get("end") == "win" or floor > run_fields.ACT_BOSS_FLOORS[act] + (1 if act == 2 else 0)
+        first_of_act = seen[act] == 0
+        seen[act] += 1
+        won = (not last) or row.get("end") == "win" or (first_of_act and keep_v2.went_past(row, act))
         fights.append([act, 1.0 if won else None])
     return fights
 

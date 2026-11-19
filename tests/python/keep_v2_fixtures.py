@@ -1,8 +1,10 @@
 """Synthetic paired arms for the keep test v2's tests (tools/lab/keep_v2.py): no saved row is committed, only counts.
 
 An arm is described by groups `(count, candidate level, incumbent level)`, a level being how deep the run got: 0 died before the Act 1 boss,
-1 beat it (died in Act 2), 2 beat the Act 2 boss (died in Act 3), 3 also beat the first Act 3 boss (A10 has two; floor 48, which the
-floor cuts miss), 4 won. The rows carry the fields the rule reads (`floor`, `win`, `crash`, `boss_damage`, `boss_damage_acts`).
+1 beat it (died in Act 2), 2 beat the Act 2 boss (died in Act 3; a level 2 run that reached the first Act 3 boss ends on floor 48 with
+its health bar read full or not), 3 also beat the first Act 3 boss (A10 has two; the run is past it when it reaches floor 49 and the
+second boss's fight is recorded), 4 won. The rows carry the fields the rule reads (`floor`, `win`, `crash`, `boss_damage`,
+`boss_damage_acts`); since 2026-11-19 a boss is beaten when the run went past it (`keep_v2.went_past`), not when its bar reads 1.0.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ FLOOR_PARAMS = {0: (15.8, 2.7, 3, 17), 1: (29.2, 4.1, 18, 33), 2: (42.1, 3.7, 34
 
 def floor_of(level: int, rng: np.random.Generator) -> int:
     if level == 3:
-        return 48
+        return 49
     if level == 4:
         return 51
     mean, sd, lo, hi = FLOOR_PARAMS[level]
@@ -37,8 +39,10 @@ def run_row(seed: str, level: int, rng: np.random.Generator) -> dict:
         acts = [[0, 1.0], [1, round(float(rng.uniform(0.2, 0.8)), 4)]]
     elif level == 2:
         acts = [[0, 1.0], [1, 1.0], [2, round(float(rng.uniform(0.2, 0.8)), 4)]]
-    else:  # 3: the first Act 3 boss beaten, the second not; 4: the win
-        acts = [[0, 1.0], [1, 1.0], [2, 1.0]]
+    elif level == 3:  # the first Act 3 boss beaten, the second not: the second boss's fight is recorded, the run ends on floor 49
+        acts = [[0, 1.0], [1, 1.0], [2, 1.0], [2, 0.5]]
+    else:  # the win
+        acts = [[0, 1.0], [1, 1.0], [2, 1.0], [2, 1.0]]
     return {"seed": seed, "floor": floor_of(level, rng), "win": level == 4, "end": "win" if level == 4 else "death", "decisions": 10,
             "wall": 1.0, "crash": False, "boss_damage": acts[0][1], "boss_damage_acts": acts}
 

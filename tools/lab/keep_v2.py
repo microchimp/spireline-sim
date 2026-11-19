@@ -4,7 +4,8 @@ Pure functions over the paired per-seed outcomes of a candidate and the incumben
 (no file read, no run played). `rl/gen_loop.py` calls `judge` and `seq_call` only when the keep rule is v2 (``--keep-rule v2``
 or ``SPIRELINE_KEEP_RULE=v2``; the default is v1, today's floor primary, untouched).
 
-The rule. A run beats up to four bosses: B1, B2, B3a (the first Act 3 boss) and B3b (the win). The **frontier** f is a boss, the
+The rule. A run beats up to four bosses: B1, B2, B3a (the first Act 3 boss) and B3b (the win); since 2026-11-19 a boss is beaten when the run
+went past it (`went_past`), not when its health bar read 1.0 (`bosses_beaten_loose`). The **frontier** f is a boss, the
 deepest the promoted lineage beats in at least 1.5 of 100 runs over its last three judged blocks (B1 when none), fixed before the
 block is played. **deep_f** of a run is how many of the bosses from f on it beats, paired by seed, in points per 100 runs.
 Two routes, one alpha (0.005 one-sided):
@@ -58,7 +59,8 @@ SMOKE_MEAN = -1.0  # D64: no longer a refusal; the smoke look records `smoke_wou
 WIN_GATE = 0.10  # wins join the co-primaries once both arms reach this rate (gen_loop.WIN_GATE)
 WIN_ALPHA = 0.01  # the wins co-primary's alpha (gen_loop.ALPHA)
 BOSSES = ("B1", "B2", "B3a", "win")
-ACT_BOSS_FLOORS = (17, 33, 48)  # rl/run_fields.ACT_BOSS_FLOORS: the floor cuts of rows that carry no `boss_damage_acts`
+ACT_BOSS_FLOORS = (17, 33, 48)  # rl/run_fields.ACT_BOSS_FLOORS: the usual boss floors (a row with `nodes` names its own, `boss_floors`)
+BOSS_READING = "strict-2026-11-19"  # how a boss counts as beaten (`went_past`); the verdicts carry it as `boss_reading`
 BOOT_B = pg.BOOT_B
 BOOT_SEED = pg.BOOT_SEED
 
@@ -74,11 +76,65 @@ ADVISORY_V3 = ("attempt", "drift")  # v3: checks recorded with their value that 
 # ------------------------------------------------------------------ bosses beaten, the frontier, deep_f
 
 
+def boss_floors(nodes: Any) -> list[int]:
+    """The floors the run's boss fights were on, in order, from its node string (`nodes`, one letter per room entered): floor 1 is the
+    first room and has no letter, so the k-th letter is floor k + 2 and a 'B' at index i is a boss on floor i + 2. A boss the run never
+    entered is not listed. Acts 1 to 3 have 17, 16 and 15 floors (bosses on 17, 33 and 48; the second Act 3 boss on 49), but one run in
+    about four hundred that reaches Act 2 has an Act 2 of 18 floors, whose boss is on 35 and whose Act 3 boss is on 50: the string, not
+    the cuts, says where each boss is. Only a complete string says so (`complete_nodes`)."""
+    if not isinstance(nodes, str):
+        return []
+    return [i + 2 for i, ch in enumerate(nodes) if ch == "B"]
+
+
+def complete_nodes(row: Mapping[str, Any]) -> bool:
+    """Whether the row's node string covers every room of the run: the floor is one more than its length. True of every emulator arm row
+    of generations 15 to 18 (29,698 of 29,698); not of the real game's rows, whose strings leave rooms out (the stream asks no map decision
+    when the boss is the only node left), nor of a row without the field."""
+    nodes = row.get("nodes")
+    return isinstance(nodes, str) and int(row.get("floor") or 0) == len(nodes) + 1
+
+
+def went_past(row: Mapping[str, Any], act: int) -> bool:
+    """The one strict rule (2026-11-19): the run went past the first boss of act `act` (0 = Act 1, 1 = Act 2, 2 = the first Act 3 boss).
+    A win went past all of them. A crashed or lost seed went past none. Otherwise the run's floor is above the boss's floor: the boss's
+    floor is read from the row's own node string (`boss_floors`) when that string is complete (a boss never entered was not passed), else
+    it is the cut 17 / 33 / 48, and then a fight the row records as lost (the act's first `boss_damage_acts` entry below 1.0, or None)
+    is not passed whatever the floor says. The fraction of the boss's health taken is NOT read as a kill: it reaches 1.0 at the first Act 3
+    boss without the boss dying; a row ending on floor 48 beat nothing there, a row on floor 49 or later did. A row ended by a deadline
+    reads like any other: by its floor."""
+    if row.get("win"):
+        return True
+    if row.get("crash") or row.get("lost"):
+        return False
+    floor = int(row.get("floor") or 0)
+    if complete_nodes(row):
+        floors = boss_floors(row["nodes"])
+        return act < len(floors) and floor > floors[act]
+    acts = row.get("boss_damage_acts")
+    if isinstance(acts, list):
+        for entry in acts:
+            if int(entry[0]) == act:
+                if entry[1] is None or entry[1] < 1.0:
+                    return False
+                break
+    return floor > ACT_BOSS_FLOORS[act]
+
+
 def bosses_beaten(row: Mapping[str, Any]) -> tuple[bool, bool, bool, bool]:
-    """(B1, B2, B3a, win) of one run. A win beats all four. Otherwise `boss_damage_acts` where the row has it (the first entry of
-    each act, fraction exactly 1.0: a boss fight won), and the floor cuts 17 / 33 / 48 where it has not (a block from before
-    2026-10-25). The two readings differ on a few rows: a run that ended on floor 35 without beating the Act 2 boss, and a run
-    that beat the first of A10's two Act 3 bosses on floor 48, which the cut misses; a row with the field always uses it."""
+    """(B1, B2, B3a, win) of one run under the strict reading (`went_past`): a boss is beaten when the run went past it. A win beats all
+    four. Since 2026-11-19: the judge used to read a boss as beaten when `boss_damage_acts` had a first entry of 1.0 for its act
+    (`bosses_beaten_loose`), which is the same at Acts 1 and 2 (but for the odd long Act 2) and three times too high at the first Act 3
+    boss, where two runs in three that took the whole of the boss's first form still die there."""
+    if row.get("win"):
+        return (True, True, True, True)
+    return (went_past(row, 0), went_past(row, 1), went_past(row, 2), False)
+
+
+def bosses_beaten_loose(row: Mapping[str, Any]) -> tuple[bool, bool, bool, bool]:
+    """The reading before 2026-11-19, kept for comparison tables only (`tools/lab/ledger_strict.py`): (B1, B2, B3a, win) where the row
+    has `boss_damage_acts` the first entry of each act at exactly 1.0, and the floor cuts 17 / 33 / 48 where it has not; a win beats all
+    four. Nothing decides on it."""
     if row.get("win"):
         return (True, True, True, True)
     acts = row.get("boss_damage_acts")
@@ -330,7 +386,7 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
     checks = {"route": bool(route), "wins": bool(wins["holds"]), "crash": bool(crash["holds"]), "drift": not drift["blocks"],
               "attempt": bool(attempt["within_cap"])}
     blocking = [k for k in pg.failed_checks(checks) if k != "route"]
-    return {"rule": RULE, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
+    return {"rule": RULE, "boss_reading": BOSS_READING, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
             "route": route, "routes": {"A": ra, "F": rf}, "floor": st["floor"], "deep": st["deep"], "kills": kills,
             "alpha": ROUTE_ALPHA, "floor_margin": FLOOR_MARGIN, "min_gain": MIN_GAIN, "wins": wins, "crash": crash, "drift": drift,
             "attempt": attempt, "act1_review": a1, "checks": checks, "promote": pg.checks_hold(checks), "blocks": bool(blocking),
@@ -370,7 +426,7 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
     blocking = [k for k, v in gating.items() if not v and k != "route"]
     extend = bool(final and not extended and not ra["holds"] and ra["checks"]["min_gain"] and not ra["checks"]["deep_bound"] and not blocking)
     route = "A" if ra["holds"] else EXTEND_ROUTE if extend else ""
-    return {"rule": RULE_V3, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
+    return {"rule": RULE_V3, "boss_reading": BOSS_READING, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
             "route": route, "routes": {"A": ra}, "floor": st["floor"], "deep": st["deep"], "kills": kills, "alpha": ROUTE_ALPHA,
             "min_gain": MIN_GAIN, "collapse": collapse, "wins": wins, "crash": crash, "drift": drift, "attempt": attempt, "act1_review": a1,
             "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),

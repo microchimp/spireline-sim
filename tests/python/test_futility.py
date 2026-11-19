@@ -52,16 +52,28 @@ def pattern(n: int, hi: float, lo: float) -> np.ndarray:
 
 def block(n: int, floor_diffs: np.ndarray, deep_every: int = 0, seed: int = 5, prefix: str = "F"):
     """(seeds, candidate rows, incumbent rows): both arms reach the Act 2 (level 1: the Act 1 boss beaten, the Act 2 boss not), the candidate's floor
-    is the incumbent's plus `floor_diffs[i]`, and every `deep_every`-th seed the candidate also beats the Act 2 boss (deep_B2 +100 for that seed)."""
+    is the incumbent's plus `floor_diffs[i]`, and every `deep_every`-th seed the candidate also beats the Act 2 boss (deep_B2 +100 for that seed).
+    A boss beaten is a run gone past it (`keep_v2.went_past`, since 2026-11-19), so the rows are physical: a level 1 run's floor is 18 to 33
+    (the incumbent's is moved inside that range where the seed's difference would take the candidate out of it) and the candidate that beats
+    the Act 2 boss is on floor 34 or more: on such a seed the incumbent died at the Act 2 boss (floor 33) and the candidate is one floor on (a floor
+    difference of +1 there, not `floor_diffs[i]`) and the seed after it (one whose difference is 0) pays one floor, so a deep-only block's mean
+    floor difference is exactly 0 in every prefix a look reads (the floors route stays dead, as it must for a gain in deep_f alone)."""
     assert np.all(np.asarray(floor_diffs) == np.rint(floor_diffs)), "floors are whole numbers"
     rng = np.random.default_rng(seed)
     base_floor = np.clip(np.rint(rng.normal(24, 3, n)), 18, 30).astype(int)
     seeds = [f"{prefix}{i:09d}" for i in range(n)]
     cand, base = [], []
     for i, s in enumerate(seeds):
+        deep = bool(deep_every and i % deep_every == 0)
         b = fx.run_row(s, 1, np.random.default_rng(i))
-        c = fx.run_row(s, 2 if deep_every and i % deep_every == 0 else 1, np.random.default_rng(i + 10**6))
-        b["floor"], c["floor"] = int(base_floor[i]), int(base_floor[i] + int(floor_diffs[i]))
+        c = fx.run_row(s, 2 if deep else 1, np.random.default_rng(i + 10**6))
+        d = int(floor_diffs[i])
+        if deep_every and i % deep_every == 1 and d == 0:  # the seed after a deep seed
+            d = -1
+        bf = int(min(max(int(base_floor[i]), 18 + max(0, -d)), 33 - max(0, d)))
+        b["floor"], c["floor"] = bf, bf + d
+        if deep:
+            b["floor"], c["floor"] = 33, 34
         cand.append(c)
         base.append(b)
     return seeds, cand, base
