@@ -301,6 +301,7 @@ class ReportTests(Tmp):
         self.assertIn("By consumer", text)
         self.assertIn("gate-a", text)
         self.assertIn("Not in either log", text)
+        self.assertIn(" 4.0 by hand through labrun, 9.0 in runs that failed", text)  # one decimal: a small figure never reads as zero
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(0, lr.main(["--report", "--lab", str(self.lab), "--since", "2026-11-01", "--json"]))

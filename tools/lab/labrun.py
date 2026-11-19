@@ -342,7 +342,7 @@ def render(rep: dict[str, Any]) -> str:
     lines = [f"Lab books {rep['since'][:10]} to {rep['until'][:10]} ({rep['window_h']:g} hours; ~ marks core-hours estimated from wall time)",
              f"The PC's {rep['threads']} threads over the window: {rep['thread_hours']:,.0f} thread-hours. Logged: {rep['logged_core_h']:,.0f} core-hours"
              + (f" ({share * 100:.0f} in 100)" if share is not None else "")
-             + f", of which {rep['hand_core_h']:,.0f} by hand through labrun, {rep['failed_core_h']:,.0f} in runs that failed, {rep['est_core_h']:,.0f} estimated.",
+             + f", of which {rep['hand_core_h']:,.1f} by hand through labrun, {rep['failed_core_h']:,.1f} in runs that failed, {rep['est_core_h']:,.1f} estimated.",
              "Not in either log: the always-on fight loop (its own phase log) and anything run outside the lab runner and labrun."]
     lines += block("By tag (the runner's step, or the --tag of a hand job)", rep["by_tag"])
     lines += block("By purpose", rep["by_purpose"])
