@@ -753,13 +753,14 @@ class DeckTests(unittest.TestCase):
         self.assertEqual(m, {"size": 8, "attack": 2, "skill": 3, "power": 1, "curse": 1, "?": 1})
 
     def test_the_table_splits_by_side_boss_and_result_and_drops_a_small_cell(self):
-        human = [{"boss_no": 1, "encounter_id": 80, "deck": [1, 2, 2, 3], "outcome": {"human_survived": i < 12}} for i in range(30)]
+        human = [{"boss_no": 1, "encounter_id": 80, "deck": [1, 2, 2, 3], "outcome": {"human_survived": i < 12}} for i in range(35)]
         own = [(1, 80, i < 3, [1, 1, 1, 2]) for i in range(40)]
         t = a3.decks_table(human, iter(own), self.TYPES)
         self.assertEqual(sorted(t), ["human|boss1|test-subject|all", "human|boss1|test-subject|died", "own|boss1|test-subject|all",
                                      "own|boss1|test-subject|lost"])  # 12 went past and 3 won: under 20, not shown
         h = t["human|boss1|test-subject|all"]
-        self.assertEqual((h["n"], h["size"], h["skill"], h["attack"], h["power"]), (30, 4.0, 2.0, 1.0, 1.0))
+        self.assertEqual((h["n"], h["size"], h["skill"], h["attack"], h["power"]), (35, 4.0, 2.0, 1.0, 1.0))
+        self.assertEqual(t["human|boss1|test-subject|died"]["n"], 23)
         o = t["own|boss1|test-subject|lost"]
         self.assertEqual((o["n"], o["skill"], o["attack"]), (37, 1.0, 3.0))
 
