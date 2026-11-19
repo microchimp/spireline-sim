@@ -59,12 +59,13 @@ class TimeLedger:
     """`games/clock.jsonl`: the daemon's intervals, one row each, and the daily line."""
 
     def __init__(self, path: Path | str, log: Callable[[str], None] | None = None, now: Callable[[], dt.datetime] = utc,
-                 segments: Path | str | None = None, ledger: Path | str | None = None) -> None:
+                 segments: Path | str | None = None, ledger: Path | str | None = None, run_judge: Path | str | None = None) -> None:
         self.path = Path(path)
         self.log = log or (lambda m: None)
         self.now = now
         self.segments = Path(segments) if segments else None  # games/segments.jsonl: fights and segments of a day
         self.ledger = Path(ledger) if ledger else None  # gate/verdicts.jsonl: the gates of a day
+        self.run_judge = Path(run_judge) if run_judge else None  # gate/run-judge.jsonl: the run judge's verdicts on promoted players (D68, lane 6c)
         self.lock = threading.RLock()
         self.cur: dict | None = None  # {kind, what, t0 (this day's piece), start (the interval's first start), log}
         self.rows: list[dict] = []
@@ -221,7 +222,19 @@ class TimeLedger:
                 + f", between steps or down {hours(other)}; {len(gates)} gated" + (f" ({vtext})" if vtext else ""))
         if t["notes"]:
             text += "; " + ", ".join(f"{k} x{v}" for k, v in t["notes"].items())
+        judged = [r for r in self._jsonl(self.run_judge) if str(r.get("t", ""))[:10] == d]
+        if judged:
+            text += "; run judge: " + ", ".join(self.judge_text(r) for r in judged)
         return text
+
+    @staticmethod
+    def judge_text(r: dict) -> str:
+        """`v3 promoted (first Act 3 boss kills 158 against 159, wins 2 against 0 of 2000 pairs)`: the whole-run judge's verdict on a player the
+        gate promoted, from its row in gate/run-judge.jsonl (the candidate's promotion.json read when the verdict landed)."""
+        verdict = {True: "promoted", False: "not promoted"}.get(r.get("promoted"), "no verdict read")
+        k, w = r.get("act3_boss_kills"), r.get("wins")
+        bits = ([f"first Act 3 boss kills {k[0]} against {k[1]}"] if k else []) + ([f"wins {w[0]} against {w[1]}"] if w else [])
+        return f"{r.get('version')} {verdict}" + (f" ({', '.join(bits)} of {r.get('pairs')} pairs)" if bits else "")
 
     def pending_days(self) -> list[dt.date]:
         """Days before today that have interval rows and no `daily` mark."""

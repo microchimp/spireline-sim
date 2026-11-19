@@ -275,6 +275,37 @@ after every verdict and every ten minutes, rewrites the file as the figures move
 promotion. The lab's status files already print `LAB/alerts/` (`tools/lab/alerts.py`: `ALERT gym-plateau (LAB/alerts)`). **At the first start of
 this code the alarm trips at once**: 32 gated candidates since v3's promotion (2026-11-09 12:00Z), the ten latest between +0.05 and +0.75 points.
 
+**The wiring to the run player** (D68, Act 3 week lane 6c, 2026-11-19; `rl/gym_wiring.py`, `--wiring on|off` default on, `--agent-root`, `--train-dir`,
+`--jobs-json`, `--unconsumed-h` 24; tests `tests/python/test_gym_wiring.py`). The loop promoted v3 on 2026-11-09 and nothing carried it into the run
+player until a worker built the candidate by hand on 2026-11-18: twelve days of the trainer's card hours bought nothing. Three small jobs, all files:
+
+- **A promoted player queues its own run candidate.** Right after `promote`, and at the first start, `wiring_tick` calls `gym_wiring.evaluate`. If
+  neither the champion (`agent/current.json`'s folder) nor a candidate folder carries the player's fight policy (the `policy_sha256` of its
+  `model.json`), `queue_candidate` runs `python rl/gym_wiring.py build` in the GPU venv (a child of the daemon, about 8 s: ONNX export needs
+  torch and onnx, which the daemon's venv lacks) and writes `agent/gen<k+1>/candidate-fight-v<N>` (k the champion's generation): the champion's folder
+  copied byte for byte except `combat_policy.pt`, `combat_net.pt`, `combat_net.onnx` and `model.json` (the player's, exported for generation k+1),
+  `agent.json` (the champion's macro, recipe, blend, student, stakes, hold and mask version; `built.swap` "fight", `built.prior`, `built.base`,
+  a `lineage` and a `note`) and `train.json`, written last so a folder with no `agent.json` is a half-built one. The build refuses unless the
+  result loads as the champion with the player's network and `screens.differing` reads only `["fight"]`; on any failure it removes what it wrote.
+  Checked against the by-hand build of 2026-11-18 (`FIGHT-V3-V-build.py`): every weight and ONNX file has the same bytes, agent.json and
+  train.json differ only in `written`, the why, the lineage and the note. Then the lab's marker `LAB/train/ready-<k>-g<k+1>-fight-v<N>` is written
+  (the stamp on the first line as every marker has had, then `keep_rule: <rule>`, the rule the lab's train job judges by now: `train.keep_rule`
+  in jobs.json when it has the field, else the command's `--keep-rule`; no line when neither says). The lab's train job judges the candidate on fresh paired runs; the gym
+  promotes nothing itself. Idempotent: a built folder that matches is not built again, a marker (`ready-` or `done-`) is never written twice, a champion that
+  has the player's network needs nothing, a half-built folder (or one built on an older champion and never queued) is moved to
+  `gym-loop/partial-builds/` and built again. A champion that changed is the next base. A failure is logged once (`wiring: v4: not queued: ...`) and tried again every ten minutes.
+- **The trainer pauses when nothing uses its output.** The latest promoted player is *consumed* when its fight policy is the champion's, or sits in a candidate
+  that is queued (a marker) or judged (`promotion.json`). Not consumed 24 hours after the promotion: `LAB/alerts/gym-unconsumed.txt` is written (the reason, the
+  state, why the build failed) and the daemon stops generating, gating and training (status `paused`, `generation: off`; the wait is timed and logged as
+  `unconsumed`). It resumes when the player is consumed (the file is removed with a log line) or when the orchestrator removes the file (an acknowledgement kept in
+  `state.json` `wiring.acked`: that player is not alerted on again). By hand: `python rl/gym_wiring.py queue [--dry-run]` queues the latest promoted player
+  and reports its state without touching `state.json`.
+- **The gate's gain, read against the run judge.** When a candidate that was built with the player in place of its base's network has a `promotion.json`, one line
+  `run judge: v3 (gate c0185) carried by gen18/candidate-fight-v3: promoted under keep rule v2 on 2000 pairs; first Act 3 boss kills 158 against 159, wins 2 against
+  0 (candidate against base)` goes to loop.log, one row to `gate/run-judge.jsonl` (version, gate checkpoint, candidate, verdict, pairs, rule, Act 1, 2 and 3 boss
+  kills and wins, candidate then base; once per candidate and judgement time, so a re-judgement adds a row), and the day's `daily` line ends `run judge: ...`.
+  The gate's own log line cannot be amended afterwards, so the join is a new line and a sidecar keyed by `checkpoint` and `version`.
+
 **The pre-filter** (D49 item 3, 2026-11-03; `PREFILTER`, `prefilter_pick`; `--prefilter best|incumbent|off`, `--prefilter-margin`,
 `--prefilter-floor-h`). It decides who enters the gate; `PROMOTION_RULE` above is untouched. Each checkpoint without a verdict is
 decided once, from its `train.json`: the held-out policy cross-entropy (the policy is what the gate's player reads) against the

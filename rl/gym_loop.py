@@ -94,6 +94,7 @@ for _p in (ROOT / "rl", ROOT / "src", ROOT):
 import fight_gym as fg  # noqa: E402
 import gym_clock as gclock  # noqa: E402
 import gym_gate as gg  # noqa: E402
+import gym_wiring as gw  # noqa: E402
 import practice_mix as pmix  # noqa: E402
 
 # Nothing here loads the emulator library at import (gym_lockstep's rule): a spawned process selects its engine first.
@@ -1963,6 +1964,9 @@ class ClockWatch:
 
 class Daemon:
     clock = None  # a `gym_clock.TimeLedger` once `run` starts; a daemon built without one times nothing
+    wiring = None  # a `gym_wiring.Wiring` once `run` starts with `--wiring on`; a daemon built without one wires nothing (and never pauses)
+    paused: str | None = None  # why the loop is paused: the latest promoted player is used by no run candidate (D68, lane 6c)
+    _wiring_t = 0.0
     _status_lock = threading.Lock()
 
     def __init__(self, a: argparse.Namespace) -> None:
@@ -1990,7 +1994,9 @@ class Daemon:
                "segment": self.loop.state["segment"], "incumbent": self.loop.state["incumbent"],
                "server_pid": self.server_pid, "trainer_pid": self.trainer_pid, **getattr(self, "_status_kw", {})}
         if getattr(self, "a", None) is not None and hasattr(self.a, "procs"):  # a reader sees at once that generation is off
-            doc.update(procs=int(self.a.procs), gate_procs=gate_procs(self.a), generation="on" if generating(self.a) else "off")
+            doc.update(procs=int(self.a.procs), gate_procs=gate_procs(self.a), generation="on" if generating(self.a) and not self.paused else "off")
+        if self.paused:  # D68: generation, gate and trainer stopped until the promoted player is used (or the alert file is removed)
+            doc.update(paused=self.paused)
         if self.clock is not None:
             doc.update(self.clock.status_fields())
         with self._status_lock:
@@ -2028,6 +2034,52 @@ class Daemon:
             if not getattr(self, "_plateau_err", False):
                 self._plateau_err = True
                 self.loop.log(f"plateau: not written ({type(error).__name__}: {error})")
+
+    # -- the fight brain's way into the run player (D68, lane 6c; rl/gym_wiring.py)
+    def make_wiring(self):
+        """`--wiring on` (the default of `run`): the lab's folders and the builder. A daemon built without the option wires nothing."""
+        a = self.a
+        if getattr(a, "wiring", "off") != "on":
+            return None
+        return gw.Wiring(agent_root=Path(a.agent_root), train_dir=Path(a.train_dir), alerts_dir=Path(a.alerts_dir), jobs_json=Path(a.jobs_json),
+                         partial_dir=self.loop.root / "partial-builds", unconsumed_h=float(a.unconsumed_h), builder=self._build_in_span)
+
+    def _build_in_span(self, *args) -> Path:
+        """The builder (a child process in the GPU venv, a few minutes): timed as a play step `wiring`, so the clock shows it."""
+        self.status("wiring", why="building the run candidate of the promoted fight brain")
+        with self._span("play", "wiring"):
+            return gw.subprocess_builder(*args)
+
+    def wiring_tick(self, queue: bool = False, force: bool = False) -> None:
+        """One look at the latest promoted player: joined to the run judge's verdict when it has one, queued as a run candidate when no
+        candidate carries it (at most every ten minutes, and only when `queue`: a step may start now; always after a promotion, `force`), and
+        the pause decided (`self.paused`). A failure of the look is logged once and never ends the loop."""
+        w = self.wiring
+        if w is None:
+            return
+        do_queue = (queue and time.time() - self._wiring_t >= 600) or force
+        if do_queue:
+            self._wiring_t = time.time()
+        before = json.dumps(self.loop.state.get("wiring"), sort_keys=True, default=str)
+        try:
+            res = gw.evaluate(w, self.loop.state, dt.datetime.now(dt.timezone.utc), log=self.loop.log, gates_dir=self.loop.gates, queue=do_queue)
+        except Exception as error:  # noqa: BLE001 -- the wiring is a side job: a failure is logged once and the loop goes on
+            if not getattr(self, "_wiring_err", False):
+                self._wiring_err = True
+                self.loop.log(f"wiring: {type(error).__name__}: {error}")
+            return
+        self.paused = res.get("paused")
+        if json.dumps(self.loop.state.get("wiring"), sort_keys=True, default=str) != before:
+            self.loop.save()
+
+    def pause_unconsumed(self) -> None:
+        """The latest promoted player is used by no run candidate 24 hours after its promotion: generation, gate and trainer stop, timed as the
+        wait `unconsumed` (logged when it starts and ends like every wait); the next look in 30 s sees the player consumed or the alert removed."""
+        self._block("unconsumed")
+        hold_quiet(False)
+        self.status("paused", why=self.paused)
+        self.stop_trainer()
+        time.sleep(30)
 
     # -- the trainer process
     def start_trainer(self) -> None:
@@ -2118,6 +2170,8 @@ class Daemon:
                 except OSError as error:
                     self.loop.log(f"gate {cand}: human bar: games not kept as {ver}'s ({type(error).__name__}: {error})")
         self.plateau(force=True)  # the alarm follows the verdict: a promotion takes it down
+        if v.get("verdict") == "promote":
+            self.wiring_tick(queue=True, force=True)  # D68: the promoted player's run candidate is built and queued at once
 
     def teacher_step(self) -> bool:
         """D60 item 5: the run teacher's elite and boss fights as a fourth source of the practice mix. The set follows the teacher's store the
@@ -2270,6 +2324,10 @@ class Daemon:
                       + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
         self.loop.log(f"daemon: plateau alarm {'on' if getattr(self.a, 'plateau_alert', False) in (True, 'on') else 'off'}: {gg.PLATEAU['days']:g} days or "
                       f"{gg.PLATEAU['candidates']} gated candidates without a promotion writes {gg.PLATEAU['file']}")
+        self.wiring = self.make_wiring()
+        self.loop.log("daemon: wiring " + (f"on: a promoted player is built into the champion as agent/gen<k+1>/candidate-fight-v<N> and queued by a marker in "
+                                           f"{self.wiring.train_dir.name}; a player in no champion and no queued or judged candidate {self.wiring.unconsumed_h:g} h after its "
+                                           f"promotion pauses the loop and writes {gw.ALERT_FILE}" if self.wiring else "off: a promoted player is not built into a run candidate"))
         if generating(self.a):
             mcfg = pmix.config(self.loop.starts)
             self.loop.log(f"daemon: practice mix: human share {json.dumps(mcfg['human_share'])}, regret {json.dumps(mcfg['regret'])}, "
@@ -2283,7 +2341,7 @@ class Daemon:
             if getattr(self.a, "teacher_store", ""):
                 self.loop.log(f"daemon: teacher starts: skipped (generation off; {self.a.teacher_store} feeds only the practice's start mix)")
         self.clock = gclock.TimeLedger(self.loop.games / "clock.jsonl", self.loop.log, segments=self.loop.games / "segments.jsonl",
-                                       ledger=self.loop.gates / "verdicts.jsonl")
+                                       ledger=self.loop.gates / "verdicts.jsonl", run_judge=self.loop.gates / "run-judge.jsonl")
         self.loop.clock = self.clock
         self.clock.roll()  # a day finished while the daemon was down gets its daily line now
         cwatch = ClockWatch(self)
@@ -2292,6 +2350,7 @@ class Daemon:
         watch.start()
         self.status("start")
         self.plateau(force=True)
+        self.wiring_tick(queue=why_blocked(self.loop.root, starting=True) is None)  # the books are joined and a waiting player queued at a start
         entry = compact(self.loop, self.loop.state["segment"], value_labels=False)  # a killed segment's finished fights
         if entry:
             self.loop.log(f"buffer: {entry['fights']} fights of an interrupted segment kept")
@@ -2303,6 +2362,10 @@ class Daemon:
                     break
                 self.plateau()
                 why = why_blocked(self.loop.root, starting=True)
+                self.wiring_tick(queue=not why)  # D68: joins the run judge's word, queues the promoted player's candidate (only when a step may start)
+                if self.paused:
+                    self.pause_unconsumed()  # nothing spends the card on a fight brain no run uses; resumes when the player is consumed
+                    continue
                 if why:
                     self._block(why)
                     self.status("waiting", why=why)
@@ -2463,7 +2526,16 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--plateau-alert", choices=("on", "off"), default="on",
                            help="write LAB/alerts/gym-plateau.txt after five days or twenty-five gated candidates without a promotion "
                                 "(D57 addendum 2) and remove it at the next promotion")
-            p.add_argument("--alerts-dir", default=str(LAB / "alerts"), help="where the plateau alarm's file goes")
+            p.add_argument("--alerts-dir", default=str(LAB / "alerts"), help="where the plateau alarm's and the unconsumed-player alert's files go")
+            p.add_argument("--wiring", choices=("on", "off"), default="on",
+                           help="D68 (lane 6c): a promoted player is built into the champion as a run candidate and queued for the lab's judge; "
+                                "one that no champion and no queued or judged candidate uses 24 hours after its promotion pauses the loop "
+                                "(LAB/alerts/gym-unconsumed.txt; remove the file to resume)")
+            p.add_argument("--agent-root", default=str(REF / "agent"), help="the wiring's: the champion (current.json) and the candidates' generation folders")
+            p.add_argument("--train-dir", default=str(LAB / "train"), help="the wiring's: the lab's ready-/done- markers")
+            p.add_argument("--jobs-json", default=str(LAB / "jobs.json"), help="the wiring's: the lab's config, read for the keep rule its train job judges by")
+            p.add_argument("--unconsumed-h", type=float, default=gw.UNCONSUMED_H,
+                           help="hours after a promotion that a player used by no run candidate pauses the loop")
             p.add_argument("--teacher-store", default="",
                            help="D60 item 5: the run teacher's store (its <generation>/runs.jsonl, shards and decisions.d); its elite and boss fights "
                                 "become the `teacher` source of the start mix, built and followed between steps; '' (the default): off")
