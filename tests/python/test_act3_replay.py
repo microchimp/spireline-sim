@@ -188,6 +188,10 @@ class ArithmeticTests(unittest.TestCase):
         self.assertLessEqual(p["lo"], 0.3)
         self.assertGreaterEqual(p["hi"], 0.3)
         self.assertAlmostEqual(p["p_sign"], ar.sign_test_p(4, 1))
+        self.assertEqual(p["same_play"], 0)  # no moves hashes in the rows: nothing is called the same play
+        a, b = game("1x", "q", True, moves_sha="x"), game("4x", "q", True, moves_sha="x")
+        self.assertEqual(ar.paired(ar.index_rows([a, b, game("1x", "r", True, moves_sha="y"), game("4x", "r", True, moves_sha="z")]),
+                                   "1x", "4x", boot=50)["same_play"], 1)
 
     def test_a_later_row_of_the_same_game_replaces_the_earlier(self):
         idx = ar.index_rows([game("1x", "p", False), game("1x", "p", True)])

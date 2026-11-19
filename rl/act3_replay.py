@@ -237,19 +237,21 @@ def arm_summary(rows: list[dict]) -> dict:
 
 def paired(idx: dict, a: str, b: str, keep=None, boot: int = BOOT, seed: int = BOOT_SEED) -> dict:
     """Budget `b` against budget `a` on the games both have (and `keep(row)` allows): kills of each, the discordant counts
-    (only b killed: `up`; only a killed: `down`), the mean difference b - a with a 95% bootstrap interval over positions (all draws
+    (only b killed: `up`; only a killed: `down`), the pairs that played the very same moves (`same_play`), the mean difference b - a with a 95% bootstrap interval over positions (all draws
     of a position move together), and the sign test's p."""
     pairs = []
+    same = 0  # the pairs in which both budgets played the very same moves
     for key, ra in idx.get(a, {}).items():
         rb = idx.get(b, {}).get(key)
         if rb is None or (keep is not None and not keep(ra)):
             continue
         pairs.append((key[0], won_of(ra), won_of(rb)))
+        same += bool(ra.get("moves_sha")) and ra.get("moves_sha") == rb.get("moves_sha")
     n = len(pairs)
     up = sum(1 for _, x, y in pairs if y and not x)
     down = sum(1 for _, x, y in pairs if x and not y)
     out = {"a": a, "b": b, "n": n, "kills_a": sum(1 for _, x, _y in pairs if x), "kills_b": sum(1 for _, _x, y in pairs if y), "up": up,
-           "down": down, "diff": (up - down) / n if n else None, "p_sign": sign_test_p(up, down), "lo": None, "hi": None}
+           "down": down, "same_play": same, "diff": (up - down) / n if n else None, "p_sign": sign_test_p(up, down), "lo": None, "hi": None}
     if n:
         by_pos: dict[str, list[int]] = defaultdict(list)
         for pos, x, y in pairs:
@@ -679,7 +681,7 @@ def report_text(d: dict) -> str:
     L += ["", "Paired differences on the games both budgets have (in 100; 95% bootstrap interval over positions; sign test p)"]
     for p in d["paired"]:
         L.append(f"  {p['b']} minus {p['a']}: {pct(p['diff'])} [{pct(p['lo'])}, {pct(p['hi'])}]  n={p['n']}  "
-                 f"kills {p['kills_a']} -> {p['kills_b']} (only b {p['up']}, only a {p['down']})  p={p['p_sign']:.3f}")
+                 f"kills {p['kills_a']} -> {p['kills_b']} (only b {p['up']}, only a {p['down']})  p={p['p_sign']:.3f}  same moves in {p['same_play']} of {p['n']}")
     for name, cells in d["splits"].items():
         L += ["", f"By {name}"]
         for cell, c in cells.items():
