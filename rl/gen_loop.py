@@ -2966,7 +2966,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
             review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
-            futility_min_seeds: int | None = None, screen: bool | None = None, pool_blocks: Sequence[str] = ()) -> dict[str, Any]:
+            futility_min_seeds: int | None = None, screen: bool | None = None, pool_blocks: Sequence[str] = (),
+            keep_rule_why: str | None = None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s and the tsv row carries the attempt
     and the guard's verdict. A third attempt of a generation is played and judged like any other (D65 addendum 2): the old cap of two
@@ -2986,6 +2987,9 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     (tools/lab/keep_v2.py, docs/rl/KEEP_TEST_V2.md) instead of D24 and the review guard: the frontier is read from the incumbent's own arms
     before anything is played (`incumbent_frontier`), the funnel calls each look on the floor and deep_f, the cap and the drift check
     are part of the rule (the review-guard flag is not needed), and promotion.json gains `keep_v2` and the tsv row its nine columns.
+
+    `keep_rule_why` (2026-11-19): when the train job chose the rule between a marker's and the lab's (`jobs.choose_keep_rule`), its one-line reason
+    goes to promotion.json (`keep_rule_choice`) and to the end of the row's `guard` cell, so the verdict says which rule judged it and why.
 
     `keep_rule` "v3" (D66, docs/rl/KEEP_TEST_V3.md) is the same machinery with the keep rule v3's verdict (`keep_v2.judge_v3`): route A alone
     promotes, the floors refuse only a collapse, the drift check is advisory, and a final judgement whose deep_f gain is at least +1.0 per 100
@@ -3086,6 +3090,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
            "base": {"agent": base_agent.describe(), "summary": arm_summary(base_rows)}, **res,
            "decision_text": decision_text(res["decision"]), "cand_sha": cand_sha,
            "run_head_sha": head_sha, **({"macro": recipe} if recipe else {}), **({"keep_rule": rule} if v2 else {}),
+           **({"keep_rule_choice": {"rule": rule, "why": keep_rule_why}} if keep_rule_why else {}),
            # DESIGN 5.3/5.4 ask for both; PLAN section 5 does not, so a promotion here is not the full DESIGN gate
            "f7": "not run", "matched_wall_clock": False}
     if pool_blocks:
@@ -3112,6 +3117,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         cells["guard"] = f"{cells['guard']} | {pooled_say(doc['pooled'])}".replace("\t", " ")
     if screen_doc is not None and screen_doc.get("line"):  # a screen that passed leaves its figures in the row
         cells["guard"] = f"{cells['guard']} | {screen_doc['line']}".replace("\t", " ")
+    if keep_rule_why:  # the train job chose the rule between the marker's and the lab's: the row says which and why
+        cells["guard"] = f"{cells['guard']} | keep rule {rule}: {keep_rule_why}".replace("\t", " ")
     if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
         said = (f"funnel {seq['stop']['rule']} of {len(seeds)} seeds" if seq["stop"]["action"] == "futility"
                 else f"funnel {seq['stop']['action']} at {played} of {len(seeds)} seeds")
@@ -3351,12 +3358,13 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
                            lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
                            prior_server_flags: tuple[str, ...] = (), sequential: bool = False, keep_rule: str | None = None,
                            futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None,
-                           pool_blocks: Sequence[str] = ()) -> int:
+                           pool_blocks: Sequence[str] = (), keep_rule_why: str | None = None) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
     `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
     funnel (`promote(sequential=True)`); `keep_rule` ("v1", "v2" or "v3") is passed on as `--keep-rule` when named, and the child reads the
-    SPIRELINE_KEEP_RULE variable otherwise; `pool_blocks` (v3) are passed on as `--pool-block`, one each."""
+    SPIRELINE_KEEP_RULE variable otherwise; `pool_blocks` (v3) are passed on as `--pool-block`, one each; `keep_rule_why` (the train job's choice
+    between the marker's rule and the lab's) as `--keep-rule-why`."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -3373,6 +3381,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--sequential"]
     if keep_rule:
         cmd += ["--keep-rule", keep_rule]
+    if keep_rule_why:
+        cmd += ["--keep-rule-why", keep_rule_why]
     if futility is False:  # the child's default is on; only a switch-off or another start is passed on
         cmd += ["--no-futility"]
     if futility_min_seeds:

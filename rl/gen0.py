@@ -806,11 +806,27 @@ def train_cmd(a: argparse.Namespace) -> int:
     if gen is None:
         print("--gen or --marker-dir is needed", file=sys.stderr)
         return 2
+    keep_rule, keep_why = getattr(a, "keep_rule", None), None
+    if a.marker_dir:  # the lab's train job: the newer of the marker's keep rule and LAB/jobs.json's judges (tools/lab/jobs.py choose_keep_rule)
+        from tools.lab import jobs as lab_jobs  # noqa: PLC0415
+
+        try:
+            choice = lab_jobs.choose_keep_rule(keep_rule, Path(a.lab) if a.lab else Path(a.marker_dir).parent, marks[0][1],
+                                               os.environ.get(gen_loop.KEEP_RULE_FLAG) or None)
+        except ValueError as e:
+            print(f"{e}: nothing trained or judged; the marker stays", file=sys.stderr)
+            return 2
+        for line in choice["notes"]:
+            print(line, flush=True)
+        # nothing named a rule (no flag, no variable, none in jobs.json, none in the marker): v1 by default, and nothing is passed on, so the child
+        # reads the variable or v1 exactly as before the marker carried a rule
+        keep_rule = None if choice["lab_source"] == "the default" and choice["marker_rule"] is None else choice["rule"]
+        keep_why = choice["why"]
     cand_gen = gen + 1 if target is None else target
     built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
     recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
     spent = gen_loop.attempts_spent(Path(a.agent_root) / "promotions.tsv", cand_gen, True if a.review_guard else None, recipe,
-                                    keep_rule=gen_loop.keep_rule_of(getattr(a, "keep_rule", None)))
+                                    keep_rule=gen_loop.keep_rule_of(keep_rule))
     if spent is not None:  # D65 addendum 2: the old cap (two candidates a generation) is recorded, not gating; the round goes on
         print(f"generation {cand_gen} already had {spent} judged candidates (the old review-guard cap of "
               f"{gen_loop.review_guard_module().ATTEMPT_CAP} is recorded, not gating): the round goes on",
@@ -855,7 +871,7 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                    Path(a.lab) if a.lab else None, Path(a.shards_root), review_guard=a.review_guard,
                                                    prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
                                                    sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
-                                                   keep_rule=getattr(a, "keep_rule", None),  # None: the child reads SPIRELINE_KEEP_RULE, else v1
+                                                   keep_rule=keep_rule, keep_rule_why=keep_why,  # None: the child reads SPIRELINE_KEEP_RULE, else v1
                                                    futility=False if getattr(a, "no_futility", False) else None,
                                                    futility_min_seeds=getattr(a, "futility_min_seeds", None),
                                                    screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool)
@@ -864,7 +880,7 @@ def train_cmd(a: argparse.Namespace) -> int:
         # The keep rule v3 extends a candidate whose deep_f gain is +1.0 per 100 or more but whose 0.005 bound is not above 0 (D66): the
         # candidate is played on the date's next fresh block, judged pooled with the first, and that judgement is the verdict. The pooled
         # judgement never extends again, so this runs once.
-        if rc == 0 and not getattr(a, "no_requeue", False) and gen_loop.keep_rule_of(getattr(a, "keep_rule", None)) == "v3":
+        if rc == 0 and not getattr(a, "no_requeue", False) and gen_loop.keep_rule_of(keep_rule) == "v3":
             first = gen_loop.extension_of(cand)
             if first is not None:
                 second = gen_loop.next_extension_block(seeds_file, Path(a.agent_root) / "promotions.tsv")
@@ -872,6 +888,14 @@ def train_cmd(a: argparse.Namespace) -> int:
                 rc = play(second, (str(first.get("seed_block") or seeds_file.stem),))
         return rc
     return 0
+
+
+def marker_text(utc: str, keep_rule: str | None) -> str:
+    """A LAB/train marker's text: the UTC time and, when the builder names the keep rule the candidate was built for, `keep_rule: <rule>`
+    (the train job judges under the newer of that and LAB/jobs.json's: tools/lab/jobs.py choose_keep_rule)."""
+    from tools.lab import jobs as lab_jobs  # noqa: PLC0415
+
+    return lab_jobs.marker_text(utc, keep_rule)
 
 
 def build_cmd(a: argparse.Namespace) -> int:
@@ -913,7 +937,7 @@ def build_cmd(a: argparse.Namespace) -> int:
            "policy_sha256": meta[gen_loop.BUILT_KEY]["prior"]["policy_sha256"], "vrun_fit": meta["vrun_fit"]}
     if marker is not None:
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(gen_loop.utc_now() + "\n", encoding="utf-8")
+        marker.write_text(marker_text(gen_loop.utc_now(), getattr(a, "keep_rule", None)), encoding="utf-8")  # the rule it was built for, when named
         out["marker"] = marker.name
     print(json.dumps(out))
     return 0
@@ -943,7 +967,7 @@ def build_vrun_cmd(a: argparse.Namespace) -> int:
            "recipe": meta.get("recipe") or meta.get("macro"), "vrun_fit": {k: meta["vrun_fit"].get(k) for k in ("source", "sha256", "matched", "human_leg")}}
     if marker is not None:
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(gen_loop.utc_now() + "\n", encoding="utf-8")
+        marker.write_text(marker_text(gen_loop.utc_now(), getattr(a, "keep_rule", None)), encoding="utf-8")  # the rule it was built for, when named
         out["marker"] = marker.name
     print(json.dumps(out))
     return 0
@@ -1046,6 +1070,7 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
                            smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
+                           keep_rule_why=getattr(a, "keep_rule_why", None),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
                            screen=False if getattr(a, "no_screen", False) else None, pool_blocks=list(getattr(a, "pool_block", None) or ()),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
@@ -1401,6 +1426,9 @@ def build_parser() -> argparse.ArgumentParser:
     bd.add_argument("--candidate-generation", type=int, required=True, help="the candidate's generation number (gen<N>/candidate)")
     bd.add_argument("--why", required=True, help="the decision the candidate is built for (agent.json and train.json record it)")
     bd.add_argument("--marker-dir", help="LAB/train: write ready-<base generation>-g<N> (-a<K> from the second attempt) once the candidate is complete")
+    bd.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help="with --marker-dir: the keep rule the candidate was built for, "
+                    "written into the marker (`keep_rule: <rule>`); the train job judges under the newer of it and LAB/jobs.json's, so a switch "
+                    "of the lab's rule that comes after the marker does not decide it")
     bd.add_argument("--attempt", type=int, default=1, help="the candidate's attempt at this generation number: from 2 it is written as "
                     "gen<N>/candidate-a<K> with the marker ready-<base generation>-g<N>-a<K>, beside the first attempt, which stays as it is")
     bd.add_argument("--no-export", action="store_true", help="no ONNX files (they need torch's exporter and the onnx package)")
@@ -1459,6 +1487,9 @@ def build_parser() -> argparse.ArgumentParser:
     bv.add_argument("--tag", required=True, help="the recipe tag: gen<N>/candidate-<tag>, marker ready-<base generation>-g<N>-<tag>")
     bv.add_argument("--why", required=True)
     bv.add_argument("--marker-dir", help="LAB/train: write the marker once the candidate is complete")
+    bv.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help="with --marker-dir: the keep rule the candidate was built for, "
+                    "written into the marker (`keep_rule: <rule>`); the train job judges under the newer of it and LAB/jobs.json's, so a switch "
+                    "of the lab's rule that comes after the marker does not decide it")
     bv.add_argument("--no-export", action="store_true", help="no ONNX files for the new V_run (they need torch's exporter and the onnx package)")
     bv.add_argument("--without-human-leg", action="store_true", help="accepted and does nothing since D64 (a fit whose export exists is carried "
                     "whatever its keep record says, the human leg included); agent.json still says when the leg did not run")
@@ -1485,6 +1516,8 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     pr.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    pr.add_argument("--keep-rule-why", default=None, help="the train job's reason for the rule it chose between the marker's and the lab's "
+                    "(jobs.choose_keep_rule): written to promotion.json (keep_rule_choice) and the end of the ledger row's guard cell")
     pr.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP + " (the keep rule v3's second look at an extended candidate)")
     pr.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     pr.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")

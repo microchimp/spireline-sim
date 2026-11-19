@@ -12,7 +12,8 @@ whole runs, shrinking, grouping, fix kits). No AI calls, no network. The shared 
 | `student_job.py` | the `student` job's command: lane 3's fit, legs and candidate with the frozen kinds left out, `result.json`, `run-bar.md` |
 | `mix.py` | the strategy mix (`LAB/mix.json`), the scheduler that follows it, the yield record (`LAB/yield.tsv`) |
 | `guards.py` | PAUSE / main.lock / user input / load / disk / HALT as one `Verdict`; `TreeCpu`, the always-on loop's CPU the load guard leaves out |
-| `alerts.py` | `LAB/alerts/`: the alert a job kind raises after two failures in a row, the list of jobs killed at their time limit, the run loop's `run-student` and `run-plateau` notes, and the banner the daily readers print at the top |
+| `alerts.py` | `LAB/alerts/`: the alert a job kind raises after two failures in a row, the list of jobs killed at their time limit, the run loop's `run-student` and `run-plateau` notes, the three silent-failure notes (`<kind>-repeat`, `<kind>-timeout`, `quiet-lock-<tag>`, 2026-11-19) and the banner the daily readers print at the top |
+| `labrun.py` | the wrapper for heavy work started by hand (BelowNormal, a Job Object, one line in `LAB/hand-jobs.jsonl`, an optional `QUIET.lock` line) and the core-hour report over the runner's log and the hand jobs (2026-11-19, see "Hand-run heavy work") |
 | `frozen.py` | D52: the frozen copy of the lab tree the practice filler runs from (one per presorted build, outside the lab folder) |
 | `cores.py` | D48: the cores each job takes (`LAB/jobs.json` `cores`), and the practice filler's rules (its command, the night, QUIET.lock, the floor) |
 | `promotion_guard.py` | the review's promotion guard (McNemar at 0.05, boss damage, lineage drift, retry cap) and its power tables; `rl/gen_loop.py` calls it behind `SPIRELINE_REVIEW_GUARD` (off), see `docs/PROMOTION_GUARD.md` |
@@ -207,7 +208,7 @@ older) means self-play first, and the runner log says so; the log also says the 
 | `selfplay` | 6 | `enabled` (with `filler`: beside the jobs, see D48 below; else the bottom of the ladder, `share` > 0 puts it ahead of the rotation until the loop has used that share of the last 7 days' CPU, see below) | off; placeholder command | yield: runs, decisions, decisions_s, generation |
 | `train` | 3 | `LAB/train/ready-<gen>` exists (oldest first; renamed `done-<gen>` on success); 60 min cap | on, marker-gated | yield: generation, promoted, loss |
 | `score-real` | 2 | `LAB/score/pending` exists, or `weekly` and 7 days since `LAB/score/last-ok`; 240 min cap | on, marker-gated; weekly off | yield: runs, wins, mean_floor, crashes, decisions_s, divergences. `LAB/score/active` exists while it runs; fights and runs jobs are not started then (a marker older than 5 h is ignored) |
-| `nightly-real` | 1.5 | `enabled`; ready when `LAB/nightly/pending` exists (written by hand by the orchestrator after a promotion; no code writes it; the block is a *promotion* block) or `LAB/nightly/last-ok` is older than `every_h` (the weekly clock, 168 in the live config: a *clock* block, the copy-accuracy watch); the marker is removed when the block ends unless it was written after the block took its list, and last-ok is stamped with the block's start time; held (reason in runner.log) while `LAB/HALT` or `LAB/PAUSE` exists, `LAB/nightly/active` or `LAB/score/active` is fresh, or the last try was skipped under 1 h ago; 900 min cap | off; placeholder command | runs `rl/nightly_real.py`: per night a fresh 2,000-seed block (`N-<block>[-<agent>]` in `LAB/seeds/`) for the incumbent and each generation promoted since the last night, the lockstep with the emulator arm on `--engine core2`, `--recycle 60`, under `QUIET.lock` (`lab-nightly <UTC>`, refreshed while it runs; waits up to 2 h, then skips). A promotion block plays each generation promoted since the last block (at `--runs-promoted`, plus the copy arm's `--emu-runs`) and not the incumbent at `--runs`; a clock block keeps the old night. Folder `LAB/nightly/<block>/<agent>/` (`<block>` is the UTC start, `YYYY-MM-DDTHHMM`; folders of 2026-11-06 and before are named by date) (+ sibling `<agent>-emu/`); summary.json `nightly` counts a crash as a loss; readiness.json `nightly`; yield: runs, wins, mean_floor, crashes, divergences |
+| `nightly-real` | 1.5 | `enabled`; ready when `LAB/nightly/pending` exists (written by hand by the orchestrator after a promotion; no code writes it; the block is a *promotion* block) or `LAB/nightly/last-ok` is older than `every_h` (the weekly clock, 168 in the live config: a *clock* block, the copy-accuracy watch); the marker is removed when the block ends unless it was written after the block took its list, and last-ok is stamped with the block's start time; held (reason in runner.log) while `LAB/HALT` or `LAB/PAUSE` exists, `LAB/nightly/active` or `LAB/score/active` is fresh, or the last try was skipped under 1 h ago; 900 min cap | off; placeholder command | runs `rl/nightly_real.py`: per night a fresh 2,000-seed block (`N-<block>[-<agent>]` in `LAB/seeds/`) for the incumbent and each generation promoted since the last night, the lockstep with the emulator arm on `--engine core2`, `--recycle 60`, under `QUIET.lock` (`lab-nightly <UTC>`, refreshed while it runs; waits up to 2 h, then skips). A promotion block plays the incumbent when it was promoted since the last block (at `--runs-promoted`, plus the copy arm's `--emu-runs`), never at `--runs`, and is idle otherwise; a clock block plays the incumbent alone, at `--runs-promoted` when a generation was promoted since the last block and at `--runs` otherwise. Neither plays the generations promoted in between (2026-11-19: five promotions would have been five 7.6-hour blocks); `--all-promoted` in the command brings the old night back, and `result.json` / the log name the ones left out. A `--since` older than `last-ok` is read as `last-ok`. Folder `LAB/nightly/<block>/<agent>/` (`<block>` is the UTC start, `YYYY-MM-DDTHHMM`; folders of 2026-11-06 and before are named by date) (+ sibling `<agent>-emu/`); summary.json `nightly` counts a crash as a loss; readiness.json `nightly`; yield: runs, wins, mean_floor, crashes, divergences |
 | `bench-env` | 7 | `enabled` and `every_h` (20) since `LAB/bench-env/last-ok` | off | yield: dec_s, crashes, mem_mb_per_run; readiness.json `bench.env` (next to LAB) |
 | `bench-emu` | 7 | same; needs `{tree}/rl/bench_emu.py` | off | yield: steps_s, clones_s, sims_s; readiness.json `bench.emu` |
 
@@ -277,9 +278,53 @@ row without being held by it; a report or a filler block that fails is as before
 the limit and the time it ran, the last log lines) for a job command, a report command (groups, kits) or a practice block, and one
 `ALERT timeout:` line in the log.
 
+Three silent failures raise a note of their own (2026-11-19, the review of the machine: 210 core-hours of failed retries, a dead holder's line
+that kept the fight loop out). None holds anything; each is one file under `LAB/alerts/` and one `ALERT <name>: raised` log line, looked
+for when a job ends and every ten minutes while the runner waits or loops (`Runner.service_alerts`, called from `service_filler`):
+
+| file | when | start over |
+|---|---|---|
+| `<kind>-repeat.txt` | the kind (or fights strategy) failed three times in 24 hours, a success in between or not (two in a row hold it by `<kind>.txt` as above; a kind that fails, recovers and fails again never tripped that) | remove the file by hand: the count restarts |
+| `<kind>-timeout.txt` | the kind was killed at its time limit twice in seven days (`timeouts.txt` still lists every kill) | remove the file by hand: the count restarts |
+| `quiet-lock-<tag>.txt` | a `QUIET.lock` line `<tag> <UTC> pid=<n>` more than an hour old whose process is gone (a live holder rewrites its line every 15 minutes; a line under two hours old keeps the loop's step, the filler, the teacher and the gates out) | one alert per distinct line; remove that line from `QUIET.lock` by hand, then the file. The runner clears only its own `lab-*` lines |
+
+The counts live in `state.json` (`fail_times`, `timeout_times`, `alerted_extra`), so a restart forgets nothing.
+
 The daily readers print the standing alerts at the top: `LAB/status.txt` starts with `ALERT <kinds> (LAB/alerts) | ` while any file
 is there, and `LAB/summary.md` and `LAB/clock.md` start with an `ALERTS` block (between `<!-- lab-alerts -->` markers: the groups step and
 the daily clock write it, and the runner refreshes it in place when an alert is raised or removed).
+
+## Hand-run heavy work: `labrun.py` (2026-11-19)
+
+At least 900 of about 5,000 logged core-hours since 2026-10-22 bought nothing, and the PC's other thread-hours are in no log: heavy work started
+by hand never reached one. A rule kept in a note recurs; this one is code.
+
+```
+python tools/lab/labrun.py --tag <tag> --purpose "<why>" --consumer "<who reads the result>" [--quiet] [--cores N] -- <command...>
+python tools/lab/labrun.py --report [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]
+```
+
+The command runs at BelowNormal in a Job Object (every process it starts is in the job, so the CPU seconds and I/O are the whole tree's; the
+tree ends with the wrapper) and one line goes to `LAB/hand-jobs.jsonl`: tag, purpose, consumer, command (user paths made anonymous), start and
+end (UTC), wall and CPU seconds, cores used, `--cores` as declared, core-hours, rc, `quiet`. With `--quiet` the wrapper holds its own
+`QUIET.lock` line (`<tag> <UTC> pid=<Windows pid>`, rewritten every 15 minutes, gone however the command ends) and refuses at once, exit 75, when
+another holder's line under two hours old stands (the always-on loop's `gym-loop` apart). Whatever the flags it refuses while a nightly
+block runs (`LAB/nightly/active` fresh, or a `lab-nightly` line); `--allow-night` overrides and is not for a task. The command's exit code is
+labrun's. `--report` reads `LAB/runner.log` and `hand-jobs.jsonl` together: core-hours by tag, by purpose and by consumer, the failed runs'
+share, and what share of the PC's thread-hours the logs account for (the always-on fight loop keeps its own phase log; a runner line from
+before 2026-11-03 has no `cpu=` and is estimated at the median cores measured later for the same step, marked `~`).
+
+## Markers carry the keep rule (2026-11-19)
+
+A `LAB/train/ready-*` marker is its UTC time on the first line and may carry `keep_rule: v3` on a later one (a JSON object with a `keep_rule`
+key reads the same; `gen0.py build` and `build-vrun` write it with `--keep-rule`, with `--marker-dir`). The train job (`gen0.py train
+--marker-dir`) judges under the **newer** of the marker's rule and the `--keep-rule` that `LAB/jobs.json`'s train command names *when the
+judgement starts* (read again, so a switch made after the job was made counts), logs both (`keep rule: judged under v3 (marker v3, newer than
+lab v2 (LAB/jobs.json))`), and the verdict says which it used: `promotion.json` `keep_rule_choice`, the ledger's `rule` column (the rule that
+judged) and the end of its `guard` cell (`keep rule v3: marker v3, newer than lab v2 (LAB/jobs.json)`). A marker without the field gets the
+lab's rule and a log line saying so; a marker naming a rule that does not exist stops the round (rc 2, the marker stays): a rule that decides
+a promotion is never guessed. The job record (`job.json` params) shows `marker_keep_rule` and `lab_keep_rule`. Generation 18 was judged
+under v2 because the worker's marker beat the switch to v3 by two minutes; this closes that.
 
 ## The judgement holds the machine: the `lab-train` line (D55 addendum 18)
 
@@ -400,7 +445,7 @@ of unattended data; `-LabGb N` sets it, in either mode). The idle mode stays the
 
 ## Tests
 
-`python -m unittest tests.python.test_lab_runner tests.python.test_lab_mix` (about 20 s): guards with fake clocks (also PAUSE
+`tests/python/test_lab_books.py` (2026-11-19): `labrun` (the line, the whole tree's CPU, BelowNormal for the command and its children, rc, a quiet line held and removed, refusals, the night, the report on fake logs), the marker's keep rule (read, chosen, logged, recorded in the verdict) and the three silent-failure alerts. `python -m unittest tests.python.test_lab_runner tests.python.test_lab_mix` (about 20 s): guards with fake clocks (also PAUSE
 files written as PowerShell writes them, the always-on stay mode), load window maths, pruning (what stays, failed writes),
 plans on a fake tree (one per strategy and the reasons one cannot run), the mix file, the scheduler's CPU shares, the yield
 rows, the runner on trivial commands (done.rc last, resume, supersede, PAUSE now / with grace, HALT, backoff, always-on

@@ -94,6 +94,7 @@ RESUME_HOURS = 24.0
 CLOCK_EVERY_S = 24 * 3600.0  # LAB/clock.md (tools/lab/clock_report.py over runner.log) is written again after this long
 CHILD_ENV = {"PYTHONDONTWRITEBYTECODE": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "PYTHONIOENCODING": "utf-8"}
 STALE_LOCK_S = 3 * 900.0  # a `lab-*` QUIET.lock line is refreshed every 15 minutes; three missed refreshes make it stale
+ALERT_CHECK_S = 600.0  # the silent-failure alerts (tools/lab/alerts.py: repeat failures, repeat timeouts, a dead holder's QUIET.lock line) are looked for this often
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -437,6 +438,7 @@ class Runner:
         self._train_beat = 0.0
         self._load_exempt_logged = False
         self._alert_sig: tuple | None = None
+        self._alert_check = 0.0  # epoch seconds of the last look for the silent-failure alerts
         self._main_sha_seen: tuple[float, str | None, tuple] | None = None
 
     # ---- plumbing
@@ -1088,7 +1090,9 @@ class Runner:
     def service_filler(self, start: bool = True) -> None:
         """Called wherever the runner waits or loops: close a block that ended, stop one that must give way, start one when the
         rules allow (`start`; not between jobs, so a block never starts just before the pick that would stop it). A fault here
-        turns the filler off for this process; it never fails a job."""
+        turns the filler off for this process; it never fails a job. The silent-failure alerts are looked for here too (`service_alerts`): this
+        is the call every wait and loop of the runner makes."""
+        self.service_alerts()
         if not self.filler_mode:
             return
         try:
@@ -1517,6 +1521,8 @@ class Runner:
         recent[key] = [*(recent.get(key) or []), {"job": run.name, "rc": rc, "secs": run.data.get("wall_secs", 0)}][-2:]
         if streak[key] >= 2:
             self.raise_alert(key, run.job != "presort")
+        alerts.record_failure(st, key, run.name, rc, run.data.get("wall_secs", 0))  # a failure that is not the second in a row still counts for the day's
+        self.service_alerts(force=True)
 
     def raise_alert(self, key: str, blocks: bool) -> None:
         """Write LAB/alerts/<key>.txt for the two failures in `fail_recent`, hold the kind while it stands (`blocks`) and say so once in the log."""
@@ -1534,6 +1540,28 @@ class Runner:
         if fresh:
             self.log(f"ALERT {key}: failed {st['fail_streak'].get(key, 2)} times in a row; "
                      + (f"no longer picked until LAB/alerts/{path.name} is removed by hand" if blocks else f"see LAB/alerts/{path.name}"))
+
+    def service_alerts(self, force: bool = False) -> None:
+        """The alerts for the failures the two-in-a-row rule does not see (tools/lab/alerts.py, 2026-11-19), looked for at most every ALERT_CHECK_S
+        (`force`: now): a kind that failed more than twice in 24 hours, a kind killed at its time limit twice in a week, and a QUIET.lock line
+        whose process has been gone for more than an hour. Each raises one file under LAB/alerts/ and one log line; none holds anything. A fault
+        here is a log line, never a stop."""
+        if self.a.dry_run:
+            return
+        now = time.time()
+        if not force and now - self._alert_check < ALERT_CHECK_S:
+            return
+        self._alert_check = now
+        try:
+            made = alerts.raise_repeats(self.lab.root, self.state, now)
+            made += alerts.raise_dead_locks(self.lab.root, self.quiet_lock_path(), self.state, now, winsys.parent_alive)
+            if made:
+                self.lab.save_state(self.state)
+                self.refresh_banners()
+                for p in made:
+                    self.log(f"ALERT {p.stem}: raised (LAB/alerts/{p.name})")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"alerts: the silent-failure check failed ({type(e).__name__})")
 
     def refresh_banners(self) -> None:
         """The alerts at the top of summary.md and clock.md (the files the groups step and the daily clock write): redone when the alert files
@@ -1558,6 +1586,8 @@ class Runner:
             return
         self.refresh_banners()
         self.log(f"ALERT timeout: {kind}/{cmd.name} of {run.name} was killed at its {float(cmd.timeout or 0):.0f}s limit (LAB/alerts/{alerts.TIMEOUTS})")
+        alerts.record_timeout(self.state, kind, run.name, cmd.name, float(cmd.timeout or 0), ran_s)  # the second kill of a kind in a week raises <kind>-timeout.txt
+        self.service_alerts(force=True)
 
     def record(self, run: Run, rc: int, yield_now: bool = True) -> None:
         """A finished (or closed) job's CPU goes to its strategy's account, and its row to LAB/yield.tsv (at once, or when the

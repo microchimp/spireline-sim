@@ -5,16 +5,19 @@
                               [--recycle 60]
 
 Two triggers (2026-11-06: the real-game check is the bottleneck, so it runs when the orchestrator asks for it after a promotion, not
-on a clock). A *promotion* block runs when LAB/nightly/pending exists (written by hand; no code writes it): it plays each generation promoted
-since the last block (the incumbent among them when it was promoted since) at `--runs-promoted`, plus the copy arm's `--emu-runs`, and
-does not play the incumbent's `--runs` block (the incumbent is the promoted player). A *clock* block (LAB/nightly/last-ok older than
-the job's `every_h`, the weekly copy-accuracy watch) keeps the old night: the incumbent first, every agent at `--runs-promoted` when a
-generation was promoted since the last block, else the incumbent at `--runs`. `--trigger` forces one (default: promotion when the marker exists at the start).
+on a clock). A *promotion* block runs when LAB/nightly/pending exists (written by hand; no code writes it): it plays the incumbent when
+it was promoted since the last block, at `--runs-promoted` (2000), plus the copy arm's `--emu-runs`, and does not play the incumbent's
+`--runs` block (an incumbent not promoted since is not played: the block is idle). A *clock* block (LAB/nightly/last-ok older than
+the job's `every_h`, the weekly real-game check: 168 hours makes it weekly) plays the incumbent alone: at `--runs-promoted` when a
+generation was promoted since the last block, else at `--runs`. `--trigger` forces one (default: promotion when the marker exists at the start).
+Neither block plays the generations promoted between blocks (the lab promoted five in the 13 days to 2026-11-19: five blocks of 7.6 hours
+for five players the next promotion replaced): only `--all-promoted` brings that back (a promotion block then plays each generation
+promoted since, a clock block the incumbent and each of them, all at `--runs-promoted`); the result and the log say which were left out.
 The driver takes its list at its start time (`started_epoch` in result.json); the lab stamps last-ok with that time and removes the
 marker when the block ends, unless it was written after that time, so a promotion that lands while a block plays is the next block's.
 
-For the incumbent (agent-root/current.json) and each generation promoted since the last block (promotions.tsv rows written after
-LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
+For the incumbent (agent-root/current.json) and, with `--all-promoted`, each generation promoted since the last block (promotions.tsv rows
+written after LAB/nightly/last-ok whose decision is `promoted`), one fresh block of seeds (gen0.e_block rule, name N-<date> for the incumbent and
 N-<date>-<agent> for the others, written to LAB/seeds/, checked disjoint from every known block, E and S blocks included) is played
 by `gen0.py score` in lockstep with the emulator arm on `--engine core2`. The block's folder is LAB/nightly/<block>/<agent>/, <block> the
 UTC start `YYYY-MM-DDTHHMM` (two blocks on one day do not collide; the folders of 2026-11-06 and earlier are named by date alone, and every
@@ -170,6 +173,18 @@ def promotion_agents(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     them. An incumbent that was not promoted since is not played at `--runs` by a promotion block (that is the clock block's job)."""
     keep = set(promoted_labels(agents))
     return [ag for ag in agents if ag["label"] in keep]
+
+
+def block_agents(agents: list[dict[str, Any]], trigger: str, all_promoted: bool = False) -> list[dict[str, Any]]:
+    """The agents a block plays out of `agents_to_score`'s list (the incumbent first). By default the incumbent alone: a clock block always, a
+    promotion block only when the incumbent was itself promoted since the last block (else nothing: the block is idle). `all_promoted` plays
+    the old list: a promotion block's `promotion_agents`, a clock block's every agent."""
+    if all_promoted:
+        return promotion_agents(agents) if trigger == "promotion" else list(agents)
+    inc = [ag for ag in agents if ag.get("role") == "incumbent"][:1]
+    if trigger == "promotion":
+        return [ag for ag in inc if ag.get("promoted_since")]
+    return inc
 
 
 def seed_block_name(date: str, agent: dict[str, Any]) -> str:
@@ -363,7 +378,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait-h", type=float, default=2.0)
     ap.add_argument("--no-lock", action="store_true", help="the caller holds the QUIET.lock (the dry run)")
     ap.add_argument("--seeds-also", action="append", default=[], help="another folder of seed blocks to stay disjoint from (read only)")
-    ap.add_argument("--since", help="UTC time (default: LAB/nightly/last-ok's): promotions after it are scored too")
+    ap.add_argument("--since", help="UTC time (default: LAB/nightly/last-ok's): promotions after it count as promoted since the last block. "
+                    "A time older than last-ok's (a block started after it) is read as last-ok's: a --since left in the job's command never turns "
+                    "every later block into a promotion block")
+    ap.add_argument("--all-promoted", action="store_true", help="play every generation promoted since the last block as well (the pre-2026-11-19 night); "
+                    "by default a block plays the incumbent alone")
     a = ap.parse_args(argv)
     if a.emu_runs is not None and a.emu_runs < 1:
         ap.error("--emu-runs must be at least 1")
@@ -392,22 +411,31 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.time()  # the block's list is taken now: a promotion after this is the next block's (jobs.finish stamps last-ok with it)
         since = parse_utc(a.since) if a.since else None
         ok = lab / "nightly" / "last-ok"
-        if since is None and ok.is_file():
-            since = ok.stat().st_mtime
+        last_block = ok.stat().st_mtime if ok.is_file() else None  # the last block's start (jobs.finish stamps it)
+        if since is None:
+            since = last_block
+        elif last_block is not None and last_block > since:  # a --since the last block has passed is spent
+            print(f"[{utc_now()}] --since {a.since} is older than the last block's start ({utc_now(last_block)}): the last block's start is used", flush=True)
+            since = last_block
         date_dir = lab / "nightly" / a.date
         agents: dict[str, Any] = {}
         a.trigger_used = trigger_of(lab, a.trigger)
-        todo = agents_to_score(Path(a.agent_root), since)
-        if a.trigger_used == "promotion":
-            todo = promotion_agents(todo)
-            if not todo:  # the marker outlived its promotion (the block before took it): nothing to play, nothing stamped
-                why = "no generation promoted since the last block"
-                print(f"[{utc_now()}] promotion block: {why}", flush=True)
-                (out / "result.json").write_text(json.dumps({"idle": why, "agents": {}, "trigger": "promotion", "started_epoch": t0}), encoding="utf-8")
-                return 0
-        a.runs = night_runs(todo, a.runs, a.runs_promoted)
-        promoted = promoted_labels(todo)
-        print(f"[{utc_now()}] {a.trigger_used} block {a.date}: {a.runs} runs per agent ({'promoted since the last block: ' + ', '.join(promoted) if promoted else 'no promotion since the last block'})", flush=True)
+        listed = agents_to_score(Path(a.agent_root), since)
+        promoted = promoted_labels(listed)  # every generation promoted since the last block (the incumbent among them when it was)
+        todo = block_agents(listed, a.trigger_used, bool(getattr(a, "all_promoted", False)))
+        played = {ag["label"] for ag in todo}
+        left_out = [x for x in promoted if x not in played]  # promoted since, not played (--all-promoted plays them)
+        if not todo:  # a promotion block whose promotion the block before already took: nothing to play, nothing stamped
+            why = "no generation promoted since the last block" if not promoted else (
+                "the incumbent was not promoted since the last block (promoted since: " + ", ".join(promoted) + "; --all-promoted plays them)")
+            print(f"[{utc_now()}] promotion block: {why}", flush=True)
+            (out / "result.json").write_text(json.dumps({"idle": why, "agents": {}, "trigger": "promotion", "started_epoch": t0,
+                                                         "promoted_not_played": left_out}), encoding="utf-8")
+            return 0
+        a.runs = night_runs(listed, a.runs, a.runs_promoted)  # a generation promoted since the last block: the full block, for the incumbent alone
+        print(f"[{utc_now()}] {a.trigger_used} block {a.date}: {a.runs} runs per agent, plays {', '.join(ag['label'] for ag in todo)} "
+              f"({'promoted since the last block: ' + ', '.join(promoted) if promoted else 'no promotion since the last block'}"
+              + (f"; not played, --all-promoted would: {', '.join(left_out)}" if left_out else "") + ")", flush=True)
         for ag in todo:
             try:
                 agents[ag["label"]] = play_agent(a, ag, a.date, date_dir)
@@ -417,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         good = [v for v in agents.values() if "error" not in v]
         inc = good[0] if good else {}
         res = {"date": a.date, "trigger": a.trigger_used, "started_epoch": t0, "engine": a.engine, "runs_per_agent": a.runs, "emu_runs_per_agent": emu_runs_tonight(a.emu_runs, a.runs) or a.runs,
+               "all_promoted": bool(getattr(a, "all_promoted", False)), "promoted_not_played": left_out,
                "agents": agents, "wall_s": round(time.time() - t0, 1),
                # the yield columns (tools/lab/mix.py) are the first agent's
                "runs": inc.get("runs"), "wins": inc.get("wins"), "mean_floor": inc.get("mean_floor"), "crashes": inc.get("crashes"),

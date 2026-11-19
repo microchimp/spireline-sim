@@ -11,6 +11,18 @@ in runner.log and was tried again after every backoff, with nothing anywhere els
                             the runner no longer picks the `student` kind until the file is removed by hand.
   LAB/alerts/run-plateau.txt   ten days without a run-loop promotion (`write_run_plateau`), with the last rounds' verdicts; a note, nothing is held.
 
+Three silent failures the 2026-11-18 review of the machine found (210 core-hours of failed retries, a dead holder's QUIET.lock line that kept the
+fight loop and the practice filler out) and the two-in-a-row rule above does not see (2026-11-19):
+
+  LAB/alerts/<kind>-repeat.txt    a kind (or fights strategy) failed three times (more than twice) in 24 hours, a success in between or not.
+                                  A note: nothing is held (two in a row hold the kind by `<kind>.txt`). Removing the file starts the count again.
+  LAB/alerts/<kind>-timeout.txt   a kind killed at its time limit twice in seven days (`timeouts.txt` lists every one). A note; removing it starts the count again.
+  LAB/alerts/quiet-lock-<tag>.txt a QUIET.lock line `<tag> <UTC> pid=<n>` more than an hour old whose process is gone. One alert per distinct line;
+                                  the line is for a person to remove (the runner clears only its own `lab-*` lines).
+
+`record_failure`, `record_timeout` and `raise_repeats` keep their counts in the runner's state dict (`fail_times`, `timeout_times`,
+`alerted_extra`), so a restart does not forget them; `raise_dead_locks` reads the QUIET.lock file and asks whether a process lives.
+
 `banner` / `status_prefix` are what the daily readers print at the top (status.txt, clock.md, summary.md). Pure file work: no runner state.
 """
 
@@ -147,6 +159,165 @@ def write_timeout(lab: Path | str, kind: str, job: str, cmd: str, limit_s: float
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(entry) + "\n")
     return path
+
+
+# ---------------------------------------------------------------- the silent failures (2026-11-19)
+
+REPEAT_FAILURES = 3  # more than twice ...
+REPEAT_WINDOW_S = 24 * 3600.0  # ... in a day
+TIMEOUT_REPEAT = 2  # killed at its limit twice ...
+TIMEOUT_WINDOW_S = 7 * 24 * 3600.0  # ... in a week
+DEAD_LOCK_MIN_AGE_H = 1.0  # a QUIET.lock line this old, its process gone
+KEEP_ROWS = 20
+FORGET_DEAD_LOCK_S = 30 * 24 * 3600.0
+
+
+def repeat_name(kind: str) -> str:
+    return f"{kind}-repeat"
+
+
+def timeout_name(kind: str) -> str:
+    return f"{kind}-timeout"
+
+
+def lock_name(tag: str) -> str:
+    return f"quiet-lock-{tag}"
+
+
+def record_failure(state: dict, kind: str, job: str, rc: int, secs: float, now: float | None = None) -> list[dict]:
+    """Note a failed job of `kind` in `state["fail_times"]` (the last day's, at most KEEP_ROWS); returns the kind's rows."""
+    now = time.time() if now is None else now
+    rows = [r for r in state.setdefault("fail_times", {}).get(kind, []) if now - r["t"] < REPEAT_WINDOW_S]
+    rows.append({"t": now, "job": str(job), "rc": rc, "secs": secs})
+    state["fail_times"][kind] = rows[-KEEP_ROWS:]
+    return state["fail_times"][kind]
+
+
+def record_timeout(state: dict, kind: str, job: str, cmd: str, limit_s: float, ran_s: float, now: float | None = None) -> list[dict]:
+    """Note a command of `kind` killed at its time limit in `state["timeout_times"]` (the last week's); returns the kind's rows."""
+    now = time.time() if now is None else now
+    rows = [r for r in state.setdefault("timeout_times", {}).get(kind, []) if now - r["t"] < TIMEOUT_WINDOW_S]
+    rows.append({"t": now, "job": str(job), "cmd": str(cmd), "limit_s": limit_s, "ran_s": ran_s})
+    state["timeout_times"][kind] = rows[-KEEP_ROWS:]
+    return state["timeout_times"][kind]
+
+
+def write_repeat_failures(lab: Path | str, kind: str, rows: Sequence[dict], now: float | None = None) -> Path:
+    """LAB/alerts/<kind>-repeat.txt: the failures of the last day, each with its job folder, return code, duration and the tails of its failed logs."""
+    path = alert_path(lab, repeat_name(kind))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"ALERT {repeat_name(kind)}: {kind} failed {len(rows)} times in 24 hours (not necessarily in a row), raised {utc(now)}",
+             f"A note: the runner still picks {kind} by its own retry rule (two failures in a row hold it, LAB/alerts/{safe_name(kind)}.txt). A kind that fails,",
+             "recovers and fails again spends its core-hours without ever tripping that. Remove this file by hand when it is dealt with: the count starts over.", ""]
+    for r in rows:
+        lines.append(f"{utc(r['t'])} job runs/{r['job']}: rc={r['rc']} duration={r['secs']}s")
+        for cmd, tl in failed_logs(Path(lab) / "runs" / str(r["job"]))[:2]:
+            lines.append(f"  {cmd} log, last {len(tl)} line(s):")
+            lines += [f"    {x}" for x in tl]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def write_repeat_timeouts(lab: Path | str, kind: str, rows: Sequence[dict], now: float | None = None) -> Path:
+    """LAB/alerts/<kind>-timeout.txt: the commands of the kind killed at their time limit in the last week."""
+    path = alert_path(lab, timeout_name(kind))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"ALERT {timeout_name(kind)}: {kind} was killed at its time limit {len(rows)} times in 7 days, raised {utc(now)}",
+             "A note: nothing is held. The limit is too short for the work, or the work hangs; either way each kill spent the whole limit for nothing. "
+             f"{TIMEOUTS} lists every kill with its log tail. Remove this file by hand when it is dealt with: the count starts over.", ""]
+    for r in rows:
+        lines.append(f"{utc(r['t'])} runs/{r['job']} {r['cmd']}: killed at its {float(r['limit_s']):.0f}s limit (ran {float(r['ran_s']):.0f}s)")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def dead_quiet_lines(path: Path | str, now: float | None = None, alive=None, min_age_h: float = DEAD_LOCK_MIN_AGE_H) -> list[dict]:
+    """The lines of a QUIET.lock file (`<tag> <UTC> pid=<n>`) that name a process which is gone (`alive(pid)` false) and are more than `min_age_h`
+    old by their own time: `{tag, utc, pid, age_h, line}`. A line with no pid, no readable time, or a live process is not listed. `alive` is
+    `winsys.parent_alive` by default (it says a process it cannot open is gone)."""
+    now = time.time() if now is None else now
+    if alive is None:
+        from tools.lab import winsys  # noqa: PLC0415
+
+        alive = winsys.parent_alive
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        pid = next((int(x[4:]) for x in parts[2:] if x.startswith("pid=") and x[4:].isdigit()), None)
+        try:
+            t = dt.datetime.strptime(parts[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC).timestamp()
+        except ValueError:
+            continue
+        age_h = (now - t) / 3600
+        if pid is None or age_h <= min_age_h or alive(pid):
+            continue
+        out.append({"tag": parts[0], "utc": parts[1], "pid": pid, "age_h": age_h, "line": " ".join(parts)})
+    return out
+
+
+def write_dead_lock(lab: Path | str, d: dict, now: float | None = None) -> Path:
+    """LAB/alerts/quiet-lock-<tag>.txt for one dead holder's line (see `dead_quiet_lines`)."""
+    path = alert_path(lab, lock_name(d["tag"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"ALERT {lock_name(d['tag'])}: the QUIET.lock line '{scrub(d['line'])}' is {d['age_h']:.1f} h old and process {d['pid']} is gone, raised {utc(now)}",
+             "A holder that runs rewrites its line every 15 minutes. This one has not, and nothing runs under that process id, so the job it stood for",
+             "died with its line. A line under two hours old keeps the fight loop's step, the practice filler, the teacher and the gates out.",
+             "Remove that one line from QUIET.lock by hand (leave the others), then remove this file. The runner clears only its own lab-* lines.", ""]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def raise_repeats(lab: Path | str, state: dict, now: float | None = None) -> list[Path]:
+    """Write the repeat-failure and repeat-timeout alerts the counts in `state` call for and are not raised yet; the paths written. An alert
+    file removed by hand since it was raised starts its count again. A file that stands without the state knowing (a state lost) is taken as raised."""
+    now = time.time() if now is None else now
+    done = state.setdefault("alerted_extra", {})
+    for name, info in list(done.items()):
+        if info.get("type") in ("repeat", "timeout") and not alert_path(lab, name).exists():
+            done.pop(name)
+            state.get("fail_times" if info["type"] == "repeat" else "timeout_times", {}).pop(info.get("kind"), None)
+    out: list[Path] = []
+    for kind, rows in list(state.get("fail_times", {}).items()):
+        recent = [r for r in rows if now - r["t"] < REPEAT_WINDOW_S]
+        name = repeat_name(kind)
+        if len(recent) < REPEAT_FAILURES or name in done:
+            continue
+        done[name] = {"type": "repeat", "kind": kind, "raised": utc(now)}
+        if not alert_path(lab, name).exists():
+            out.append(write_repeat_failures(lab, kind, recent, now))
+    for kind, rows in list(state.get("timeout_times", {}).items()):
+        recent = [r for r in rows if now - r["t"] < TIMEOUT_WINDOW_S]
+        name = timeout_name(kind)
+        if len(recent) < TIMEOUT_REPEAT or name in done:
+            continue
+        done[name] = {"type": "timeout", "kind": kind, "raised": utc(now)}
+        if not alert_path(lab, name).exists():
+            out.append(write_repeat_timeouts(lab, kind, recent, now))
+    return out
+
+
+def raise_dead_locks(lab: Path | str, quiet_lock_path: Path | str, state: dict, now: float | None = None, alive=None) -> list[Path]:
+    """One alert for each QUIET.lock line whose holder has been gone for more than an hour (`dead_quiet_lines`), once per distinct line (the
+    state remembers it for 30 days, so removing the alert file while the line stands does not raise it again every look); the paths written."""
+    now = time.time() if now is None else now
+    done = state.setdefault("alerted_extra", {})
+    for name, info in list(done.items()):
+        if info.get("type") == "quiet-lock" and now - float(info.get("t", now)) > FORGET_DEAD_LOCK_S:
+            done.pop(name)
+    out: list[Path] = []
+    for d in dead_quiet_lines(quiet_lock_path, now, alive):
+        name = lock_name(d["tag"])
+        if done.get(name, {}).get("line") == d["line"]:
+            continue
+        done[name] = {"type": "quiet-lock", "line": d["line"], "raised": utc(now), "t": now}
+        out.append(write_dead_lock(lab, d, now))
+    return out
 
 
 def listing(lab: Path | str) -> list[dict]:

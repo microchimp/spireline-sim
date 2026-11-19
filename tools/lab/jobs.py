@@ -20,13 +20,16 @@ fixed-seed score (LAB/score/pending, which a promotion writes).
 
 nightly-real is a kind of its own (D8, D33 addendum 2): score-real is one command on one marker, the nightly block is a driver
 (rl/nightly_real.py) that plays several agents under the QUIET.lock, so the due rule and the window markers sit here and the
-work sits in the driver. Ready (2026-11-06): LAB/nightly/pending exists (hand-written; the block plays the generations promoted
-since the last block, `trigger` promotion) or LAB/nightly/last-ok is older than `every_h` (the clock stays as the weekly copy-accuracy
-watch, `trigger` clock). Skipped, with the reason, while LAB/HALT or LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not
+work sits in the driver. Ready (2026-11-06): LAB/nightly/pending exists (hand-written; the block plays the incumbent when it was promoted
+since the last block, `trigger` promotion; `--all-promoted` in the command plays every generation promoted since, 2026-11-19) or
+LAB/nightly/last-ok is older than `every_h` (168 makes the clock the weekly real-game block, `trigger` clock: the incumbent alone). Skipped, with the reason, while LAB/HALT or LAB/PAUSE is up, LAB/nightly/active is fresh (the last block has not
 finished) or LAB/score/active is fresh; nothing is pre-empted. The pending marker is consumed when the block ends (so an interrupted or
 superseded block is still wanted), unless it was written after the block took its list (the marker is newer than the block's start);
 last-ok is stamped with the block's START time, so a promotion that landed while the block played is "since the last block" for the
 next one.
+
+A train marker may carry the keep rule its candidate was built for (2026-11-19, `read_marker`, `choose_keep_rule`): the train job judges under the
+newer of the marker's rule and the one LAB/jobs.json names, logs both, and the verdict records which it used and why.
 
 A job's command may write ``<job>/result.json`` (an object); its keys named in mix.YIELD_COLUMNS become the job's
 yield.tsv columns, and the bench kinds also store it under readiness.json ``bench.env`` / ``bench.emu``.
@@ -332,6 +335,10 @@ def params_for(kind: str, lab: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         ms = train_markers(lab)
         p["marker"] = ms[0].name if ms else ""
         p["generation"] = p["marker"].removeprefix("ready-")
+        if ms:  # what the marker says about the keep rule, beside the lab's, so the job record shows both (the train job judges under the newer)
+            seen = read_marker(ms[0])["keep_rule"]
+            p["marker_keep_rule"] = str(seen) if seen not in (None, "") else None
+            p["lab_keep_rule"] = lab_keep_rule(lab)
         target = re.fullmatch(r"ready-(\d+)-g(\d+)(?:-a(\d+)|-(" + TAG + r"))?", p["marker"])
         if target:  # `ready-<gen>-g<target>[-a<n>]`: the shards of <gen> train a candidate that is generation <target> (D33 addendum (b))
             p["generation"], p["candidate_generation"] = target.group(1), int(target.group(2))
@@ -374,6 +381,120 @@ def store_nightly(readiness: Path, result: dict[str, Any]) -> None:
     doc = doc if isinstance(doc, dict) else {}
     doc["nightly"] = {k: result[k] for k in ("date", "engine", "runs_per_agent", "agents") if k in result}
     _atomic(readiness, json.dumps(doc, indent=1))
+
+
+# ---------------------------------------------------------------- the keep rule a marker carries (2026-11-19)
+#
+# Generation 18 was judged under the keep rule v2 because the worker's marker beat the orchestrator's switch to v3 by two minutes: the job
+# took the rule from jobs.json as it stood when the marker appeared. A marker now says what rule its candidate was built for, so the pick does
+# not depend on who wrote a file first. The marker's first line stays its UTC time (every older reader and writer is unchanged); a later line
+# `keep_rule: v3` carries the rule (a marker that is a JSON object with a `keep_rule` key is read the same). A marker without one gets the lab's rule.
+
+KEEP_RULES = ("v1", "v2", "v3")  # in order of version: the newer is the later (rl/gen_loop.KEEP_RULES)
+_MARKER_KEY = re.compile(r"^\s*([A-Za-z][A-Za-z_-]*)\s*[:=]\s*(.*?)\s*$")
+
+
+def newer_rule(*rules: str | None) -> str | None:
+    """The newest of the keep rules named (v1 < v2 < v3); None when none is named. Names outside KEEP_RULES are not passed in (callers validate)."""
+    named = [r for r in rules if r]
+    return max(named, key=KEEP_RULES.index) if named else None
+
+
+def read_marker(path: Path | str) -> dict[str, Any]:
+    """What a LAB/train marker says: `{"utc": first line, "keep_rule": the raw value or None, "fields": every `key: value` line}`. A file that
+    is missing or empty says nothing (an empty `fields`). The value of `keep_rule` is as written (see `choose_keep_rule` for the check)."""
+    try:
+        text = Path(path).read_bytes().decode("utf-8", errors="replace").lstrip("\ufeff")
+    except OSError:
+        return {"utc": None, "keep_rule": None, "fields": {}}
+    fields: dict[str, str] = {}
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            doc = json.loads(stripped)
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict):
+            fields = {str(k).replace("-", "_"): str(v) for k, v in doc.items() if isinstance(v, (str, int, float)) and not isinstance(v, bool)}
+            return {"utc": fields.get("utc") or fields.get("written"), "keep_rule": fields.get("keep_rule"), "fields": fields}
+    lines = text.splitlines()
+    for ln in lines[1:]:
+        m = _MARKER_KEY.match(ln)
+        if m:
+            fields[m.group(1).lower().replace("-", "_")] = m.group(2)
+    first = lines[0].strip() if lines else ""
+    return {"utc": first or None, "keep_rule": fields.get("keep_rule"), "fields": fields}
+
+
+def marker_text(utc: str, keep_rule: str | None = None, **fields: str) -> str:
+    """The text of a marker: the UTC time, then `keep_rule: <rule>` (when given) and any other `key: value` lines."""
+    if keep_rule is not None and keep_rule not in KEEP_RULES:
+        raise ValueError(f"unknown keep rule {keep_rule!r} (the rules are {', '.join(KEEP_RULES)})")
+    rows = [utc] + ([f"keep_rule: {keep_rule}"] if keep_rule else []) + [f"{k}: {v}" for k, v in fields.items()]
+    return "\n".join(rows) + "\n"
+
+
+def cmd_keep_rule(cmd: Any) -> str | None:
+    """The `--keep-rule` value in a command list (`--keep-rule v3` or `--keep-rule=v3`), as written; None when there is none."""
+    toks = [str(x) for x in cmd] if isinstance(cmd, (list, tuple)) else str(cmd).split() if isinstance(cmd, str) else []
+    for i, t in enumerate(toks):
+        if t.startswith("--keep-rule="):
+            return t.split("=", 1)[1]
+        if t == "--keep-rule" and i + 1 < len(toks):
+            return toks[i + 1]
+    return None
+
+
+def lab_keep_rule(lab: Path | str) -> str | None:
+    """The keep rule LAB/jobs.json's train command names now (read again, so a switch made after a job was made counts); None when the file
+    or the flag is missing. The value is as written."""
+    doc = read_lenient(Path(lab) / "jobs.json")
+    train = doc.get("train") if isinstance(doc, dict) else None
+    return cmd_keep_rule(train.get("cmd")) if isinstance(train, dict) else None
+
+
+def choose_keep_rule(flag: str | None, lab: Path | str | None, marker: Path | str | None, env: str | None = None) -> dict[str, Any]:
+    """The keep rule the train job judges a marker's candidate under: the newer of the marker's rule and the lab's. The lab's rule is the
+    `--keep-rule` in LAB/jobs.json's train command as it stands now (`lab_keep_rule`), else the job's own flag (`flag`), else `env` (the
+    SPIRELINE_KEEP_RULE variable), else v1. A marker with no rule gets the lab's. Returns `{"rule", "source" (marker, lab or both), "marker_rule",
+    "lab_rule", "lab_source", "why" (one short line for the verdict), "notes" (lines for the job's log)}`; ValueError for a marker that names
+    a rule that does not exist (a rule that decides a promotion is never guessed: the round stops and says so)."""
+    notes: list[str] = []
+    raw = read_marker(marker)["keep_rule"] if marker else None
+    m_rule = str(raw).strip().lower() if raw not in (None, "") else None
+    if m_rule is not None and m_rule not in KEEP_RULES:
+        raise ValueError(f"the marker {Path(str(marker)).name} names keep rule {raw!r}; the rules are {', '.join(KEEP_RULES)}")
+    lab_raw = lab_keep_rule(lab) if lab else None
+    lab_rule, lab_source = None, ""
+    if lab_raw is not None:
+        if str(lab_raw).strip().lower() in KEEP_RULES:
+            lab_rule, lab_source = str(lab_raw).strip().lower(), "LAB/jobs.json"
+        else:
+            notes.append(f"keep rule: LAB/jobs.json's train command names {lab_raw!r}, which is not a rule; the job's own setting is used")
+    for value, source in ((flag, "the job's --keep-rule"), (env, "SPIRELINE_KEEP_RULE")):
+        if lab_rule is None and value not in (None, ""):
+            v = str(value).strip().lower()
+            if v not in KEEP_RULES:
+                raise ValueError(f"unknown keep rule {value!r} (the rules are {', '.join(KEEP_RULES)})")
+            lab_rule, lab_source = v, source
+    if lab_rule is None:
+        lab_rule, lab_source = "v1", "the default"
+    if m_rule is None:
+        rule, source = lab_rule, "lab"
+        why = f"lab {lab_rule} ({lab_source}), the marker names no rule"
+    elif m_rule == lab_rule:
+        rule, source = lab_rule, "both"
+        why = f"marker and lab both {lab_rule}"
+    elif KEEP_RULES.index(m_rule) > KEEP_RULES.index(lab_rule):
+        rule, source = m_rule, "marker"
+        why = f"marker {m_rule}, newer than lab {lab_rule} ({lab_source})"
+    else:
+        rule, source = lab_rule, "lab"
+        why = f"lab {lab_rule} ({lab_source}), newer than marker {m_rule}"
+    if flag not in (None, "") and str(flag).strip().lower() != lab_rule and lab_source == "LAB/jobs.json":
+        notes.append(f"keep rule: the job was made with --keep-rule {flag} and LAB/jobs.json now says {lab_rule}; {lab_rule} is the lab's")
+    notes.insert(0, f"keep rule: judged under {rule} ({why})" + ("; the marker carries no keep_rule, so the lab's rule judges it" if m_rule is None else ""))
+    return {"rule": rule, "source": source, "marker_rule": m_rule, "lab_rule": lab_rule, "lab_source": lab_source, "why": why, "notes": notes}
 
 
 def consume_marker(marker: Path | str) -> Path | None:

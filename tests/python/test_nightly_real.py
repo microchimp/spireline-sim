@@ -318,16 +318,27 @@ class DriverTest(Tmp):
         self.assertEqual(["20"], [c[c.index("--runs") + 1] for c in seen])
         self.assertEqual(20, json.loads((job / "result.json").read_text())["runs_per_agent"])
 
-    def test_runs_promoted_for_every_agent_on_a_promotion_night(self):
-        def promote(_folder):
-            agent = self.tmp / "agent"
-            (agent / "gen4" / "c").mkdir(parents=True)
-            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
-                                                 f"2026-10-25T01:00:00Z\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
-        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", prepare=promote)
+    def promote_g4(self, _folder):
+        agent = self.tmp / "agent"
+        (agent / "gen4" / "c").mkdir(parents=True)
+        (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
+                                             f"2026-10-25T01:00:00Z\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
+
+    def test_runs_promoted_for_every_agent_on_a_promotion_night_with_all_promoted(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", "--all-promoted",
+                                                   prepare=self.promote_g4)
         self.assertEqual(0, rc)
         self.assertEqual(["40", "40"], [c[c.index("--runs") + 1] for c in seen])  # the incumbent and the promoted generation alike
-        self.assertEqual(40, json.loads((job / "result.json").read_text())["runs_per_agent"])
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual((40, True, []), (res["runs_per_agent"], res["all_promoted"], res["promoted_not_played"]))
+
+    def test_a_clock_block_plays_the_incumbent_alone_at_runs_promoted_when_a_generation_was_promoted_and_names_the_one_left_out(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", prepare=self.promote_g4)
+        self.assertEqual(0, rc)
+        self.assertEqual([("40", str(self.tmp / "agent" / "gen3" / "c"))],
+                         [(c[c.index("--runs") + 1], c[c.index("--gen-dir") + 1]) for c in seen])  # one block, not one per promoted generation
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual((["g3"], ["g4"], False, 40), (list(res["agents"]), res["promoted_not_played"], res["all_promoted"], res["runs_per_agent"]))
 
     def test_a_half_finished_real_block_is_resumed_in_its_folder_not_replayed(self):
         row = json.dumps(end("A", 20))
@@ -430,7 +441,7 @@ class DriverTest(Tmp):
         return prepare
 
     def test_a_promotion_block_plays_the_promoted_generation_alone_at_runs_promoted_with_the_copy_sample(self):
-        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "7", prepare=self.promoted_g4())
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "7", "--all-promoted", prepare=self.promoted_g4())
         self.assertEqual(0, rc)
         self.assertEqual(1, len(seen))  # g3, the incumbent, is not played at --runs: g4 is the promoted player here
         cmd = seen[0]
@@ -452,17 +463,73 @@ class DriverTest(Tmp):
         self.assertEqual([("40", str(self.tmp / "agent" / "gen3" / "c"))], [(c[c.index("--runs") + 1], c[c.index("--gen-dir") + 1]) for c in seen])
         self.assertEqual("N-2026-10-25", Path(seen[0][seen[0].index("--seeds-file") + 1]).stem)  # the incumbent's block name as before
 
-    def test_a_clock_block_without_the_marker_keeps_the_old_night(self):
-        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", prepare=self.promoted_g4(marker=False))
+    def test_a_clock_block_without_the_marker_keeps_the_old_night_with_all_promoted(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--all-promoted", prepare=self.promoted_g4(marker=False))
         self.assertEqual(0, rc)
         self.assertEqual([("40", "g3"), ("40", "g4")],
                          [(c[c.index("--runs") + 1], Path(c[c.index("--out") + 1]).name) for c in seen])  # the incumbent too, at the promotion night's runs
         self.assertEqual("clock", json.loads((job / "result.json").read_text())["trigger"])
 
-    def test_trigger_clock_forces_the_old_night_though_the_marker_is_up(self):
-        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--trigger", "clock", prepare=self.promoted_g4())
+    def test_trigger_clock_forces_the_old_night_though_the_marker_is_up_with_all_promoted(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--trigger", "clock", "--all-promoted", prepare=self.promoted_g4())
         self.assertEqual(2, len(seen))
         self.assertEqual("clock", json.loads((job / "result.json").read_text())["trigger"])
+
+    def test_trigger_clock_without_all_promoted_plays_the_incumbent_alone_though_the_marker_is_up(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--trigger", "clock", prepare=self.promoted_g4())
+        self.assertEqual(["g3"], [Path(c[c.index("--out") + 1]).name for c in seen])
+        self.assertEqual("clock", json.loads((job / "result.json").read_text())["trigger"])
+
+    def test_a_promotion_block_whose_promoted_generation_is_not_the_incumbent_is_idle_and_names_it(self):
+        # the marker is up and g4 was promoted since, but current.json still says g3: the block plays at most the incumbent, so nothing
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", prepare=self.promoted_g4())
+        self.assertEqual((0, []), (rc, seen))
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual(({}, "promotion", ["g4"]), (res["agents"], res["trigger"], res["promoted_not_played"]))
+        self.assertIn("incumbent was not promoted", res["idle"])
+        self.assertIn("--all-promoted", res["idle"])
+
+    def test_five_promotions_since_the_last_block_are_one_block_not_five(self):
+        def five(_folder):
+            agent = self.tmp / "agent"
+            rows = ""
+            for g in range(4, 8):  # four generations the next promotion replaced
+                (agent / f"gen{g}" / "c").mkdir(parents=True)
+                rows += f"2026-10-25T0{g - 3}:00:00Z\t{g}\t{g - 1}\tE\t2000\tpromoted\tsha{g}\t{agent / f'gen{g}' / 'c'}\n"
+            rows += f"2026-10-25T08:00:00Z\t3\t2\tE\t2000\tpromoted\tsha3\t{agent / 'gen3' / 'c'}\n"  # the incumbent, promoted last
+            (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n" + rows)
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", prepare=five)
+        self.assertEqual(1, len(seen))
+        res = json.loads((job / "result.json").read_text())
+        self.assertEqual((["g3"], ["g4", "g5", "g6", "g7"]), (list(res["agents"]), res["promoted_not_played"]))
+        self.assertEqual(40, res["runs_per_agent"])
+
+    def test_a_clock_block_without_a_promotion_plays_the_incumbent_at_runs(self):
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-26T00:00:00Z", prepare=self.promote_g4)
+        self.assertEqual(["20"], [c[c.index("--runs") + 1] for c in seen])  # the promotion is before --since
+        self.assertEqual([], json.loads((job / "result.json").read_text())["promoted_not_played"])
+
+    def test_a_since_older_than_the_last_block_is_the_last_blocks_start(self):
+        # the lab's command carries --since <the day gen 18 was promoted>; once a block has started after it, it is spent
+        def prepare(_folder):
+            self.promote_g4(_folder)
+            lab = self.tmp / "lab"
+            (lab / "nightly").mkdir(parents=True, exist_ok=True)
+            (lab / "nightly" / "last-ok").write_text("x\n")
+            t = nr.parse_utc("2026-10-25T05:00:00Z")
+            os.utime(lab / "nightly" / "last-ok", (t, t))
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--since", "2026-10-24T00:00:00Z", prepare=prepare)
+        self.assertEqual(["20"], [c[c.index("--runs") + 1] for c in seen])  # g4 (01:00) is before the last block (05:00): not promoted since
+        self.assertEqual([], json.loads((job / "result.json").read_text())["promoted_not_played"])
+
+    def test_block_agents_by_trigger(self):
+        inc, prom = {"label": "g3", "role": "incumbent"}, {"label": "g4", "role": "promoted"}
+        inc_p = {**inc, "promoted_since": True}
+        self.assertEqual(["g3"], [a["label"] for a in nr.block_agents([inc, prom], "clock")])
+        self.assertEqual([], nr.block_agents([inc, prom], "promotion"))
+        self.assertEqual(["g3"], [a["label"] for a in nr.block_agents([inc_p, prom], "promotion")])
+        self.assertEqual(["g3", "g4"], [a["label"] for a in nr.block_agents([inc, prom], "clock", True)])
+        self.assertEqual(["g4"], [a["label"] for a in nr.block_agents([inc, prom], "promotion", True)])
 
     def test_a_marker_whose_promotion_the_last_block_already_played_is_an_idle_block(self):
         # the promotion (01:00) is before last-ok (stamped with the last block's start): nothing to play, nothing stamped, no incumbent block
@@ -600,7 +667,7 @@ class PartialCopyArmDriverTest(Tmp):
             (agent / "gen4" / "c").mkdir(parents=True)
             (agent / "promotions.tsv").write_text("written\tcand_gen\tbase_gen\tseed_block\tseeds\tdecision\tcand_sha\tcand_dir\n"
                                                  f"2026-10-25T01:00:00Z\t4\t3\tE\t2000\tpromoted\tsha\t{agent / 'gen4' / 'c'}\n")
-        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "30", "--since", "2026-10-24T00:00:00Z", prepare=promote)
+        rc, seen, lab, job, lock = self.run_driver(None, "--runs-promoted", "40", "--emu-runs", "30", "--since", "2026-10-24T00:00:00Z", "--all-promoted", prepare=promote)
         self.assertEqual(["30", "30"], [self.cmd_value(c, "--emu-runs") for c in seen])  # 30 of 40 on both agents' blocks
         self.assertEqual(30, json.loads((job / "result.json").read_text())["emu_runs_per_agent"])
 
