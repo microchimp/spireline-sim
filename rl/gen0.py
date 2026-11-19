@@ -40,6 +40,11 @@ KEEP_RULE_HELP = ("the promotion rule: v1 (default: D24's floor primary and the 
                   "docs/rl/KEEP_TEST_V2.md: promote on the deepest boss the lineage reaches, or on the floor, with the guards) or v3 (the keep rule "
                   "v3, D66, docs/rl/KEEP_TEST_V3.md: route A alone, floors refuse only a collapse, the drift check advisory, an extension "
                   "for a gain that needs more seeds); default: the SPIRELINE_KEEP_RULE variable, else v1")  # train, promote and rejudge
+MIN_GAIN_DEFAULT = 1.0  # tools/lab/keep_v2.MIN_GAIN and gen_loop.MIN_GAIN_DEFAULT (a test holds the three equal)
+MIN_GAIN_HELP = ("keep rules v2 and v3 (D68 addendum 3): route A's smallest deep_f gain per 100 runs, at least 0 (default 1.0: the rule as it was). "
+                 "The judge's bound check (the one-sided 0.005 lower bound above 0) is not changed. A value other than 1.0 is recorded in the verdict "
+                 "(keep_v2.min_gain), in the decision (decision.min_gain) and in the ledger's guard cell (`min gain <value>` after the rule's name); "
+                 "an error under v1, which has no such minimum")  # train, promote and rejudge
 POOL_BLOCK_HELP = ("keep rule v3: pool this block's finished arms (the candidate's and the base's, arms/<block>-<config>) with the judged block's; "
                    "route A is judged on all the pairs; repeatable")
 FUTILITY_HELP = ("with --sequential: stop the block as rejected (rule futility@<seeds>) at a look from --futility-min-seeds on when no route's 95% upper bound "
@@ -778,6 +783,23 @@ def bench_cmd(a: argparse.Namespace) -> int:
     return rc if res else (rc or 1)
 
 
+def min_gain_type(text: str) -> float:
+    """argparse type of `--min-gain`: a finite number of at least 0."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: the minimum gain is a finite number of at least 0 (per 100 runs)")
+    return value
+
+
+def min_gain_flag(a: argparse.Namespace) -> float | None:
+    """`--min-gain` as the value to pass on to `gen_loop`: None when it is absent or the default (+1.0), so the default path is exactly as it was."""
+    value = getattr(a, "min_gain", None)
+    return None if value is None or float(value) == MIN_GAIN_DEFAULT else float(value)
+
+
 def exclude_prior_paths(text: str | None) -> tuple[str, ...]:
     """`--exclude-prior-paths cpu,mixed` as a tuple of tags (validated where the training set is built)."""
     return tuple(t.strip() for t in (text or "").split(",") if t.strip())
@@ -822,6 +844,11 @@ def train_cmd(a: argparse.Namespace) -> int:
         # reads the variable or v1 exactly as before the marker carried a rule
         keep_rule = None if choice["lab_source"] == "the default" and choice["marker_rule"] is None else choice["rule"]
         keep_why = choice["why"]
+    min_gain = min_gain_flag(a)  # None unless --min-gain names another minimum than +1.0
+    if min_gain is not None and a.promote and gen_loop.keep_rule_of(keep_rule) not in gen_loop.KEEP_TESTS:
+        print(f"--min-gain {min_gain:g} is the keep rules' (v2, v3) but the rule judging is {gen_loop.keep_rule_of(keep_rule)}: nothing trained or judged; "
+              "the marker stays", file=sys.stderr)
+        return 2
     cand_gen = gen + 1 if target is None else target
     built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
     recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
@@ -872,6 +899,7 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                    prior_server_flags=tuple(prior_launch.ServerOpts.from_args(a).flags()),
                                                    sequential=bool(getattr(a, "sequential", False)),  # off unless the train flags say
                                                    keep_rule=keep_rule, keep_rule_why=keep_why,  # None: the child reads SPIRELINE_KEEP_RULE, else v1
+                                                   min_gain=min_gain,  # None: the child's default, +1.0
                                                    futility=False if getattr(a, "no_futility", False) else None,
                                                    futility_min_seeds=getattr(a, "futility_min_seeds", None),
                                                    screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool)
@@ -1089,7 +1117,7 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
                            smoke=a.smoke_seeds, batch=a.batch_seeds, keep_rule=getattr(a, "keep_rule", None),
-                           keep_rule_why=getattr(a, "keep_rule_why", None),
+                           keep_rule_why=getattr(a, "keep_rule_why", None), min_gain=min_gain_flag(a),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
                            screen=False if getattr(a, "no_screen", False) else None, pool_blocks=list(getattr(a, "pool_block", None) or ()),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
@@ -1109,7 +1137,7 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
                            review_guard=True if a.review_guard else None, keep_rule=getattr(a, "keep_rule", None), out=Path(a.out) if getattr(a, "out", None) else None,
-                           pool_blocks=list(getattr(a, "pool_block", None) or ()))
+                           pool_blocks=list(getattr(a, "pool_block", None) or ()), min_gain=min_gain_flag(a))
     out = {k: doc[k] for k in ("decision_text", "n_seeds", "floor", "boss_kill", "wins", "decision")}
     if "keep_v2" in doc:  # the keep test v2 (or v3): the route, the frontier and the headline figures beside the usual ones
         k2 = doc["keep_v2"]
@@ -1430,6 +1458,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     t.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     t.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    t.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
     t.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     t.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
     t.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
@@ -1544,6 +1573,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     pr.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    pr.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
     pr.add_argument("--keep-rule-why", default=None, help="the train job's reason for the rule it chose between the marker's and the lab's "
                     "(jobs.choose_keep_rule): written to promotion.json (keep_rule_choice) and the end of the ledger row's guard cell")
     pr.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP + " (the keep rule v3's second look at an extended candidate)")
@@ -1563,6 +1593,7 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--lab", help="the lab folder: write LAB/score/pending after a promotion")
     rj.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     rj.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
+    rj.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
     rj.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP)
     rj.add_argument("--out", help="a dry run: write promotion.json, a copy of promotions.tsv with the new row and (on a promotion) current.json "
                     "to this folder instead of the agent folder, which is only read; refused together with --lab")
