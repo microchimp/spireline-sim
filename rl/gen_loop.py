@@ -164,6 +164,12 @@ class Agent:
     # path through an Act 1 route option, the HP per cent of max HP at or above which it applies). Part of the identity, like the schedule and the hold;
     # None is every agent that existed before it.
     route_elite: tuple[float, int] | None = None
+    # the boss chain (2026-11-19, the Act 3 week, `rl/boss_chain.py`; agent.json `boss_chain`, the recipe's `+chain:<8 hex>@<k1>/<k2>/<k3>`): the chain file
+    # (boss_chain.npz in the candidate's folder), its sha256 and its kappa per act (floors per nat of the log chance of getting past the Act 2 boss and the
+    # first Act 3 boss added to each option's value in Acts 2 and 3). Part of the identity; None is every agent that existed before it.
+    chain: str | None = None
+    chain_sha256: str | None = None
+    chain_kappa: tuple[float, float, float] | None = None
 
     def search_config(self, sims):
         """The `search_configs.SearchConfig` this agent plays when the lab asks for `sims` (a config name or a flat budget): `sims` itself
@@ -184,8 +190,9 @@ class Agent:
         return 1.0 if self.stakes is None else self.search_config("a3-v1").wall_factor()
 
     def recipe(self) -> str:
-        """The ledger's recipe (`macro_recipe.full_recipe`): the macro's, the schedule's, the hold's and the elite bonus's."""
-        return macro_recipe.full_recipe(self.macro, self.stakes, self.hold, self.route_elite)
+        """The ledger's recipe (`macro_recipe.full_recipe`): the macro's, the schedule's, the hold's, the elite bonus's and the boss chain's."""
+        chain = (self.chain_sha256[:8], self.chain_kappa) if self.chain is not None else None
+        return macro_recipe.full_recipe(self.macro, self.stakes, self.hold, self.route_elite, chain)
 
     def search_extra(self) -> dict[str, Any]:
         """`live_search.search_live` keyword arguments that switch the tree to PUCT with the prior; {} for none.
@@ -222,7 +229,8 @@ class Agent:
             return imitation_chooser.BlendedPolicy(self.macro_npz, self.human_prior, self.lam, self.tau, self.eps, self.W,
                                                    pick=pick, skip_bias=bias, act_lam=dict(self.lam_acts) or None,
                                                    **({"student": self.student, "student_lams": dict(self.student_lams)} if self.student else {}),
-                                                   **({"route_elite": self.route_elite} if self.route_elite is not None else {}))
+                                                   **({"route_elite": self.route_elite} if self.route_elite is not None else {}),
+                                                   **({"chain": self.chain, "chain_kappa": self.chain_kappa} if self.chain is not None else {}))
         return selfplay.RulesPlayer()
 
     def describe(self) -> dict[str, Any]:
@@ -238,6 +246,8 @@ class Agent:
         search = {k: v for k, v in (("stakes", self.stakes), ("hold", self.hold)) if v is not None}
         if self.route_elite is not None:  # what the run chooser picks on the map, named only where the agent has it
             search["route_elite"] = [self.route_elite[0], self.route_elite[1]]
+        if self.chain is not None:  # what the run chooser adds to its option values in Acts 2 and 3, named only where the agent has it
+            search["boss_chain"] = macro_recipe.chain_tag(self.chain_sha256, self.chain_kappa)
         return {"generation": self.generation, "dir": tail, "prior": bool(self.prior_dir), "prior_sha256": sha,
                 "macro": self.macro, **explore, **search}
 
@@ -330,10 +340,14 @@ def load_agent(gen_dir: str | Path | None = None, agent_root: str | Path | None 
     route_elite = route_elite_identity(meta, p.name)
     if route_elite is not None and not blended:
         raise ValueError(f"{p.name}/agent.json: route_elite needs a blended macro (the elite bonus rides on the run chooser), not {mode!r}")
+    chain = boss_chain_identity(meta, p)
+    if chain is not None and not blended:
+        raise ValueError(f"{p.name}/agent.json: boss_chain needs a blended macro (the chain rides on the run chooser), not {mode!r}")
     agent = Agent(str(p), generation, prior, mode, str(npz) if mode == "vrun" or blended else None,
                   float(meta.get("tau", 0.0)), float(meta.get("eps", 0.0)), mask_version=int(mask_version),
                   human_prior=str(human) if human else None, lam=lam, stakes=stakes, hold=hold, lam_acts=tuple(sorted(lam_acts.items())),
-                  student=str(student_file) if student_file else None, student_lams=tuple(student_lams.items()), route_elite=route_elite)
+                  student=str(student_file) if student_file else None, student_lams=tuple(student_lams.items()), route_elite=route_elite,
+                  **({"chain": str(chain[0]), "chain_sha256": file_sha256(chain[0]), "chain_kappa": chain[1]} if chain is not None else {}))
     if meta.get("recipe") is not None and meta["recipe"] != agent.recipe():  # the recipe agent.json records is the one the fields give
         raise ValueError(f"{p.name}/agent.json: recipe {meta['recipe']!r} is not the agent's ({agent.recipe()!r})")
     return agent
@@ -388,6 +402,35 @@ def route_elite_identity(meta: dict[str, Any], name: str = "agent.json") -> tupl
         return macro_recipe.elite_bonus(re_["bonus"]), macro_recipe.elite_pct(int(pct))
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"{name}: route_elite {re_!r} is not {{'bonus': floors per elite room, 'hp_frac': <whole per cent as a fraction>, 'act': 1}}: {e}") from e
+
+
+def boss_chain_identity(meta: dict[str, Any], folder: str | Path = "agent.json") -> tuple[Path, tuple[float, float, float]] | None:
+    """(the chain file, kappa) of an agent.json's `boss_chain` ({"file": "boss_chain.npz", "sha256": <full>, "kappa": [k1, k2, k3], ...}); None for an agent
+    without it. The file must exist in `folder` with the sha256 the block names, kappa is three numbers from 0 to `macro_recipe.MAX_CHAIN_KAPPA`, and the chain
+    must have been fitted with this agent's own FightNet (`boss_chain.fight_sha_of(run_value.npz)` equals the chain's `fight_sha256`): the chain reads the same
+    fight forecasts the run brain does. Errors name the folder, never a seed."""
+    block = meta.get("boss_chain")
+    if block is None:
+        return None
+    folder = Path(folder)
+    name = folder.name
+    try:
+        file = folder / str(block["file"])
+        kappa = macro_recipe.chain_kappa(block["kappa"])
+        want = str(block["sha256"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"{name}/agent.json: boss_chain {block!r} is not {{'file': ..., 'sha256': ..., 'kappa': [k1, k2, k3]}}: {e}") from e
+    if not file.is_file():
+        raise FileNotFoundError(f"{name}/agent.json: boss_chain names {file.name}, which is not in the folder")
+    if file_sha256(file) != want:
+        raise ValueError(f"{name}/{file.name} is not the boss chain the agent.json names")
+    import boss_chain  # noqa: PLC0415 -- numpy only
+
+    scorer = boss_chain.ChainScorer(file)
+    run_value = folder / "run_value.npz"
+    if not run_value.is_file() or scorer.fight_sha256 != boss_chain.fight_sha_of(run_value):
+        raise ValueError(f"{name}/{file.name} was fitted with another FightNet than this agent's run brain")
+    return file, kappa
 
 
 def active_agent_extra() -> dict[str, Any]:
@@ -2012,6 +2055,92 @@ def build_vrun_candidate(base: Path | str, vrun_fit: Path | str, agent_root: Pat
     got = load_agent(cand)
     if (got.generation, got.macro, got.recipe(), got.describe()["prior_sha256"]) != (target, base_agent.macro, base_agent.recipe(), prior_sha):
         raise ValueError(f"gen{target}/{cand.name} does not load as the base with a new V_run fit: {got.describe()}")
+    return cand
+
+
+# ------------------------------------------------------------------ the boss chain (the Act 3 week, lane 3b)
+
+CHAIN_FILE = "boss_chain.npz"
+CHAIN_FIT_FILE = "boss_chain.json"  # the chain's `fit.json` (the fit's record), copied beside it
+
+
+def build_chain_candidate(base: Path | str, chain_dir: Path | str, agent_root: Path | str, target: int, *, why: str, kappa, tag: str = "chain") -> Path:
+    """Generation `target`'s candidate that is the generation `base` (a generation directory or a current.json) with a boss chain added and nothing else
+    (`rl/boss_chain.py`): every file of the base's folder is copied byte for byte except `VRUN_SWAP_NOT_COPIED` (agent.json, train.json, promotion.json and
+    model.json, the last written anew for the target generation), `boss_chain.npz` and `boss_chain.json` (the chain's fit record) come from `chain_dir` (a folder
+    `boss_chain.py fit` wrote), and agent.json keeps the base's macro, human prior, student, stakes, hold, elite bonus and mask version, adding the block
+    `boss_chain` (file, sha256, kappa, clip, q4, the fit's folder and the smoke test's verdict) and the recipe's `+chain:<8 hex>@<k1>/<k2>/<k3>` part. So the
+    candidate differs from the base in the recipe alone (`screens.differing` reads ["settings"], no screen applies). The base must play a blended chooser and
+    carry no chain; the chain must have been fitted with the base's own FightNet. Written as gen<target>/candidate-<tag>, never over an existing folder; it
+    writes no marker (`gen0.py build-chain` prints the marker's name)."""
+    import shutil  # noqa: PLC0415
+
+    import boss_chain  # noqa: PLC0415
+    import screens  # noqa: PLC0415
+
+    agent_root, target, chain_dir = Path(agent_root), int(target), Path(chain_dir)
+    kappa = macro_recipe.chain_kappa(kappa)
+    base_agent = load_agent(base)
+    if base_agent.path is None:
+        raise ValueError("the base must be a generation directory or a current.json, not generation 0's empty agent")
+    if not macro_recipe.is_blended(base_agent.macro):
+        raise ValueError(f"the boss chain rides on the blended chooser; the base's ({base_agent.macro}) is not one")
+    if base_agent.chain is not None:
+        raise ValueError("the base already carries a boss chain; a build never swaps one silently")
+    if target <= base_agent.generation:
+        raise ValueError(f"a candidate built on generation {base_agent.generation} cannot be generation {target}")
+    base_dir = Path(base_agent.path)
+    scorer = boss_chain.ChainScorer(chain_dir / CHAIN_FILE)
+    if scorer.fight_sha256 != boss_chain.fight_sha_of(base_dir / "run_value.npz"):
+        raise ValueError(f"{chain_dir.name}/{CHAIN_FILE} was fitted with another FightNet than the base's run brain")
+    fit_doc = read_json(chain_dir / "fit.json")
+    report = read_json(chain_dir / "report.json") if (chain_dir / "report.json").is_file() else None
+    cand = agent_root / f"gen{target}" / candidate_dirname(0, 1, tag)
+    if cand.exists() and any(cand.iterdir()):
+        raise FileExistsError(f"gen{target}/{cand.name} exists; a built candidate never writes over one")
+    cand.mkdir(parents=True, exist_ok=True)
+    try:
+        for f in sorted(base_dir.iterdir()):
+            if f.is_file() and f.name not in VRUN_SWAP_NOT_COPIED:
+                shutil.copyfile(f, cand / f.name)
+        shutil.copyfile(chain_dir / CHAIN_FILE, cand / CHAIN_FILE)
+        shutil.copyfile(chain_dir / "fit.json", cand / CHAIN_FIT_FILE)
+        model = write_prior_model_json(cand, target) if (base_dir / "model.json").is_file() else None
+        base_meta = read_json(base_dir / "agent.json")
+        sha = file_sha256(cand / CHAIN_FILE)
+        prior_sha = base_agent.describe()["prior_sha256"]
+        verdict = (report or {}).get("verdict") or {}
+        block = {"file": CHAIN_FILE, "sha256": sha, "kappa": list(kappa), "clip": boss_chain.CLIP, "read_gen": boss_chain.READ_GEN, "q4": fit_doc.get("q4"),
+                 "fight_sha256": scorer.fight_sha256, "fit_dir": chain_dir.as_posix(), "report_verdict": verdict.get("verdict"), "report_band": verdict.get("band"),
+                 "report_door_auc": verdict.get("door_auc")}
+        recipe = macro_recipe.full_recipe(base_agent.macro, base_agent.stakes, base_agent.hold, base_agent.route_elite, (sha[:8], kappa))
+        base_block = {"dir": base_dir.as_posix(), "generation": base_agent.generation, "macro": base_agent.macro, "policy_sha256": prior_sha,
+                      "run_value_sha256": file_sha256(base_dir / "run_value.npz") if (base_dir / "run_value.npz").is_file() else None}
+        prior = {"dir": base_dir.as_posix(), "policy_sha256": prior_sha,
+                 "net_sha256": file_sha256(cand / "combat_net.pt") if (cand / "combat_net.pt").is_file() else None}
+        note = (f"built, not trained: generation {base_agent.generation}'s agent ({base_agent.recipe() or base_agent.macro}) with the boss chain {sha[:8]} "
+                f"(kappa {'/'.join(macro_recipe.format_lambda(k) for k in kappa)} floors per nat in Acts 1 to 3) and nothing else; only the chain and the recipe differ, "
+                "and its judgement tests the chain alone")
+        lineage = None if target == base_agent.generation + 1 else {
+            "from_generation": base_agent.generation, "skips": list(range(base_agent.generation + 1, target)),
+            "difference": f"generation {base_agent.generation}'s agent with a boss chain", "decision": why}
+        meta = {k: v for k, v in base_meta.items() if k not in ("lineage", "note", BUILT_KEY, "boss_chain")}
+        meta.update(generation=target, built_on=base_agent.generation, written=utc_now(), boss_chain=block, recipe=recipe, **({"lineage": lineage} if lineage else {}))
+        meta[BUILT_KEY] = {"why": why, "trained": False, "swap": "chain", "prior": prior, "base": base_block, "tag": tag}
+        meta["note"] = note
+        doc = {"candidate_generation": target, BUILT_KEY: {**meta[BUILT_KEY], "written": utc_now(), "rule": "the base's folder copied unchanged; the boss chain and the "
+                                                           "recipe's +chain part are new; `gen0.py train` judges the candidate as it is", "boss_chain": block},
+               **({"lineage": lineage} if lineage else {}), "base_train": read_json(base_dir / "train.json") if (base_dir / "train.json").is_file() else None,
+               **({"model_json": model} if model else {})}
+        write_json(cand / "train.json", doc)
+        write_json(cand / "agent.json", meta)  # last: `built_candidate` reads a complete directory
+        got = load_agent(cand)
+        differing = screens.differing(cand, base_dir)
+        if (got.generation, got.macro, got.recipe(), got.describe()["prior_sha256"]) != (target, base_agent.macro, recipe, prior_sha) or differing != ["settings"]:
+            raise ValueError(f"gen{target}/{cand.name} does not load as the base with a boss chain alone: {got.describe()}, differing {differing}")
+    except BaseException:
+        shutil.rmtree(cand, ignore_errors=True)
+        raise
     return cand
 
 

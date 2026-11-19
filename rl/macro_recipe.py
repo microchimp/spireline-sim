@@ -42,6 +42,12 @@ One more part changes what the chooser picks on the map and is named after the o
     elite    the Act 1 elite bonus: `+elite:<bonus>@<hp per cent>`, e.g. `+elite:1@60`. On an Act 1 route screen each room's score gains `bonus`
              floors for each elite room on the best path through it (`imitation_chooser.elites_ahead`), while HP is at or above the per cent of max HP
              (agent.json `route_elite`: {"bonus": 1.0, "hp_frac": 0.6, "act": 1}). Only a blended chooser carries it; absent, nothing changes.
+
+And one more, last (2026-11-19, the Act 3 week, `rl/boss_chain.py`):
+
+    chain    the boss chain: `+chain:<8 hex>@<k1>/<k2>/<k3>`, e.g. `+chain:1a2b3c4d@0/10/10`. The first 8 hex of the chain file's sha256 and kappa, the floors per nat
+             of the log chance of getting past the Act 2 boss and the first Act 3 boss that the chooser adds to each option's value in Acts 1, 2 and 3
+             (agent.json `boss_chain`: {"file", "sha256", "kappa": [0, 10, 10], ...}). Only a blended chooser carries it; absent, nothing changes.
 """
 
 from __future__ import annotations
@@ -77,7 +83,9 @@ _CONFIG = re.compile(r"(" + _BASE + r")(?:@h(\d+)e(\d+)b(\d+))?(?:\+hold(\d+))?"
 _RECIPE_STAKES = re.compile(r"\+stakes:([^+]+)")
 _RECIPE_HOLD = re.compile(r"\+hold:(\d+)")
 _RECIPE_ELITE = re.compile(r"\+elite:(" + _LAMBDA + r")@(\d+)")
+_RECIPE_CHAIN = re.compile(r"\+chain:([0-9a-f]{8})@(" + _LAMBDA + r")/(" + _LAMBDA + r")/(" + _LAMBDA + r")")
 MAX_ELITE_BONUS = 50.0  # the elite bonus is a number of floors, above 0 and at most this
+MAX_CHAIN_KAPPA = 50.0  # the boss chain's weight is a number of floors per nat, 0 to this, one for each act
 
 
 def format_lambda(lam: float) -> str:
@@ -346,11 +354,43 @@ def parse_elite(recipe: str | None) -> tuple[float, int] | None:
     return (elite_bonus(float(m[1])), elite_pct(int(m[2]))) if m else None
 
 
-def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None = None, elite: tuple[float, int] | None = None) -> str:
-    """The ledger's recipe of an agent: its macro's, then `+stakes:<tag>`, `+hold:<per cent>` and `+elite:<bonus>@<per cent>` where it has them. An agent
-    with none is `recipe_of(macro)` (so every agent that existed before the parts keeps its recipe). A plain macro with a part names itself first
-    (`vrun+stakes:a3-v1@h1e4b16`)."""
-    if stakes is None and hold is None and elite is None:
+def chain_kappa(values) -> tuple[float, float, float]:
+    """The boss chain's kappa: three finite numbers (floors per nat in Acts 1, 2 and 3), each 0 to `MAX_CHAIN_KAPPA`."""
+    if isinstance(values, str):
+        raise ValueError(f"the boss chain's kappa is three numbers, not {values!r}")
+    try:
+        kappa = tuple(float(x) for x in values)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"the boss chain's kappa is three numbers, not {values!r}") from e
+    if len(kappa) != 3 or not all(math.isfinite(x) and 0.0 <= x <= MAX_CHAIN_KAPPA for x in kappa):
+        raise ValueError(f"the boss chain's kappa is three numbers (Acts 1 to 3), each 0 to {MAX_CHAIN_KAPPA:g}, not {values!r}")
+    return kappa  # type: ignore[return-value]
+
+
+def chain_tag(sha8_or_sha: str, kappa) -> str:
+    """`<8 hex>@<k1>/<k2>/<k3>`: the boss chain's file (the first 8 hex of its sha256) and its kappa, as the recipe and `describe()` write it."""
+    if not re.fullmatch(r"[0-9a-f]{8,64}", sha8_or_sha):
+        raise ValueError("the boss chain's sha256 is lowercase hex")
+    return f"{sha8_or_sha[:8]}@" + "/".join(format_lambda(k) for k in chain_kappa(kappa))
+
+
+def chain_part(sha8_or_sha: str, kappa) -> str:
+    """The recipe's `+chain:<8 hex>@<k1>/<k2>/<k3>` part."""
+    return f"+chain:{chain_tag(sha8_or_sha, kappa)}"
+
+
+def parse_chain(recipe: str | None) -> tuple[str, tuple[float, float, float]] | None:
+    """(8 hex, kappa) of a recipe's `+chain:` part; None without one."""
+    m = _RECIPE_CHAIN.search(recipe or "")
+    return (m[1], chain_kappa([_parse_lambda(m[2]), _parse_lambda(m[3]), _parse_lambda(m[4])])) if m else None
+
+
+def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None = None, elite: tuple[float, int] | None = None,
+                chain: tuple[str, Sequence[float]] | None = None) -> str:
+    """The ledger's recipe of an agent: its macro's, then `+stakes:<tag>`, `+hold:<per cent>`, `+elite:<bonus>@<per cent>` and `+chain:<8 hex>@<k1>/<k2>/<k3>`
+    where it has them. An agent with none is `recipe_of(macro)` (so every agent that existed before the parts keeps its recipe). A plain macro with a part
+    names itself first (`vrun+stakes:a3-v1@h1e4b16`)."""
+    if stakes is None and hold is None and elite is None and chain is None:
         return recipe_of(macro)
     base = str(macro) if macro else "rules"
     if stakes is not None:
@@ -360,14 +400,17 @@ def full_recipe(macro: str | None, stakes: str | None = None, hold: int | None =
         base += f"+hold:{hold_pct(hold)}"
     if elite is not None:
         base += elite_part(*elite)
+    if chain is not None:
+        base += chain_part(*chain)
     return base
 
 
 def split_recipe(recipe: str) -> tuple[str, str | None, int | None]:
-    """The inverse of `full_recipe` less the elite part (`parse_elite` reads that): (macro, stakes tag or None, hold per cent or None). A "" recipe is
-    ("", None, None)."""
+    """The inverse of `full_recipe` less the elite and chain parts (`parse_elite` and `parse_chain` read those): (macro, stakes tag or None, hold per cent or
+    None). A "" recipe is ("", None, None)."""
     stakes = _RECIPE_STAKES.search(recipe)
     hold = _RECIPE_HOLD.search(recipe)
     elite = _RECIPE_ELITE.search(recipe)
-    cut = min((m.start() for m in (stakes, hold, elite) if m), default=len(recipe))
+    chain = _RECIPE_CHAIN.search(recipe)
+    cut = min((m.start() for m in (stakes, hold, elite, chain) if m), default=len(recipe))
     return recipe[:cut], (stakes[1] if stakes else None), (int(hold[1]) if hold else None)

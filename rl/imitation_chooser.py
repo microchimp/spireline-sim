@@ -44,6 +44,11 @@ The guard's probability is `min(GUARD_PROB, STUDENT_GUARD_SHARE / n)` for a scre
 option for sitting under a fixed 2 in 100. Every kind the student has not taken over is decided as before (the human prior's blend on the deck
 screens, `vrun` elsewhere): a policy without a student is the policy it was, number for number.
 
+The boss chain (2026-11-19, the Act 3 week, `rl/boss_chain.py`; the recipe's `+chain:<8 hex>@<k1>/<k2>/<k3>` part, agent.json `boss_chain`): on a screen in Act 2 or Act 3 up to
+floor 47 whose options all score, each option's value gains `kappa_act * log(chance of getting through)` from the chain's two forecasts (past the Act 2 boss; past the
+first Act 3 boss given that): `log q2 + log q3` up to the Act 2 boss's floor, `log q3` after it. The blend, the guard, the draw and the skip gap read that value; the
+recorded values and floor distributions stay the run brain's. An Act 1 screen (kappa 0 there) and a policy without a chain are what they were, choice for choice.
+
 The Act 1 elite bonus (2026-11-14, D60 item 9, the elite test; the recipe's `+elite:<bonus>@<per cent>` part, agent.json `route_elite`): on an Act 1 route
 screen, while HP is at or above the per cent of max HP, each option's score gains `bonus` floors for each elite room on the best path through the room it leads
 to (`elites_ahead`, the room itself counted), whoever decides the screen (the student's blend, or V alone when the student's lambda is 0 or there is no student).
@@ -64,7 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from human_prior_infer import PriorScorer, StudentScorer, log_softmax, option_gaps, option_rows, option_sides
+from human_prior_infer import PriorScorer, StudentScorer, log_softmax, option_gaps, option_grids, option_rows, option_sides
 from human_prior_infer import load as load_prior
 from human_prior_infer import load_student
 from macro_recipe import (  # noqa: F401 -- the recipe's names live there
@@ -75,6 +80,7 @@ from macro_recipe import (  # noqa: F401 -- the recipe's names live there
     PREFIX,
     STUDENT_KINDS,
     act_of_floor,
+    chain_tag,
     elite_bonus,
     elite_pct,
     format_lambda,
@@ -85,6 +91,7 @@ from macro_recipe import (  # noqa: F401 -- the recipe's names live there
     parse_pick,
     student_lambda_for_floor,
 )
+from macro_recipe import chain_kappa as validated_chain_kappa
 from run_train import models, vocab
 from run_train.policy import LookaheadPolicy, floor_probs
 from run_train.selfplay import Pick
@@ -95,6 +102,7 @@ if TYPE_CHECKING:
 GUARD_PROB = 0.02  # an option the prior gives under this is taken only on the judgement's say-so
 GUARD_FLOORS = 1.0  # ... and only when V prefers it by more than this many floors
 TIE = 1e-9
+LAST_CHAIN_FLOOR = 47  # the boss chain adds to screens up to this floor (`boss_chain.LAST_PRE_B3A`: a test holds them equal): the first Act 3 boss stands on floor 48
 
 CARD_KINDS = frozenset({"card.take", "card.skip"})
 REST_KINDS = frozenset({"rest.heal", "rest.smith", "rest.dig", "rest.lift", "rest.cook", "rest.kindle", "rest.clone"})
@@ -271,7 +279,8 @@ class BlendedPolicy(LookaheadPolicy):
     def __init__(self, checkpoint: str | Path, prior: str | Path | PriorScorer, lam: float, temperature: float = 0.0, eps: float = 0.0,
                  W: float | None = None, pick: str = PICK_ARGMAX, skip_bias: float = 0.0,  # noqa: N803
                  act_lam: Mapping[int, float] | None = None, student: str | Path | StudentScorer | None = None,
-                 student_lams: Mapping[str, Sequence[float]] | None = None, route_elite: tuple[float, int] | None = None):
+                 student_lams: Mapping[str, Sequence[float]] | None = None, route_elite: tuple[float, int] | None = None,
+                 chain: str | Path | Any | None = None, chain_kappa: Sequence[float] | None = None):
         super().__init__(checkpoint, temperature, eps, W)
         if not (lam >= 0):
             raise ValueError(f"lambda is 0 or more, not {lam}")
@@ -288,6 +297,15 @@ class BlendedPolicy(LookaheadPolicy):
             if len(route_elite) != 2:
                 raise ValueError(f"the elite bonus is (floors per elite room, HP per cent), not {route_elite!r}")
             self.route_elite = (elite_bonus(route_elite[0]), elite_pct(route_elite[1]))
+        self.chain: Any = None  # a boss_chain.ChainScorer (the chain's file) and its kappa per act (Acts 2 and 3 only act): None is every policy before it
+        self.chain_kappa: tuple[float, float, float] | None = None
+        if (chain is None) != (chain_kappa is None):
+            raise ValueError("a boss chain needs its kappa, and a kappa needs a boss chain")
+        if chain is not None:
+            import boss_chain  # noqa: PLC0415 -- numpy only; a policy without a chain never loads it
+
+            self.chain_kappa = validated_chain_kappa(chain_kappa)
+            self.chain = chain if isinstance(chain, boss_chain.ChainScorer) else boss_chain.ChainScorer(chain)
         self.lam = float(lam)
         self.pick_mode = pick
         self.skip_bias = float(skip_bias)
@@ -318,6 +336,8 @@ class BlendedPolicy(LookaheadPolicy):
             extra["student_kinds"] = {k: [format_lambda(x) for x in v] for k, v in self.student_lams.items()}
         if self.route_elite is not None:
             extra["route_elite"] = [self.route_elite[0], self.route_elite[1]]
+        if self.chain is not None:
+            extra["boss_chain"] = chain_tag(self.chain.sha256, self.chain_kappa)
         return {**super().describe(), "kind": "lookahead+pi_h", "lambda": format_lambda(self.lam), "pi_h": self.prior.sha256[:8], **extra}
 
     def lam_at(self, floor: int) -> float:
@@ -359,12 +379,44 @@ class BlendedPolicy(LookaheadPolicy):
             return None
         return [bonus * elites_ahead(v.map_nodes, o.node[:2]) if o.node is not None else 0.0 for o in decision.options]
 
-    def _vrun_with_bonus(self, view: RunView, decision: Decision, rng: np.random.Generator | None, extra: list[float]) -> Pick:
+    def chain_applies(self, view: RunView, decision: Decision) -> bool:
+        """Whether the boss chain adds to this screen: a chain is set, the act's kappa is above 0 (Acts 2 and 3 only), the floor is 47 or lower and the screen has
+        two or more options that all score."""
+        if self.chain is None:
+            return False
+        v = decision.view or view
+        act, options = int(v.act_index), decision.options
+        if act not in (1, 2) or self.chain_kappa[act] <= 0 or int(v.floor) > LAST_CHAIN_FLOOR or len(options) < 2:  # type: ignore[index]
+            return False
+        return all(o.scorable for o in options)
+
+    def chain_extra(self, view: RunView, decision: Decision, rows: np.ndarray | None = None) -> list[float] | None:
+        """The boss chain's addition to each option's value (`boss_chain.chain_terms` of the chain's log-chances of the options' rows), or None where the chain
+        adds nothing (`chain_applies`). `rows` are the options' judgement rows when the caller holds them."""
+        if not self.chain_applies(view, decision):
+            return None
+        import boss_chain  # noqa: PLC0415
+
+        v = decision.view or view
+        rows = option_rows(self.nets, v, list(decision.options)) if rows is None else rows
+        terms = boss_chain.chain_terms(self.chain.log_q(rows), int(v.act_index), int(v.floor), self.chain_kappa)
+        return None if terms is None else [float(x) for x in terms]
+
+    @staticmethod
+    def _joined(*extras: list[float] | None) -> list[float] | None:
+        """The sum of the additions that apply (None when none does)."""
+        live = [e for e in extras if e is not None]
+        if not live:
+            return None
+        return [float(sum(x)) for x in zip(*live, strict=True)]
+
+    def _vrun_with_bonus(self, view: RunView, decision: Decision, rng: np.random.Generator | None, extra: list[float], rows: np.ndarray | None = None) -> Pick:
         """`LookaheadPolicy.pick` on a screen whose options all score, with `extra` (one number per option) added to each option's value in the choice; the
-        recorded values and floor distributions are the judgement's."""
+        recorded values and floor distributions are the judgement's. `rows` are the options' judgement rows (`option_rows`) when the caller holds them: the same
+        numbers `floor_probs` scores."""
         view = decision.view or view
         options = list(decision.options)
-        probs = floor_probs(self.nets, view, options)  # as `LookaheadPolicy.pick` scores them
+        probs = floor_probs(self.nets, view, options) if rows is None else self.nets.value.floor_probs(rows)  # as `LookaheadPolicy.pick` scores them
         values = models.expected_floors(probs, self.W)
         pi = self.distribution(np.asarray(values, dtype=np.float64) + np.asarray(extra, dtype=np.float64))
         k = _draw(pi, rng)
@@ -373,35 +425,46 @@ class BlendedPolicy(LookaheadPolicy):
     def pick(self, view: RunView, decision: Decision, rng: np.random.Generator | None) -> Pick:
         self.last = None
         extra = self.route_bonus(view, decision)  # None unless the elite bonus applies to this screen
+        chain: list[float] | None = None
+        rows: np.ndarray | None = None
+        if self.chain_applies(view, decision):  # the chain's addition (Acts 2 and 3); the rows are scored once for the chain and the choice
+            v = decision.view or view
+            rows = option_rows(self.nets, v, list(decision.options))
+            chain = self.chain_extra(view, decision, rows)
         taken = self.student_at(view, decision)
         if taken is not None:
             kind, lam_s = taken
             if lam_s <= 0:  # the student's lambda is 0 here: the judgement alone, as `vrun` decides it
-                if extra is not None:
-                    return self._vrun_with_bonus(view, decision, rng, extra)
+                if extra is not None or chain is not None:
+                    return self._vrun_with_bonus(view, decision, rng, self._joined(extra, chain), rows)
                 return LookaheadPolicy.pick(self, view, decision, rng)
-            return self._decide(view, decision, rng, kind, lam_s, self.student.scorer_for(kind), student=True, extra=extra)  # a merged student's net for this kind
+            return self._decide(view, decision, rng, kind, lam_s, self.student.scorer_for(kind), student=True, extra=extra, chain=chain, rows=rows)  # a merged student's net for this kind
         lam = self.lam_at(view.floor)
         screen = screen_of(decision) if lam > 0 else None
         if screen is None:
-            if extra is not None:
-                return self._vrun_with_bonus(view, decision, rng, extra)
+            if extra is not None or chain is not None:
+                return self._vrun_with_bonus(view, decision, rng, self._joined(extra, chain), rows)
             return super().pick(view, decision, rng)
-        return self._decide(view, decision, rng, screen, lam, self.prior)
+        return self._decide(view, decision, rng, screen, lam, self.prior, chain=chain, rows=rows)
 
     def _decide(self, view: RunView, decision: Decision, rng: np.random.Generator | None, screen: str, lam: float, scorer: PriorScorer,
-                student: bool = False, extra: list[float] | None = None) -> Pick:
-        """One screen decided by the blend of V and `scorer`'s log-probabilities (the human prior's, or the student's for a kind it took over)."""
+                student: bool = False, extra: list[float] | None = None, chain: list[float] | None = None, rows: np.ndarray | None = None) -> Pick:
+        """One screen decided by the blend of V and `scorer`'s log-probabilities (the human prior's, or the student's for a kind it took over). `chain` (one number
+        per option, or None) is the boss chain's addition to each option's value: the blend, the guard, the draw and the skip gap read V + chain, the record
+        keeps V. `rows` are the options' judgement rows when `pick` scored them already."""
         view = decision.view or view
         options = list(decision.options)
         tower = bool(getattr(scorer, "map_grid", False))  # a scorer with the map tower reads each option's block M (the rows are the same bytes)
         gapped = bool(getattr(scorer, "state_gaps", False))  # one with the state gaps reads each option's block G (the view's counters, "?" odds and removals)
-        if tower:
+        if rows is not None:
+            grid = option_grids(view, options) if tower else None
+        elif tower:
             rows, grid = option_rows(self.nets, view, options, with_grid=True)
         else:
             rows, grid = option_rows(self.nets, view, options), None
         probs = self.nets.value.floor_probs(rows)
         values = models.expected_floors(probs, self.W)
+        u = values if chain is None else np.asarray(values, dtype=np.float64) + np.asarray(chain, dtype=np.float64)  # what the choice reads: V plus the chain
         sided = tuple(getattr(scorer, "side_blocks", ()) or ())  # a student fitted with the loader's side blocks reads them too (the held ones from the rows)
         kw = {"sides": option_sides(view, options, sided, rows)} if sided else {}
         if gapped:
@@ -415,19 +478,19 @@ class BlendedPolicy(LookaheadPolicy):
         if self.pick_mode == PICK_SKIPCAL and skip is not None and self.skip_bias:
             bonus = [self.skip_bias if i == skip else 0.0 for i in range(len(options))]
         if screen == "rest":
-            choice = blend_rest(values, logits, [rest_group(o) for o in options], lam, gp)
+            choice = blend_rest(u, logits, [rest_group(o) for o in options], lam, gp)
         else:
-            choice = blend_pick(values, logp, lam, bonus, gp)
+            choice = blend_pick(u, logp, lam, bonus, gp)
         k, p = choice.index, 1.0
         exploring = self.tau > 0 or self.eps > 0
         if exploring or self.pick_mode == PICK_SAMPLE:  # sample around the blend (the rest site on its flat score)
-            pi = self.distribution(values, logp, choice, tau=None if exploring else 1.0, bonus=bonus, lam=lam, guard_prob=gp)
+            pi = self.distribution(u, logp, choice, tau=None if exploring else 1.0, bonus=bonus, lam=lam, guard_prob=gp)
             k = _draw(pi, rng if exploring else self._sample_stream(int(view.floor), ("s:" + screen) if student else screen))
             p = float(pi[k])
         self.last = {"screen": ("s:" + screen) if student else screen, "prior": int(k == choice.prior_top), "v": int(k == choice.v_top),
                      "guard": int(choice.guard)}
         if self.pick_mode == PICK_SKIPCAL and skip is not None:  # the skip's gap, for the calibration (run_fields.decide appends it)
-            self.last["gap"] = round(skip_gap(values, logp, lam, skip), 4)
+            self.last["gap"] = round(skip_gap(u, logp, lam, skip), 4)
         return Pick(k, values=tuple(float(v) for v in values), p_chosen=p, p_floor=tuple(float(x) for x in probs[k]))
 
     def distribution(self, values, logp=None, choice: Choice | None = None, tau: float | None = None,

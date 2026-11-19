@@ -973,6 +973,25 @@ def build_vrun_cmd(a: argparse.Namespace) -> int:
     return 0
 
 
+def build_chain_cmd(a: argparse.Namespace) -> int:
+    """`build-chain`: generation N's candidate, the base generation with a boss chain (`boss_chain.py fit` OUT) added and nothing else
+    (`gen_loop.build_chain_candidate`, the Act 3 week's lane 3b). It prints the candidate and the marker's name, `ready-<base generation>-g<N>-<tag>`; it
+    writes no marker (the orchestrator does, once the night block has ended)."""
+    _setup()
+    import gen_loop  # noqa: PLC0415
+    import macro_recipe  # noqa: PLC0415
+
+    base = a.base or str(Path(a.agent_root) / "current.json")
+    gen_loop.candidate_dirname(0, 1, a.tag)  # refuses a tag the markers cannot name
+    kappa = macro_recipe.chain_kappa([float(x) for x in str(a.kappa).split("/")])
+    marker = f"ready-{gen_loop.load_agent(base).generation}-g{a.target}-{a.tag}"
+    cand = gen_loop.build_chain_candidate(base, a.chain_dir, a.agent_root, a.target, why=a.why, kappa=kappa, tag=a.tag)
+    meta = gen_loop.read_json(cand / "agent.json")
+    print(json.dumps({"candidate": cand.as_posix(), "marker": marker, "generation": meta["generation"], "built_on": meta["built_on"], "recipe": meta["recipe"],
+                      "boss_chain": {k: meta["boss_chain"].get(k) for k in ("sha256", "kappa", "report_verdict", "report_band", "report_door_auc")}}))
+    return 0
+
+
 def parse_lambda_acts(parts: list[str] | None) -> dict[int, float] | None:
     """`--lambda-act 1=0 --lambda-act 2=0.5` -> {1: 0.0, 2: 0.5} (the act numbers from 1; None when not given)."""
     out: dict[int, float] = {}
@@ -1140,7 +1159,7 @@ def emu_arm_match(emu_dir: str | Path | None, agent: dict, engine: str = "old") 
     if not isinstance(named, dict):
         return False, "summary.json names no agent"
     named = {"macro": "rules", **named}  # a summary from before the macro switch was played by the rules
-    for key in ("generation", "prior_sha256", "macro", "stakes", "hold", "route_elite"):  # the last three: the search's and the map bonus's own identity (a plain agent has none)
+    for key in ("generation", "prior_sha256", "macro", "stakes", "hold", "route_elite", "boss_chain"):  # the last four: the search's, the map bonus's and the boss chain's own identity (a plain agent has none)
         if named.get(key) != agent.get(key, "rules" if key == "macro" else None):
             return False, f"names another agent ({key} {named.get(key)!r}, scored {agent.get(key)!r})"
     return True, "names the scored agent"
@@ -1493,6 +1512,15 @@ def build_parser() -> argparse.ArgumentParser:
     bv.add_argument("--no-export", action="store_true", help="no ONNX files for the new V_run (they need torch's exporter and the onnx package)")
     bv.add_argument("--without-human-leg", action="store_true", help="accepted and does nothing since D64 (a fit whose export exists is carried "
                     "whatever its keep record says, the human leg included); agent.json still says when the leg did not run")
+    bc = sub.add_parser("build-chain", help="generation N's candidate: the base generation with a boss chain (`rl/boss_chain.py fit` OUT) added and "
+                        "nothing else (the Act 3 week); prints the candidate and the marker's name, writes no marker")
+    bc.add_argument("--base", help="the generation the candidate copies (a generation directory or a current.json; default: --agent-root's current.json)")
+    bc.add_argument("--chain-dir", required=True, help="a `boss_chain.py fit` OUT (boss_chain.npz, fit.json, and report.json when the smoke test ran)")
+    bc.add_argument("--agent-root", required=True)
+    bc.add_argument("--target", type=int, required=True, help="the candidate's generation")
+    bc.add_argument("--kappa", default="0/10/10", help="floors per nat in Acts 1, 2 and 3, written k1/k2/k3")
+    bc.add_argument("--tag", default="chain", help="the recipe tag: gen<N>/candidate-<tag>, marker ready-<base generation>-g<N>-<tag>")
+    bc.add_argument("--why", required=True)
     rk = sub.add_parser("ranking-check", help="the V_run keep test's ranking check (D47, D49): a candidate head's options ranked against "
                         "the incumbent's on the fixed set of held-out decisions, and against the human choice on the held-out fifth")
     rk.add_argument("--candidate", required=True, help="a run_value.npz, a generation directory, a fit folder or a current.json")
@@ -1620,6 +1648,8 @@ def main(argv: list[str] | None = None) -> int:
         return build_cmd(a)
     if a.cmd == "build-vrun":
         return build_vrun_cmd(a)
+    if a.cmd == "build-chain":
+        return build_chain_cmd(a)
     if a.cmd == "vrun-fit":
         return vrun_fit_cmd(a)
     if a.cmd == "ranking-check":
