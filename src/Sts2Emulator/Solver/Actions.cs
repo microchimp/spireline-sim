@@ -159,18 +159,21 @@ public static class Actions
         return moves;
     }
 
+    /// <summary>
+    /// An aimed action is one move per target and none when there is no target to aim at (<see cref="CombatEngine.ValidActions" />
+    /// no longer lists such an action; it was once kept here as a move at target -1, a play the game refuses).
+    /// </summary>
     static void AddAimed(List<Move> moves, int action, bool aims, List<int> targets)
     {
-        if (aims && targets.Count > 0)
-        {
-            foreach (int t in targets)
-            {
-                moves.Add(new Move(action, t));
-            }
-        }
-        else
+        if (!aims)
         {
             moves.Add(new Move(action, -1));
+            return;
+        }
+
+        foreach (int t in targets)
+        {
+            moves.Add(new Move(action, t));
         }
     }
 
