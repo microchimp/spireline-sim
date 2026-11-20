@@ -64,7 +64,7 @@ SPLITS: dict[str, dict] = {
     "CombatEngine.DoomThePlayerAtTurnEnd": {
         "kind": "split",
         "file": "Core/CombatEngine.cs",
-        "sha256": "decbdbcb3ac357f8ebbd2ee6451b3994708dbe5ec4a23a42c557698ef877f659",
+        "sha256": "cde9620e0f754ab48bd3279e9395b4a70a183402d00407bd75497a043139801e",
         "reason": "Doom's turn-end body is two statements: the threshold test on the Doom stack and the open gate "
                   "(the BeforeSideTurnEnd moment, F05), then the first writes of the player's death (HP to zero and the "
                   "HP-changed dispatch, F10; the kill and AfterDiedToDoom are not in this body); the F10 part gates on "

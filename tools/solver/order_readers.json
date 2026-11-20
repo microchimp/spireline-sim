@@ -814,10 +814,6 @@
    "class": "free",
    "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
   },
-  "CombatEngine:ValidActions:PotionSlots[s]#2": {
-   "class": "free",
-   "why": "the player's choice: the action or the open screen names this index, and equal-key positions offer the same choices card for card (the solver tries every one)"
-  },
   "CombatEngine:ValidActions:for Hand": {
    "class": "free",
    "why": "collects the indices of matching cards for a screen (every pile ordered while it is open) or a roll (rolled)"

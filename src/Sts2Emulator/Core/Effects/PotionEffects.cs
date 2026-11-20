@@ -65,8 +65,9 @@ public static class PotionEffects
     /// Whether a held potion is offered as a move in a fight: the game's fight loop and `NPotionPopup` enable the use
     /// button only for a `CombatOnly` or `AnyTime` potion (never `Automatic`: Fairy in a Bottle fires from its own
     /// death hook), and only when `PassesCustomUsabilityCheck` holds -- which `FoulPotion`, the one override, answers
-    /// true for while a combat is in progress. A target-needing potion is still offered with no enemy: no check
-    /// looks at that. Plus the engine's own rule (<see cref="IsModelled" />).
+    /// true for while a combat is in progress. Plus the engine's own rule (<see cref="IsModelled" />). Whether the
+    /// potion has a target is not asked here: <see cref="CombatEngine.ValidActions" /> leaves out a target-needing potion
+    /// (<see cref="NeedsEnemyTarget" />) while no enemy can be hit, as the game cancels it.
     /// </summary>
     public static bool CanUseInCombat(int potionId) =>
         IsModelled(potionId) && UsageOf(potionId) != PotionUsage.Automatic;

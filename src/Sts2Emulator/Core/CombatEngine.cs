@@ -4007,9 +4007,17 @@ public static class CombatEngine
             return [.. actions];
         }
 
+        // An action that aims at an enemy needs one to aim at. With none standing the game offers neither the card
+        // (`CardModel.CanPlayTargeting` is false for a card handed no target) nor the potion (`UsePotionAction` cancels
+        // it and the potion stays), so a lone End Turn is what the player has -- which the referee's driver takes without
+        // asking. The Test Subject has no standing enemy between its forms (it falls to nothing and stands up on its own
+        // next move, `TryRespawnTestSubject`): the mask kept every attack and every aimed potion on offer there, the
+        // lockstep did not see a lone End Turn, and the copy stayed a turn behind the game for the rest of the run.
+        bool aimable = HasTargetableEnemy(state);
+
         for (int i = 0; i < state.Hand.Count; i++)
         {
-            if (CanPlayFromHand(state, state.Hand[i]))
+            if (CanPlayFromHand(state, state.Hand[i]) && (aimable || !AimsAtEnemy(state, state.Hand[i])))
             {
                 actions.Add(i);
             }
@@ -4020,7 +4028,8 @@ public static class CombatEngine
         int potionSlots = Math.Min(state.PotionSlots.Length, state.MaxPotionSlots);
         for (int s = 0; s < potionSlots; s++)
         {
-            if (state.PotionSlots[s] != 0 && Effects.PotionEffects.CanUseInCombat(state.PotionSlots[s]))
+            int potion = state.PotionSlots[s];
+            if (potion != 0 && Effects.PotionEffects.CanUseInCombat(potion) && (aimable || !Effects.PotionEffects.NeedsEnemyTarget(potion)))
             {
                 actions.Add(state.Hand.Count + 1 + s);
             }
@@ -4028,6 +4037,27 @@ public static class CombatEngine
 
         return [.. actions];
     }
+
+    /// <summary>
+    /// Whether an aimed play has a creature to aim at: an enemy that is standing and can be hit (not one on its way back,
+    /// <see cref="EnemyAI.IsTargetable" />). The solver's <c>Actions.Targets</c> asks the same question of each enemy.
+    /// </summary>
+    internal static bool HasTargetableEnemy(CombatState state)
+    {
+        foreach (var enemy in state.Enemies)
+        {
+            if (enemy.Hp > 0 && EnemyAI.IsTargetable(enemy))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether the card, as the game reads its target type now, asks the player for an enemy to aim at.</summary>
+    private static bool AimsAtEnemy(CombatState state, CardInstance card) =>
+        Effects.CardEffects.TargetTypeOf(state, card, GeneratedData.Cards.Get(card.DefId)) == CardTarget.AnyEnemy;
 
     /// <summary>
     /// Answers the open card-selection screen and closes it. Moving a card cannot end
