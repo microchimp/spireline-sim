@@ -158,6 +158,31 @@ PROMOTION_RULE = {"name": "gym-loop-promote-v3", "fixed": "2026-11-11 (D57 item 
                   "single": {"alpha": 0.05, "l0_not_worse": True, "min_points": 0.0},
                   "pool": {"k": 5, "min": 3, "alpha": 0.10, "not_worse_points": -1.0, "z_lower": gg.Z95},
                   "guard_h": 6.0}
+# Rule v4 (D57 addendum 9, 2026-11-20; `--rule v4|v3`, v4 the default, `--rule v3` the undo). The ruler is the fight exam's human stratum
+# (`exam/starts-human.jsonl`, 400 starts of Acts 1 and 2) under the exam's own configuration (`fight_exam.DEFAULT_CONFIG`, the CPU prior,
+# as `human_bar` played it), paired by (start, draw j) with the incumbent on the same seeds; survival = won and not capped. The statistics
+# are v3's (`gym_gate.cluster_mean_se`). Stage 1 plays draws 0-1 and rejects when the 95% upper bound of the survival gain is under
+# `screen.points`; stage 2 draws 0-7 promotes at `promote.points` with the 90% lower bound above zero and HP lost a fight not worse by
+# more than `promote.hp_worse`; a gain of `near_points` or more that misses the bar goes to stage 3, draws 0-15, the same test, else reject.
+# The incumbent's games are kept in `exam/games-<incumbent>.jsonl` and reused after an identity check (`identity.n` stored games replayed
+# on a new engine: outcome, end HP and move hash must match). The Act 3 guard (`act3_guard`): from `after_h` hours after the first practice
+# segment that drew Act 3 starts, a would-be promotion also plays one draw of a fixed subsample of the Act 3 exam cells and fails when the
+# 95% upper bound of the survival difference is under `points`. The pooled-trend path of v3 is retired for v4 (`gym_gate.pooled` stays for v3).
+PROMOTION_RULE_V4 = {"name": "gym-loop-promote-v4", "fixed": "2026-11-20 (D57 addendum 9): the exam's human stratum, paired draws, stages of 2, 8 and 16 draws",
+                     "config": "a3-v1", "prior": "cpu", "starts": 400, "capped": "lost", "stage_draws": (2, 8, 16),
+                     "screen": {"bound": "upper", "z": gg.Z95, "points": -1.0},
+                     "promote": {"points": 0.75, "z_lower": gg.Z90, "hp_worse": 0.5}, "near_points": 0.5,
+                     "identity": {"n": 24, "seed": "gym-loop-identity"},
+                     "act3_guard": {"starts": 120, "quotas": {"80": 80}, "seed": 20261120, "draws": 1, "points": -3.0, "z": gg.Z95,
+                                    "after_h": 24.0, "when": "promote"},
+                     "guard_h": 6.0}
+RULES = {"v3": PROMOTION_RULE, "v4": PROMOTION_RULE_V4}
+
+
+def active_rule(a) -> dict:
+    """The rule the daemon (or `gate`) runs under: `--rule`; an argument set with no `rule` is v3, as before the flag."""
+    return RULES[getattr(a, "rule", None) or "v3"]
+
 
 # The gate's pre-filter (D49 item 3, 2026-11-03; it decides who enters the gate, never who is promoted). Every checkpoint's train.json
 # carries its held-out policy cross-entropy beside the incumbent's on the same rows (the trainer scores both in one call). The
@@ -1363,6 +1388,278 @@ def run_gate(loop: Loop, cand: str, cand_dir: Path, config: str, procs: int, k: 
     return out
 
 
+# ---------------------------------------------------------------------------------------------------------- the gate under rule v4
+
+
+def v4_tasks(fe, starts_file: Path, lite: dict, who: str, cfg: str, done: set, draws: int, js: tuple[int, ...] | None = None) -> list:
+    """The exam games of `who` still to play on `lite`'s starts (documents read from `starts_file`), draws 0..draws-1 (or `js`), long
+    fights first, as `fight_exam.exam_tasks` orders them."""
+    info = {"starts": str(starts_file), "player": who, "config": cfg, "ns": fe.NS, "label": who}
+    rank = {"boss": 0, "elite": 1, "hallway": 2}
+    tasks = [("a3-v1", s["id"], j, s["cat"], info) for s in lite.values() for j in (range(draws) if js is None else js)
+             if (s["id"], j) not in done]
+    tasks.sort(key=lambda t: (rank.get(lite[t[1]].get("kind"), 0), t[2], t[1]))
+    return tasks
+
+
+def exam_rows(path: Path, starts: dict, cfg: str) -> list[dict]:
+    """The rows of an exam games file that are games of `starts` under `cfg`."""
+    return [r for r in fg.read_jsonl(path) if r.get("start") in starts and r.get("config", cfg) == cfg]
+
+
+def usable_index(rows: list[dict], eng: str, ok: set, want=None) -> dict:
+    """{(start, j): row} of the rows played on this engine or on one whose identity check passed (`ok`); a row on this engine wins."""
+    old = gg.indexed([r for r in rows if r.get("engine") in ok and r.get("engine") != eng], want)
+    cur = gg.indexed([r for r in rows if r.get("engine") == eng], want)
+    return {**old, **cur}
+
+
+def identity_ledger(exam: Path) -> list[dict]:
+    return fg.read_jsonl(exam / "identity.jsonl")
+
+
+def ensure_identity(loop: Loop, who: str, who_dir: Path, games: Path, starts_file: Path, lite: dict, eng: str, rule: dict, procs: int, k: int,
+                    daemon=None, tag: str = "exam", sub: str = "") -> set | str:
+    """The engines whose stored rows of `who` in `games` can be used on this engine `eng`: `eng` itself, and every other engine whose
+    check has passed. A new engine gets its check once per player (`identity.n` stored games replayed by `who` under the exam's config
+    and compared on outcome, end HP and move hash: `gym_gate.identity_check`), recorded in `exam/identity.jsonl` and the replayed rows kept
+    in `exam/identity-<who>-<old>-<eng>.jsonl`; a check that fails leaves that engine's rows unused (the games are played again on this
+    engine). Returns the set, or "stopped" when a stop cut the replay short."""
+    exam = loop.root / "exam"
+    cfg = rule["config"]
+    rows = exam_rows(games, lite, cfg)
+    ok = {eng}
+    for old in sorted({r.get("engine") for r in rows if r.get("engine")} - {eng}):
+        led = [r for r in identity_ledger(exam) if (r.get("player"), r.get("from_engine"), r.get("to_engine"), r.get("set", "")) == (who, old, eng, sub)]
+        if led:
+            if led[-1]["ok"]:
+                ok.add(old)
+            continue
+        stored = gg.indexed([r for r in rows if r.get("engine") == old])
+        keys = gg.identity_sample(stored, int(rule["identity"]["n"]), f"{rule['identity']['seed']}:{who}:{old}:{sub}")
+        target = exam / f"identity-{who}-{old}-{eng}{('-' + sub) if sub else ''}.jsonl"
+        have = {(r["start"], int(r["j"])) for r in fg.read_jsonl(target)}
+        everything = {(s, j) for s in lite for j in range(1 + max(j for _s, j in stored))}
+        tasks = v4_tasks(_fight_exam(), starts_file, lite, who, cfg, everything - set(keys) | have, 1 + max(j for _s, j in stored))
+        if tasks:
+            loop.log(f"gate {tag}: identity check of {who}'s rows from engine {old} on {eng}: {len(tasks)} of {len(keys)} games replayed")
+            stopped = play_tasks(loop, tasks, target, who_dir, procs, k, rule["prior"], f"identity-{who}", steps="fight_exam:exam_game_steps",
+                                 daemon=daemon)
+            if stopped:
+                return "stopped"
+        res = gg.identity_check({x: stored[x] for x in keys}, gg.indexed(fg.read_jsonl(target)))
+        with open(exam / "identity.jsonl", "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"t": stamp(), "player": who, "from_engine": old, "to_engine": eng, "set": sub, **res}) + "\n")
+        loop.log(f"gate {tag}: identity check of {who}'s rows from engine {old} on {eng}: {res['same']} of {res['n']} games identical"
+                 + ("" if res["ok"] else "; NOT identical, those rows are not used and the games are played again"))
+        if res["ok"]:
+            ok.add(old)
+    return ok
+
+
+def exam_play(loop: Loop, who: str, who_dir: Path, games: Path, starts_file: Path, lite: dict, eng: str, ok: set, draws: int, rule: dict,
+              procs: int, k: int, daemon=None, js: tuple[int, ...] | None = None) -> str | None:
+    """Play the exam games `who` has no usable row of (draws 0..draws-1, or `js`) into `games`; the stop reason or None."""
+    cfg = rule["config"]
+    done = set(usable_index(exam_rows(games, lite, cfg), eng, ok))
+    tasks = v4_tasks(_fight_exam(), starts_file, lite, who, cfg, done, draws, js)
+    if not tasks:
+        return None
+    loop.log(f"gate {who}: {len(tasks)} exam games on {len(lite)} starts under {cfg} (draws 0-{draws - 1})")
+    return play_tasks(loop, tasks, games, who_dir, procs, k, rule["prior"], f"gate-{who}", steps="fight_exam:exam_game_steps", daemon=daemon)
+
+
+def cost_by_cell(rows, cells: dict[str, str]) -> dict:
+    """CPU-seconds per game by cell, from the rows' own `seconds` (a game's own compute in the lockstep), and the total."""
+    acc: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        if r.get("seconds") is not None and r.get("start") in cells:
+            acc[cells[r["start"]]].append(float(r["seconds"]))
+    return {"by_cell": {c: {"games": len(v), "s_per_game": round(sum(v) / len(v), 2)} for c, v in sorted(acc.items())},
+            "games": sum(len(v) for v in acc.values()), "cpu_s": round(sum(sum(v) for v in acc.values()), 1)}
+
+
+def act3_gate_ids(exam: Path, rule: dict) -> list[str]:
+    """The Act 3 guard's start ids: `exam/starts-act3-gate.jsonl` if it is there, else drawn once (`gym_gate.pick_act3_gate`, the seeded
+    draw of the rule) from `exam/starts-act3.lite.json` and written there. [] when the exam has no Act 3 cells."""
+    path = exam / "starts-act3-gate.jsonl"
+    if path.is_file():
+        return [r["id"] for r in fg.read_jsonl(path)]
+    lite = read_json(exam / "starts-act3.lite.json", None) or []
+    if not lite:
+        return []
+    g = rule["act3_guard"]
+    ids = gg.pick_act3_gate(lite, int(g["starts"]), {str(b): int(n) for b, n in g["quotas"].items()}, int(g["seed"]))
+    cell = {s["id"]: s["cell"] for s in lite}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(json.dumps({"id": i, "cell": cell[i]}) + "\n" for i in ids), encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+    return ids
+
+
+def act3_guard_since(loop: Loop) -> str | None:
+    """When the daemon's first practice segment that drew Act 3 starts finished (`games/segments.jsonl`: `cats` has an act3 cell), or None."""
+    for r in fg.read_jsonl(loop.games / "segments.jsonl"):
+        if any(str(c).startswith("act3") and n for c, n in (r.get("cats") or {}).items()):
+            return r.get("t")
+    return None
+
+
+def act3_guard_due(loop: Loop, rule: dict, now: dt.datetime | None = None) -> bool:
+    """The Act 3 guard applies from `after_h` hours after the first segment with Act 3 starts."""
+    t = gg.parse_stamp(act3_guard_since(loop))
+    return t is not None and ((now or utc()) - t).total_seconds() / 3600.0 >= float(rule["act3_guard"]["after_h"])
+
+
+def run_act3_guard(loop: Loop, cand: str, cand_dir: Path, inc: str, inc_dir: Path, eng: str, rule: dict, procs: int, k: int, daemon=None) -> dict:
+    """One draw of the Act 3 guard sample for the candidate and the incumbent (each player's rows kept in `exam/act3-gate/`, the
+    incumbent's reused and identity-checked as the human stratum's are). {fail, by_cell, ...}, {"stopped": why} when cut short, or
+    {"skipped": why}."""
+    exam = loop.root / "exam"
+    ids = act3_gate_ids(exam, rule)
+    lite_all = _fight_exam().load_act3_exam(exam)
+    lite = {i: lite_all[i] for i in ids if i in lite_all}
+    if not lite:
+        return {"skipped": "no Act 3 exam cells in the exam folder"}
+    starts_file = _fight_exam().exam_paths(exam)["act3_starts"]
+    cells = {i: s["cell"] for i, s in lite.items()}
+    draws = int(rule["act3_guard"]["draws"])
+    (exam / "act3-gate").mkdir(exist_ok=True)
+    sets = {}
+    for who, wdir in ((inc, inc_dir), (cand, cand_dir)):
+        games = exam / "act3-gate" / f"games-{who}.jsonl"
+        ok = ensure_identity(loop, who, wdir, games, starts_file, lite, eng, rule, procs, k, daemon, tag=f"{cand} Act 3 guard", sub="act3")
+        if ok == "stopped":
+            return {"stopped": "stopped"}
+        stopped = exam_play(loop, who, wdir, games, starts_file, lite, eng, ok, draws, rule, procs, k, daemon)
+        if stopped:
+            return {"stopped": stopped}
+        sets[who] = usable_index(exam_rows(games, lite, rule["config"]), eng, ok, lambda j: j < draws)
+    g = gg.act3_guard(sets[cand], sets[inc], rule, cells)
+    g["cost"] = cost_by_cell(sets[cand].values(), cells)
+    return g
+
+
+def v4_cells(human: dict) -> tuple[dict, dict]:
+    """({start id: the act-and-kind cell, e.g. act1-boss}, {start id: the boss cell, e.g. act1-boss-74}) of the human stratum."""
+    kind = {sid: s.get("kind_cell") or "-".join(s["cell"].split("-")[:2]) for sid, s in human.items()}
+    boss = {sid: s["cell"] for sid, s in human.items() if kind[sid].endswith("boss")}
+    return kind, boss
+
+
+def _with_human(by: dict, keys: list, cellmap: dict, human: dict) -> dict:
+    """`gym_gate.exam_read`'s by-cell figures with the humans' own survival (in 100) and HP lost on the same starts added."""
+    out = {}
+    for cell, d in by.items():
+        ids = sorted({s for s, _j in keys if cellmap.get(s) == cell})
+        out[cell] = {**d, "human_surv": round(100 * sum(1.0 if human[s].get("human_survived") else 0.0 for s in ids) / len(ids), 1),
+                     "human_hp_lost": round(sum(float(human[s].get("human_hp_lost") or 0.0) for s in ids) / len(ids), 2)}
+    return out
+
+
+def v4_human_reading(fe, human: dict, ci: dict, ii: dict, inc: str, cand: str, draws: int, cfg: str, read: dict) -> dict:
+    """The human-bar line of a v4 stage-2 or stage-3 verdict, from the exam games the verdict stands on (no game is played): the exam's
+    own reading (`fight_exam.human_bar_reading`, bootstrap interval) and its line, with survival and HP lost by cell (the six act-and-kind
+    cells, and each boss) of the candidate, the incumbent and the human."""
+    reading = fe.human_bar_reading(ci, ii, human, draws=draws)
+    reading.update(incumbent=inc, candidate=cand, config=cfg)
+    reading["line"] = fe.human_bar_line(reading, inc)
+    keys = sorted(set(ci) & set(ii))
+    kind, boss = v4_cells(human)
+    reading["by_cell"] = _with_human(read.get("by_cell") or {}, keys, kind, human)
+    reading["by_boss"] = _with_human(gg.exam_read(ci, ii, boss)["by_cell"], keys, boss, human)
+    return reading
+
+
+def _v4_note(v: dict) -> str:
+    if v.get("verdict") == "incomplete" or v.get("win_diff") is None:
+        return ""
+    hp = f"; HP lost a fight {v['hp_diff']:+.2f} (SE {v['hp_se']:.2f})" if v.get("hp_diff") is not None and v.get("hp_se") is not None else ""
+    if v.get("stage") == 1:
+        return f"; 95% upper bound {100 * (v.get('ub95') or 0.0):+.2f} points" + hp
+    return f"; 90% lower bound {100 * (v.get('lb90') or 0.0):+.2f} points" + hp + (f"; {v['why']}" if v.get("why") else "")
+
+
+def run_gate_v4(loop: Loop, cand: str, cand_dir: Path, procs: int, k: int, daemon=None, rule: dict | None = None,
+                now: dt.datetime | None = None) -> dict:
+    """Score a checkpoint against the incumbent with rule v4 (resumable: the exam games on disk are kept). Plays only the candidate's
+    games and, the first time, the incumbent's missing ones. Returns the verdict dict (`verdict` promote, reject or stopped; `stage` 1 to 3)
+    with `human` (the human-bar line, stages 2 and 3), `cost` and, when a would-be promotion met the Act 3 guard, `act3`."""
+    rule = dict(rule or PROMOTION_RULE_V4)
+    fe = _fight_exam()
+    exam = loop.root / "exam"
+    human = fe.load_human_exam(exam)
+    inc, inc_dir = loop.incumbent()
+    eng = engine_tag()
+    cfg = rule["config"]
+    out: dict = {"candidate": cand, "incumbent": inc, "config": cfg, "engine": eng, "rule": rule["name"]}
+    if not human:
+        return {**out, "verdict": "stopped", "why": "no human stratum in the exam folder (fight_exam.py add-human)"}
+    rule["starts"] = len(human)
+    cells = v4_cells(human)[0]
+    starts_file = fe.exam_paths(exam)["human_starts"]
+    games = {inc: fe.games_path(exam, inc), cand: fe.games_path(exam, cand)}
+    dirs = {inc: inc_dir, cand: cand_dir}
+    oks: dict[str, set] = {}
+    for who in (inc, cand):
+        oks[who] = ensure_identity(loop, who, dirs[who], games[who], starts_file, human, eng, rule, procs, k, daemon, tag=cand)
+        if oks[who] == "stopped":
+            return {**out, "verdict": "stopped", "why": "stopped"}
+    for stage, draws in enumerate(rule["stage_draws"], 1):
+        for who in (inc, cand):
+            stopped = exam_play(loop, who, dirs[who], games[who], starts_file, human, eng, oks[who], draws, rule, procs, k, daemon)
+            if stopped:
+                return {**out, "verdict": "stopped", "why": stopped}
+        want = lambda j, d=draws: j < d  # noqa: E731
+        crows, irows = exam_rows(games[cand], human, cfg), exam_rows(games[inc], human, cfg)
+        ci, ii = usable_index(crows, eng, oks[cand], want), usable_index(irows, eng, oks[inc], want)
+        v = gg.v4_decide(ci, ii, stage, rule, cells)
+        v["draws"] = draws
+        out.update(v)
+        if v["verdict"] == "incomplete":
+            break
+        v_cost = cost_by_cell([r for key, r in ci.items()], cells)
+        out["cost"] = v_cost
+        if stage >= 2:
+            out["human"] = v4_human_reading(fe, human, ci, ii, inc, cand, draws, cfg, v)
+            loop.log(f"gate {cand}: {out['human']['line']}")
+        loop.log(f"gate {cand}: stage {stage} (draws 0-{draws - 1}) {v['verdict']}: cand {100 * v['cand_rate']:.1f} inc {100 * v['inc_rate']:.1f} "
+                 f"of {v['pairs']} games on {v['starts']} starts ({100 * v['win_diff']:+.2f} points, SE {100 * (v['win_se'] or 0):.2f})" + _v4_note(v))
+        if v["verdict"] != "continue":
+            break
+    g = rule["act3_guard"]
+    if out["verdict"] == "promote" and g.get("when") == "promote" and act3_guard_due(loop, rule, now):
+        a3 = run_act3_guard(loop, cand, cand_dir, inc, inc_dir, eng, rule, procs, k, daemon)
+        if "stopped" in a3:
+            return {**out, "verdict": "stopped", "why": a3["stopped"]}
+        out["act3"] = a3
+        if a3.get("fail"):
+            out.update(verdict="reject", path=None, why=a3["why"], guard_act3=True)
+        loop.log(f"gate {cand}: Act 3 guard: " + (a3.get("skipped") or f"{100 * a3['cand_rate']:.1f} against {100 * a3['inc_rate']:.1f} on {a3['pairs']} games "
+                 f"({100 * a3['win_diff']:+.2f} points, 95% upper bound {100 * (a3['ub95'] or 0):+.2f}, floor {g['points']:+.1f}): "
+                 + ("FAILED, the promotion is refused" if a3["fail"] else "passed")))
+    elif out["verdict"] == "promote":
+        loop.log(f"gate {cand}: Act 3 guard not due" + (" (no practice segment has drawn Act 3 starts yet)" if act3_guard_since(loop) is None
+                                                         else f" (the first Act 3 practice segment ended {act3_guard_since(loop)}; due {g['after_h']:g} h later)"))
+    return out
+
+
+def import_games(root: Path, name: str, src: Path, provenance: str) -> int:
+    """Append the rows of `src` that `exam/games-<name>.jsonl` lacks (by start and draw; the row's own engine tag stays) with a
+    `provenance` field, for a candidate or an incumbent whose exam games were played elsewhere (D57 addendum 9: c0380's and v3's of
+    2026-11-20). Returns the rows added. A row of the file is never changed."""
+    fe = _fight_exam()
+    dst = fe.games_path(Path(root) / "exam", name)
+    have = {(r["start"], int(r["j"])) for r in fg.read_jsonl(dst)}
+    take = [{**r, "provenance": provenance} for r in fg.read_jsonl(src) if (r["start"], int(r["j"])) not in have]
+    if take:
+        end = dst.read_bytes()[-1:] if dst.is_file() else b"\n"
+        with open(dst, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("" if end in (b"\n", b"") else "\n")
+            fh.writelines(json.dumps(r) + "\n" for r in take)
+    return len(take)
+
+
 # ---------------------------------------------------------------------------------------------------------- the human bar at the gate
 
 
@@ -1455,9 +1752,9 @@ def policy_sha(d: Path) -> str:
 
 def prefilter_cfg(a: argparse.Namespace | None = None) -> dict:
     """PREFILTER's settings, overridden by the daemon's flags (`--prefilter`, `--prefilter-margin`, `--prefilter-floor-h`)."""
-    cfg = {**PREFILTER, "window": 300_000}
+    cfg = {**PREFILTER, "window": 300_000, "rule": PROMOTION_RULE["name"]}
     if a is not None:
-        cfg.update(mode=a.prefilter, margin=a.prefilter_margin, floor_h=a.prefilter_floor_h, window=a.train_window)
+        cfg.update(mode=a.prefilter, margin=a.prefilter_margin, floor_h=a.prefilter_floor_h, window=a.train_window, rule=active_rule(a)["name"])
         if getattr(a, "gate_every_min", 0.0):
             cfg["gate_every_min"] = float(a.gate_every_min)
     return cfg
@@ -1532,6 +1829,8 @@ def prefilter_decide(pf: dict, fig: dict, cfg: dict) -> tuple[bool, str]:
     if gap <= cfg["margin"]:
         return False, "not below the incumbent's" + (f" by more than {cfg['margin']:.4f}" if cfg["margin"] else "")
     best = pf.get("best")
+    if best and best.get("rule", PROMOTION_RULE["name"]) != cfg.get("rule", PROMOTION_RULE["name"]):
+        best = None  # D57 addendum 9: a gap anchored by a verdict of another rule (a record with no rule is v3's) does not count
     if cfg["mode"] == "best" and best and gap <= best["gap"]:
         return False, f"not past {best['cand']}'s gap of {best['gap']:+.4f}, which the gate rejected"
     return True, "below the incumbent's" + (f" and past {best['cand']}'s gap of {best['gap']:+.4f}" if cfg["mode"] == "best" and best
@@ -1638,8 +1937,10 @@ def prefilter_note_verdict(loop: Loop, cand: str, verdict: dict, now: dt.datetim
     pf["last_gate"] = (now or utc()).strftime("%Y-%m-%dT%H:%M:%SZ")
     pf["window"] = []
     fig = pf["figures"].get(cand)
-    if fig and "gap" in fig and verdict.get("verdict") in ("reject", "promote") and (pf["best"] is None or fig["gap"] > pf["best"]["gap"]):
-        pf["best"] = {"cand": cand, "gap": fig["gap"], "loss": fig["loss"], "ref": fig["ref"]}
+    rname = verdict.get("rule") or PROMOTION_RULE["name"]
+    if (fig and "gap" in fig and verdict.get("verdict") in ("reject", "promote")
+            and (pf["best"] is None or pf["best"].get("rule", PROMOTION_RULE["name"]) != rname or fig["gap"] > pf["best"]["gap"])):
+        pf["best"] = {"cand": cand, "gap": fig["gap"], "loss": fig["loss"], "ref": fig["ref"], "rule": rname}
 
 
 def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) -> str:
@@ -1658,6 +1959,12 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
     loop.state["promotions"].append({"version": ver, "checkpoint": cand, "over": prev, "t": stamp()})
     loop.state["gate_pair"] = next_gate_pair(PROMOTION_RULE, loop.gate_pair())  # the next candidate meets it on a fresh pair
     loop.save()
+    if verdict.get("rule") == PROMOTION_RULE_V4["name"]:
+        # v4 plays the exam, not the board's 200 starts: the candidate has no board games, so the board page gets no row for it here
+        loop.log(f"promoted {cand} as {ver} over {prev} by rule v4 (stage {verdict.get('stage')}, {verdict.get('draws')} draws): "
+                 f"{verdict.get('cand_wins')} against {verdict.get('inc_wins')} wins of {verdict.get('pairs')} exam games; "
+                 f"no fight-board row (the board's starts were not played; play them with `gate --rule v3` to add one)")
+        return ver
     rows = fg.read_jsonl(loop.gates / verdict["cand_file"])
     with open(loop.board / f"fp-{ver}.jsonl", "w", encoding="utf-8") as fh:
         for r in rows:
@@ -1739,7 +2046,9 @@ def board_commit(loop: Loop, ver: str, verdict: dict, commit: bool = True) -> st
     page = BOARD_WT / BOARD_PAGE
     html = page.read_text(encoding="utf-8")
     old = page_log(html)
-    vers = sorted((v for v in loop.state["versions"] if v != "v0"), key=lambda x: int(x[1:]))
+    onpage = {k for k, _ in page_arms(html)}
+    vers = sorted((v for v in loop.state["versions"] if v != "v0" and (f"fp-{v}" in onpage or (loop.board / f"fp-{v}.jsonl").is_file())),
+                  key=lambda x: int(x[1:]))  # a version promoted under rule v4 has no board games and no row
     eng_commit = _git("rev-parse", "--short", "HEAD", cwd=ROOT).strip()
     line = board_line(ver, verdict, eng_commit)
     files, arms = board_args(loop, page_arms(html), vers)
@@ -2116,6 +2425,13 @@ class Daemon:
 
     # -- the steps
     def next_gate(self) -> tuple[str, Path] | None:
+        first = getattr(self.a, "first_candidate", "") or ""
+        if first and active_rule(self.a) is PROMOTION_RULE_V4:
+            # D57 addendum 9: the checkpoint the rule's first gate is on (c0380, whose exam games exist), until it has a verdict
+            d = self.loop.checkpoints / first
+            v = self.loop.state["gated"].get(first)
+            if d.is_dir() and (d / "combat_policy.pt").is_file() and not (isinstance(v, dict) and v.get("verdict") in ("reject", "promote")):
+                return first, d
         if self.a.prefilter == "off":
             newest = self.loop.newest_checkpoint()
             if newest is None or newest[0] in self.loop.state["gated"]:
@@ -2127,18 +2443,24 @@ class Daemon:
         return prefilter_pick(self.loop, prefilter_cfg(self.a))
 
     def gate(self, cand: str, cand_dir: Path) -> None:
+        v4 = active_rule(self.a) is PROMOTION_RULE_V4
         self.status("gate", candidate=cand)
         with self._span("play", "gate"):
-            v = run_gate(self.loop, cand, cand_dir, self.a.player_config, gate_procs(self.a), self.a.gate_k, self.a.prior, daemon=self,
-                         judge=self.a.judge or None)
+            if v4:
+                v = run_gate_v4(self.loop, cand, cand_dir, gate_procs(self.a), self.a.gate_k, daemon=self)
+            else:
+                v = run_gate(self.loop, cand, cand_dir, self.a.player_config, gate_procs(self.a), self.a.gate_k, self.a.prior, daemon=self,
+                             judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
-        if v.get("stage") == 2:
-            v = promotion_guard(self.loop, v)
+        if v.get("stage") in ((2, 3) if v4 else (2,)):
+            v = promotion_guard(self.loop, v, active_rule(self.a))
             if v.get("guard"):
                 self.loop.log(f"gate {cand}: {v['why']}")
         mode = getattr(self.a, "human_bar", "promotion")
-        if v.get("stage") == 2 and ((mode == "on" and v.get("verdict") in ("promote", "reject")) or (mode == "promotion" and v.get("verdict") == "promote")):
+        if v4:
+            pass  # the human line is part of the v4 verdict (stages 2 and 3, from the exam games the verdict stands on); `--human-bar` is a no-op
+        elif v.get("stage") == 2 and ((mode == "on" and v.get("verdict") in ("promote", "reject")) or (mode == "promotion" and v.get("verdict") == "promote")):
             # the human line (D55 addendum 11): report-only, after the rule has spoken; a stage-1 reject never plays it, and in mode
             # `promotion` (D57 item 2) only a promotion does, once, on the CPU prior
             self.status("gate", candidate=cand, part="human bar")
@@ -2157,8 +2479,9 @@ class Daemon:
         self.loop.state["gated"][cand] = {k: v.get(k) for k in ("verdict", "stage", "why", "pairs", "cand_wins", "inc_wins",
                                                                 "win_diff", "win_se", "l0_diff", "p", "incumbent", "config",
                                                                 "stage1_js", "human", "path", "diff_lb", "pool_k", "pool_diff", "pool_p",
-                                                                "guard") if k not in ("human", "path", "diff_lb", "pool_k", "pool_diff",
-                                                                                      "pool_p", "guard") or k in v}
+                                                                "guard", "rule", "draws", "hp_diff", "act3") if k not in (
+                                                                    "human", "path", "diff_lb", "pool_k", "pool_diff", "pool_p", "guard",
+                                                                    "rule", "draws", "hp_diff", "act3") or k in v}
         self.loop.save()
         with open(self.loop.gates / "verdicts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), **{k: v.get(k) for k in v if k not in ("cand_file", "inc_file")}}) + "\n")
@@ -2310,9 +2633,14 @@ class Daemon:
         for root in getattr(self.a, "trainer_extra_rows_root", None) or []:
             if not Path(root).is_dir():
                 self.loop.log(f"daemon: the trainer's plain-rows root {root} is not there (yet): it reads what appears")
+        rule = active_rule(self.a)
         self.loop.log(f"daemon: state reloaded: incumbent {self.loop.state['incumbent']}, {len(self.loop.state['gated'])} checkpoints "
-                      f"with a verdict, segment {self.loop.state['segment']}; {PROMOTION_RULE['name']}: stage 1 plays j "
-                      f"{list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}")
+                      f"with a verdict, segment {self.loop.state['segment']}; {rule['name']}: "
+                      + (f"the exam's human stratum under {rule['config']} ({rule['prior']} prior), stages of {list(rule['stage_draws'])} draws; "
+                         f"promote at {rule['promote']['points']:+g} points with the 90% lower bound above 0 and HP lost not worse by more than "
+                         f"{rule['promote']['hp_worse']:g}; Act 3 guard from {rule['act3_guard']['after_h']:g} h after the first Act 3 practice segment"
+                         + (f"; first candidate {self.a.first_candidate}" if getattr(self.a, "first_candidate", "") else "")
+                         if rule is PROMOTION_RULE_V4 else f"stage 1 plays j {list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}"))
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
@@ -2320,8 +2648,12 @@ class Daemon:
             self.loop.log(f"daemon: gate cadence: a checkpoint is offered to the gate {self.a.gate_every_min:g} minutes after the last one gated "
                           f"(the trainer writes one every {self.a.checkpoint_min:g} minutes, passes capped at {self.a.max_epochs:g} a row)")
         mode = getattr(self.a, "human_bar", "promotion")
-        self.loop.log(f"daemon: human bar {mode}: " + {"promotion": "a promotion", "on": "every stage-2 verdict", "off": "nothing"}.get(mode, mode)
-                      + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
+        if rule is PROMOTION_RULE_V4:
+            self.loop.log("daemon: human bar: under rule v4 every stage-2 or stage-3 verdict carries the human line from its own exam games "
+                          f"(report-only); `--human-bar {mode}` is a no-op")
+        else:
+            self.loop.log(f"daemon: human bar {mode}: " + {"promotion": "a promotion", "on": "every stage-2 verdict", "off": "nothing"}.get(mode, mode)
+                          + f" is followed by the human stratum ({HUMAN_BAR['draws']} draws under {HUMAN_BAR['config']}, {HUMAN_BAR['prior']} prior), report-only")
         self.loop.log(f"daemon: plateau alarm {'on' if getattr(self.a, 'plateau_alert', False) in (True, 'on') else 'off'}: {gg.PLATEAU['days']:g} days or "
                       f"{gg.PLATEAU['candidates']} gated candidates without a promotion writes {gg.PLATEAU['file']}")
         self.wiring = self.make_wiring()
@@ -2461,7 +2793,7 @@ def cmd_status(a) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("starts", "weights", "run", "gate", "stop", "status"):
+    for name in ("starts", "weights", "run", "gate", "stop", "status", "import-games"):
         p = sub.add_parser(name)
         p.add_argument("--root", default=str(DEFAULT_ROOT))
         p.add_argument("--procs", type=int, default=6,
@@ -2479,10 +2811,17 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--player-config", default="judge-v0",
                            help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
             p.add_argument("--gate-k", type=int, default=32)
+            p.add_argument("--rule", choices=("v4", "v3"), default="v4",
+                           help="the promotion rule (D57 addendum 9): v4, the fight exam's human stratum under the player's own search "
+                                "(the default); v3, the board's 200 Act 1 boss starts under the judge-equipped search (the undo)")
             p.add_argument("--judge", default=str(REF / "agent" / "judge" / "v0" / "judge.pt"),
                            help="the judge checkpoint a judge config's leaves read ('' for a config without one)")
         if name == "gate":
             p.add_argument("--candidate", required=True)
+        if name == "import-games":
+            p.add_argument("--into", required=True, help="the player whose exam games file (exam/games-<into>.jsonl) gets the rows")
+            p.add_argument("--games", required=True, help="the games file to take rows from (the rows the file lacks, by start and draw)")
+            p.add_argument("--provenance", required=True, help="written into every added row")
         if name == "stop":
             p.add_argument("--wait-s", type=float, default=300.0)
         if name == "run":
@@ -2519,10 +2858,12 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--until", default="", help="stop at this UTC stamp (the dry run)")
             p.add_argument("--no-trainer", action="store_true")
             p.add_argument("--no-gate", action="store_true")
+            p.add_argument("--first-candidate", default="",
+                           help="under rule v4: the checkpoint the first gate plays (its exam games imported with `import-games`), until it has a verdict")
             p.add_argument("--human-bar", choices=("promotion", "on", "off"), default="promotion",
                            help="play the candidate on the fight exam's human stratum (CPU prior) and record the human line "
                                 "(report-only; the rule never reads it): promotion, after a stage-2 promotion only (the default); "
-                                "on, after every stage-2 verdict; off, never")
+                                "on, after every stage-2 verdict; off, never (a no-op under --rule v4, whose verdicts carry the line)")
             p.add_argument("--plateau-alert", choices=("on", "off"), default="on",
                            help="write LAB/alerts/gym-plateau.txt after five days or twenty-five gated candidates without a promotion "
                                 "(D57 addendum 2) and remove it at the next promotion")
@@ -2582,7 +2923,13 @@ def main(argv=None) -> int:
     if a.cmd == "gate":
         loop = Loop(a.root)
         d = Path(a.candidate)
-        print(json.dumps(run_gate(loop, d.name, d, a.player_config, gate_procs(a), a.gate_k, a.prior, judge=a.judge or None), indent=1))
+        if active_rule(a) is PROMOTION_RULE_V4:
+            print(json.dumps(run_gate_v4(loop, d.name, d, gate_procs(a), a.gate_k), indent=1))
+        else:
+            print(json.dumps(run_gate(loop, d.name, d, a.player_config, gate_procs(a), a.gate_k, a.prior, judge=a.judge or None), indent=1))
+        return 0
+    if a.cmd == "import-games":
+        print(import_games(a.root, a.into, Path(a.games), a.provenance), "rows added")
         return 0
     if a.cmd == "stop":
         return cmd_stop(a)

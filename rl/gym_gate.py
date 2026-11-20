@@ -257,3 +257,162 @@ def read_ledger(path: Path) -> list[dict]:
     except OSError:
         pass
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------- rule v4 (D57 addendum 9)
+#
+# Rule v4 judges the candidate on the fight exam's human stratum (400 starts of Acts 1 and 2) under the player's own search, paired by
+# (start, draw j) with the incumbent, at a resolution that sees about +1 point. Everything here is pure: rows in, numbers out. A game row
+# carries `start`, `j`, `won`, `capped`, `start_hp`, `end_hp` (a capped game is lost, as in v3). The statistics are v3's: the paired
+# difference per (start, j), its mean, the start-clustered SE (`cluster_mean_se`), one-sided bounds at z 1.645 (95) and z 1.282 (90).
+
+Z90 = 1.2815515655446004  # one-sided 90%
+
+
+def hp_lost(row: dict) -> float:
+    """HP lost in a fight: the start HP less the end HP, the whole start HP when the game was lost (or capped)."""
+    hp0 = float(row.get("start_hp") or 0.0)
+    return hp0 - float(row.get("end_hp") or 0.0) if win(row) else hp0
+
+
+def indexed(rows: Iterable[dict], want: Callable[[int], bool] | None = None, starts: set | None = None) -> dict[tuple[str, int], dict]:
+    """{(start, j): row} (the last row of a key wins), j accepted by `want`, starts in `starts` when given."""
+    return {(r["start"], int(r["j"])): r for r in rows
+            if (want is None or want(int(r["j"]))) and (starts is None or r["start"] in starts)}
+
+
+def exam_pairs(cand: dict, inc: dict) -> tuple[dict, dict, list]:
+    """(survival, HP lost, keys) pair differences, candidate minus incumbent, over the (start, j) both played: {key: diff} twice."""
+    keys = sorted(set(cand) & set(inc))
+    surv = {k: float(win(cand[k]) - win(inc[k])) for k in keys}
+    hp = {k: hp_lost(cand[k]) - hp_lost(inc[k]) for k in keys}
+    return surv, hp, keys
+
+
+def exam_read(cand: dict, inc: dict, cells: dict[str, str] | None = None) -> dict:
+    """The paired reading of two indexed game sets: survival and HP lost of each side on the pairs both played, the difference, its
+    clustered SE and bounds (`ub95` = m + Z95 SE, `lb90` = m - Z90 SE; fractions for survival, HP for HP lost); `by_cell` (start id to
+    cell name in `cells`) the same per cell, with no bounds."""
+    surv, hp, keys = exam_pairs(cand, inc)
+    m, se, n, c = cluster_mean_se(surv)
+    hm, hse, _n, _c = cluster_mean_se(hp)
+    out = {"pairs": n, "starts": c, "cand_wins": sum(win(cand[k]) for k in keys), "inc_wins": sum(win(inc[k]) for k in keys),
+           "win_diff": m, "win_se": se, "ub95": None if m is None or se is None else m + Z95 * se,
+           "lb90": None if m is None or se is None else m - Z90 * se, "hp_diff": hm, "hp_se": hse,
+           "cand_hp_lost": None if not keys else sum(hp_lost(cand[k]) for k in keys) / n,
+           "inc_hp_lost": None if not keys else sum(hp_lost(inc[k]) for k in keys) / n,
+           "cand_rate": None if not n else sum(win(cand[k]) for k in keys) / n,
+           "inc_rate": None if not n else sum(win(inc[k]) for k in keys) / n}
+    if cells:
+        by: dict[str, dict] = {}
+        for cell in sorted({cells[k[0]] for k in keys if k[0] in cells}):
+            sub = [k for k in keys if cells.get(k[0]) == cell]
+            cm, cse, cn, cc = cluster_mean_se({k: surv[k] for k in sub})
+            hm2, hse2, _a, _b = cluster_mean_se({k: hp[k] for k in sub})
+            by[cell] = {"pairs": cn, "starts": cc, "cand_rate": sum(win(cand[k]) for k in sub) / cn,
+                        "inc_rate": sum(win(inc[k]) for k in sub) / cn, "win_diff": cm, "win_se": cse,
+                        "cand_hp_lost": sum(hp_lost(cand[k]) for k in sub) / cn, "inc_hp_lost": sum(hp_lost(inc[k]) for k in sub) / cn,
+                        "hp_diff": hm2, "hp_se": hse2}
+        out["by_cell"] = by
+    return out
+
+
+def v4_bar(read: dict, rule: dict) -> dict:
+    """Stage 2 and 3's test on a reading: `ok` (promote) when the survival gain is at least `promote.points`, its 90% lower bound is above
+    zero and HP lost a fight is not worse by more than `promote.hp_worse` (point estimate); `near` when the gain is at least
+    `near_points`."""
+    p = rule["promote"]
+    m, lb, hp = read["win_diff"], read["lb90"], read["hp_diff"]
+    if m is None or lb is None or hp is None:
+        return {"ok": False, "near": False, "why": "no pairs to judge"}
+    gain_ok, lb_ok, hp_ok = 100.0 * m >= float(p["points"]), lb > 0.0, hp <= float(p["hp_worse"])
+    why = "; ".join(x for x, bad in ((f"gain {100 * m:+.2f} points is under the {p['points']:+.2f} needed", not gain_ok),
+                                     (f"the 90% lower bound {100 * lb:+.2f} points is not above 0", not lb_ok),
+                                     (f"HP lost a fight is worse by {hp:+.2f}, over the {p['hp_worse']:+.1f} allowed", not hp_ok)) if bad)
+    return {"ok": gain_ok and lb_ok and hp_ok, "near": 100.0 * m >= float(rule["near_points"]), "why": why or None}
+
+
+def v4_decide(cand: dict, inc: dict, stage: int, rule: dict, cells: dict[str, str] | None = None) -> dict:
+    """Rule v4 on the indexed games of the candidate and the incumbent, restricted by the caller to the stage's draws. Stage 1: `reject`
+    when the 95% UPPER bound of the survival gain is under `screen.points`, else `continue` (to stage 2). Stages 2 and 3: `promote` when
+    `v4_bar` passes; else `continue` (stage 2 only: on to stage 3) when the gain is at least `near_points`; else `reject`. `incomplete`
+    when fewer pairs than the stage's `starts x draws` were played. Returns the reading with verdict, stage and why."""
+    read = exam_read(cand, inc, cells)
+    need = int(rule["starts"]) * int(rule["stage_draws"][stage - 1])
+    if read["pairs"] < need:
+        return {"verdict": "incomplete", "stage": stage, "need": need, **read}
+    if stage == 1:
+        bad = read["ub95"] is not None and 100.0 * read["ub95"] < float(rule["screen"]["points"])
+        why = (f"stage 1: the 95% upper bound {100 * read['ub95']:+.2f} points is under the {rule['screen']['points']:+.1f} that marks "
+               f"a candidate clearly worse") if bad else None
+        return {"verdict": "reject" if bad else "continue", "stage": 1, "why": why, **read}
+    bar = v4_bar(read, rule)
+    if bar["ok"]:
+        return {"verdict": "promote", "stage": stage, "why": None, "path": "exam", **read}
+    last = stage >= len(rule["stage_draws"])
+    if bar["near"] and not last:
+        return {"verdict": "continue", "stage": stage, "path": None, "why": f"stage {stage}: {bar['why']}; the gain is over "
+                f"{rule['near_points']:+.1f}, so stage {stage + 1}", **read}
+    return {"verdict": "reject", "stage": stage, "why": f"stage {stage}: {bar['why']}", "path": None, **read}
+
+
+def act3_guard(cand: dict, inc: dict, rule: dict, cells: dict[str, str] | None = None) -> dict:
+    """The Act 3 guard on the indexed games of one draw: `fail` when the 95% UPPER bound of the survival difference (candidate minus
+    incumbent) is under `act3_guard.points`, as the stage-1 screen does; reported by cell. No pairs: no fail."""
+    g = rule["act3_guard"]
+    read = exam_read(cand, inc, cells)
+    ub = None if read["win_diff"] is None or read["win_se"] is None else read["win_diff"] + float(g.get("z", Z95)) * read["win_se"]
+    fail = ub is not None and 100.0 * ub < float(g["points"])
+    return {"fail": fail, "pairs": read["pairs"], "win_diff": read["win_diff"], "win_se": read["win_se"], "ub95": ub,
+            "cand_rate": read["cand_rate"], "inc_rate": read["inc_rate"], "by_cell": read.get("by_cell", {}),
+            "why": (f"Act 3 guard: the 95% upper bound {100 * ub:+.2f} points of the difference is under {g['points']:+.1f}"
+                    if fail else None)}
+
+
+def pick_act3_gate(lite: list[dict], n: int, quotas: dict[str, int], seed: int) -> list[str]:
+    """The Act 3 guard's fixed subsample: `n` start ids of the Act 3 exam's lite records, drawn once by a seeded hash. `quotas` {boss id
+    (the cell name's last part, e.g. "80" for the Test Subject): starts wanted}, split over the boss's cells in proportion to their
+    sizes; what the quotas leave of `n` is spread evenly over the other bosses. Within a cell the order is the hash of (seed, start id).
+    Returns the ids, by boss and cell."""
+    import hashlib  # noqa: PLC0415
+
+    cells: dict[str, list[str]] = {}
+    for s in lite:
+        cells.setdefault(s["cell"], []).append(s["id"])
+    for c in cells:
+        cells[c].sort(key=lambda i: hashlib.sha256(f"{seed}:{i}".encode()).hexdigest())
+    bosses = sorted({c.rsplit("-", 1)[-1] for c in cells})
+    want: dict[str, int] = {b: int(quotas[b]) for b in bosses if b in quotas}
+    rest = [b for b in bosses if b not in want]
+    left = max(0, n - sum(want.values()))
+    for i, b in enumerate(rest):
+        want[b] = left // len(rest) + (1 if i < left % len(rest) else 0)
+    out: list[str] = []
+    for b in bosses:
+        cs = sorted(c for c in cells if c.rsplit("-", 1)[-1] == b)
+        total = sum(len(cells[c]) for c in cs)
+        take = {c: int(round(want[b] * len(cells[c]) / total)) for c in cs}
+        take[cs[-1]] = want[b] - sum(take[c] for c in cs[:-1])  # the last cell takes the rounding
+        for c in cs:
+            out += cells[c][:max(0, min(take[c], len(cells[c])))]
+    return out
+
+
+def identity_sample(keys: Iterable[tuple[str, int]], n: int, seed: str) -> list[tuple[str, int]]:
+    """`n` of the (start, j) keys by a seeded hash (all of them when there are fewer): the games an identity check replays."""
+    import hashlib  # noqa: PLC0415
+
+    return sorted(sorted(set(keys), key=lambda k: hashlib.sha256(f"{seed}:{k[0]}:{k[1]}".encode()).hexdigest())[:n])
+
+
+def identity_same(stored: dict, replay: dict) -> bool:
+    """Whether a replayed game is the stored one: the same outcome (a capped game is lost), end HP and move hash."""
+    return (win(stored) == win(replay) and int(stored.get("end_hp") or 0) == int(replay.get("end_hp") or 0)
+            and stored.get("moves_sha") == replay.get("moves_sha"))
+
+
+def identity_check(stored: dict[tuple[str, int], dict], replay: dict[tuple[str, int], dict]) -> dict:
+    """{n, same, ok, bad}: `replay` {(start, j): row} against the stored rows of the same keys; ok only when every key was replayed and
+    every one is the same. `bad` lists up to five differing keys."""
+    bad = [k for k in sorted(stored) if k not in replay or not identity_same(stored[k], replay[k])]
+    return {"n": len(stored), "same": len(stored) - len(bad), "ok": bool(stored) and not bad, "bad": [list(k) for k in bad[:5]]}

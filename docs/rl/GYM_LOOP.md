@@ -180,8 +180,45 @@ checkpoints. `--gate-procs N` (default `--procs`) is the processes of the gate's
 
 ## 5. The gate and the board (decided before the first checkpoint)
 
-**Since 2026-11-11 the rule is v3 (`gym-loop-promote-v3`, D57 item 2; the block "Gate rule v3" below). The next paragraph describes v1 and v2,
-whose stage 2 survives unchanged as path (a).**
+**Since 2026-11-20 the rule is v4 (`gym-loop-promote-v4`, D57 addendum 9; the block "Gate rule v4" below), `--rule v4|v3`, v4 the default; `--rule v3`
+is the undo and runs the v3 gate as it was (the paragraphs on v1 to v3 stay as the record).** *v3 (2026-11-11, D57 item 2; the block "Gate rule v3"
+below) judged on the board's starts; the next paragraph describes v1 and v2, whose stage 2 survives unchanged as path (a).*
+
+**Gate rule v4** (D57 addendum 9, 2026-11-20; `PROMOTION_RULE_V4`, `run_gate_v4`, `decide` is v3's and not used; the statistics in `rl/gym_gate.py`
+`exam_read`, `v4_decide`, `act3_guard`; tests `tests/python/test_gym_gate_v4.py`). Why: v3's ruler (the board's 200 Act 1 boss starts x 10 seeds under
+`judge-v0`, SE 0.65 points) could not see a gain under about +1.1 points; c0380 beat v3 by +1.34 points (SE 0.66) and 0.52 HP a fight (SE 0.19) on the
+fight exam's 400 human starts x 8 draws under `a3-v1`, and the pre-filter's "best gap" anchored on candidates the blind gate had rejected (nothing
+passed it since 11-17). The rule:
+1. **Ruler**: the exam's human stratum (`exam/starts-human.jsonl`, 400 starts: Act 1 and 2 hallway 31, elite 31, Act 1 boss 185, Act 2 boss 91),
+   the exam's own configuration (`fight_exam.DEFAULT_CONFIG` `a3-v1`, the CPU prior), paired draws `j` on the same seeds for candidate and
+   incumbent; survival = won and not capped; HP lost = start HP less end HP (the whole start HP when lost). The paired difference per (start, j),
+   SE clustered on starts (`cluster_mean_se`), one-sided bounds at z 1.645 (95) and 1.282 (90).
+2. **Stage 1** draws 0-1 (800 games): reject when the 95% upper bound of the survival gain is under -1.0 point, else stage 2.
+   **Stage 2** draws 0-7 (3,200): promote when the gain is at least +0.75 points, its 90% lower bound is above 0 and HP lost a fight is not worse by
+   more than 0.5 (point estimate); a gain of at least +0.5 that misses the bar goes to **stage 3**, draws 0-15 (6,400), the same test; otherwise
+   reject. The pooled-trend path of v3 is retired for v4 (`gym_gate.pooled` stays for v3). One promotion in `guard_h` 6 hours stays.
+3. **Stored incumbent games**: `exam/games-<incumbent>.jsonl` (games played on any engine, rows carry `engine`; imported rows carry `provenance`). A
+   row on another engine than the daemon's is used only after an **identity check**: 24 of its games replayed by the same player on this engine must
+   match on outcome, end HP and move hash; recorded in `exam/identity.jsonl` (once per player, stored engine and engine); a failed check leaves those
+   rows unused and the games are played again. A gate therefore plays only the candidate (and the incumbent's missing draws, once). The candidate's
+   games are `exam/games-<candidate>.jsonl` (resumable); a promoted player's become its own (`human_bar_adopt`).
+4. **Act 3 guard**: from 24 hours after the first practice segment that drew an Act 3 start (`games/segments.jsonl`), a would-be promotion also
+   plays one draw of 120 Act 3 exam starts (Test Subject cells 80, the other four cells 10 each, drawn once by a seeded hash and written to
+   `exam/starts-act3-gate.jsonl`; games in `exam/act3-gate/`, the incumbent's kept and identity-checked the same way) and is refused when the 95%
+   upper bound of the survival difference is under -3.0 points; reported by cell in the verdict (`act3`). About 1 CPU-hour a player.
+5. **Human bar**: every stage-2 or stage-3 verdict carries the human line (`human`: candidate, incumbent and the humans' survival and HP lost, overall,
+   by act-and-kind cell and by boss) in `gate/verdicts.jsonl` and the loop log; no game is played for it; `--human-bar` is a no-op under v4.
+6. **Pre-filter**: the anchor ("best gap so far", mode `best`) counts only verdicts of the active rule (the record names its rule; a record with none
+   is v3's); `floor_h` 6 stays.
+7. **After a promotion** as before (`promote`, `human_bar_adopt`, the wiring) except the **board**: v4 plays the exam, not the board's starts, so a
+   v4-promoted version gets no fight-board row (`promote` logs it; `gate --rule v3` plays the board's games). `board_commit` leaves a version with no
+   board games out of the rebuild.
+8. **First candidate**: `--first-candidate cNNNN` (v4 only) makes that checkpoint the next gate until it has a verdict, with games imported by
+   `gym_loop.py import-games --root ROOT --into NAME --games FILE --provenance TEXT` (rows the file lacks, by start and draw).
+Costs (rows' own `seconds`): about 2.9 CPU-s a game, stage 1 about 0.65 CPU-hours, stage 2 about 2.6, stage 3 about 5.2, the Act 3 guard about 1.
+Undo: stop the daemon, start it again with `--rule v3` (the verdict records of both rules stay in `gate/verdicts.jsonl`, each naming its rule).
+
+*v3 and earlier*, as the record:
 
 `PROMOTION_RULE` (`gym-loop-promote-v2`: v1 was fixed before the first checkpoint, v2 on 2026-11-01, D43): the board's 200 Act-1 boss starts, game j with the gym's seeds (namespace `g`), the
 player (`--player-config judge-v0 --judge D:/spireline/referee/agent/judge/v0/judge.pt`, the defaults since the judge landed (D41): JUDGE_V0's search with the judge v0 at its leaves, the judge on its own server on the card beside the prior's; the incumbent's games are kept per config and judge; measured: the gate's judge-v0 games of version 0 are the board's judge-v0 games move for move),
