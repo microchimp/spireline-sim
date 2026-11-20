@@ -357,7 +357,7 @@ class GenerationOffTests(unittest.TestCase):
 
     def test_the_gate_and_the_human_bar_play_with_the_gate_procs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with Harness(Path(tmp), "--procs", "0", "--gate-procs", "4", "--human-bar", "on") as h:
+            with Harness(Path(tmp), "--procs", "0", "--gate-procs", "4", "--human-bar", "on", "--rule", "v3") as h:
                 d = h.d
                 d.status = lambda *a, **k: None
                 seen = {}
@@ -374,7 +374,7 @@ class GenerationOffTests(unittest.TestCase):
                 with mock.patch.object(gl, "run_gate", run_gate), mock.patch.object(gl, "human_bar", human_bar):
                     d.gate("c0001", d.loop.checkpoints / "c0001")
                 self.assertEqual(seen, {"gate": 4, "human": 4})
-            with Harness(Path(tmp) / "b", "--procs", "3", "--human-bar", "on") as h:  # no --gate-procs: the generation's count, as before
+            with Harness(Path(tmp) / "b", "--procs", "3", "--human-bar", "on", "--rule", "v3") as h:  # no --gate-procs: the generation's count, as before
                 d = h.d
                 d.status = lambda *a, **k: None
                 seen = {}
@@ -385,10 +385,13 @@ class GenerationOffTests(unittest.TestCase):
     def test_a_one_shot_gate_command_uses_the_gate_procs(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "run_gate", return_value={"verdict": "x"}) as rg, \
                 contextlib.redirect_stdout(io.StringIO()):
-            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3"])
+            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3", "--rule", "v3"])
             self.assertEqual(rg.call_args.args[4], 3)
-            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "2"])
+            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "2", "--rule", "v3"])
             self.assertEqual(rg.call_args.args[4], 2)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "run_gate_v4", return_value={"verdict": "x"}) as r4,                 contextlib.redirect_stdout(io.StringIO()):  # rule v4 is the default: its gate plays with the gate procs too
+            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3"])
+            self.assertEqual(r4.call_args.args[3], 3)
 
 
 class BufferWithoutGenerationTests(unittest.TestCase):
