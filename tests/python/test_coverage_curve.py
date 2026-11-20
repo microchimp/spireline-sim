@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -223,14 +224,21 @@ class RegretTests(unittest.TestCase):
 class MemoryTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "GetProcessMemoryInfo is Windows only")
     def test_the_peak_working_set_is_read_and_never_falls(self):
-        a = cov.peak_working_set_mb()
-        block = bytearray(64 * 2**20)  # touch 64 MB
-        block[:: 4096] = b"x" * len(block[:: 4096])
-        b = cov.peak_working_set_mb()
+        # Read in a fresh interpreter, where the peak sits at the working set, so touching 64 MB must lift it by 32 or more. In the
+        # suite's own process that need not hold: earlier tests set a higher peak, and under memory pressure the system trims the
+        # working set far below it, so the touch can stay under the old peak (the two full gates of 2026-11-20 read the same figure
+        # before and after the touch while twelve emulator processes ran beside them).
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import coverage as cov\n"
+                "a = cov.peak_working_set_mb(); block = bytearray(64 * 2**20); block[::4096] = b'x' * len(block[::4096])\n"
+                "b = cov.peak_working_set_mb(); del block; print(a, b, cov.peak_working_set_mb())\n")
+        done = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "tools" / "solver")], capture_output=True, text=True,
+                              timeout=120, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        a, b, c = (float(x) for x in done.stdout.split())
         self.assertGreater(a, 0)
         self.assertGreaterEqual(b, a + 32)
-        del block
-        self.assertGreaterEqual(cov.peak_working_set_mb(), b)
+        self.assertGreaterEqual(c, b)
+        self.assertIsNotNone(cov.peak_working_set_mb())  # and it reads in this process too
 
     def test_the_new_subcommands_parse(self):
         for cmd in ("memory", "macro-ab", "played", "regret"):
