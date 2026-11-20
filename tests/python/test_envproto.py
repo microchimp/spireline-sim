@@ -612,7 +612,8 @@ class RunRowTest(unittest.TestCase):
                 raise boom
             ls = types.SimpleNamespace(stats={"decisions": len(pairs)}, lost=None, log=types.SimpleNamespace(records=[]),
                                        agent_seed=[1, 0], assumed=[], fields=None)
-            return {"end": "death", "floor": 3, "asked": len(pairs), **({"stale": True} if seed in stale else {})}, ls
+            return {"end": "death", "floor": 3, "asked": len(pairs), **({"stale": True} if seed in stale else {}),
+                    **getattr(test, "end_extra", {})}, ls
 
         q = queue_mod.Queue()
         lock = types.ModuleType("lockstep")
@@ -650,6 +651,20 @@ class RunRowTest(unittest.TestCase):
         self.assertTrue(self.t0 - 1 <= row["t_end"] <= self.t1 + 1)
         self.assertEqual((1.5, 0), (row["boot_s"], row["restarts"]))
         self.assertEqual({"n": 60, "screen": "event", "action": 0}, row["streak"])
+
+    def test_an_end_row_carries_the_games_fight_errors_and_the_stall_record_only_when_there_are_some(self):
+        """The driver's end message lists why a fight stopped (`fight_errors`: max_actions, idle_timeout after step ...); the row of
+        the 2026-11-19 block did not carry it, so 19 `fight_unfinished` rows could not be told apart. A run the stall guard ended
+        (lockstep.StallGuard) carries the answer the game kept ignoring."""
+        (plain,) = self.play({"S1": ([("map", 0)], None)})
+        self.assertNotIn("fight_errors", plain)
+        self.assertNotIn("stalled", plain)
+        self.end_extra = {"end": "fight_unfinished", "fight_errors": ["max_actions"]}
+        (row,) = self.play({"S1": ([("map", 0)], None)})
+        self.assertEqual((["max_actions"], "fight_unfinished"), (row["fight_errors"], row["end"]))
+        self.end_extra = {"end": "stalled", "stalled": {"floor": 48, "kind": "combat", "action": ["potion", 0, "WEAK_POTION", -1], "answers": 2}}
+        (row,) = self.play({"S1": ([("map", 0)], None)})
+        self.assertEqual(("stalled", 2), (row["end"], row["stalled"]["answers"]))
 
     def test_the_same_action_on_another_screen_is_not_a_streak(self):
         pairs = [("event", 0), ("map", 0), ("event", 0), ("map", 0)] * 20

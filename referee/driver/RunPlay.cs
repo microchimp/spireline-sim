@@ -868,29 +868,21 @@ public static partial class Driver
             for (int h = 0; h < hand.Count; h++)
             {
                 if (!hand[h].CanPlay()) continue;
-                if (hand[h].TargetType == TargetType.AnyEnemy)
-                {
-                    for (int t = 0; t < enemies.Count; t++) options.Add((h, t));
-                }
-                else
-                {
-                    options.Add((h, -1));
-                }
+                foreach (int t in ActionTargets.For(hand[h].TargetType == TargetType.AnyEnemy, enemies.Count)) options.Add((h, t));
             }
 
             var usable = potions ? player.PotionSlots.Select((p, slot) => (p, slot))
                 .Where(x => x.p is { IsQueued: false, PassesCustomUsabilityCheck: true }
                             && x.p.Usage is MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly or MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime
-                            && player.CanRemovePotions)
+                            && player.CanRemovePotions
+                            // A potion that aims at an enemy has no legal use when no creature is alive (the Test Subject between its
+                            // forms): the game cancels it and keeps the potion, so it is not offered (ActionTargets.cs).
+                            && ActionTargets.For(x.p.TargetType == TargetType.AnyEnemy, enemies.Count).Count > 0)
                 .ToList() : new();
             // One list of legal actions: end turn and plays (options), then each usable potion at each target.
             var potionActs = new List<(PotionModel potion, int slot, int target)>();
             foreach (var (pm, ps) in usable)
-            {
-                if (pm!.TargetType == TargetType.AnyEnemy && enemies.Count > 0)
-                    for (int t = 0; t < enemies.Count; t++) potionActs.Add((pm, ps, t));
-                else potionActs.Add((pm, ps, -1));
-            }
+                foreach (int t in ActionTargets.For(pm!.TargetType == TargetType.AnyEnemy, enemies.Count)) potionActs.Add((pm, ps, t));
 
             int choice = Env.Decide("combat", options.Count + potionActs.Count, () => new JsonArray(options
                     .Select(o => (JsonNode)(o.hand < 0 ? new JsonArray("end") : new JsonArray("play", o.hand, hand[o.hand].Id.Entry, o.target)))

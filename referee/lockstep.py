@@ -207,7 +207,7 @@ def fresh_agent_seed() -> int:
 def run_outcome(m: dict, done: bool) -> dict:
     """The run's outcome from the referee's end message: class win/death/crash/truncated, the end string, final floor."""
     end = m.get("end")
-    cls = "truncated" if not done else "win" if str(end).lower() in ("win", "victory", "won") else \
+    cls = "truncated" if not done or str(end).lower() == "stalled" else "win" if str(end).lower() in ("win", "victory", "won") else \
         "crash" if str(end).lower() == "crash" else "death"
     return {"class": cls, "end": end, "floor": m.get("floor")}
 
@@ -297,6 +297,68 @@ def reanchor_plan(kind: str, prev_kind: str | None) -> str | None:
     return None
 
 
+STALL_LIMIT = 3  # answers given to one unchanged decision before the run is stopped as `stalled` (`StallGuard`)
+
+
+class Stalled(Exception):
+    """The game was asked the same decision again and again and went on ignoring every answer (`StallGuard`). Carries where
+    it happened and the answer the game ignored first: `play_run` ends the run as `stalled` with it."""
+
+    def __init__(self, floor, kind: str, action, answers: int):
+        super().__init__(f"stalled at floor {floor} on {kind}: {answers} answers ignored, first {json.dumps(action)}")
+        self.floor, self.kind, self.action, self.answers = floor, kind, action, answers
+
+    def record(self) -> dict:
+        return {"floor": self.floor, "kind": self.kind, "action": self.action, "answers": self.answers}
+
+
+def state_key(msg: dict) -> tuple:
+    """What a decision is, for telling whether the game is asking the same thing again: the screen, the state hash the driver
+    sends with it (without one the observation), the actions on offer and the screen's context (the pick number of a card
+    screen: its picks are held by the driver until the last, so the game's state stands still between them)."""
+    base = msg.get("h")
+    if base is None:
+        base = json.dumps(msg.get("obs"), sort_keys=True, default=str)
+    return (msg.get("kind"), base, json.dumps(msg.get("actions"), sort_keys=True, default=str),
+            json.dumps(msg.get("ctx"), sort_keys=True, default=str))
+
+
+class StallGuard:
+    """An answer the game ignores must not be given again. The driver asks again on the same game state when it refused the
+    answer (a potion handed no target is cancelled and stays in its slot, a card play refused): the state, the actions and
+    the screen are the same. The fixed stand-in answers the same screen the same way, so the pair repeated until the
+    driver's 400-action cap ended the run as `fight_unfinished` (14 runs of the 2026-11-19 real block, 376 to 394
+    identical answers each). `answer` returns the answer to give: the one asked for, unless the game has already ignored
+    it at this state, then End Turn when that is on offer and was not tried, else the first action not tried. After
+    `limit` ignored answers at one state it raises `Stalled`."""
+
+    def __init__(self, limit: int = STALL_LIMIT):
+        self.limit = limit
+        self.key: tuple | None = None
+        self.tried: list[int] = []  # the answers given at this state, in order
+
+    def answer(self, msg: dict, choice: int) -> int:
+        labels = msg.get("actions") or []
+        key = state_key(msg)
+        if key != self.key:
+            self.key, self.tried = key, []  # the game moved: a new state
+        if self.tried and (len(self.tried) >= self.limit or len(self.tried) >= len(labels)):
+            first = self.tried[0]
+            raise Stalled((msg.get("obs") or {}).get("floor"), str(msg.get("kind")),
+                          labels[first] if 0 <= first < len(labels) else None, len(self.tried))
+        if choice in self.tried:
+            choice = self._other(labels)
+        self.tried.append(choice)
+        return choice
+
+    def _other(self, labels: list) -> int:
+        left = [i for i in range(len(labels)) if i not in self.tried]
+        for i in left:
+            if isinstance(labels[i], list) and labels[i] and labels[i][0] == "end":
+                return i
+        return left[0]
+
+
 @dataclass
 class DivergenceLog:
     records: list = field(default_factory=list)
@@ -325,8 +387,11 @@ class Lockstep:
     """
 
     def __init__(self, emu: EmuSide | None, fallback, seed: str = "", sims: int = 60,
-                 agent_seed=None):
+                 agent_seed=None, stall_limit: int | None = None):
         self.emu, self.fallback, self.seed, self.sims = emu, fallback, seed, sims
+        # `stall_limit` (play_run: STALL_LIMIT): no answer is given twice to a decision the game left unchanged, and the run
+        # is stopped (`Stalled`) after that many. None: no guard (the fake streams of the tests repeat one state).
+        self.guard = StallGuard(stall_limit) if stall_limit else None
         self.agent_seed = agent_seed
         self.open: dict | None = None  # the record of the loss now in force; its not-ranked span grows each decision
         self.log = DivergenceLog()
@@ -371,7 +436,7 @@ class Lockstep:
             self.stats["after_end"] = self.stats.get("after_end", 0) + 1
             self.stats["not_ranked"] += 1
             self.prev_kind = kind
-            return self.fallback(msg)
+            return self._not_again(msg, self.fallback(msg))
         ranked = False
         if self.emu is not None:
             ranked = self._check(i, kind, labels, msg) if self.lost is None else self._resume(i, kind, labels, msg)
@@ -385,6 +450,7 @@ class Lockstep:
             self.assumed.add(i)
         if choice is None:
             choice = self.fallback(msg)
+        choice = self._not_again(msg, choice)  # before the copy is told: a refused answer is not mirrored
         if self.lost is None and self.emu is not None:
             try:
                 err = self.emu.apply(kind, labels, choice)
@@ -405,6 +471,16 @@ class Lockstep:
                 self.room_type = labels[choice][2]
             self._fields("real_macro", kind, labels[choice], (msg.get("obs") or {}).get("floor"))
         return choice
+
+    def _not_again(self, msg: dict, choice: int) -> int:
+        """`StallGuard.answer` when there is a guard: another answer when the game already ignored this one at this state,
+        `Stalled` when it has ignored `stall_limit`. The count goes into `stats["ignored_answers"]`."""
+        if self.guard is None or not isinstance(choice, int):
+            return choice
+        given = self.guard.answer(msg, choice)
+        if given != choice:
+            self.stats["ignored_answers"] = self.stats.get("ignored_answers", 0) + 1
+        return given
 
     def _take_hidden(self, msg: dict) -> dict:
         """The firewall of the hidden anchor state (PLAN.md section 5, "The bridge, decided"). The game's stream counters and
@@ -1628,15 +1704,19 @@ def referee_only_policy(msg: dict) -> int:
 
 
 def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory=None, max_decisions: int = 4000,
-             agent_seed=None, character: str = "IRONCLAD", anchor_state: bool | None = None):
+             agent_seed=None, character: str = "IRONCLAD", anchor_state: bool | None = None,
+             stall_limit: int | None = STALL_LIMIT):
     """One run on a GameEnv under the PLAY agent. Returns (end message, Lockstep).
+
+    `stall_limit`: answers given to one decision the game leaves unchanged before the run ends as `stalled` (`StallGuard`); 0 or
+    None: no guard.
 
     `anchor_state`: ask the driver (reset spec "anchor_state") for the game's hidden state at the re-anchor points, for the
     emulator side's re-anchor only (`Lockstep._take_hidden`). Default: yes when the emulator side takes it
     (`wants_anchor_state`), unless the environment variable SPIRELINE_ANCHOR_STATE is 0 (the A/B switch of the old behaviour)."""
     agent_seed = list(agent_seed) if agent_seed is not None else [fresh_agent_seed(), 0]
     emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed, character)))(seed)
-    ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed)
+    ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed, stall_limit=stall_limit)
     if anchor_state is None:
         anchor_state = bool(getattr(emu, "wants_anchor_state", False)) and os.environ.get("SPIRELINE_ANCHOR_STATE", "1") != "0"
     try:
@@ -1647,6 +1727,13 @@ def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory
             m, done = env.step(ls.decide(m))
             n += 1
         ls.finish(run_outcome(m, done))
+        return m, ls
+    except Stalled as e:
+        # The game ignored every answer to one decision: the run ends here with its own reason, carrying the answer. The game
+        # process stands at the unanswered decision, so it is marked stale and the worker starts a fresh one.
+        ls.stats["stalled"] = e.record()
+        m = {"t": "end", "end": "stalled", "floor": e.floor, "asked": n, "stalled": e.record(), "stale": "stalled"}
+        ls.finish(run_outcome(m, True))
         return m, ls
     except BaseException as e:
         ls.finish(run_outcome({"end": "crash", "floor": None}, True))

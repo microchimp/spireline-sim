@@ -830,6 +830,10 @@ def play_worker(wid: int, game: str, out: str, seeds: list, sims: int, q, step_t
             ev = {"ev": "end", "w": wid, "seed": seed, "character": character, "end": m.get("end"), "floor": m.get("floor"), "asked": m.get("asked"),
                   "s": round(time.time() - t0, 1), "stats": ls.stats, "lost": ls.lost, "divergences": ls.log.records,
                   "agent_seed": ls.agent_seed, "assumed": len(ls.assumed), **_fields_row(ls), **_row_extra(env, restarts, timed)}
+            if m.get("stalled"):  # ended by the stall guard (lockstep.StallGuard): the answer the game kept ignoring
+                ev["stalled"] = m["stalled"]
+            if m.get("fight_errors"):  # why a fight stopped (the driver's FightLoop: max_actions, idle_timeout after step ...)
+                ev["fight_errors"] = m["fight_errors"]
             if m.get("stale"):
                 if arm_run:
                     faulthandler.cancel_dump_traceback_later()

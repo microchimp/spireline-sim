@@ -1515,6 +1515,9 @@ class OutcomeTests(unittest.TestCase):
             return self.end, True
 
     def _play(self, stream, emu, end):
+        # Every decision of a real run asks on a state that moved (its own state hash): a message repeated with the same hash is
+        # a game that ignored the answer, which the stall guard (lockstep.StallGuard) stops. These streams repeat one message.
+        stream = [dict(m, h=f"state{i}") for i, m in enumerate(stream)]
         return lockstep.play_run(self.Env(stream, end), "SEEDX", emu_factory=lambda s: emu, agent_seed=[5, 0])
 
     def test_a_run_that_loses_lockstep_then_ends_has_outcome_and_span_in_its_records(self):
