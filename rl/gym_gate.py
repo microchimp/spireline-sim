@@ -416,3 +416,123 @@ def identity_check(stored: dict[tuple[str, int], dict], replay: dict[tuple[str, 
     every one is the same. `bad` lists up to five differing keys."""
     bad = [k for k in sorted(stored) if k not in replay or not identity_same(stored[k], replay[k])]
     return {"n": len(stored), "same": len(stored) - len(bad), "ok": bool(stored) and not bad, "bad": [list(k) for k in bad[:5]]}
+
+
+# ---------------------------------------------------------------------------------------------------------- rule v5 (D68 addendum 5 decision 4)
+#
+# Rule v5 reads two parts of its own ruler (`gym-loop/gate5/`): part `h`, human starts of Acts 1 and 2 that the fight exam did not take, and
+# part `a3`, the two Act 3 bosses (human openings and our own arrivals). Within a part a cell counts by a fixed weight (our runs' deaths there
+# per 100 runs), the estimate is the stratified one, and a candidate passes by one of two routes, each a gain in its own part with the other
+# part not clearly worse. Everything here is pure: rows in, numbers out.
+
+Z975 = 1.959963984540054  # one-sided 97.5%: each of the two routes, so the rule as a whole stays near 5 in 100
+
+
+def strat_read(cand: dict, inc: dict, cells: dict[str, str], weights: dict[str, float]) -> dict:
+    """The paired reading of one part: per start the mean over the draws both played of candidate minus incumbent survival (and HP lost);
+    per cell the mean of those start means and their sample variance; the part's figure the weighted sum over the cells present (weights
+    renormalised over them; a cell with no weight is reported, not counted), its SE sqrt(sum w^2 var / n). `cand`/`inc`: {(start, j): row};
+    `cells`: start id -> cell. Fractions for survival, HP for HP lost. A cell of one start adds no variance (flagged in `thin`)."""
+    keys = sorted(k for k in set(cand) & set(inc) if k[0] in cells)
+    per: dict[str, dict[str, list]] = {}
+    for k in keys:
+        per.setdefault(cells[k[0]], {}).setdefault(k[0], []).append(k)
+    by: dict[str, dict] = {}
+    for c, starts in sorted(per.items()):
+        d_s, h_s = [], []
+        cw = iw = n = 0
+        ch = ih = 0.0
+        for ks in starts.values():
+            d_s.append(sum(win(cand[k]) - win(inc[k]) for k in ks) / len(ks))
+            h_s.append(sum(hp_lost(cand[k]) - hp_lost(inc[k]) for k in ks) / len(ks))
+            cw += sum(win(cand[k]) for k in ks)
+            iw += sum(win(inc[k]) for k in ks)
+            ch += sum(hp_lost(cand[k]) for k in ks)
+            ih += sum(hp_lost(inc[k]) for k in ks)
+            n += len(ks)
+        m = len(d_s)
+        dm, hm = sum(d_s) / m, sum(h_s) / m
+        dv = sum((x - dm) ** 2 for x in d_s) / (m - 1) if m > 1 else 0.0
+        hv = sum((x - hm) ** 2 for x in h_s) / (m - 1) if m > 1 else 0.0
+        by[c] = {"starts": m, "pairs": n, "weight": float(weights.get(c, 0.0)), "win_diff": dm, "win_se": math.sqrt(dv / m),
+                 "hp_diff": hm, "hp_se": math.sqrt(hv / m), "cand_rate": cw / n, "inc_rate": iw / n, "cand_hp_lost": ch / n,
+                 "inc_hp_lost": ih / n, "_dv": dv, "_hv": hv}
+    counted = {c: x for c, x in by.items() if x["weight"] > 0}
+    wsum = sum(x["weight"] for x in counted.values())
+    out = {"pairs": len(keys), "starts": sum(x["starts"] for x in by.values()), "cells": len(by),
+           "cand_wins": sum(win(cand[k]) for k in keys), "inc_wins": sum(win(inc[k]) for k in keys),
+           "by_cell": {c: {k: v for k, v in x.items() if not k.startswith("_")} for c, x in by.items()}}
+    if not counted or wsum <= 0:
+        return {**out, "win_diff": None, "win_se": None, "hp_diff": None, "hp_se": None, "cand_rate": None, "inc_rate": None,
+                "cand_hp_lost": None, "inc_hp_lost": None, "thin": []}
+    w = {c: x["weight"] / wsum for c, x in counted.items()}
+
+    def wsum_of(key: str) -> float:
+        return sum(w[c] * x[key] for c, x in counted.items())
+
+    return {**out, "win_diff": wsum_of("win_diff"), "win_se": math.sqrt(sum(w[c] ** 2 * x["_dv"] / x["starts"] for c, x in counted.items())),
+            "hp_diff": wsum_of("hp_diff"), "hp_se": math.sqrt(sum(w[c] ** 2 * x["_hv"] / x["starts"] for c, x in counted.items())),
+            "cand_rate": wsum_of("cand_rate"), "inc_rate": wsum_of("inc_rate"), "cand_hp_lost": wsum_of("cand_hp_lost"),
+            "inc_hp_lost": wsum_of("inc_hp_lost"), "thin": sorted(c for c, x in counted.items() if x["starts"] < 2)}
+
+
+def v5_worse(read: dict, part: dict, z: float = Z95) -> dict:
+    """`worse` when the part's one-sided 95% upper bound of the survival difference is under its `worse` floor (points): the candidate is
+    clearly worse there. No pairs: not worse (nothing to judge)."""
+    m, se = read.get("win_diff"), read.get("win_se")
+    if m is None or se is None:
+        return {"worse": False, "ub95": None}
+    ub = m + z * se
+    return {"worse": 100.0 * ub < float(part["worse"]), "ub95": ub}
+
+
+def v5_route(read: dict, route: dict) -> dict:
+    """One route's own test on its part: the gain at least `points`, its one-sided lower bound at `z` above zero, HP lost a fight not worse
+    by more than `hp_worse` (point estimate). {ok, lb, why}."""
+    m, se, hp = read.get("win_diff"), read.get("win_se"), read.get("hp_diff")
+    if m is None or se is None or hp is None:
+        return {"ok": False, "lb": None, "why": "no pairs to judge"}
+    lb = m - float(route["z"]) * se
+    level = 100.0 * (1.0 - upper_tail(float(route["z"])))
+    bad = [x for x, b in ((f"gain {100 * m:+.2f} points is under the {route['points']:+.2f} needed", 100.0 * m < float(route["points"])),
+                          (f"the {level:.1f}% lower bound {100 * lb:+.2f} points is not above 0", lb <= 0.0),
+                          (f"HP lost a fight is worse by {hp:+.2f}, over the {route['hp_worse']:+.1f} allowed", hp > float(route["hp_worse"])))
+           if b]
+    return {"ok": not bad, "lb": lb, "why": "; ".join(bad) or None}
+
+
+def v5_decide(reads: dict[str, dict], stage: int, rule: dict) -> dict:
+    """Rule v5 on the two parts' readings at a stage. Stage 1: `reject` when either part is clearly worse (`v5_worse`), else `continue`.
+    Stages 2 and 3: `promote` by the first route (in `rule["routes"]` order) whose own test passes while no other part is clearly worse;
+    else `continue` (to the next stage; never after the last) when no part is clearly worse and some part's gain reaches its `near` points;
+    else `reject`. Returns {verdict, stage, path (the route), why, worse: {part: ...}, routes: {route: ...}}."""
+    parts = rule["parts"]
+    worse = {p: v5_worse(reads[p], parts[p], float(rule.get("z_worse", Z95))) for p in parts}
+    bad = [p for p in parts if worse[p]["worse"]]
+    why_bad = "; ".join(f"part {p} is clearly worse (95% upper bound {100 * worse[p]['ub95']:+.2f} points, under {parts[p]['worse']:+.1f})"
+                        for p in bad)
+    if stage == 1:
+        return {"verdict": "reject" if bad else "continue", "stage": 1, "path": None, "why": f"stage 1: {why_bad}" if bad else None,
+                "worse": worse, "routes": {}}
+    routes = {}
+    for name, r in rule["routes"].items():
+        own = v5_route(reads[r["part"]], r)
+        others = [p for p in parts if p != r["part"] and worse[p]["worse"]]
+        routes[name] = {**own, "ok": own["ok"] and not others, "own_ok": own["ok"], "blocked_by": others}
+    for name in rule["routes"]:
+        if routes[name]["ok"]:
+            return {"verdict": "promote", "stage": stage, "path": name, "why": None, "worse": worse, "routes": routes}
+    last = stage >= max(len(p["stage_draws"]) for p in parts.values())
+    near = [p for p in parts if reads[p].get("win_diff") is not None and 100.0 * reads[p]["win_diff"] >= float(parts[p]["near"])]
+
+    def route_why(n: str, x: dict) -> str:
+        bits = [x["why"]] if x["why"] else []
+        if x["blocked_by"]:
+            bits.append(f"part {', '.join(x['blocked_by'])} is clearly worse")
+        return f"route {n}: " + ("; ".join(bits) or "passed")
+
+    why = "; ".join(route_why(n, x) for n, x in routes.items())
+    if near and not bad and not last:
+        return {"verdict": "continue", "stage": stage, "path": None, "worse": worse, "routes": routes,
+                "why": f"stage {stage}: {why}; part {', '.join(near)} gains at least its near bar, so stage {stage + 1}"}
+    return {"verdict": "reject", "stage": stage, "path": None, "worse": worse, "routes": routes, "why": f"stage {stage}: {why}"}

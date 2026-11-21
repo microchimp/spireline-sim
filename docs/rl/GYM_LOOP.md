@@ -180,9 +180,44 @@ checkpoints. `--gate-procs N` (default `--procs`) is the processes of the gate's
 
 ## 5. The gate and the board (decided before the first checkpoint)
 
-**Since 2026-11-20 the rule is v4 (`gym-loop-promote-v4`, D57 addendum 9; the block "Gate rule v4" below), `--rule v4|v3`, v4 the default; `--rule v3`
-is the undo and runs the v3 gate as it was (the paragraphs on v1 to v3 stay as the record).** *v3 (2026-11-11, D57 item 2; the block "Gate rule v3"
-below) judged on the board's starts; the next paragraph describes v1 and v2, whose stage 2 survives unchanged as path (a).*
+**Since 2026-11-21 the rule is v5 (`gym-loop-promote-v5`, D68 addendum 5 decision 4; the block "Gate rule v5" below), `--rule v5|v4|v3`, v5 the
+default; `--rule v4` and `--rule v3` are the undo paths and run those gates as they were (their blocks stay as the record).** *v4 (2026-11-20, D57
+addendum 9) judged on the fight exam's 400 human starts; v3 (2026-11-11, D57 item 2; the block "Gate rule v3" below) on the board's starts; the
+paragraph after v3 describes v1 and v2, whose stage 2 survives unchanged as v3's path (a).*
+
+**Gate rule v5** (D68 addendum 5 decision 4, 2026-11-21; `PROMOTION_RULE_V5`, `run_gate_v5`, `build_gate5`; the statistics in `rl/gym_gate.py`
+`strat_read`, `v5_worse`, `v5_route`, `v5_decide`; tests `tests/python/test_gym_gate_v5.py`; memo `referee/backlog/act3-week/GATE-V5.md`). Why: v4's
+ruler was the fight exam's held-out human stratum, spent as a selection set; its incumbent's bar was the very games that won its promotion; a
+no-gain candidate passed about 12 times in 100 (stage 2 at a 90% bound, then stage 3); no Act 3 fight was in the ruler. The rule:
+1. **Ruler** (`gym_loop.py gate5-set --root ROOT [--seed N] [--rebuild]`, once; `gate5/`): part `h`, 500 human starts of Acts 1 and 2 from the loop's
+   human start list (the corpus's training fifths; the exam fifth is out of the list and re-checked by the fixed hash rule; the ids file is not
+   read), only starts with the human's result, whose run the loop never played and that the exam's exclusion list does not hold (none of the
+   exam's 400), at most one a run: Act 1 boss 168 (28 a boss), Act 2 boss 162 (54 a boss), Act 2 elite 85, Act 2 hallway 40, Act 1 elite 25,
+   Act 1 hallway 20; part `a3`, 414 starts at the two Act 3 bosses by lane 5's design (its six cells and quotas, the Test Subject first),
+   drawn again from the starts the exam did not take (`set.act3_source` `exam` reads the exam's own set instead). Their runs and starts go on
+   `exam/exclude_runs.json` (old file kept once as `.pre-gate5.bak`), so the practice never draws them. `a3-v1`, the CPU prior, paired draws.
+2. **Statistic**: per start the mean over its draws of candidate minus incumbent survival (won and not capped) and HP lost (start HP less end HP,
+   the whole start HP when lost); per part the weighted mean of the cells' means, weights = our runs' deaths per 100 runs in that cell
+   (`GATE5_WEIGHTS`: the real block of generation 20, 2026-11-20), SE the stratified one. One-sided bounds: z 1.96 to promote, 1.645 for "clearly worse".
+3. **Stages and routes**: part h plays 2, 8, 16 draws at stages 1, 2, 3; part a3 1, 4, 8. A part is *clearly worse* when its 95% upper bound is
+   under its floor (h -1.0 point, a3 -2.0). Stage 1 rejects a clearly worse part. Stages 2 and 3 promote by **route F** (part h gains at least
+   +0.75 points, its 97.5% lower bound above 0, HP lost there not worse by more than 0.5, part a3 not clearly worse) or **route A3** (part a3 gains
+   at least +1.5, the same bound and HP test, part h not clearly worse); stage 2 goes on to stage 3 when no part is clearly worse and part h
+   gains +0.5 or part a3 +1.0; else reject. One promotion in `guard_h` 6 hours stays. Simulated on the measured spreads: a no-gain candidate is
+   promoted about 7 times in 100 (v4: 12), a +1 point Acts 1-2 gain 62 (v4: 70), +2 points 99, an Act 3 gain of +2 points 79, +3 points 98.
+4. **Fresh draws per era**: the era is the number of v5 promotions (`state.json` `gate5.era`); era e plays part h draws 16e to 16e+15 and part a3
+   8e to 8e+7, candidate and incumbent on the same seeds. A promotion opens the next era, so the new incumbent plays its bar on seeds nobody has
+   played (its own selection games are never its bar); it plays them once, as the era's first gate needs them. Games: `gate5/games-<name>.jsonl`
+   (both parts); stored rows of another engine are used after an identity check per part (24 games, `gate5/identity.jsonl`), as v4's.
+5. **The Act 3 guard is part of the ruler**: part a3 is played from stage 1, guards route F, and is a route itself (v4's `act3_guard` stays for v4).
+6. **Verdicts** (`gate/verdicts.jsonl`, `rule` named): `parts` (both readings, by cell), `routes`, `worse`, `path` (the route), `era`, `draws`;
+   the top-level survival figures are part h's (the plateau alarm and the status read them); `human` at stages 2 and 3 from part h's human
+   starts (the exam's reading, a new series beside the exam's) with part a3's human openings (`a3_human`); `cost` by part.
+7. **Unchanged from v4**: the pre-filter's anchor counts only the active rule's verdicts (v5 starts empty), the identity check, no fight-board row
+   for a promotion, the wiring. The trainer is not rebased after a promotion: it resumes from its own state, and `--base` only names it.
+Costs (CPU-seconds a game at 12 processes: Act 1 boss 1.8, Act 2 boss 2.5, elites 1.1-1.3, hallways 0.5-1.4, Act 3 about 2.1-2.5): stage 1 about
+0.8 CPU-hours, stage 2 3.2, stage 3 6.5 for the candidate; the incumbent's era record at most 6.5 once a promotion. Undo: stop the daemon, start it
+again with `--rule v4` (or `v3`); `gate5/` and its exclusions stay.
 
 **Gate rule v4** (D57 addendum 9, 2026-11-20; `PROMOTION_RULE_V4`, `run_gate_v4`, `decide` is v3's and not used; the statistics in `rl/gym_gate.py`
 `exam_read`, `v4_decide`, `act3_guard`; tests `tests/python/test_gym_gate_v4.py`). Why: v3's ruler (the board's 200 Act 1 boss starts x 10 seeds under

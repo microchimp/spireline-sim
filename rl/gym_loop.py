@@ -6,6 +6,7 @@
         [--procs 0 --gate-procs 4]   generation off: only the trainer, the pre-filter and the gate run (D65 addendum 4)
         [--trainer-extra-rows-root PATH ... --trainer-extra-window N --trainer-policy-min-grade N]   the plain runs' fight rows
     python rl/gym_loop.py gate    --root ROOT --candidate DIR                      one promotion gate, by hand
+    python rl/gym_loop.py gate5-set --root ROOT [--seed N] [--rebuild]             rule v5's own ruler (gate5/), once
     python rl/gym_loop.py stop    --root ROOT                                       stop the daemon (its STOP file, then its PID)
     python rl/gym_loop.py status  --root ROOT
 
@@ -176,11 +177,42 @@ PROMOTION_RULE_V4 = {"name": "gym-loop-promote-v4", "fixed": "2026-11-20 (D57 ad
                      "act3_guard": {"starts": 120, "quotas": {"80": 80}, "seed": 20261120, "draws": 1, "points": -3.0, "z": gg.Z95,
                                     "after_h": 24.0, "when": "promote"},
                      "guard_h": 6.0}
-RULES = {"v3": PROMOTION_RULE, "v4": PROMOTION_RULE_V4}
+# Rule v5 (D68 addendum 5 decision 4, 2026-11-21; `--rule v5|v4|v3`, v5 the default; v4 and v3 the undo paths). Its ruler is its own
+# (`gate5/`, built once by `gate5-set`; its runs go on the exam's exclusion list so the practice never draws them): part `h`, 500 human starts
+# of Acts 1 and 2 that the fight exam did not take (the exam's 400 are held out again), and part `a3`, 414 starts at the two Act 3 bosses
+# drawn a second time by lane 5's design (the exam's own 414 stay held out; `set.act3_source: exam` reads them instead). Within a part a cell
+# counts by our runs' deaths there per 100 runs (the real block of generation 20, 2026-11-20, 1,994 runs); the stratified estimate
+# (`gym_gate.strat_read`). Two routes (`gym_gate.v5_decide`): F, part h gains at least +0.75 points with its 97.5% lower bound above 0 and HP
+# lost not worse by 0.5 while part a3 is not clearly worse (95% upper bound under -2.0); A3, part a3 gains at least +1.5 with the same bound
+# and HP test while part h is not clearly worse (95% upper bound under -1.0). Stage 1 (h 2 draws, a3 1) rejects a clearly worse part; stages
+# 2 (8, 4) and 3 (16, 8) promote by a route; stage 2 goes on when a part gains its `near` points. Draws are numbered by era (the promotions
+# under v5): era e plays h draws 16e.. and a3 draws 8e.., so a new incumbent's bar is played fresh, never its selection games.
+GATE5_WEIGHTS = {"h": {"act1-hallway": 2.5, "act1-elite": 2.3, "act1-boss": 22.8, "act2-hallway": 10.1, "act2-elite": 10.2, "act2-boss": 22.1},
+                 "a3": {"act3-boss1-73": 4.71, "act3-boss1-78": 4.81, "act3-boss1-80": 4.86, "act3-boss2-73": 1.29, "act3-boss2-78": 1.29,
+                        "act3-boss2-80": 1.29}}
+GATE5_H_QUOTA = {**{f"act1-boss-{b}": 28 for b in (74, 77, 79, 82, 83, 84)}, **{f"act2-boss-{b}": 54 for b in (75, 76, 81)},
+                 "act2-elite": 85, "act2-hallway": 40, "act1-elite": 25, "act1-hallway": 20}
+PROMOTION_RULE_V5 = {"name": "gym-loop-promote-v5", "fixed": "2026-11-21 (D68 addendum 5 decision 4): its own ruler of two parts (Acts 1-2 "
+                     "human starts outside the exam; the Act 3 bosses), deaths-weighted cells, two routes at 97.5%, fresh draws per era",
+                     "config": "a3-v1", "prior": "cpu", "capped": "lost",
+                     "parts": {"h": {"stage_draws": (2, 8, 16), "era_draws": 16, "worse": -1.0, "near": 0.5, "weights": GATE5_WEIGHTS["h"]},
+                               "a3": {"stage_draws": (1, 4, 8), "era_draws": 8, "worse": -2.0, "near": 1.0, "weights": GATE5_WEIGHTS["a3"]}},
+                     "routes": {"F": {"part": "h", "points": 0.75, "z": gg.Z975, "hp_worse": 0.5},
+                                "A3": {"part": "a3", "points": 1.5, "z": gg.Z975, "hp_worse": 0.5}},
+                     "z_worse": gg.Z95,
+                     "identity": {"n": 24, "seed": "gym-loop-identity"},
+                     "set": {"seed": 20261121, "h_quota": GATE5_H_QUOTA, "act3_source": "twin",
+                             "a3_human_quota": {"act3-boss1-80": 80, "act3-boss2-80": 40, "act3-boss1-78": 32, "act3-boss1-73": 32,
+                                                "act3-boss2-78": 20, "act3-boss2-73": 20},
+                             "a3_own_quota": {"act3-boss1-80": 60, "act3-boss2-80": 30, "act3-boss1-78": 30, "act3-boss1-73": 30,
+                                              "act3-boss2-78": 20, "act3-boss2-73": 20}},
+                     "guard_h": 6.0}
+RULES = {"v3": PROMOTION_RULE, "v4": PROMOTION_RULE_V4, "v5": PROMOTION_RULE_V5}
 
 
 def active_rule(a) -> dict:
-    """The rule the daemon (or `gate`) runs under: `--rule`; an argument set with no `rule` is v3, as before the flag."""
+    """The rule the daemon (or `gate`) runs under: `--rule` (v5 by default on the command line); an argument set with no `rule` is v3, as
+    before the flag."""
     return RULES[getattr(a, "rule", None) or "v3"]
 
 
@@ -1419,13 +1451,14 @@ def identity_ledger(exam: Path) -> list[dict]:
 
 
 def ensure_identity(loop: Loop, who: str, who_dir: Path, games: Path, starts_file: Path, lite: dict, eng: str, rule: dict, procs: int, k: int,
-                    daemon=None, tag: str = "exam", sub: str = "") -> set | str:
+                    daemon=None, tag: str = "exam", sub: str = "", folder: Path | None = None) -> set | str:
     """The engines whose stored rows of `who` in `games` can be used on this engine `eng`: `eng` itself, and every other engine whose
     check has passed. A new engine gets its check once per player (`identity.n` stored games replayed by `who` under the exam's config
     and compared on outcome, end HP and move hash: `gym_gate.identity_check`), recorded in `exam/identity.jsonl` and the replayed rows kept
     in `exam/identity-<who>-<old>-<eng>.jsonl`; a check that fails leaves that engine's rows unused (the games are played again on this
-    engine). Returns the set, or "stopped" when a stop cut the replay short."""
-    exam = loop.root / "exam"
+    engine). Returns the set, or "stopped" when a stop cut the replay short. `folder`: where the ledger and the replays live (rule v5's
+    `gate5/`; the exam's folder by default)."""
+    exam = Path(folder) if folder is not None else loop.root / "exam"
     cfg = rule["config"]
     rows = exam_rows(games, lite, cfg)
     ok = {eng}
@@ -1465,7 +1498,7 @@ def exam_play(loop: Loop, who: str, who_dir: Path, games: Path, starts_file: Pat
     tasks = v4_tasks(_fight_exam(), starts_file, lite, who, cfg, done, draws, js)
     if not tasks:
         return None
-    loop.log(f"gate {who}: {len(tasks)} exam games on {len(lite)} starts under {cfg} (draws 0-{draws - 1})")
+    loop.log(f"gate {who}: {len(tasks)} exam games on {len(lite)} starts under {cfg} (draws {js[0] if js else 0}-{js[-1] if js else draws - 1})")
     return play_tasks(loop, tasks, games, who_dir, procs, k, rule["prior"], f"gate-{who}", steps="fight_exam:exam_game_steps", daemon=daemon)
 
 
@@ -1658,6 +1691,298 @@ def import_games(root: Path, name: str, src: Path, provenance: str) -> int:
             fh.write("" if end in (b"\n", b"") else "\n")
             fh.writelines(json.dumps(r) + "\n" for r in take)
     return len(take)
+
+
+# ---------------------------------------------------------------------------------------------------------- the gate under rule v5
+
+
+GATE5_DIR = "gate5"
+GATE5_STEMS = {"h": "starts-gate", "a3": "starts-gate-act3"}
+
+
+def gate5_paths(root: Path) -> dict:
+    """Rule v5's ruler folder: `gate5/` with a start file (and its index and lite list) per part, `meta.json`, the players' games
+    (`games-<name>.jsonl`, both parts) and the identity ledger."""
+    d = Path(root) / GATE5_DIR
+    out = {"dir": d, "meta": d / "meta.json"}
+    for part, stem in GATE5_STEMS.items():
+        out[part] = d / f"{stem}.jsonl"
+        out[f"{part}_lite"] = d / f"{stem}.lite.json"
+    return out
+
+
+def load_gate5(root: Path) -> dict[str, dict]:
+    """{part: {start id: lite record}} of the v5 ruler (empty parts when `gate5-set` has not been run)."""
+    p = gate5_paths(root)
+    return {part: {s["id"]: s for s in (read_json(p[f"{part}_lite"], None) or [])} for part in GATE5_STEMS}
+
+
+def gate5_cells(part: str, lite: dict) -> dict[str, str]:
+    """Start id -> the cell its weight is read under: the act-and-kind cell in part h (act1-boss, ...), the boss and turn in part a3."""
+    if part == "h":
+        return {sid: s.get("kind_cell") or f"act{int(s['act'])}-{s['kind']}" for sid, s in lite.items()}
+    return {sid: s["cell"] for sid, s in lite.items()}
+
+
+def gate5_era(loop: Loop) -> int:
+    """The era: how many promotions rule v5 has made (`state.json` `gate5.era`); era e plays draws `era_draws` x e onwards."""
+    return int((loop.state.get("gate5") or {}).get("era", 0))
+
+
+def era_js(rule: dict, part: str, era: int, stage: int) -> tuple[int, ...]:
+    """The draws a part plays at a stage of an era: era e's first `stage_draws[stage - 1]` draws, from `era_draws` x e."""
+    p = rule["parts"][part]
+    base = int(p["era_draws"]) * int(era)
+    return tuple(range(base, base + int(p["stage_draws"][stage - 1])))
+
+
+def v5_rule_line(loop: Loop, rule: dict) -> str:
+    """The start-up line's account of rule v5: the ruler, the routes, the era."""
+    sets = load_gate5(loop.root)
+    r = rule["routes"]
+    return (f"its own ruler (gate5/: part h {len(sets['h'])} human starts of Acts 1-2 outside the exam, part a3 {len(sets['a3'])} Act 3 boss starts) "
+            f"under {rule['config']} ({rule['prior']} prior), stages of {list(rule['parts']['h']['stage_draws'])} and {list(rule['parts']['a3']['stage_draws'])} "
+            f"draws; route F at {r['F']['points']:+g} points (part h), route A3 at {r['A3']['points']:+g} (part a3), each with its 97.5% lower bound "
+            f"above 0, HP lost not worse by {r['F']['hp_worse']:g} and the other part not clearly worse; era {gate5_era(loop)}"
+            + ("" if all(sets.values()) else "; NO RULER YET: run `gym_loop.py gate5-set` (the gate stops until it exists)"))
+
+
+def _v5_part_line(p: str, x: dict) -> str:
+    if x.get("win_diff") is None:
+        return f"part {p}: no pairs"
+    return (f"part {p} {100 * x['cand_rate']:.1f} / {100 * x['inc_rate']:.1f} ({100 * x['win_diff']:+.2f} points, SE {100 * (x['win_se'] or 0):.2f}; "
+            f"HP {x['hp_diff']:+.2f}) on {x['pairs']} games")
+
+
+def v5_human(fe, sets: dict, idx: dict, inc: str, cand: str, cfg: str, draws: int, read_h: dict) -> dict:
+    """The human line of a v5 verdict from the games it stands on (no game is played): part h's human starts as the exam's reading reads
+    them (`fight_exam.human_bar_reading`, its line, by act-and-kind cell and by boss), and part a3's human openings (candidate, incumbent and
+    human survival in 100)."""
+    human = sets["h"]
+    ci, ii = idx["h"]
+    reading = fe.human_bar_reading(ci, ii, human, draws=draws)
+    reading.update(incumbent=inc, candidate=cand, config=cfg, ruler="gate5 part h")
+    reading["line"] = fe.human_bar_line(reading, inc)
+    keys = sorted(set(ci) & set(ii))
+    kind, boss = v4_cells(human)
+    reading["by_cell"] = _with_human(read_h.get("by_cell") or {}, keys, kind, human)
+    reading["by_boss"] = _with_human(gg.exam_read(ci, ii, boss)["by_cell"], keys, boss, human)
+    ca, ia = idx["a3"]
+    hk = [k for k in sorted(set(ca) & set(ia)) if sets["a3"].get(k[0], {}).get("stratum") == "human"]
+    if hk:
+        ids = sorted({s for s, _j in hk})
+        reading["a3_human"] = {"starts": len(ids), "games": len(hk), "cand_surv": round(100 * sum(gg.win(ca[k]) for k in hk) / len(hk), 1),
+                               "inc_surv": round(100 * sum(gg.win(ia[k]) for k in hk) / len(hk), 1),
+                               "human_surv": round(100 * sum(1.0 if sets["a3"][s].get("human_survived") else 0.0 for s in ids) / len(ids), 1)}
+    return reading
+
+
+def run_gate_v5(loop: Loop, cand: str, cand_dir: Path, procs: int, k: int, daemon=None, rule: dict | None = None) -> dict:
+    """Score a checkpoint against the incumbent with rule v5 on its own ruler (`gate5/`; resumable: the games on disk are kept). Plays the
+    candidate's games of this era's draws and, once an era, the incumbent's. Returns the verdict (`verdict` promote, reject, incomplete or
+    stopped; `stage` 1 to 3; `path` the route; `parts` the two readings; `era`; the top-level survival figures are part h's) with `human`
+    at stages 2 and 3 and `cost`."""
+    rule = dict(rule or PROMOTION_RULE_V5)
+    fe = _fight_exam()
+    paths = gate5_paths(loop.root)
+    sets = load_gate5(loop.root)
+    inc, inc_dir = loop.incumbent()
+    eng = engine_tag()
+    era = gate5_era(loop)
+    cfg = rule["config"]
+    out: dict = {"candidate": cand, "incumbent": inc, "config": cfg, "engine": eng, "rule": rule["name"], "era": era}
+    if not all(sets.values()):
+        return {**out, "verdict": "stopped", "why": "no v5 ruler in gate5/ (gym_loop.py gate5-set)"}
+    parts = rule["parts"]
+    cells = {p: gate5_cells(p, sets[p]) for p in parts}
+    games = {inc: paths["dir"] / f"games-{inc}.jsonl", cand: paths["dir"] / f"games-{cand}.jsonl"}
+    dirs = {inc: inc_dir, cand: cand_dir}
+    oks: dict[tuple[str, str], set] = {}
+    for p in parts:
+        for who in (inc, cand):
+            ok = ensure_identity(loop, who, dirs[who], games[who], paths[p], sets[p], eng, rule, procs, k, daemon, tag=cand, sub=p,
+                                 folder=paths["dir"])
+            if ok == "stopped":
+                return {**out, "verdict": "stopped", "why": "stopped"}
+            oks[(p, who)] = ok
+    stages = max(len(x["stage_draws"]) for x in parts.values())
+    for stage in range(1, stages + 1):
+        js = {p: era_js(rule, p, era, stage) for p in parts}
+        for p in parts:
+            for who in (inc, cand):
+                stopped = exam_play(loop, who, dirs[who], games[who], paths[p], sets[p], eng, oks[(p, who)], js[p][-1] + 1, rule, procs, k,
+                                    daemon, js=js[p])
+                if stopped:
+                    return {**out, "verdict": "stopped", "why": stopped}
+        idx, reads, short = {}, {}, []
+        for p in parts:
+            want = lambda j, s=frozenset(js[p]): j in s  # noqa: E731
+            ci = usable_index(exam_rows(games[cand], sets[p], cfg), eng, oks[(p, cand)], want)
+            ii = usable_index(exam_rows(games[inc], sets[p], cfg), eng, oks[(p, inc)], want)
+            idx[p] = (ci, ii)
+            reads[p] = gg.strat_read(ci, ii, cells[p], parts[p]["weights"])
+            if reads[p]["pairs"] < len(sets[p]) * len(js[p]):
+                short.append(f"part {p} {reads[p]['pairs']} of {len(sets[p]) * len(js[p])} pairs")
+        h = reads["h"]
+        out.update(stage=stage, draws={p: [js[p][0], js[p][-1]] for p in parts}, parts=reads, pairs=h["pairs"], starts=h["starts"],
+                   cand_wins=h["cand_wins"], inc_wins=h["inc_wins"], win_diff=h["win_diff"], win_se=h["win_se"], hp_diff=h["hp_diff"],
+                   hp_se=h["hp_se"], cand_rate=h["cand_rate"], inc_rate=h["inc_rate"])
+        if short:
+            out.update(verdict="incomplete", path=None, why="; ".join(short))
+            break
+        v = gg.v5_decide(reads, stage, rule)
+        out.update(verdict=v["verdict"], path=v["path"], why=v["why"], worse=v["worse"], routes=v["routes"])
+        out["cost"] = {p: cost_by_cell(idx[p][0].values(), cells[p]) for p in parts}
+        if stage >= 2:
+            try:
+                out["human"] = v5_human(fe, sets, idx, inc, cand, cfg, len(js["h"]), h)
+                loop.log(f"gate {cand}: {out['human']['line']}")
+            except Exception as error:  # noqa: BLE001 -- a report-only reading must never change or lose the verdict
+                out["human"] = f"error: {type(error).__name__}"
+                loop.log(f"gate {cand}: human bar: {type(error).__name__}: {error}")
+        loop.log(f"gate {cand}: stage {stage} (era {era}; part h draws {js['h'][0]}-{js['h'][-1]}, part a3 draws {js['a3'][0]}-{js['a3'][-1]}) "
+                 f"{v['verdict']}{' by route ' + v['path'] if v['path'] else ''}: " + "; ".join(_v5_part_line(p, reads[p]) for p in parts)
+                 + (f"; {v['why']}" if v.get("why") else ""))
+        if v["verdict"] != "continue":
+            break
+    return out
+
+
+def build_gate5(root: Path, *, seed: int | None = None, rebuild: bool = False, rule: dict | None = None) -> dict:
+    """Rule v5's ruler, written once to `gate5/` (returns its meta). Part h: human starts of Acts 1 and 2 from the loop's human start list
+    (`starts/human-starts.*`, the corpus's training fifths), only those with the human's result, whose run the loop never played and that the
+    fight exam's exclusion list does not hold (so none of the exam's 400), at most one start a run, `set.h_quota` a cell by the seeded hash.
+    Part a3: lane 5's Act 3 cells and quotas (`set.a3_*_quota`) drawn from the Act 3 start lists the same way (the exam's own Act 3 starts,
+    which the exclusion list holds, are left out; human openings whose run the practice never played first), or, with `set.act3_source`
+    "exam", the exam's own Act 3 set copied. The exam fifth: the start list was built without it, and the fixed hash rule is checked again
+    here (the ids file is not read). The ruler's runs and starts are added to `exam/exclude_runs.json` (the old file kept once as
+    `.pre-gate5.bak`) so the practice never draws them. An existing ruler is kept unless `rebuild` (its files then get a dated backup name)."""
+    import act3_starts as a3  # noqa: PLC0415 -- pure Python
+    import human_starts as hs  # noqa: PLC0415 -- pure Python; the corpus is not read here
+
+    rule = rule or PROMOTION_RULE_V5
+    st = rule["set"]
+    seed = int(st["seed"] if seed is None else seed)
+    root = Path(root)
+    fe = _fight_exam()
+    paths = gate5_paths(root)
+    if paths["meta"].exists() and not rebuild:
+        raise FileExistsError(f"{paths['meta']} exists: the ruler is fixed; --rebuild replaces it")
+    sd = root / "starts"
+    exam = fe.exam_paths(root / "exam")
+    played = fe.played_runs(root)
+    ex = pmix.read_exclusion(root)
+    # part h
+    lite = read_json(sd / f"{hs.STEM}.lite.json", []) or []
+    outcomes = (read_json(sd / hs.OUTCOME_FILE, {}) or {}).get("outcomes") or {}
+    if not lite or not outcomes:
+        raise FileNotFoundError(f"no human starts or no outcomes in {sd}")
+    left: Counter = Counter()
+    pool: dict[str, list[dict]] = defaultdict(list)
+    for s in lite:
+        if s["id"] not in outcomes:
+            left["no outcome in the sidecar"] += 1
+        elif {pmix.run_of(s["id"]), s.get("run"), s.get("seed")} & played:
+            left["its run was played by the loop"] += 1
+        elif pmix.excluded(s, ex):
+            left["on the exam's exclusion list"] += 1
+        else:
+            pool[fe.cell_of(s)].append(s)
+    taken: set = set()
+    chosen: list[dict] = []
+    rep_h: dict[str, dict] = {}
+    for c in sorted(st["h_quota"]):
+        q, took = int(st["h_quota"][c]), 0
+        for s in sorted(pool.get(c, []), key=lambda s: fe.order_key(seed, s["id"])):
+            if took >= q:
+                break
+            if s["run"] in taken:
+                continue
+            taken.add(s["run"])
+            took += 1
+            chosen.append({**s, "cell": c, "kind_cell": fe.kind_cell(s), "half": fe.half_of(s["id"]), "practised": 0, "clean": True, "stratum": "human"})
+        rep_h[c] = {"pool": len(pool.get(c, [])), "quota": q, "chosen": took, "short": took < q}
+    hs.assert_no_exam((s["run"] for s in chosen), frozenset())  # the fixed hash rule of D38 (the list itself was built without the fifth)
+    src = str(sd / f"{hs.STEM}.jsonl")
+    keys = ("cell", "kind_cell", "half", "practised", "clean", "stratum")
+    full_h = [{**load_start(src, s["id"]), **{k: s[k] for k in keys}, **outcomes[s["id"]]} for s in chosen]
+    # part a3
+    rep_a: dict = {}
+    if st.get("act3_source", "twin") == "exam":
+        ids = [s["id"] for s in (read_json(exam["act3_lite"], None) or [])]
+        full_a = [load_start(str(exam["act3_starts"]), i) for i in ids]
+        rep_a = {"source": "the exam's own Act 3 set", "starts": len(full_a)}
+    else:
+        h3 = read_json(sd / f"{a3.HUMAN_STEM}.lite.json", []) or []
+        o3 = read_json(sd / f"{a3.OWN_STEM}.lite.json", []) or []
+        out3 = (read_json(sd / a3.OUTCOME_FILE, {}) or {}).get("outcomes") or {}
+        if not h3 or not out3:
+            raise FileNotFoundError(f"no human Act 3 starts or no outcomes in {sd}")
+
+        def skip(r: dict, human: bool) -> str | None:
+            if human and r["id"] not in out3:
+                return "no outcome in the sidecar"
+            if pmix.excluded(r, ex):
+                return "on the exam's exclusion list"
+            if {pmix.run_of(r["id"]), r.get("run")} & played:
+                return "practised by the loop"
+            return None
+
+        taken3: set = set()
+        ch, rh = a3.pick_quota(h3, st["a3_human_quota"], seed=seed, taken=taken3, skip=lambda r: skip(r, True),
+                               prefer=lambda r: not r.get("loop_played"))
+        co, ro = a3.pick_quota(o3, st["a3_own_quota"], seed=seed, taken=taken3, skip=lambda r: skip(r, False)) if o3 else ([], {})
+        full_a = []
+        for stem, picked in ((a3.HUMAN_STEM, ch), (a3.OWN_STEM, co)):
+            src3 = str(sd / f"{stem}.jsonl")
+            for s in picked:
+                doc = load_start(src3, s["id"])
+                extra = {"cell": s["cell"], "kind_cell": fe.kind_cell(doc), "half": fe.half_of(s["id"]), "practised": 0 if s["clean"] else 1,
+                         "clean": s["clean"], "stratum": doc.get("stratum") or ("human" if stem == a3.HUMAN_STEM else "own")}
+                if stem == a3.HUMAN_STEM:
+                    extra.update(out3[s["id"]])
+                full_a.append({**doc, **extra})
+        rep_a = {"source": "lane 5's design, drawn again outside the exam", "human": rh, "own": ro}
+    if not full_h or not full_a:
+        raise ValueError(f"an empty part: h {len(full_h)}, a3 {len(full_a)}")
+    paths["dir"].mkdir(parents=True, exist_ok=True)
+    if rebuild:
+        tag = stamp().replace(":", "")
+        for f in list(paths["dir"].glob("starts-gate*")) + [paths["meta"]]:
+            if f.is_file():
+                f.rename(f.with_name(f.name + f".{tag}.bak"))
+    fe.write_stem_set(paths["dir"], GATE5_STEMS["h"], full_h)
+    fe.write_stem_set(paths["dir"], GATE5_STEMS["a3"], full_a)
+    # the practice never draws the ruler's starts or their runs
+    exf = exam["exclude"]
+    exd = read_json(exf, {}) or {}
+    backup = exf.with_name(exf.name + ".pre-gate5.bak")
+    if exf.exists() and not backup.exists():
+        backup.write_bytes(exf.read_bytes())
+    runs = sorted({str(s["run"]) for s in full_h + full_a if s.get("run")})
+    before = len(set(exd.get("run_seeds") or []))
+    exd["run_seeds"] = sorted(set(exd.get("run_seeds") or []) | set(runs))
+    exd["start_ids"] = sorted(set(exd.get("start_ids") or []) | {s["id"] for s in full_h + full_a})
+    exd["by_stratum"] = {**(exd.get("by_stratum") or {}), "gate5-h": len(full_h), "gate5-a3": len(full_a)}
+    exd["gate5"] = {"rule": rule["name"], "written": stamp(), "starts": len(full_h) + len(full_a), "runs": len(runs)}
+    write_json(exf, exd)
+    by_part = {"h": dict(sorted(Counter(s["cell"] for s in full_h).items())), "a3": dict(sorted(Counter(s["cell"] for s in full_a).items()))}
+    meta = {"rule": rule["name"], "written": stamp(), "seed": seed, "starts": {"h": len(full_h), "a3": len(full_a)}, "by_part": by_part,
+            "by_stratum_a3": dict(Counter(s.get("stratum") for s in full_a)), "report_h": rep_h, "report_a3": rep_a, "left_out_h": dict(left),
+            "short_cells": sorted(c for c, x in rep_h.items() if x["short"]) + sorted(
+                c for side in ("human", "own") for c, x in ((rep_a.get(side) or {}).items()) if isinstance(x, dict) and x.get("short")),
+            "played_runs": len(played), "weights": {p: dict(x["weights"]) for p, x in rule["parts"].items()},
+            "human_survived": {"h": sum(1 for s in full_h if s.get("human_survived")),
+                               "a3": sum(1 for s in full_a if s.get("stratum") == "human" and s.get("human_survived"))},
+            "exclusion": {"file": exf.name, "runs_added": len(set(exd["run_seeds"])) - before, "backup": backup.name},
+            "files_sha256": {f.name: sha256_file(f) for f in (paths["h"], paths["a3"])},
+            "note": "the exam's 400 human starts and its 414 Act 3 starts are not in this ruler; the corpus's exam fifth never is"}
+    write_json(paths["meta"], meta)
+    loop_log = Path(root) / "loop.log"
+    with open(loop_log, "a", encoding="utf-8") as fh:
+        fh.write(f"{stamp()} gate5-set: rule v5's ruler written: part h {len(full_h)} starts, part a3 {len(full_a)}; "
+                 f"{meta['exclusion']['runs_added']} runs added to the exam's exclusion list\n")
+    return meta
 
 
 # ---------------------------------------------------------------------------------------------------------- the human bar at the gate
@@ -1959,6 +2284,16 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
     loop.state["promotions"].append({"version": ver, "checkpoint": cand, "over": prev, "t": stamp()})
     loop.state["gate_pair"] = next_gate_pair(PROMOTION_RULE, loop.gate_pair())  # the next candidate meets it on a fresh pair
     loop.save()
+    if verdict.get("rule") == PROMOTION_RULE_V5["name"]:
+        # v5 plays its own ruler, not the board's starts (no board row); the next era's draws are fresh for the new incumbent
+        g5 = loop.state.setdefault("gate5", {"era": 0})
+        g5["era"] = int(verdict.get("era") if verdict.get("era") is not None else g5.get("era", 0)) + 1
+        g5.setdefault("eras", []).append({"era": g5["era"], "incumbent": ver, "t": stamp(), "over": prev, "route": verdict.get("path")})
+        loop.save()
+        loop.log(f"promoted {cand} as {ver} over {prev} by rule v5 (route {verdict.get('path')}, stage {verdict.get('stage')}): part h "
+                 f"{100 * (verdict.get('win_diff') or 0):+.2f} points, part a3 {100 * ((verdict.get('parts') or {}).get('a3', {}).get('win_diff') or 0):+.2f}; "
+                 f"era {g5['era']} begins: {ver} plays its bar on draws nobody has played; no fight-board row")
+        return ver
     if verdict.get("rule") == PROMOTION_RULE_V4["name"]:
         # v4 plays the exam, not the board's 200 starts: the candidate has no board games, so the board page gets no row for it here
         loop.log(f"promoted {cand} as {ver} over {prev} by rule v4 (stage {verdict.get('stage')}, {verdict.get('draws')} draws): "
@@ -2443,23 +2778,26 @@ class Daemon:
         return prefilter_pick(self.loop, prefilter_cfg(self.a))
 
     def gate(self, cand: str, cand_dir: Path) -> None:
+        v5 = active_rule(self.a) is PROMOTION_RULE_V5
         v4 = active_rule(self.a) is PROMOTION_RULE_V4
         self.status("gate", candidate=cand)
         with self._span("play", "gate"):
-            if v4:
+            if v5:
+                v = run_gate_v5(self.loop, cand, cand_dir, gate_procs(self.a), self.a.gate_k, daemon=self)
+            elif v4:
                 v = run_gate_v4(self.loop, cand, cand_dir, gate_procs(self.a), self.a.gate_k, daemon=self)
             else:
                 v = run_gate(self.loop, cand, cand_dir, self.a.player_config, gate_procs(self.a), self.a.gate_k, self.a.prior, daemon=self,
                              judge=self.a.judge or None)
         if v.get("verdict") == "stopped":
             return
-        if v.get("stage") in ((2, 3) if v4 else (2,)):
+        if v.get("stage") in ((2, 3) if v4 or v5 else (2,)):
             v = promotion_guard(self.loop, v, active_rule(self.a))
             if v.get("guard"):
                 self.loop.log(f"gate {cand}: {v['why']}")
         mode = getattr(self.a, "human_bar", "promotion")
-        if v4:
-            pass  # the human line is part of the v4 verdict (stages 2 and 3, from the exam games the verdict stands on); `--human-bar` is a no-op
+        if v4 or v5:
+            pass  # the human line is part of the v4 and v5 verdicts (stages 2 and 3, from the exam games the verdict stands on); `--human-bar` is a no-op
         elif v.get("stage") == 2 and ((mode == "on" and v.get("verdict") in ("promote", "reject")) or (mode == "promotion" and v.get("verdict") == "promote")):
             # the human line (D55 addendum 11): report-only, after the rule has spoken; a stage-1 reject never plays it, and in mode
             # `promotion` (D57 item 2) only a promotion does, once, on the CPU prior
@@ -2479,15 +2817,15 @@ class Daemon:
         self.loop.state["gated"][cand] = {k: v.get(k) for k in ("verdict", "stage", "why", "pairs", "cand_wins", "inc_wins",
                                                                 "win_diff", "win_se", "l0_diff", "p", "incumbent", "config",
                                                                 "stage1_js", "human", "path", "diff_lb", "pool_k", "pool_diff", "pool_p",
-                                                                "guard", "rule", "draws", "hp_diff", "act3") if k not in (
+                                                                "guard", "rule", "draws", "hp_diff", "act3", "era") if k not in (
                                                                     "human", "path", "diff_lb", "pool_k", "pool_diff", "pool_p", "guard",
-                                                                    "rule", "draws", "hp_diff", "act3") or k in v}
+                                                                    "rule", "draws", "hp_diff", "act3", "era") or k in v}
         self.loop.save()
         with open(self.loop.gates / "verdicts.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"t": stamp(), **{k: v.get(k) for k in v if k not in ("cand_file", "inc_file")}}) + "\n")
         if v.get("verdict") == "promote":
             ver = promote(self.loop, cand, cand_dir, v, self.a.board)
-            if "human" in v:
+            if "human" in v and not v5:  # a v5 incumbent plays its own era's draws; nothing is adopted
                 try:
                     human_bar_adopt(self.loop, cand, ver)
                 except OSError as error:
@@ -2636,11 +2974,13 @@ class Daemon:
         rule = active_rule(self.a)
         self.loop.log(f"daemon: state reloaded: incumbent {self.loop.state['incumbent']}, {len(self.loop.state['gated'])} checkpoints "
                       f"with a verdict, segment {self.loop.state['segment']}; {rule['name']}: "
+                      + (v5_rule_line(self.loop, rule) if rule is PROMOTION_RULE_V5 else "")
                       + (f"the exam's human stratum under {rule['config']} ({rule['prior']} prior), stages of {list(rule['stage_draws'])} draws; "
                          f"promote at {rule['promote']['points']:+g} points with the 90% lower bound above 0 and HP lost not worse by more than "
                          f"{rule['promote']['hp_worse']:g}; Act 3 guard from {rule['act3_guard']['after_h']:g} h after the first Act 3 practice segment"
                          + (f"; first candidate {self.a.first_candidate}" if getattr(self.a, "first_candidate", "") else "")
-                         if rule is PROMOTION_RULE_V4 else f"stage 1 plays j {list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}"))
+                         if rule is PROMOTION_RULE_V4 else "" if rule is PROMOTION_RULE_V5
+                         else f"stage 1 plays j {list(stage1_js(PROMOTION_RULE, self.loop.gate_pair()))}"))
         pcfg = prefilter_cfg(self.a)
         self.loop.log(f"daemon: gate pre-filter {PREFILTER['name']}: mode {pcfg['mode']}, margin {pcfg['margin']} nats, floor "
                       f"{pcfg['floor_h']} h, on {PREFILTER['metric']}")
@@ -2648,7 +2988,10 @@ class Daemon:
             self.loop.log(f"daemon: gate cadence: a checkpoint is offered to the gate {self.a.gate_every_min:g} minutes after the last one gated "
                           f"(the trainer writes one every {self.a.checkpoint_min:g} minutes, passes capped at {self.a.max_epochs:g} a row)")
         mode = getattr(self.a, "human_bar", "promotion")
-        if rule is PROMOTION_RULE_V4:
+        if rule is PROMOTION_RULE_V5:
+            self.loop.log("daemon: human bar: under rule v5 every stage-2 or stage-3 verdict carries the human line from its own ruler's human starts "
+                          f"(report-only; a new series beside the exam's); `--human-bar {mode}` is a no-op")
+        elif rule is PROMOTION_RULE_V4:
             self.loop.log("daemon: human bar: under rule v4 every stage-2 or stage-3 verdict carries the human line from its own exam games "
                           f"(report-only); `--human-bar {mode}` is a no-op")
         else:
@@ -2793,7 +3136,7 @@ def cmd_status(a) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("starts", "weights", "run", "gate", "stop", "status", "import-games"):
+    for name in ("starts", "weights", "run", "gate", "stop", "status", "import-games", "gate5-set"):
         p = sub.add_parser(name)
         p.add_argument("--root", default=str(DEFAULT_ROOT))
         p.add_argument("--procs", type=int, default=6,
@@ -2811,9 +3154,10 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--player-config", default="judge-v0",
                            help="the search config the gate scores: the judge's (D41), a gym arm or a search_configs name")
             p.add_argument("--gate-k", type=int, default=32)
-            p.add_argument("--rule", choices=("v4", "v3"), default="v4",
-                           help="the promotion rule (D57 addendum 9): v4, the fight exam's human stratum under the player's own search "
-                                "(the default); v3, the board's 200 Act 1 boss starts under the judge-equipped search (the undo)")
+            p.add_argument("--rule", choices=("v5", "v4", "v3"), default="v5",
+                           help="the promotion rule: v5 (D68 addendum 5 decision 4, the default), its own ruler of Acts 1-2 human starts outside "
+                                "the exam and the Act 3 bosses, two routes, fresh draws per era (`gate5-set` builds the ruler); v4 (D57 addendum 9), "
+                                "the fight exam's human stratum; v3, the board's 200 Act 1 boss starts under the judge-equipped search")
             p.add_argument("--judge", default=str(REF / "agent" / "judge" / "v0" / "judge.pt"),
                            help="the judge checkpoint a judge config's leaves read ('' for a config without one)")
         if name == "gate":
@@ -2824,6 +3168,9 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--provenance", required=True, help="written into every added row")
         if name == "stop":
             p.add_argument("--wait-s", type=float, default=300.0)
+        if name == "gate5-set":
+            p.add_argument("--seed", type=int, default=None, help="the draw's seed (the rule's `set.seed` by default)")
+            p.add_argument("--rebuild", action="store_true", help="replace an existing gate5/ (its files get a dated backup name)")
         if name == "run":
             p.add_argument("--teacher", default="x16", help="the generation's search: the stronger search grades the fights")
             p.add_argument("--k", type=int, default=2, help="fights a lockstep process holds during generation (few: a stop loses them)")
@@ -2923,13 +3270,19 @@ def main(argv=None) -> int:
     if a.cmd == "gate":
         loop = Loop(a.root)
         d = Path(a.candidate)
-        if active_rule(a) is PROMOTION_RULE_V4:
+        if active_rule(a) is PROMOTION_RULE_V5:
+            print(json.dumps(run_gate_v5(loop, d.name, d, gate_procs(a), a.gate_k), indent=1))
+        elif active_rule(a) is PROMOTION_RULE_V4:
             print(json.dumps(run_gate_v4(loop, d.name, d, gate_procs(a), a.gate_k), indent=1))
         else:
             print(json.dumps(run_gate(loop, d.name, d, a.player_config, gate_procs(a), a.gate_k, a.prior, judge=a.judge or None), indent=1))
         return 0
     if a.cmd == "import-games":
         print(import_games(a.root, a.into, Path(a.games), a.provenance), "rows added")
+        return 0
+    if a.cmd == "gate5-set":
+        meta = build_gate5(Path(a.root), seed=a.seed, rebuild=a.rebuild)
+        print(json.dumps({k: meta[k] for k in ("rule", "written", "seed", "starts", "by_part", "short_cells", "exclusion")}, indent=1))
         return 0
     if a.cmd == "stop":
         return cmd_stop(a)

@@ -389,9 +389,12 @@ class GenerationOffTests(unittest.TestCase):
             self.assertEqual(rg.call_args.args[4], 3)
             gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "2", "--rule", "v3"])
             self.assertEqual(rg.call_args.args[4], 2)
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "run_gate_v4", return_value={"verdict": "x"}) as r4,                 contextlib.redirect_stdout(io.StringIO()):  # rule v4 is the default: its gate plays with the gate procs too
-            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3"])
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "run_gate_v4", return_value={"verdict": "x"}) as r4,                 contextlib.redirect_stdout(io.StringIO()):  # rule v4's gate plays with the gate procs too
+            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3", "--rule", "v4"])
             self.assertEqual(r4.call_args.args[3], 3)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gl, "run_gate_v5", return_value={"verdict": "x"}) as r5,                 contextlib.redirect_stdout(io.StringIO()):  # rule v5 is the default (lane 14): its gate plays with the gate procs too
+            gl.main(["gate", "--root", tmp, "--candidate", str(Path(tmp) / "c0001"), "--procs", "0", "--gate-procs", "3"])
+            self.assertEqual(r5.call_args.args[3], 3)
 
 
 class BufferWithoutGenerationTests(unittest.TestCase):
