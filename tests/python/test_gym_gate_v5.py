@@ -191,6 +191,7 @@ class Gate(unittest.TestCase):
         level = lambda s, j: s in H_IDS[:10] or s in A_IDS[:6]  # noqa: E731
         self.outcome = {"v3": level, "cand": level}
         self.replay_same = True
+        self.faults: set = set()
         for p in (mock.patch.object(gl, "engine_tag", lambda: "E2"), mock.patch.object(gl, "play_tasks", self.fake_play)):
             p.start()
             self.addCleanup(p.stop)
@@ -203,6 +204,10 @@ class Gate(unittest.TestCase):
                 who = info["player"]
                 won = self.outcome[who if who in self.outcome else "cand"](s, j)
                 moves = f"{s}-{j}" if self.replay_same or not what.startswith("identity") else "other"
+                if (s, j) in self.faults:  # what fight_gym.capped_row writes for an engine fault: no engine, config or start HP
+                    fh.write(json.dumps({"_task": ["a3-v1", s, j], "capped": True, "cap_reason": "error: EngineFault: x", "seconds": 1.0,
+                                         "arm": "a3-v1", "start": s, "j": j, "cat": "act3-boss", "won": False, "end_hp": 0}) + "\n")
+                    continue
                 fh.write(json.dumps({**row(s, j, won, eng="E2", moves=moves), "player": who}) + "\n")
         return None
 
@@ -276,6 +281,25 @@ class Gate(unittest.TestCase):
         self.replay_same = False
         self.gate()
         self.assertTrue(any(w == "gate-v3" for w, *_ in self.played))
+
+    def test_a_capped_game_is_a_loss_of_this_engine_and_is_not_played_again(self):
+        # the first live v5 gate (2026-11-21) met two engine faults at the Act 3 bosses: the bare capped rows were left out of the pairing and
+        # the stage read incomplete; now they are stamped as losses of this engine
+        self.faults = {("a7", 1), ("a7", 3)}
+        self.outcome["cand"] = lambda s, j: s in H_IDS[:16] or s in A_IDS[:6]
+        v = self.gate()
+        self.assertEqual((v["verdict"], v["path"]), ("promote", "F"))
+        self.assertEqual(v["parts"]["a3"]["pairs"], 12 * 4)
+        rows = [json.loads(x) for x in (gl.gate5_paths(self.root)["dir"] / "games-cand.jsonl").read_text(encoding="utf-8").splitlines()]
+        stamped = [r for r in rows if r.get("stamped")]
+        self.assertEqual(sorted((r["start"], r["j"]) for r in stamped), [("a7", 1), ("a7", 3)])
+        self.assertTrue(all(r["engine"] == "E2" and r["config"] == "a3-v1" and not r["won"] and r["start_hp"] == 50 and r["hp_lost"] == 50
+                            for r in stamped))
+        self.assertEqual(gg.hp_lost(stamped[0]), 50.0)  # the whole start HP, as a loss
+        n = len(self.played)
+        self.assertEqual(self.gate()["verdict"], "promote")
+        self.assertEqual(len(self.played), n)  # nothing is played again
+        self.assertIn("counted as lost", (self.root / "loop.log").read_text(encoding="utf-8"))
 
     def test_no_ruler_stops_the_gate(self):
         for f in gl.gate5_paths(self.root)["dir"].glob("*.lite.json"):

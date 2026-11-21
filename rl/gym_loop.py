@@ -1499,7 +1499,40 @@ def exam_play(loop: Loop, who: str, who_dir: Path, games: Path, starts_file: Pat
     if not tasks:
         return None
     loop.log(f"gate {who}: {len(tasks)} exam games on {len(lite)} starts under {cfg} (draws {js[0] if js else 0}-{js[-1] if js else draws - 1})")
-    return play_tasks(loop, tasks, games, who_dir, procs, k, rule["prior"], f"gate-{who}", steps="fight_exam:exam_game_steps", daemon=daemon)
+    stopped = play_tasks(loop, tasks, games, who_dir, procs, k, rule["prior"], f"gate-{who}", steps="fight_exam:exam_game_steps", daemon=daemon)
+    n = stamp_capped(games, tasks, lite, eng, cfg)
+    if n:
+        loop.log(f"gate {who}: {n} capped game{'s' if n > 1 else ''} (an engine fault, a hang or a dead worker) counted as lost on engine {eng}")
+    return stopped
+
+
+def stamp_capped(games: Path, tasks: list, lite: dict, eng: str, cfg: str) -> int:
+    """A game the lockstep's guard capped (an engine fault, a hang past the deadline, a dead worker) is written without the game's own fields:
+    no engine, no config, no start HP. It is a lost game of this engine (`capped: lost`): append a copy with those fields (start HP from the
+    start's record, end HP 0, `stamped`) so the pairing and the HP reading count it and the game is not played again at every gate (the last
+    row of a key wins; the bare row stays). Only the keys of `tasks` that have no row on an engine are stamped. Returns how many."""
+    want = {(t[1], int(t[2])) for t in tasks}
+    rows = fg.read_jsonl(games)
+    have = {(r["start"], int(r["j"])) for r in rows if r.get("engine") and "start" in r and "j" in r}
+    add = []
+    for r in rows:
+        if "start" not in r or "j" not in r or r.get("engine") or not r.get("capped"):
+            continue
+        key = (r["start"], int(r["j"]))
+        if key not in want or key in have:
+            continue
+        s = lite.get(key[0]) or {}
+        hp0 = int(s.get("hp") or 0)
+        add.append({**r, "engine": eng, "config": cfg, "won": False, "capped": True, "start_hp": hp0, "end_hp": 0, "hp_lost": hp0,
+                    "cell": r.get("cell") or s.get("cell"), "stratum": r.get("stratum") or s.get("stratum"),
+                    "stamped": "a capped row without the game's fields: a loss on this engine"})
+        have.add(key)
+    if add:
+        end = games.read_bytes()[-1:] if games.is_file() else b"\n"
+        with open(games, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("" if end in (b"\n", b"") else "\n")
+            fh.writelines(json.dumps(x) + "\n" for x in add)
+    return len(add)
 
 
 def cost_by_cell(rows, cells: dict[str, str]) -> dict:
@@ -1829,6 +1862,7 @@ def run_gate_v5(loop: Loop, cand: str, cand_dir: Path, procs: int, k: int, daemo
                    hp_se=h["hp_se"], cand_rate=h["cand_rate"], inc_rate=h["inc_rate"])
         if short:
             out.update(verdict="incomplete", path=None, why="; ".join(short))
+            loop.log(f"gate {cand}: stage {stage} (era {era}) incomplete: {out['why']}")
             break
         v = gg.v5_decide(reads, stage, rule)
         out.update(verdict=v["verdict"], path=v["path"], why=v["why"], worse=v["worse"], routes=v["routes"])
