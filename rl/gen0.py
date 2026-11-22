@@ -45,6 +45,16 @@ MIN_GAIN_HELP = ("keep rules v2 and v3 (D68 addendum 3): route A's smallest deep
                  "The judge's bound check (the one-sided 0.005 lower bound above 0) is not changed. A value other than 1.0 is recorded in the verdict "
                  "(keep_v2.min_gain), in the decision (decision.min_gain) and in the ledger's guard cell (`min gain <value>` after the rule's name); "
                  "an error under v1, which has no such minimum")  # train, promote and rejudge
+ROUTE_S_HELP = ("route S, the boss-door route for fight-only swaps (keep rule v3; D66 as amended by D68 addendum 6 outcome 4; docs/rl/KEEP_TEST_V3.md): "
+                "auto: a candidate whose agent.json says built.swap: fight is read by S1, the arrival exam on the champion's own first-Act-3-boss "
+                "arrivals, before any arm is played; when S1 holds the whole-run judgement is S2 (looks refuse only, no futility stop, no early promotion, "
+                "no extension) and the decision is route S's; when it does not, v3 decides as it always did. off (the default): v3 as it was")
+S1_FILE_HELP = ("rejudge under --route-s auto: an arrival exam's results.json (rl/act3_starts.py arrival-exam; judge-design/S1-v5.sh writes one), "
+                "checked against the champion's ruler hash and the two fight networks; a mismatch is not applied and the reason is recorded. "
+                "Without it the candidate's own s1.json is read, else v3 decides")
+COMPLETE_BLOCK_HELP = ("rejudge under --route-s auto with S1 holding on a block the funnel stopped early: play the seeds of the block that have no row "
+                       "(the funnel's own resume keeps the stored rows) and judge all of them under S2; plays games (the arms are played with --procs and "
+                       "the prior-server flags), never a dry run")
 POOL_BLOCK_HELP = ("keep rule v3: pool this block's finished arms (the candidate's and the base's, arms/<block>-<config>) with the judged block's; "
                    "route A is judged on all the pairs; repeatable")
 FUTILITY_HELP = ("with --sequential: stop the block as rejected (rule futility@<seeds>) at a look from --futility-min-seeds on when no route's 95% upper bound "
@@ -849,6 +859,11 @@ def train_cmd(a: argparse.Namespace) -> int:
         print(f"--min-gain {min_gain:g} is the keep rules' (v2, v3) but the rule judging is {gen_loop.keep_rule_of(keep_rule)}: nothing trained or judged; "
               "the marker stays", file=sys.stderr)
         return 2
+    route_s = gen_loop.route_s_of(getattr(a, "route_s", None))
+    if route_s == "auto" and a.promote and gen_loop.keep_rule_of(keep_rule) != "v3":
+        print(f"--route-s auto is the keep rule v3's but the rule judging is {gen_loop.keep_rule_of(keep_rule)}: nothing trained or judged; the marker stays",
+              file=sys.stderr)
+        return 2
     cand_gen = gen + 1 if target is None else target
     built = gen_loop.built_candidate(Path(a.agent_root), cand_gen, retrain, attempt, tag)  # `gen0.py build` assembled it: judged as it is, never trained over
     recipe = gen_loop.candidate_recipe(gen_loop.load_agent(built)) if built is not None else ""  # attempts are counted per recipe: chooser, stakes schedule, hold
@@ -902,7 +917,8 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                    min_gain=min_gain,  # None: the child's default, +1.0
                                                    futility=False if getattr(a, "no_futility", False) else None,
                                                    futility_min_seeds=getattr(a, "futility_min_seeds", None),
-                                                   screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool)
+                                                   screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool,
+                                                   **({"route_s": route_s} if route_s == "auto" else {}))
 
         rc = play(seeds_file)
         # The keep rule v3 extends a candidate whose deep_f gain is +1.0 per 100 or more but whose 0.005 bound is not above 0 (D66): the
@@ -1112,7 +1128,16 @@ def promote_cmd(a: argparse.Namespace) -> int:
     import prior_launch  # noqa: PLC0415
 
     opts = prior_launch.ServerOpts.from_args(a)  # the arms play on the CPU path unless --prior-server says otherwise
-    doc = gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
+    try:
+        doc = _promote_doc(a, opts, gen_loop)
+    except gen_loop.S1Blocked as why:  # route S's first stage was stopped or blocked: nothing is lost, the job exits non-zero and the runner tries it again
+        print(f"route S: S1 stopped ({why}); the work on disk is kept, run the judgement again to resume", file=sys.stderr)
+        return 3
+    return promote_report(doc)
+
+
+def _promote_doc(a: argparse.Namespace, opts, gen_loop) -> dict:
+    return gen_loop.promote(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            procs=a.procs, config=a.config, ascension=a.ascension, lab=Path(a.lab) if a.lab else None,
                            lab_runs=[Path(x) for x in a.lab_runs] if a.lab_runs else None,
                            review_guard=True if a.review_guard else None, sequential=bool(a.sequential),
@@ -1120,7 +1145,11 @@ def promote_cmd(a: argparse.Namespace) -> int:
                            keep_rule_why=getattr(a, "keep_rule_why", None), min_gain=min_gain_flag(a),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
                            screen=False if getattr(a, "no_screen", False) else None, pool_blocks=list(getattr(a, "pool_block", None) or ()),
+                           route_s=getattr(a, "route_s", None),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
+
+
+def promote_report(doc: dict) -> int:
     out = {k: doc.get(k) for k in ("decision_text", "floor", "boss_kill", "wins")}  # (a screen's rejection played no arm: no figures)
     if "human_bar" in doc:  # the keep test v2's report-only line on the fight exam's human stratum
         out["human_bar"] = doc["human_bar"]["line"]
@@ -1131,13 +1160,23 @@ def promote_cmd(a: argparse.Namespace) -> int:
 
 
 def rejudge_cmd(a: argparse.Namespace) -> int:
+    if getattr(a, "lib", None):
+        os.environ["STS2_LIB_PATH"] = a.lib
     _setup()
     import gen_loop  # noqa: PLC0415
 
+    opts = None  # the arms of a completion (--complete-block) play on the CPU path unless --prior-server says otherwise
+    if hasattr(a, "prior_server"):
+        import prior_launch  # noqa: PLC0415
+
+        opts = prior_launch.ServerOpts.from_args(a)
     doc = gen_loop.rejudge(Path(a.cand), Path(a.base) if a.base else None, Path(a.seeds_file), agent_root=Path(a.agent_root),
                            config=a.config, note=a.note, lab=Path(a.lab) if a.lab else None,
                            review_guard=True if a.review_guard else None, keep_rule=getattr(a, "keep_rule", None), out=Path(a.out) if getattr(a, "out", None) else None,
-                           pool_blocks=list(getattr(a, "pool_block", None) or ()), min_gain=min_gain_flag(a))
+                           pool_blocks=list(getattr(a, "pool_block", None) or ()), min_gain=min_gain_flag(a),
+                           **({"route_s": a.route_s, "s1_file": a.s1, "complete": bool(a.complete_block), "procs": a.procs, "ascension": a.ascension}
+                              if getattr(a, "route_s", "off") != "off" else {}),
+                           **({"server_opts": opts} if opts is not None and opts.mode != "off" else {}))
     out = {k: doc[k] for k in ("decision_text", "n_seeds", "floor", "boss_kill", "wins", "decision")}
     if "keep_v2" in doc:  # the keep test v2 (or v3): the route, the frontier and the headline figures beside the usual ones
         k2 = doc["keep_v2"]
@@ -1146,6 +1185,14 @@ def rejudge_cmd(a: argparse.Namespace) -> int:
                           "drift": k2["drift"]["verdict"], "act1_review": k2["act1_review"]["fires"]}
         if "extend" in k2:  # the keep rule v3
             out["keep_v2"].update({"extend": k2["extend"], "extended": k2["extended"], "floor_collapse": k2["collapse"]})
+        if "route_s" in k2:  # route S: what decided, S1's reading with its SE, S2's bounds
+            rs = k2["route_s"]
+            out["route_s"] = {"decided_by": rs["decided_by"], "why": rs["why"], "s1": {k: rs["s1"].get(k) for k in ("applied", "holds", "mean", "se", "lower", "starts", "reasons")},
+                              "s2": rs["s2"], "state_shift": rs["state_shift"]}
+    if "base_reuse" in doc:  # the check on the champion's stored arm
+        out["base_reuse"] = {k: doc["base_reuse"].get(k) for k in ("action", "checked", "same", "why")}
+    if "completed" in doc["rejudged"]:  # a block completed under S2
+        out["completed"] = doc["rejudged"]["completed"]["text"]
     if "pooled" in doc:  # the blocks a v3 judgement pooled, each with its pairs
         out["pooled"] = doc["pooled"]
     if "human_bar" in doc:  # report-only: the judged player's fight network against the human on the fight exam's human stratum
@@ -1459,6 +1506,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     t.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     t.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
+    t.add_argument("--route-s", choices=("auto", "off"), default="off", help=ROUTE_S_HELP)
     t.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     t.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
     t.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
@@ -1574,6 +1622,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--sequential", action="store_true", help=SEQUENTIAL_HELP)
     pr.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     pr.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
+    pr.add_argument("--route-s", choices=("auto", "off"), default="off", help=ROUTE_S_HELP)
     pr.add_argument("--keep-rule-why", default=None, help="the train job's reason for the rule it chose between the marker's and the lab's "
                     "(jobs.choose_keep_rule): written to promotion.json (keep_rule_choice) and the end of the ledger row's guard cell")
     pr.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP + " (the keep rule v3's second look at an extended candidate)")
@@ -1594,6 +1643,13 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--review-guard", action="store_true", help=REVIEW_GUARD_HELP)
     rj.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     rj.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
+    rj.add_argument("--route-s", choices=("auto", "off"), default="off", help=ROUTE_S_HELP)
+    rj.add_argument("--s1", default=None, help=S1_FILE_HELP)
+    rj.add_argument("--complete-block", action="store_true", help=COMPLETE_BLOCK_HELP)
+    rj.add_argument("--procs", type=int, default=16, help="with --complete-block: processes of the arms played")
+    rj.add_argument("--ascension", type=int, default=10, help="with --complete-block: the arms' ascension")
+    rj.add_argument("--lib", help="with --complete-block: the emulator library folder")
+    add_prior_server_flags(rj)
     rj.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP)
     rj.add_argument("--out", help="a dry run: write promotion.json, a copy of promotions.tsv with the new row and (on a promotion) current.json "
                     "to this folder instead of the agent folder, which is only read; refused together with --lab")

@@ -2547,7 +2547,7 @@ def pooled_record(main: str, main_pairs: int, main_rows: tuple[list[dict], list[
 def keep_v2_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dict[str, str]], *, cand_gen: int, cand_sha: str,
                     block: str, frontier_info: dict[str, Any], boot: int = BOOT_B, apply_cap: bool = True, head_sha: str = "",
                     recipe: str = "", rule: str = "v2", pooled: Sequence[str] = (), final: bool = True,
-                    min_gain: float | None = None) -> dict[str, Any]:
+                    min_gain: float | None = None, s1: Mapping[str, Any] | None = None, fight_swap: bool = True) -> dict[str, Any]:
     """The keep test v2 (`keep_v2.judge`) on two arms at the frontier `frontier_info` (`incumbent_frontier`), with the lineage, the drift
     history and the attempt count from the promotions.tsv `rows` written before this judgement (this block's own rows do not count),
     exactly as `review_guard_verdict` reads them. The attempt is recorded against the old cap and refuses nothing (D65 addendum 2). With
@@ -2556,13 +2556,21 @@ def keep_v2_verdict(cand_rows: list[dict], base_rows: list[dict], rows: list[dic
     `rule` "v3" is the keep rule v3 (D66, `keep_v2.judge_v3`): `pooled` names the blocks whose arms are pooled with `block`'s (they are left out of
     the history as `block` is), the candidate counts as extended already when the ledger says so or a block is pooled (`extended_before`), and
     `final` says every seed of the block was played (only a final judgement extends). `min_gain` is route A's smallest deep_f gain per 100 runs
-    (None: `keep_v2.MIN_GAIN`); the verdict records it (`min_gain`, `routes.A.min_gain`)."""
+    (None: `keep_v2.MIN_GAIN`); the verdict records it (`min_gain`, `routes.A.min_gain`).
+
+    `s1` (v3 only; route S, D68 addendum 6 outcome 4) is the arrival exam's reading for this pair (`keep_v2.s1_reading`, checked against the pair's ruler
+    hash, candidate and champion) and `fight_swap` says the candidate is a fight-only swap: the verdict is then `keep_v2.judge_v3`'s with route S (`route_s`);
+    with no reading it is exactly as it was."""
     k2 = keep_v2_module()
     left_out = {block, *pooled}
     history = [r for r in rows if r.get("seed_block") not in left_out]
     prior = attempts_before(rows, cand_gen, cand_sha, head_sha, recipe)
     cap = k2.pg.ATTEMPT_CAP if apply_cap else max(k2.pg.ATTEMPT_CAP, prior + 1)  # a cap the attempt cannot exceed would not have refused it
     extra = {"rule": "v3", "extended": bool(pooled) or extended_before(rows, cand_sha, head_sha, recipe, block), "final": final} if rule == "v3" else {}
+    if s1 is not None:
+        if rule != "v3":
+            raise ValueError("route S is the keep rule v3's (--keep-rule v3)")
+        extra.update(s1=s1, fight_swap=fight_swap)
     verdict = k2.judge(cand_rows, base_rows, frontier=int(frontier_info["index"]), frontier_info=frontier_info, lineage=lineage_blocks(history),
                        previous_flagged=previous_drift_flagged(history), prior_attempts=prior, cap=cap, boot=boot,
                        min_gain=k2.MIN_GAIN if min_gain is None else k2.check_min_gain(min_gain), **extra)
@@ -2780,7 +2788,7 @@ def futility_check(floors: Sequence[float], deep_diffs: Sequence[float] | None, 
 def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list[dict]]], judge: Callable[[list[dict], list[dict]], dict],
            *, smoke: int = SEQ_SMOKE, batch: int = SEQ_BATCH, keep_rule: str = "v1", frontier: int = 0, futility: int | None = None,
            frontier_name: str = "deep_f", say: Callable[[str], None] | None = None, prefix: tuple[list[dict], list[dict]] | None = None,
-           extend_possible: bool = False, min_gain: float | None = None) -> dict[str, Any]:
+           extend_possible: bool = False, min_gain: float | None = None, route_s: bool = False) -> dict[str, Any]:
     """Walk the looks of `seeds` (see `seq_call` for the rule). `rows_at(n)` gives both arms' rows with at least the first n seeds (it
     plays them, or reads recorded rows: a replay is the same walk); `judge(cand_rows, base_rows)` is today's decision on rows
     (`compare_arms` with the guard), asked only at an eligible look. Returns `looks` (one dict per look reached: `seq_call`'s
@@ -2796,10 +2804,18 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
     available) lets the futility stop ask route A for the gain that earns an extension alone (`keep_v2.futility_routes`). `min_gain` (the keep rules'
     route A, None: `keep_v2.MIN_GAIN`) is the smallest gain every look, the refusal of a dead route A and the futility stop ask for.
 
+    With `route_s` (S2 of route S, the keep rule v3 after S1 held: D68 addendum 6 outcome 4) the looks refuse only (`keep_v2.seq_call_v3(route_s=True)`:
+    from 500 pairs on, deep_f's 99% upper bound below 0 or a floor collapse): no look is ever eligible to promote early, there is no futility stop
+    (`futility` is not asked) and the last look is `judge`'s, S2's final bound. `route_s` needs the keep rule v3.
+
     With `futility` (a number of paired seeds; None: off) a look at that many seeds or more that would play on ("continue") also asks
     `futility_check`: when no route's 95% upper bound reaches the gain it needs to promote on the whole block, the walk stops with action
     "futility" (`stop["rule"]` is `futility@<seeds>`) and says which bounds fell short through `say`. Refusals and early promotions come
     first and are as they were; the last look is never a futility look."""
+    if route_s and keep_rule != "v3":
+        raise ValueError("route S is the keep rule v3's (keep_rule='v3')")
+    if route_s:
+        futility = None  # S2 has no futility stop
     seeds = list(seeds)
     looks = seq_looks(len(seeds), smoke, batch)
     log: list[dict[str, Any]] = []
@@ -2826,7 +2842,7 @@ def funnel(seeds: Sequence[str], rows_at: Callable[[int], tuple[list[dict], list
             k2 = keep_v2_module()
             deep_diffs = [100.0 * (k2.deep(c[s], frontier) - k2.deep(b[s], frontier)) for s in paired]
             call = k2.seq_call(floors, deep_diffs, j, looks, **({"rule": "v3"} if keep_rule == "v3" else {}),
-                               **({} if min_gain is None else {"min_gain": min_gain}))
+                               **({} if min_gain is None else {"min_gain": min_gain}), **({"route_s": True} if route_s else {}))
         else:
             call = seq_call(floors, j, looks)
         smoke_crash = None
@@ -3006,14 +3022,16 @@ def known_seed_sets(seed_dir: Path, lab_runs: Path | list[Path] | None, e_name: 
 
 
 def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: int, ascension: int = 10,
-            server_opts=None, resume: bool = False) -> list[dict]:
+            server_opts=None, resume: bool = False, start_ix: int = 0) -> list[dict]:
     """Play the seeds with `agent`, or reuse the arm if the same seeds and config were already played there. The arm uses a
     prior server only when `server_opts` (a `prior_launch.ServerOpts`) says so; the promotion arms default to the CPU path.
 
     With `resume` (the funnel's looks: an arm grows from a first part of the block to the whole of it) the seeds asked for are a
     part of what the folder may hold: a finished arm of the same agent with a row for every seed asked is reused (its rows for those
     seeds returned), and otherwise the arm runs into the same folder keeping the rows it has, so only the other seeds are played.
-    summary.json then covers every row, with the wall time summed over the looks and the timed-out seeds of all of them."""
+    summary.json then covers every row, with the wall time summed over the looks and the timed-out seeds of all of them.
+    `start_ix` is the index of the first seed in its block (the agent's random numbers are [agent seed, index], so a run of seeds taken from the middle of a
+    block keeps its place): 0 for a block played from its start, as always."""
     import gen0  # noqa: PLC0415
 
     arm_dir = Path(arm_dir)
@@ -3031,6 +3049,8 @@ def run_arm(seeds: list[str], arm_dir: Path, agent: Agent, config: str, procs: i
                 return [r for r in rows if r["seed"] in want] if resume else rows
             carry = old
     kw = {"resume": True} if resume else {}  # a plain arm is played as it always was
+    if start_ix:
+        kw["start_ix"] = int(start_ix)
     if server_opts is not None and server_opts.mode != "off":
         gen0.run_block_served(seeds, config, procs, arm_dir, opts=server_opts, ascension=ascension, agent=agent, **kw)
     else:
@@ -3114,12 +3134,278 @@ def screen_rejection(cand: Path, cand_agent: Agent, base_agent: Agent, screen_do
     return doc
 
 
+# ------------------------------------------------------------------ route S (D68 addendum 6 outcome 4): the S1 stage and the base-arm reuse check
+#
+# Route S (docs/rl/KEEP_TEST_V3.md "Route S") judges a fight-only swap where the fight brain acts. S1 is the arrival exam (`rl/act3_starts.py`): the
+# candidate's fight network against the champion's from the champion's own first-Act-3-boss arrivals, run as the first stage of `promote` under the lab's
+# train job; S2 is the funnel over the whole-run pairs with its looks refusing only (`funnel(route_s=True)`). The flag is `--route-s {auto,off}`, off by default.
+
+ROUTE_S_MODES = ("auto", "off")
+FIGHT_SWAP = "fight"  # `built.swap` in the agent.json `rl/gym_wiring.py` writes for a candidate that is the champion with only its fight network replaced
+S1_FILE = "s1.json"  # the candidate's S1 reading, beside its promotion.json
+S1_EXAM_DIR = "s1"  # the exam's report.txt and results.json for the candidate (a folder of the candidate's)
+S1_LEDGER_FILE = "s1-ledger.json"  # beside the ruler: the tests played against it, so no test's draws are used twice
+S1_LEDGER_RULE = "s1-ledger-v1"
+S1_PROCS = 12  # processes of the ruler's replays and of the exam
+LAB_TRAIN_TAG = "lab-train"  # the QUIET.lock tag the lab's runner holds while the train job runs (tools/lab/runner.py TRAIN_TAG): the exam is told to ignore it
+BASE_REUSE_SEEDS = 20  # seeds of the champion's stored arm replayed before S2 may reuse the arm
+OUTCOME_FIELDS = ("ix", "win", "floor", "end", "crash", "lost", "nodes", "cards", "rests", "boss_damage_acts")  # a replay is the same when these rows are
+
+
+class S1Blocked(RuntimeError):
+    """The S1 stage was stopped or blocked (the night window, PAUSE, HALT, a landing, another's QUIET line, a stop file) or ended incomplete. What is on disk is
+    kept: the job exits non-zero, the runner tries it again, and the ruler's replays and the exam's games resume where they stopped."""
+
+
+class S1Unavailable(RuntimeError):
+    """S1 cannot be played for this pair (the champion has no arms to build a ruler from, or the candidate holds the champion's own fight network): the judgement
+    goes on under v3 and records why."""
+
+
+def route_s_of(value: str | None) -> str:
+    """`--route-s`: "auto" or "off" (the default). Any other value is an error, not a silent off: a rule that decides a promotion is never guessed."""
+    v = "off" if value is None or str(value).strip() == "" else str(value).strip().lower()
+    if v not in ROUTE_S_MODES:
+        raise ValueError(f"unknown --route-s {value!r} (the modes are {', '.join(ROUTE_S_MODES)})")
+    return v
+
+
+def fight_only_swap(cand: Path | str) -> bool:
+    """Whether the candidate is a fight-only swap: the `built.swap` field of its agent.json reads "fight", which `rl/gym_wiring.py` writes (and nothing else
+    writes: the prior, V_run and chain builders write other values or none) when it builds the champion with only its fight network replaced."""
+    try:
+        meta = read_json(Path(cand) / "agent.json")
+    except (OSError, ValueError):
+        return False
+    built = meta.get(BUILT_KEY) if isinstance(meta, dict) else None
+    return isinstance(built, dict) and built.get("swap") == FIGHT_SWAP
+
+
+def s1_ruler_dir(base_dir: Path | str, root: Path | str | None = None) -> Path:
+    """The champion's ruler folder: `<root>/<generation folder>-<agent folder>` (`rl/act3_starts.py arrivals`' own default, gym-loop/arrival/gen20-candidate-chain)."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    base_dir = Path(base_dir)
+    return Path(root if root is not None else a3.ARRIVAL_ROOT) / f"{base_dir.parent.name}-{base_dir.name}"
+
+
+def usable_ruler(ruler: Path, base_dir: Path) -> dict[str, Any] | None:
+    """The meta of the ruler in `ruler` when it is this champion's and its starts file hashes to the meta's (`act3_starts.load_ruler`), else None."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    try:
+        meta, _lite = a3.load_ruler(ruler)
+    except (OSError, ValueError, KeyError):
+        return None
+    ok = meta.get("champion") == f"{base_dir.parent.name}-{base_dir.name}" and meta.get("champion_dir") == f"{base_dir.parent.name}/{base_dir.name}"
+    return meta if ok and meta.get("ruler_hash") else None
+
+
+def s1_expect(cand_agent: Agent, base_agent: Agent, ruler_hash: str | None) -> dict[str, Any]:
+    """What a reading must name to be applied to this pair: the ruler's hash (None when the ruler cannot be read) and the sha256 of each fight network."""
+    return {"ruler_hash": ruler_hash, "candidate": cand_agent.describe().get("prior_sha256"), "champion": base_agent.describe().get("prior_sha256")}
+
+
+def s1_ledger(ruler: Path) -> dict[str, Any]:
+    """The ledger of the tests played against a ruler (`s1-ledger.json`): `tests` is a list of {test, candidate, ...}; a missing or unreadable file is empty."""
+    try:
+        doc = read_json(Path(ruler) / S1_LEDGER_FILE)
+    except (OSError, ValueError):
+        doc = None
+    if not isinstance(doc, dict) or not isinstance(doc.get("tests"), list):
+        doc = {"rule": S1_LEDGER_RULE, "tests": []}
+    return doc
+
+
+def s1_used_tests(ruler: Path, ledger: Mapping[str, Any]) -> set[int]:
+    """The test indices that have been played against the ruler: the ledger's, and every one whose draws (6k to 6k + 5) a games file in the ruler's `exam`
+    folder holds (a test played by hand, before there was a ledger, still counts)."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    used = {int(t["test"]) for t in ledger["tests"]}
+    for f in sorted((Path(ruler) / "exam").glob("games-arr-*.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                with contextlib.suppress(ValueError, KeyError, TypeError):
+                    used.add(int(json.loads(line)["j"]) // a3.ARRIVAL_DRAWS)
+    return used
+
+
+def register_s1_test(ruler: Path | str, reading: Mapping[str, Any], cand_dir_name: str = "") -> bool:
+    """Record a test played elsewhere (a reading `rejudge --s1` applies, the hand run of `judge-design/S1-v5.sh`) in the ruler's ledger, so the next test takes
+    new draws. False when the ruler is missing or the test is already there."""
+    ruler = Path(ruler)
+    if not ruler.is_dir() or reading.get("test") is None:
+        return False
+    ledger = s1_ledger(ruler)
+    if any(int(t["test"]) == int(reading["test"]) and t.get("candidate") == reading.get("candidate") for t in ledger["tests"]):
+        return False
+    ledger["tests"].append({"test": int(reading["test"]), "candidate": reading.get("candidate"), "candidate_dir": cand_dir_name or reading.get("candidate_dir"),
+                            "champion": reading.get("champion"), "ruler_hash": reading.get("ruler_hash"), "started": None, "done": utc_now(),
+                            "mean": reading.get("mean"), "se": reading.get("se"), "source": "registered"})
+    write_json(ruler / S1_LEDGER_FILE, ledger)
+    return True
+
+
+def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_agent: Agent, *, procs: int = S1_PROCS, ruler_root: Path | str | None = None,
+             python: str | None = None, run: Callable[..., Any] | None = None, say: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """S1 for a fight-only swap: the first stage of `promote` under `--route-s auto`. Returns the reading (`keep_v2.s1_reading`, checked against this pair),
+    written to the candidate's folder as `s1.json`.
+
+    1. The champion's ruler (`D:/spireline/referee/gym-loop/arrival/<champion folder name>/`, `rl/act3_starts.py arrivals`): used when its `meta.json` names this
+       champion and its starts file hashes to the meta's hash; else built there, from the champion's arms, on `procs` processes.
+    2. The test index k: the candidate's own when the ruler's ledger already holds a test for this fight network (a resumed or repeated judgement plays
+       the same draws, and one whose `s1.json` stands for this ruler, champion and candidate is not played again); else one more than any test played
+       against the ruler (`s1_used_tests`), so no draw (6k to 6k + 5) is used by two candidates. The ledger is written before the games are.
+    3. `rl/act3_starts.py arrival-exam` of the candidate against the champion on the ruler, test k, `procs` processes, the report in `<candidate>/s1/`.
+
+    Both heavy steps run as children of this process, so they run at its priority (the train job's: BelowNormal), hold no QUIET.lock line of their own and
+    are told to ignore the lab's own `lab-train` line (`--allow-quiet`): the exam's `blocked_reason` would read it as another's and stop. They touch nothing
+    of the gym daemon. A stop or a block raises `S1Blocked` (the job fails, the runner retries it, the work resumes); a pair S1 cannot be played for raises
+    `S1Unavailable`. `run` (default `subprocess.run`) and `python` (default this interpreter) are replaced by tests."""
+    say = say or (lambda m: print(m, flush=True))
+    run = run or subprocess.run
+    py = python or sys.executable
+    cand, base_dir = Path(cand), Path(base_dir)
+    ruler = s1_ruler_dir(base_dir, ruler_root)
+    script = str(ROOT / "rl" / "act3_starts.py")
+    lib = os.environ.get("STS2_LIB_PATH")
+    allow = ["--allow-quiet", LAB_TRAIN_TAG, *(["--lib", lib] if lib else [])]
+    meta = usable_ruler(ruler, base_dir)
+    if meta is None:
+        if not (base_dir / "arms").is_dir():
+            raise S1Unavailable(f"the champion {base_dir.parent.name}/{base_dir.name} has no arms to build a ruler from")
+        say(f"S1: building the ruler of {base_dir.parent.name}/{base_dir.name} in {ruler.name} (the champion's arrivals, {procs} processes)")
+        rc = run([py, script, "arrivals", "--champion", str(base_dir), "--out", str(ruler), "--procs", str(int(procs)), *allow], check=False).returncode
+        if rc == 3:
+            raise S1Blocked("the ruler's replays were stopped or blocked; what they wrote is kept")
+        if rc == 2:
+            raise S1Unavailable("the ruler cannot be built: no arm to read, or an arm another agent played")
+        if rc != 0:
+            raise RuntimeError(f"the ruler's builder ended with status {rc}")
+        meta = usable_ruler(ruler, base_dir)
+        if meta is None:
+            raise RuntimeError(f"the ruler's builder left no usable ruler in {ruler.name}")
+    expect = s1_expect(cand_agent, base_agent, meta["ruler_hash"])
+    if expect["candidate"] == expect["champion"]:
+        raise S1Unavailable("the candidate and the champion hold the same fight network: nothing to compare")
+    stored = cand / S1_FILE
+    if stored.is_file():  # this candidate was read against this ruler already: the reading stands
+        try:
+            old = read_json(stored)
+            again = {**old, "match": keep_v2_module().s1_match(old, expect)}
+            if again["match"]["verified"] and again.get("complete"):
+                say(f"S1: {S1_FILE} stands for this ruler, champion and candidate: not played again")
+                return again
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    ledger = s1_ledger(ruler)
+    entry = next((t for t in ledger["tests"] if t.get("candidate") == expect["candidate"] and t.get("champion") == expect["champion"]
+                  and t.get("ruler_hash") == expect["ruler_hash"] and t.get("done") is None), None)
+    if entry is None:
+        used = s1_used_tests(ruler, ledger)
+        entry = {"test": max(used) + 1 if used else 0, "candidate": expect["candidate"], "candidate_dir": cand.name, "champion": expect["champion"],
+                 "ruler_hash": expect["ruler_hash"], "started": utc_now(), "done": None}
+        ledger["tests"].append(entry)
+        write_json(ruler / S1_LEDGER_FILE, ledger)
+    k = int(entry["test"])
+    report_dir = cand / S1_EXAM_DIR
+    say(f"S1: the arrival exam, test {k} (draws {6 * k} to {6 * k + 5}), {cand.name} against {base_dir.name} on {meta['starts']} starts ({procs} processes)")
+    rc = run([py, script, "arrival-exam", "--ruler", str(ruler), "--candidate", str(cand), "--champion", str(base_dir), "--test", str(k), "--procs", str(int(procs)),
+              "--out", str(ruler / "exam"), "--report-dir", str(report_dir), *allow], check=False).returncode
+    if rc == 2:
+        raise S1Unavailable("the candidate and the champion hold the same fight network: nothing to compare")
+    if rc == 3:
+        raise S1Blocked("the arrival exam was stopped, blocked or left incomplete; its games are kept")
+    if rc != 0:
+        raise RuntimeError(f"the arrival exam ended with status {rc}")
+    reading = keep_v2_module().s1_reading(read_json(report_dir / "results.json"), expect)
+    write_json(stored, reading)
+    entry.update(done=utc_now(), mean=reading.get("mean"), se=reading.get("se"))
+    write_json(ruler / S1_LEDGER_FILE, ledger)
+    say(f"S1: {reading['mean']:+.2f} passes per 100 arrivals (SE {reading['se']:.2f}, {reading['starts']} starts)" if reading.get("mean") is not None
+        else "S1: the exam gave no reading")
+    return reading
+
+
+def s1_from_file(path: Path | str, cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_agent: Agent, *, ruler_root: Path | str | None = None,
+                 register: bool = True) -> dict[str, Any]:
+    """A reading from an arrival exam's `results.json` (`rejudge --s1`: the file `judge-design/S1-v5.sh` writes), checked against this pair: its ruler hash against
+    the champion's ruler in the ruler folder (`usable_ruler`; a ruler that cannot be read leaves the hash unchecked and the reading unapplied), its candidate
+    and champion against the two fight networks. With `register` the test is entered in the ruler's ledger (the next test then takes new draws)."""
+    ruler = s1_ruler_dir(base_dir, ruler_root)
+    meta = usable_ruler(ruler, Path(base_dir))
+    reading = keep_v2_module().s1_reading(read_json(path), s1_expect(cand_agent, base_agent, meta["ruler_hash"] if meta else None))
+    if register and meta and reading["match"]["verified"]:
+        register_s1_test(ruler, reading, Path(cand).name)
+    return reading
+
+
+def outcome_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a run's row that says how it ended (`OUTCOME_FIELDS`): what a replay must reproduce for the same seed."""
+    return {k: row.get(k) for k in OUTCOME_FIELDS}
+
+
+def base_arm_reuse(seeds: Sequence[str], cand: Path | str, base_dir: Path | str, base_agent: Agent, arm: str, config: str, procs: int, ascension: int,
+                   *, n: int = BASE_REUSE_SEEDS, arm_kw: Mapping[str, Any] | None = None, say: Callable[[str], None] | None = None,
+                   play: Callable[..., list[dict]] | None = None) -> dict[str, Any]:
+    """Before S2 reuses the champion's stored arm on a block the candidate never played: replay `n` of its seeds with the champion on the current tree and
+    compare the outcome rows (`OUTCOME_FIELDS`) with the stored ones. The seeds checked are the first `n` seeds of the block, in order and without a gap,
+    that the champion's arm holds and the candidate's does not (each keeps its index in the block: the agent's random numbers are [agent seed, index]);
+    they are played into `<candidate>/arms-check/<arm>` with the arm's own prior transport (`arm_kw`). When every one is the same the stored arm is reused
+    (`action` "reused", what `run_arm` does by itself); when one differs the stored arm is moved to `<champion>/arms-stale/` and the champion plays the
+    block afresh (`action` "played afresh": an engine change since it was played means its rows are not this tree's). No row the candidate did not play
+    beside it, nothing to check (`action` "none": a resumed block, or a fresh one). The record goes to promotion.json (`base_reuse`)."""
+    say = say or (lambda m: print(m, flush=True))
+    play = play or run_arm
+    cand, base_dir = Path(cand), Path(base_dir)
+    stored_dir, mine_dir = base_dir / "arms" / arm, cand / "arms" / arm
+    stored = {r["seed"]: r for r in arm_rows(stored_dir)} if (stored_dir / "runs.jsonl").is_file() else {}
+    mine = {r["seed"] for r in arm_rows(mine_dir)} if (mine_dir / "runs.jsonl").is_file() else set()
+    reusable = [s for s in seeds if s in stored and s not in mine]
+    rec: dict[str, Any] = {"arm": arm, "stored_rows": len(stored), "candidate_rows": len(mine & set(seeds)), "reusable": len(reusable), "wanted": int(n),
+                           "fields": list(OUTCOME_FIELDS)}
+    if not reusable:
+        return {**rec, "checked": 0, "same": 0, "differing": [], "action": "none",
+                "why": "the champion's stored arm holds no row the candidate did not play beside it: nothing is reused unchecked"}
+    first = list(seeds).index(reusable[0])
+    window: list[str] = []
+    ok = set(reusable)
+    for s in list(seeds)[first:]:
+        if s not in ok or len(window) >= n:
+            break
+        window.append(s)
+    say(f"S2: before the champion's stored arm on {arm} is reused, {len(window)} of its seeds are replayed on this tree")
+    replay = play(window, cand / "arms-check" / arm, base_agent, config, procs, ascension, start_ix=first, **dict(arm_kw or {}))
+    got = {r["seed"]: r for r in replay}
+    differing = [s for s in window if s not in got or outcome_row(got[s]) != outcome_row(stored[s])]
+    rec.update(checked=len(window), same=len(window) - len(differing), differing=differing, start_index=first)
+    if not differing:
+        return {**rec, "action": "reused", "why": f"{len(window)} of {len(window)} replayed seeds gave the stored outcome rows"}
+    stale = base_dir / "arms-stale" / f"{arm}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(stored_dir, stale)
+    return {**rec, "action": "played afresh", "stale": f"{base_dir.name}/arms-stale/{stale.name}",
+            "why": f"{len(differing)} of {len(window)} replayed seeds differ from the stored rows: the stored arm is set aside and the champion plays the block again"}
+
+
+def sequential_doc(seq: Mapping[str, Any], seeds: Sequence[str], *, smoke: int, batch: int, played: int, fut_min: int | None, v2: bool, rule: str,
+                   frontier_name: str | None, route_s: bool = False) -> dict[str, Any]:
+    """The `sequential` entry of a promotion.json: the funnel's schedule, stop and looks (what `promote` writes for a block played as the funnel; `rejudge`
+    writes it when it completes a block). Under route S the futility stop is off and the entry says so."""
+    schedule = seq_looks(len(seeds), smoke, batch)
+    return {"rule": SEQ_RULE, "block_seeds": len(seeds), "played": played, "smoke": smoke, "batch": batch, "schedule": schedule,
+            "z_early": (keep_v2_module().early_z if v2 else seq_early_z)(len(schedule)), "refuse_alpha": SEQ_REFUSE_ALPHA, "early_alpha": SEQ_EARLY_ALPHA,
+            "stop": seq["stop"], "looks": seq["looks"], "futility": {"enabled": fut_min is not None and not route_s, "min_seeds": fut_min},
+            **({"keep_rule": rule, "frontier": frontier_name} if v2 else {}), **({"route": "S"} if route_s else {})}
+
+
 def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, procs: int = 16, config: str = "a3-v1",
             ascension: int = 10, lab: Path | None = None, lab_runs: list[Path] | None = None, boot: int = BOOT_B,
             review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
             futility_min_seeds: int | None = None, screen: bool | None = None, pool_blocks: Sequence[str] = (),
-            keep_rule_why: str | None = None, min_gain: float | None = None) -> dict[str, Any]:
+            keep_rule_why: str | None = None, min_gain: float | None = None, route_s: str | None = None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s and the tsv row carries the attempt
     and the guard's verdict. A third attempt of a generation is played and judged like any other (D65 addendum 2): the old cap of two
@@ -3166,13 +3452,24 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     incumbent's by more than two standard errors. Only the human prior different: both are scored on the held-out human choices and the candidate is
     rejected (`screen:prior`) when its log-loss is worse. A rejection writes promotion.json (`screen` holds the figures) and a ledger row with seeds 0
     and that rule, spends the attempt, plays nothing; a screen that passes, is skipped (and says why) or fails goes on to the arms with its figures
-    in promotion.json and the row's `guard` cell."""
+    in promotion.json and the row's `guard` cell.
+
+    `route_s` ("auto" or "off", the default; `--route-s`; D68 addendum 6 outcome 4, docs/rl/KEEP_TEST_V3.md "Route S"; the keep rule v3's): under "auto" a
+    candidate whose agent.json says `built.swap: fight` (`fight_only_swap`: `rl/gym_wiring.py`'s champion with only its fight network replaced) is first read
+    by S1, the arrival exam (`s1_stage`, after the screen and before any arm is played; its reading is `<candidate>/s1.json` and promotion.json's `s1`).
+    When S1 holds, S2 is the funnel over the whole block with its looks refusing only (`funnel(route_s=True)`: no futility stop, no early promotion, no
+    extension), the champion's stored arm is reused on a block the candidate never played only after 20 of its seeds replay identically (`base_arm_reuse`,
+    promotion.json's `base_reuse`), and the verdict is route S's (`keep_v2.judge_v3(s1=)`). When S1 does not hold, or cannot be played for this pair,
+    the judgement is v3's exactly as before, with the reason recorded (`route_s_mode`). Any other candidate is judged as before."""
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
     v2 = rule in KEEP_TESTS
     if pool_blocks and rule != "v3":
         raise ValueError("pooling blocks is the keep rule v3's (--keep-rule v3)")
+    mode = route_s_of(route_s)
+    if mode == "auto" and rule != "v3":
+        raise ValueError("route S is the keep rule v3's (--keep-rule v3)")
     gain = min_gain_of(min_gain, rule)  # None under v1; the keep rules' route A minimum otherwise
     fut_min = None if futility is False or (futility is None and not FUTILITY_ON) else int(futility_min_seeds or FUTILITY_MIN_SEEDS)
     seeds = gen0.load_seeds(seeds_file)
@@ -3205,12 +3502,28 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if screen_doc is not None and screen_doc.get("rejected") and not screen_doc.get("skipped"):
         return screen_rejection(Path(cand), cand_agent, base_agent, screen_doc, name=name, config=config, procs=procs, agent_root=Path(agent_root),
                                 attempt=attempt, cand_sha=cand_sha, head_sha=head_sha, recipe=recipe, rule=rule if v2 else None, lab=lab)
+    s1: dict[str, Any] | None = None  # route S: S1's reading for this pair (None: not asked, or not playable)
+    route_s_mode: dict[str, Any] | None = None
+    if mode == "auto":
+        route_s_mode = {"mode": "auto", "fight_swap": fight_only_swap(cand)}
+        if not route_s_mode["fight_swap"]:
+            route_s_mode["why"] = "not a fight-only swap (agent.json built.swap does not read 'fight'): v3 decides"
+        else:
+            try:
+                s1 = s1_stage(cand, base_dir, cand_agent, base_agent, procs=min(int(procs), S1_PROCS), say=lambda m: print(m, flush=True))
+            except S1Unavailable as why:
+                route_s_mode["why"] = f"S1 could not be played ({why}): v3 decides"
+    s_on = bool(s1 is not None and keep_v2_module().route_s1(s1, fight_swap=True)["holds"])  # S1 holds: S decides and S2 is the funnel
+    if route_s_mode is not None:
+        route_s_mode["applies"] = s_on
+    reuse = (base_arm_reuse(seeds, Path(cand), base_dir, base_agent, arm, config, procs, ascension, arm_kw=arm_kw,
+                            say=lambda m: print(m, flush=True)) if s_on else None)  # before an arm is played: the stored arm is reused only if it replays
     seq: dict[str, Any] | None = None
 
     def keep_of(cr: list[dict], br: list[dict], final: bool = False) -> dict[str, Any] | None:
         return (keep_v2_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, frontier_info=frontier_info,
                                 boot=boot, head_sha=head_sha, recipe=recipe, rule=rule, pooled=list(pool_blocks), final=final,
-                                min_gain=gain) if v2 else None)
+                                min_gain=gain, **({"s1": s1} if s1 is not None else {})) if v2 else None)
 
     if sequential:
         def verdict(cr: list[dict], br: list[dict]) -> dict[str, Any] | None:
@@ -3225,7 +3538,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         seq = funnel(seeds, rows_at, lambda cr, br: compare_arms(cr, br, ALPHA, boot, verdict(cr, br), **({"keep": keep_of(cr, br)} if v2 else {})),
                      smoke=smoke, batch=batch, futility=fut_min, say=lambda m: print(m, flush=True),
                      **({"keep_rule": rule, "frontier": frontier_info["index"], "frontier_name": frontier_info["name"],
-                         "prefix": (pool_c, pool_b), "extend_possible": may_extend, "min_gain": gain} if v2 else {}))
+                         "prefix": (pool_c, pool_b), "extend_possible": may_extend and not s_on, "min_gain": gain,
+                         **({"route_s": True} if s_on else {})} if v2 else {}))
         cand_rows, base_rows, played = seq["cand_rows"], seq["base_rows"], seq["stop"]["n"]  # (the funnel's rows hold the pooled blocks' too)
     else:
         cand_rows = run_arm(seeds, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, **arm_kw)
@@ -3256,12 +3570,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         own_seeds = set(seeds)
         doc["pooled"] = pooled_record(name, played, ([r for r in cand_rows if r["seed"] in own_seeds], [r for r in base_rows if r["seed"] in own_seeds]), pool_info)
     if seq is not None:
-        doc["sequential"] = {"rule": SEQ_RULE, "block_seeds": len(seeds), "played": played, "smoke": smoke, "batch": batch,
-                             "schedule": seq_looks(len(seeds), smoke, batch),
-                             "z_early": (keep_v2_module().early_z if v2 else seq_early_z)(len(seq_looks(len(seeds), smoke, batch))),
-                             "refuse_alpha": SEQ_REFUSE_ALPHA, "early_alpha": SEQ_EARLY_ALPHA, "stop": seq["stop"], "looks": seq["looks"],
-                             "futility": {"enabled": fut_min is not None, "min_seeds": fut_min},
-                             **({"keep_rule": rule, "frontier": frontier_info["name"]} if v2 else {})}
+        doc["sequential"] = sequential_doc(seq, seeds, smoke=smoke, batch=batch, played=played, fut_min=fut_min, v2=v2, rule=rule,
+                                           frontier_name=frontier_info["name"] if v2 else None, route_s=s_on)
         if stopped_early:  # the figures above are those of the seeds played, not of the whole block
             doc["sequential"]["note"] = (f"stopped at {played} of {len(seeds)} seeds: floor, boss_kill and wins are the figures at the stop; "
                                          "the mean of a block that stopped on a bound is biased away from 0 (the decision's error rates hold)")
@@ -3269,6 +3579,15 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         doc["human_bar"] = human_bar_note(cand_agent, base_agent)  # report-only: no rule reads it
     if screen_doc is not None:
         doc["screen"] = screen_doc
+    if route_s_mode is not None:  # route S: what was asked, S1's reading, how far the whole run moved from it, and the check on the champion's stored arm
+        doc["route_s_mode"] = route_s_mode
+        if s1 is not None:
+            doc["s1"] = s1
+        shift = ((keep or {}).get("route_s") or {}).get("state_shift")
+        if shift:
+            doc["state_shift"] = shift
+        if reuse is not None:
+            doc["base_reuse"] = reuse
     write_json(Path(cand) / "promotion.json", doc)
     f, bk = doc["floor"], doc["boss_kill"]
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
@@ -3324,7 +3643,9 @@ def funnel_stop_record(doc: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path, config: str = "a3-v1", note: str,
             lab: Path | None = None, boot: int = BOOT_B, review_guard: bool | None = None, keep_rule: str | None = None,
-            out: Path | None = None, pool_blocks: Sequence[str] = (), min_gain: float | None = None) -> dict[str, Any]:
+            out: Path | None = None, pool_blocks: Sequence[str] = (), min_gain: float | None = None, route_s: str | None = None,
+            s1_file: Path | str | None = None, complete: bool = False, procs: int = 16, ascension: int = 10, server_opts=None,
+            ruler_root: Path | str | None = None) -> dict[str, Any]:
     """Apply the current rule to a candidate's finished arms on its own block, without playing again: for an owner
     decision that changes the rule after a block was judged (D24). Both cached arms must cover the whole block, except a block
     the funnel stopped early (the earlier promotion.json carries `sequential` with a stop before the last look,
@@ -3349,13 +3670,27 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     The ledger row is the seed file's block with the pooled pairs in `seeds` and the pooled blocks named in the `guard` cell.
 
     `min_gain` as in `promote` (`rejudge --min-gain 0.5`): the minimum the judgement asks of route A, recorded in the verdict, the decision (when it is
-    not +1.0) and the row's `guard` cell."""
+    not +1.0) and the row's `guard` cell.
+
+    `route_s` "auto" (`--route-s auto`; the keep rule v3's; D68 addendum 6 outcome 4) rejudges a fight-only swap under route S without playing S1 again: the
+    reading is the arrival exam's `results.json` named by `s1_file` (`--s1`: checked against the champion's ruler hash, the champion's and the candidate's
+    fight networks; a mismatch is not applied and the reason is recorded), else the candidate's own `s1.json`, else none (v3 decides). When S1 holds the
+    decision is S's. A block the funnel stopped before its last look has too few pairs for S2's final bound: with `complete` (`--complete-block`) the
+    block is completed to every seed of the file, the stored rows reused (`run_arm(resume=True)`, the funnel's own resume: a seed with a row is not played
+    again) and the funnel's looks walked again under S2's rules, `procs`, `ascension` and `server_opts` as `promote` takes them; without it the rejudgement
+    stops with an error that says what is missing. A completion plays games, so it is never a dry run (`out`). `ruler_root` replaces the ruler folder's parent
+    (tests)."""
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
     v2 = rule in KEEP_TESTS
     if pool_blocks and rule != "v3":
         raise ValueError("pooling blocks is the keep rule v3's (--keep-rule v3)")
+    mode = route_s_of(route_s)
+    if (mode == "auto" or s1_file or complete) and rule != "v3":
+        raise ValueError("route S is the keep rule v3's (--keep-rule v3)")
+    if (s1_file or complete) and mode != "auto":
+        raise ValueError("--s1 and --complete-block are route S's: name --route-s auto")
     gain = min_gain_of(min_gain, rule)
     if out is not None and lab is not None:
         raise ValueError("a dry run (out) writes no lab marker: do not name the lab folder")
@@ -3371,9 +3706,34 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if stop is not None and (before.get("seed_block") != name or stop["block_seeds"] != len(seeds)):
         raise ValueError(f"the funnel stopped block {before.get('seed_block')} at {stop['played']} of {stop['block_seeds']} seeds, "
                          f"but the seed file is {name} with {len(seeds)}")
+    s1 = None
+    route_s_mode = None
+    if mode == "auto":
+        route_s_mode = {"mode": "auto", "fight_swap": fight_only_swap(cand)}
+        if s1_file:
+            s1 = s1_from_file(s1_file, cand, base_dir, cand_agent, base_agent, ruler_root=ruler_root, register=out is None)
+            route_s_mode["source"] = f"--s1 {Path(s1_file).name}"
+        elif (Path(cand) / S1_FILE).is_file():
+            meta = usable_ruler(s1_ruler_dir(base_dir, ruler_root), base_dir)
+            s1 = {**read_json(Path(cand) / S1_FILE)}
+            s1["match"] = keep_v2_module().s1_match(s1, s1_expect(cand_agent, base_agent, meta["ruler_hash"] if meta else None))
+            route_s_mode["source"] = f"the candidate's {S1_FILE}"
+        else:
+            route_s_mode["why"] = f"no S1 reading (no --s1 file, no {S1_FILE} in the candidate's folder): v3 decides"
+    s_on = bool(s1 is not None and keep_v2_module().route_s1(s1, fight_swap=bool(route_s_mode and route_s_mode["fight_swap"]))["holds"])
+    if route_s_mode is not None:
+        route_s_mode["applies"] = s_on
     played = stop["played"] if stop is not None else len(seeds)
+    earlier_stop = stop["action"] if stop is not None else None
+    earlier_played = played
     if pool_blocks and stop is not None:
         raise ValueError(f"the funnel stopped block {name}: it has its verdict and is not pooled")
+    if s_on and stop is not None:  # S2's final bound needs every pair: the block is completed, or the rejudgement says what is missing
+        if not complete:
+            raise ValueError(f"S1 holds, but the funnel stopped block {name} at {stop['played']} of {len(seeds)} seeds and S2's final bound is asked on all of "
+                             f"them: add --complete-block to play the other {len(seeds) - stop['played']} pairs (the stored rows are kept)")
+        if out is not None:
+            raise ValueError("completing a block plays games into the agent folders: it is never a dry run (do not name --out)")
     cand_rows, base_rows = arm_rows(Path(cand) / "arms" / arm), arm_rows(base_dir / "arms" / arm)
     if stop is not None:  # the arms of a stopped block hold the seeds played and no others; judge those, by place in the block
         part = set(seeds[:played])
@@ -3390,11 +3750,40 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     guard = (review_guard_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, boot=boot,
                                   apply_cap=False, head_sha=head_sha, recipe=recipe) if review_guard_on(review_guard) and not v2 else None)
     keep = None
+    walked: dict[str, Any] | None = None
+    reuse = None
+    s1_kw = {"s1": s1, "fight_swap": bool(route_s_mode and route_s_mode["fight_swap"])} if s1 is not None else {}
     if v2:
         frontier_info = incumbent_frontier(agent_root, rows, config, block=[name, *pool_blocks])
+        if s_on and stop is not None:  # complete the block: the funnel's own resume plays the seeds that have no row, S2's looks refuse only
+            arm_kw = {"server_opts": server_opts} if server_opts is not None else {}
+            reuse = base_arm_reuse(seeds, Path(cand), base_dir, base_agent, arm, config, procs, ascension, arm_kw=arm_kw, say=lambda m: print(m, flush=True))
+
+            def rows_at(n: int) -> tuple[list[dict], list[dict]]:
+                part = seeds[:n]
+                return (run_arm(part, Path(cand) / "arms" / arm, cand_agent, config, procs, ascension, resume=True, **arm_kw),
+                        run_arm(part, base_dir / "arms" / arm, base_agent, config, procs, ascension, resume=True, **arm_kw))
+
+            smoke_n = int((before.get("sequential") or {}).get("smoke") or SEQ_SMOKE)
+            batch_n = int((before.get("sequential") or {}).get("batch") or SEQ_BATCH)
+
+            def walk_verdict(cr: list[dict], br: list[dict]) -> dict[str, Any]:
+                kv = keep_v2_verdict(cr, br, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name, frontier_info=frontier_info, boot=boot,
+                                     apply_cap=False, head_sha=head_sha, recipe=recipe, rule=rule, final=False, min_gain=gain, **s1_kw)
+                return compare_arms(cr, br, ALPHA, boot, None, keep=kv)
+
+            walked = funnel(seeds, rows_at, walk_verdict, smoke=smoke_n, batch=batch_n, keep_rule="v3", frontier=frontier_info["index"],
+                            frontier_name=frontier_info["name"], extend_possible=False, min_gain=gain, route_s=True, say=lambda m: print(m, flush=True))
+            cand_rows, base_rows = walked["cand_rows"], walked["base_rows"]
+            seq_doc = sequential_doc(walked, seeds, smoke=smoke_n, batch=batch_n, played=walked["stop"]["n"], fut_min=None, v2=True, rule=rule,
+                                     frontier_name=frontier_info["name"], route_s=True)
+            if walked["stop"]["action"] == "final":
+                stop, played = None, len(seeds)
+            else:
+                stop, played = {"action": walked["stop"]["action"], "played": walked["stop"]["n"], "block_seeds": len(seeds), "sequential": seq_doc}, walked["stop"]["n"]
         keep = keep_v2_verdict(cand_rows, base_rows, rows, cand_gen=cand_agent.generation, cand_sha=cand_sha, block=name,
                                frontier_info=frontier_info, boot=boot, apply_cap=False, head_sha=head_sha, recipe=recipe,
-                               rule=rule, pooled=list(pool_blocks), final=stop is None, min_gain=gain)
+                               rule=rule, pooled=list(pool_blocks), final=stop is None, min_gain=gain, **s1_kw)
     res = compare_arms(cand_rows, base_rows, ALPHA, boot, guard, **({"keep": keep} if v2 else {}))
     if res["paired_seeds"] != played + pre_n:
         raise ValueError(f"only {res['paired_seeds']} of {played + pre_n} seeds are paired in both cached arms")
@@ -3418,6 +3807,20 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
            **({"keep_rule": rule} if v2 else {}), "f7": "not run", "matched_wall_clock": False}
     if pool_blocks:
         doc["pooled"] = pooled_record(name, played, own, pool_info)
+    if route_s_mode is not None:  # route S: what was asked, the reading, how far the whole run moved from it, the check on the champion's stored arm
+        doc["route_s_mode"] = route_s_mode
+        if s1 is not None:
+            doc["s1"] = s1
+        shift = ((keep or {}).get("route_s") or {}).get("state_shift")
+        if shift:
+            doc["state_shift"] = shift
+        if reuse is not None:
+            doc["base_reuse"] = reuse
+    if walked is not None:  # the block was completed: S2's walk is the record, and the rejudgement says what it added
+        doc["rejudged"]["completed"] = {"from_seeds": earlier_played, "to_seeds": played, "block": len(seeds), "earlier_stop": earlier_stop,
+                                        "text": f"completed from {earlier_played} to {played} of {len(seeds)} seeds under route S (the stored rows kept)"}
+        if stop is None:
+            doc["sequential"] = seq_doc
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
     if pool_blocks:
         cells["guard"] = f"{cells['guard']} | {pooled_say(doc['pooled'])}".replace("\t", " ")
@@ -3521,13 +3924,15 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
                            lib: str | None, lab: Path | None, lab_runs: Path | None = None, review_guard: bool = False,
                            prior_server_flags: tuple[str, ...] = (), sequential: bool = False, keep_rule: str | None = None,
                            futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None,
-                           pool_blocks: Sequence[str] = (), keep_rule_why: str | None = None, min_gain: float | None = None) -> int:
+                           pool_blocks: Sequence[str] = (), keep_rule_why: str | None = None, min_gain: float | None = None,
+                           route_s: str | None = None) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
     `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
     funnel (`promote(sequential=True)`); `keep_rule` ("v1", "v2" or "v3") is passed on as `--keep-rule` when named, and the child reads the
     SPIRELINE_KEEP_RULE variable otherwise; `pool_blocks` (v3) are passed on as `--pool-block`, one each; `keep_rule_why` (the train job's choice
-    between the marker's rule and the lab's) as `--keep-rule-why`; `min_gain` as `--min-gain` when it is named and is not the default (+1.0)."""
+    between the marker's rule and the lab's) as `--keep-rule-why`; `min_gain` as `--min-gain` when it is named and is not the default (+1.0);
+    `route_s` as `--route-s auto` when it is "auto" (the child's default is off: nothing is passed for off)."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -3554,6 +3959,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--futility-min-seeds", str(int(futility_min_seeds))]
     if screen is False:
         cmd += ["--no-screen"]
+    if route_s_of(route_s) == "auto":
+        cmd += ["--route-s", "auto"]
     for block in pool_blocks:
         cmd += ["--pool-block", str(block)]
     cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise

@@ -1000,5 +1000,80 @@ class RecordedBlockTests(unittest.TestCase):
         self.assertEqual((out["looks"][0]["action"], out["looks"][0]["smoke_would_refuse"]), ("continue", True))
 
 
+# ----------------------------------------------------------------- route S (D68 addendum 6 outcome 4): S2 is the funnel with its looks refusing only
+
+BIG_GAIN = ((300, 3, 2), (1000, 1, 1), (400, 0, 1), (300, 1, 0))  # deep_f +15 per 100 at the first Act 3 boss: v3 promotes it early
+FLATISH = ((40, 3, 2), (52, 2, 3), (1000, 1, 1), (400, 0, 1), (508, 1, 0))  # deep_f -0.6 per 100, SE 0.48: v3's futility stop ends it at 500 to 800 pairs
+HARM = ((20, 3, 2), (140, 2, 3), (1000, 1, 1), (400, 0, 1), (440, 1, 0))  # deep_f -6.0 per 100
+
+
+class RouteSFunnelTests(unittest.TestCase):
+    """`gen_loop.funnel(keep_rule="v3", route_s=True)` over the synthetic arms of `test_keep_v3`: the looks refuse only; no early promotion, no futility stop,
+    no extension; the decision at 2,000 pairs is `judge`'s (S2's final bound), asked of the rows the walk returns."""
+
+    @staticmethod
+    def walk(spec, *, route_s: bool, futility: int | None = 500):
+        from test_keep_v3 import F_B3A, block
+
+        seeds, cand, base = block(spec, floor_mean=0.0, prefix="S", seed=21)
+
+        def judge(cr, br):
+            keep = gen_loop.keep_v2_verdict(cr, br, [], cand_gen=4, cand_sha="x", block="S", frontier_info={"index": F_B3A, "name": "B3a"}, boot=500,
+                                            rule="v3", final=False)
+            return gen_loop.compare_arms(cr, br, gen_loop.ALPHA, 500, None, keep=keep)
+
+        said: list[str] = []
+        out = gen_loop.funnel(seeds, lambda n: (cand, base), judge, keep_rule="v3", frontier=F_B3A, futility=futility, say=said.append,
+                              **({"route_s": True} if route_s else {}))
+        return out, said, (cand, base)
+
+    def test_a_gain_v3_promotes_early_is_played_to_the_end_under_s(self):
+        v3, _, _ = self.walk(BIG_GAIN, route_s=False)
+        self.assertEqual((v3["stop"]["action"], v3["stop"]["n"]), ("promote", 500))  # the early promotion route A has
+        out, _, _ = self.walk(BIG_GAIN, route_s=True)
+        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("final", 2000))  # S2's looks never promote
+        self.assertEqual([x["action"] for x in out["looks"]], ["continue"] * 6 + ["final"])
+        self.assertEqual([x["n"] for x in out["looks"]], gen_loop.seq_looks(2000))
+        self.assertTrue(all(x["routes"] == [] for x in out["looks"]))  # never eligible
+
+    def test_no_futility_stop_under_s_even_when_it_is_asked_for(self):
+        v3, said, _ = self.walk(FLATISH, route_s=False)
+        self.assertEqual(v3["stop"]["action"], "futility")
+        self.assertRegex(v3["stop"]["rule"], r"^futility@(500|800)$")
+        self.assertTrue(any("futility look" in m for m in said))
+        out, said, _ = self.walk(FLATISH, route_s=True, futility=500)
+        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("final", 2000))
+        self.assertTrue(all("futility" not in x for x in out["looks"]))
+        self.assertFalse(any("futility look" in m for m in said))
+        self.assertEqual(len(out["cand_rows"]), 2000)
+
+    def test_a_harm_is_refused_at_the_second_look_and_the_smoke_look_refuses_nothing(self):
+        out, _, _ = self.walk(HARM, route_s=True)
+        self.assertEqual((out["stop"]["action"], out["stop"]["n"]), ("refuse", 500))
+        self.assertIn("route S", out["stop"]["reason"])
+        self.assertEqual((out["looks"][0]["action"], out["looks"][0]["n"]), ("continue", 200))
+        self.assertEqual(len(out["cand_rows"]), 500)
+
+    def test_the_decision_at_2000_is_judges_with_s2s_final_bound(self):
+        from test_keep_v3_route_s import reading
+        from test_keep_v3 import F_B3A
+
+        out, _, _ = self.walk(FLATISH, route_s=True)
+        v = k2.judge(out["cand_rows"], out["base_rows"], frontier=F_B3A, rule="v3", boot=500, s1=reading(1.8, 0.4))
+        self.assertEqual((v["route"], v["promote"], v["extend"]), ("S", True, False))
+        self.assertEqual(v["route_s"]["s2"]["pairs"], 2000)
+        self.assertTrue(v["route_s"]["s2"]["final_ok"])
+        v3 = k2.judge(out["cand_rows"], out["base_rows"], frontier=F_B3A, rule="v3", boot=500)  # without S1 the same rows are refused
+        self.assertEqual((v3["route"], v3["promote"]), ("", False))
+        # the last look is `final`: the walk never decides at 2,000, `judge` does
+        self.assertEqual(out["looks"][-1]["action"], "final")
+
+    def test_route_s_is_the_keep_rule_v3s(self):
+        with self.assertRaisesRegex(ValueError, "keep rule v3"):
+            gen_loop.funnel(["a"] * 3, lambda n: ([], []), lambda c, b: {}, keep_rule="v2", route_s=True)
+        with self.assertRaisesRegex(ValueError, "keep rule v3"):
+            gen_loop.funnel(["a"] * 3, lambda n: ([], []), lambda c, b: {}, route_s=True)
+
+
 if __name__ == "__main__":
     unittest.main()

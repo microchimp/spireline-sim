@@ -122,6 +122,18 @@ class QueueTests(WiringCase):
         self.assertEqual(["ready-5-g6-fight-v4"], sorted(p.name for p in w.train.iterdir()))  # no temporary file left behind
         self.assertEqual("queued", gw.consumption(w.w, "v4", pdir)["state"])
 
+    def test_the_candidate_it_queues_is_a_fight_only_swap_as_route_s_reads_the_field(self):
+        import gen_loop
+
+        w = self.world
+        pdir = w.player("v4", "b" * 64)
+        got = gw.queue_candidate(w.w, "v4", pdir, checkpoint="c0185", promoted=PROMOTED, now=T0, log=w.log)
+        cand = Path(got["candidate"])
+        meta = json.loads((cand / "agent.json").read_text())
+        self.assertEqual(meta["built"]["swap"], gen_loop.FIGHT_SWAP)  # the field the wiring writes is the one route S reads
+        self.assertTrue(gen_loop.fight_only_swap(cand))
+        self.assertFalse(gen_loop.fight_only_swap(w.agents / "gen5" / "candidate"))  # the champion's own folder is not a swap
+
     def test_the_marker_has_the_lab_rule_from_the_field_or_the_command_and_none_when_unknown(self):
         w = self.world
         self.assertEqual("v3", gw.lab_keep_rule(w.jobs))
@@ -486,6 +498,18 @@ class BuildTests(unittest.TestCase):
         self.assertIn("fight network alone", meta["note"])
         self.assertFalse((cand / "promotion.json").exists())
         self.assertEqual(self.agents / "gen5" / "candidate", Path(json.loads((self.agents / "current.json").read_text())["dir"]))  # the champion is untouched
+
+    def test_the_real_builders_candidate_is_a_fight_only_swap_for_route_s_and_the_base_is_not(self):
+        gen_loop = self.gen_loop
+        cand = self.build()
+        field = json.loads((cand / "agent.json").read_text())[gen_loop.BUILT_KEY]["swap"]
+        self.assertEqual((field, gen_loop.FIGHT_SWAP), ("fight", "fight"))  # what `build_fight_candidate` writes is what route S reads
+        self.assertTrue(gen_loop.fight_only_swap(cand))
+        self.assertFalse(gen_loop.fight_only_swap(self.base))
+        meta = json.loads((cand / "agent.json").read_text())
+        meta[gen_loop.BUILT_KEY]["swap"] = "vrun"  # any other builder's value is not a fight swap
+        (cand / "agent.json").write_text(json.dumps(meta))
+        self.assertFalse(gen_loop.fight_only_swap(cand))
 
     def test_a_second_build_never_writes_over_the_first_and_a_failure_leaves_nothing(self):
         cand = self.build()
