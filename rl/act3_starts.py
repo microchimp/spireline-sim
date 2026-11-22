@@ -6,6 +6,8 @@
     python rl/act3_starts.py decks  --out DIR                                                   the decks walked in with: skills, attacks, powers by boss and result
     python rl/act3_starts.py human  --out DIR [--procs 4] [--engine old|core2] [--only-ids FILE]  deal the human positions' openings on the copy
     python rl/act3_starts.py own    --out DIR [--stores S ...] [--n-first N] [--n-second N]       our own Act 3 boss arrivals, from the plain-run stores
+    python rl/act3_starts.py arrivals --champion DIR --out DIR [--limit N]        the champion's first-Act-3-boss arrivals from its judged arms (S1's ruler)
+    python rl/act3_starts.py arrival-exam --ruler DIR --candidate DIR --champion DIR   S1: the candidate's fight network on that ruler (a report)
 
 Why. The two Act 3 bosses (floors 48 and 49 at Ascension 10; the second is met only by a run that beat the first) hold nine tenths of the gap
 between the loop and the average human, and one boss in particular, the Test Subject, passes in 2 of 100 for us and 70 of 100 for humans. The
@@ -515,6 +517,407 @@ def cmd_own(a: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------------------------------------- the arrival ruler (judge build 1)
+#
+# S1's ruler (judge-design/DESIGN.md section 3; D68 addendum 6 outcome 3): the champion's own first-Act-3-boss arrivals, rebuilt from the arms the
+# run judge played it in on blocks it was not selected on. A judged run's row holds the seed, the run's index, the node string and the choices
+# (`decided`), no fight position; the gym's replay step (`fight_gym._replay_task`: the run played again exactly, with the champion's own agent on
+# the engine the arm was played on, ending at the boss's first decision) deals the position, and a replay is kept only when it matches its row (the
+# map path, the cards taken and the rests up to the boss). The champion's judged arms were played with the prior on the GPU server and the
+# replay uses the in-process prior: a replay that does not match is dropped, never repaired, and the match rate is in the ruler's meta.
+#
+#   python rl/act3_starts.py arrivals     --champion DIR --out DIR [--limit N]   rebuild the ruler (with --limit N: only check that N rows replay)
+#   python rl/act3_starts.py arrival-exam --ruler DIR --candidate DIR --champion DIR [--test K]   play it and read S1 (a report, no rule)
+
+ARRIVAL_RULE = "act3-arrival-v1"
+ARRIVAL_STEM = "starts-arrival"
+ARRIVAL_NS = "ar"  # the arrival exam's draw namespace (the gym's "g", the exam's "x", the Act 3 replay's "r3", the practice's "L")
+ARRIVAL_DRAWS = 6  # draws a start in one test: test k plays draws 6k to 6k + 5
+ARRIVAL_CONFIG = "a3-v1"
+AGENT_ROOT = Path("D:/spireline/referee/agent")
+ARRIVAL_ROOT = Path("D:/spireline/referee/gym-loop/arrival")
+
+
+def arm_label(folder: str | Path, config: str = ARRIVAL_CONFIG) -> str:
+    """An arm folder's block name: `E21-2026-11-21-r1-a3-v1` -> `E21-2026-11-21-r1`."""
+    name = Path(folder).name
+    return name[: -len("-" + config)] if config and name.endswith("-" + config) else name
+
+
+def selected_blocks(champion_dir: str | Path) -> set[str]:
+    """The blocks the champion was selected on: its promotion.json's `seed_block` and any block pooled into that judgement. Its judged runs there
+    are the runs the keep rule picked it on, so they are not an independent ruler."""
+    p = Path(champion_dir) / "promotion.json"
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    out = {str(doc["seed_block"])} if doc.get("seed_block") else set()
+    for b in (doc.get("pooled") or {}).get("blocks") or []:
+        if isinstance(b, dict) and b.get("block"):
+            out.add(str(b["block"]))
+    return out
+
+
+def champion_arms(champion_dir: str | Path, exclude: Sequence[str] = ()) -> list[Path]:
+    """The champion's own arm folders (`<champion>/arms/*`, each with summary.json and runs.jsonl), oldest name first, without a block it was selected
+    on (`selected_blocks`) and without the blocks named in `exclude`: the blocks it played as the base of its successors' judgements."""
+    skip = selected_blocks(champion_dir) | set(exclude)
+    out = []
+    for d in sorted((Path(champion_dir) / "arms").glob("*")):
+        if (d / "summary.json").is_file() and (d / "runs.jsonl").is_file():
+            cfg = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("config") or ARRIVAL_CONFIG
+            if arm_label(d, cfg) not in skip:
+                out.append(d)
+    return out
+
+
+def arrival_floors(row: dict) -> list[tuple[int, int]]:
+    """[(boss turn, floor)] of the Act 3 boss rooms the judged run entered, from its complete node string: turn 1 the first Act 3 boss, turn 2 the
+    second (a run that beat the first). [] for a run that never arrived, a crashed or lost seed, or a row whose node string is not complete (the
+    string, not the usual floors 48 and 49, says where the bosses are: one run in 400 has a longer Act 2)."""
+    from tools.lab import keep_v2 as k2  # noqa: PLC0415 -- pure
+
+    if not k2.arrived_b3a(row) or not k2.complete_nodes(row):
+        return []
+    return [(i + 1, f) for i, f in enumerate(k2.boss_floors(row["nodes"])[2:4])]
+
+
+def arrival_tasks(arm_rows: list[dict], label: str, config: str, taken: set | None = None) -> list[tuple]:
+    """`fight_gym._replay_task`'s tasks for one arm's rows: one per run that arrived at the first Act 3 boss, wanting the first boss's opening (and the
+    second's when the run entered it). A seed already in `taken` (another arm played it) is left to the arm that has it."""
+    taken = set() if taken is None else taken
+    tasks = []
+    for r in arm_rows:
+        fl = arrival_floors(r)
+        if not fl or r["seed"] in taken:
+            continue
+        taken.add(r["seed"])
+        wanted = [{"id": f"{label}:{r['seed']}|f{f:02d}", "cat": CAT, "kind": "boss", "act": 3, "floor": f, "seed": r["seed"], "ix": int(r["ix"]),
+                   "night": label} for _no, f in fl]
+        tasks.append(("replay", r["seed"], int(r["ix"]), config, wanted, r))
+    return tasks
+
+
+def pick_order(seed: str, salt: int = PICK_SEED) -> str:
+    """The hash order a limited check (`--limit`) takes tasks in: the same rows each time, spread over the blocks."""
+    return hashlib.sha256(f"arrival-pick:{salt}:{seed}".encode()).hexdigest()
+
+
+def mismatch_reasons(rep: dict) -> list[str]:
+    """Why a replay did not match its row (the gym's checks: `path_same`, `cards_same`, `rests_same`, every wanted start reached, kinds as wanted);
+    [] when it matched, `capped` for a replay the guard ended."""
+    if rep.get("same"):
+        return []
+    if rep.get("cap_reason"):
+        return ["capped"]
+    out = [name for name, key in (("path", "path_same"), ("cards", "cards_same"), ("rests", "rests_same")) if not rep.get(key)]
+    if rep.get("captured") != rep.get("wanted"):
+        out.append("start not reached")
+    if not out:
+        out.append("kind")
+    return out
+
+
+def arrival_records(replays: list[dict], label: str, arm_rows: dict[str, dict], engine: str) -> tuple[list[dict], dict]:
+    """The ruler's starts from one arm's replay rows, and the counts. A replay that matched its row (`same`) gives its captured starts, in the gym's
+    start schema (`cat` act3-boss, `boss_no` 1 or 2, `cell` act3-boss<turn>-<encounter>, `stratum` own, `source` arrival); one that did not gives
+    nothing. A run's own result at the fight (`arm_run_passed`) is kept for the split. Counts: replays, matched, captured (a replay the guard ended),
+    mismatched by reason, the starts of each turn."""
+    from gym_loop import is_val_seed  # noqa: PLC0415
+
+    records: list[dict] = []
+    why: Counter = Counter()
+    n = matched = capped = 0
+    for rep in replays:
+        n += 1
+        reasons = mismatch_reasons(rep)
+        if reasons:
+            capped += reasons == ["capped"]
+            why.update(reasons)
+            continue
+        matched += 1
+        seed = str(rep["seed"])
+        row = arm_rows.get(seed) or {}
+        turns = {f: no for no, f in arrival_floors(row)}
+        for s in rep.get("starts") or []:
+            no = turns.get(int(s["floor"]))
+            if no is None or not s.get("doc") or not s.get("replay_same") or not s.get("kind_same"):
+                continue
+            enc = int(s["encounter_id"])
+            passed = bool(row.get("win")) if no == 2 else k2_went_past(row)
+            records.append({**s, "cat": CAT, "kind": "boss", "act": 3, "boss_no": no, "cell": f"act3-boss{no}-{enc}", "stratum": "own", "source": "arrival",
+                            "run": seed, "block": label, "engine": engine, "arm_run_passed": passed, "ix": int(rep["ix"]),
+                            "split": "val" if is_val_seed(seed) else "train"})
+    by_turn = Counter(r["boss_no"] for r in records)
+    return records, {"replays": n, "matched": matched, "capped": capped, "mismatched": n - matched, "why": dict(why),
+                     "first": by_turn.get(1, 0), "second": by_turn.get(2, 0)}
+
+
+def k2_went_past(row: dict) -> bool:
+    """Whether the judged run went past the first Act 3 boss (the strict reading)."""
+    from tools.lab import keep_v2 as k2  # noqa: PLC0415
+
+    return bool(k2.went_past(row, 2))
+
+
+def ruler_hash(records: list[dict]) -> str:
+    """The ruler's hash: the rule's name and, for each start in id order, its id and the sha256 of its document (canonical JSON). The files' layout,
+    the order they were written in and the annotations on a start do not change it; a different position does."""
+    h = hashlib.sha256(ARRIVAL_RULE.encode())
+    for r in sorted(records, key=lambda r: r["id"]):
+        doc = json.dumps(r.get("doc"), sort_keys=True, separators=(",", ":"))
+        h.update(f"\n{r['id']}\t{hashlib.sha256(doc.encode()).hexdigest()}".encode())
+    return h.hexdigest()
+
+
+def exclusion_of(records: list[dict]) -> dict:
+    """The practice's exclusion list for the ruler (`fight_exam.exclusion`'s shape): every run behind a start and every start id. Merging it into
+    `exam/exclude_runs.json` is the loop owner's step; the file is only written beside the ruler."""
+    return {"rule": ARRIVAL_RULE, "run_seeds": sorted({str(r["seed"]) for r in records}), "start_ids": sorted(r["id"] for r in records),
+            "starts": len(records), "by_stratum": dict(Counter(r.get("stratum", "own") for r in records))}
+
+
+def load_ruler(folder: str | Path) -> tuple[dict, dict[str, dict]]:
+    """(meta, {start id: lite record}) of a written ruler; the starts' hash is recomputed from the file and must be the meta's (a ruler somebody
+    edited is not the ruler the figures name)."""
+    folder = Path(folder)
+    meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    lite = {s["id"]: s for s in json.loads((folder / f"{ARRIVAL_STEM}.lite.json").read_text(encoding="utf-8"))}
+    recs = []
+    with open(folder / f"{ARRIVAL_STEM}.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                recs.append(json.loads(line))
+    if ruler_hash(recs) != meta.get("ruler_hash"):
+        raise ValueError(f"{folder}: the starts file does not hash to the meta's ruler_hash")
+    if set(lite) != {r["id"] for r in recs}:
+        raise ValueError(f"{folder}: the lite list and the starts file name different starts")
+    return meta, lite
+
+
+def build_ruler(folder: str | Path, champion: str, champion_dir: str, arms: list[dict], engine: str, config: str) -> dict:
+    """Write the ruler from the arms' kept starts: `arms` [{label, path, records, counts, rows}] (`arrival_records` of each). The starts file, its byte
+    index and lite list (the shape `gym_loop.load_start` reads), `meta.json` with the ruler's hash and the counts, and `exclude_runs.json`. Returns
+    the meta. A start id that two arms made is an error (the seeds were taken once, `arrival_tasks`)."""
+    folder = Path(folder)
+    records = [r for a in arms for r in a["records"]]
+    ids = [r["id"] for r in records]
+    if len(ids) != len(set(ids)):
+        raise ValueError("two arms made the same start")
+    n = write_set(folder, ARRIVAL_STEM, records)
+    h = ruler_hash(records)
+    first = [r for r in records if r["boss_no"] == 1]
+    second = [r for r in records if r["boss_no"] == 2]
+    by_cell = Counter(r["cell"] for r in records)
+    meta = {"rule": ARRIVAL_RULE, "champion": champion, "champion_dir": champion_dir, "engine": engine, "config": config, "ruler_hash": h,
+            "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "starts": n, "first": len(first), "second": len(second),
+            "by_cell": dict(sorted(by_cell.items())), "arms": [{"block": a["label"], "rows": a["rows"], "arrivals": a["arrivals"], **a["counts"]} for a in arms],
+            "arrivals": sum(a["arrivals"] for a in arms), "matched": sum(a["counts"]["matched"] for a in arms),
+            "note": "first-boss starts are the exam's statistic; second-boss starts are played for the record. Replays are kept only when they match "
+                    "their row (map path, cards, rests); the arms were played with the prior on the server and replay on the CPU prior."}
+    hs.atomic_json(folder / "meta.json", meta)
+    hs.atomic_json(folder / "exclude_runs.json", exclusion_of(records))
+    return meta
+
+
+def replay_arms(arms: list[dict], out: Path, *, agent_root: Path, engine: str | None, procs: int, limit: int, until: str | None, stop_file: Path,
+                say=print) -> tuple[list[dict], str | None]:
+    """Replay each arm's arrivals (`fight_gym._replay_task` in `procs` spawned workers; a replay with a row on disk is not played again, so a stop
+    loses only the replays in flight). Returns (the arms with `replays` read back, the stop reason). `limit`: only the first `limit` tasks of the
+    hash order over all the arms (a check that the arms load, not a ruler)."""
+    import fight_exam as fe  # noqa: PLC0415
+    import fight_gym as fg  # noqa: PLC0415
+
+    fg.MAX_PROCS = max(fg.MAX_PROCS, procs)
+    tasks_by_arm: list[list[tuple]] = []
+    taken: set = set()
+    for a in arms:
+        tasks_by_arm.append(arrival_tasks(a["all_rows"], a["label"], a["config"], taken))
+        a["arrivals"] = len(tasks_by_arm[-1])
+    if limit:
+        order = sorted(((pick_order(t[1]), i, t) for i, ts in enumerate(tasks_by_arm) for t in ts), key=lambda x: x[0])[:limit]
+        tasks_by_arm = [[t for _k, j, t in order if j == i] for i in range(len(arms))]
+    stopped = None
+    for a, tasks in zip(arms, tasks_by_arm, strict=True):
+        target = out / f"replays-{a['label']}.jsonl"
+        done = {r.get("seed") for r in fg.read_jsonl(target)}
+        left = [t for t in tasks if t[1] not in done]
+        a["tasks"] = tasks
+        if left and not stopped:
+            say(f"{a['label']}: replaying {len(left)} of {len(tasks)} arrivals on engine {engine or a['engine']} ({procs} processes)")
+            stopped = fg.run_tasks(left, fg._replay_task, target, procs, init=fg._init_worker,  # noqa: SLF001
+                                   init_args=(engine or a["engine"], str(agent_root), a["agent_dir"], str(out)), mem_limit=fg.MEM_LIMIT_GB * 2**30 * 2,
+                                   stop=lambda: fe.blocked_reason(starting=False, until=until, stop_file=stop_file))
+        mine = {t[1] for t in tasks}
+        a["replays"] = [r for r in fg.read_jsonl(target) if r.get("seed") in mine]
+    return arms, stopped
+
+
+def load_arm(folder: Path) -> dict:
+    """An arm folder as the replay step reads it: its summary (the agent folder, the config and the engine it was played on: none named is `old`),
+    its rows by seed and its block's label."""
+    summ = json.loads((folder / "summary.json").read_text(encoding="utf-8"))
+    rows = [json.loads(x) for x in (folder / "runs.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()]
+    config = summ.get("config") or ARRIVAL_CONFIG
+    return {"path": folder, "label": arm_label(folder, config), "config": config, "engine": summ.get("engine") or "old",
+            "agent_dir": summ["agent"]["dir"], "all_rows": rows, "rows": len(rows), "by_seed": {r["seed"]: r for r in rows}}
+
+
+def cmd_arrivals(a: argparse.Namespace) -> int:
+    """Rebuild the champion's arrival ruler (or, with `--limit`, check that the judge's arms replay)."""
+    import fight_exam as fe  # noqa: PLC0415
+
+    champion_dir = Path(a.champion)
+    out = Path(a.out) if a.out else ARRIVAL_ROOT / f"{champion_dir.parent.name}-{champion_dir.name}"
+    out.mkdir(parents=True, exist_ok=True)
+    folders = [Path(x) for x in a.arms] if a.arms else champion_arms(champion_dir, a.exclude_block)
+    if not folders:
+        print(f"no arm to read under {champion_dir / 'arms'}")
+        return 2
+    if a.lib:
+        os.environ["STS2_LIB_PATH"] = a.lib
+    arms = [load_arm(f) for f in folders]
+    own = f"{champion_dir.parent.name}/{champion_dir.name}"
+    foreign = [x["label"] for x in arms if x["agent_dir"].replace("\\", "/") != own]
+    if foreign:
+        print(f"these arms were not played by {own}: {', '.join(foreign)}")
+        return 2
+    fe.ALLOW_QUIET[:] = list(a.allow_quiet or [])
+    until = a.until or None
+    stop_file = out / "STOP"
+    why = fe.blocked_reason(starting=True, until=until, stop_file=stop_file)
+    if why:
+        print(f"not started: {why}")
+        return 3
+    try:
+        fe.prepare_process()
+    except fe.Blocked as why2:
+        print(f"not started: {why2}")
+        return 3
+    t0 = time.time()
+    arms, stopped = replay_arms(arms, out, agent_root=Path(a.agent_root), engine=a.engine or None, procs=a.procs, limit=a.limit, until=until,
+                                stop_file=stop_file, say=lambda m: print(f"{time.strftime('%H:%M:%SZ', time.gmtime())} {m}", flush=True))
+    kept, counts = {}, {}
+    for arm in arms:
+        recs, c = arrival_records(arm["replays"], arm["label"], arm["by_seed"], a.engine or arm["engine"])
+        secs = [float(r["seconds"]) for r in arm["replays"] if r.get("seconds") is not None]
+        c["seconds_mean"] = round(sum(secs) / len(secs), 1) if secs else None
+        arm["records"], arm["counts"] = recs, c
+        kept[arm["label"]], counts[arm["label"]] = recs, c
+    tried = {arm["label"]: {"arrivals": arm["arrivals"], "rows": arm["rows"], "tried": len(arm["tasks"]), **arm["counts"]} for arm in arms}
+    if a.limit:
+        summary = {"rule": ARRIVAL_RULE, "mode": "check", "limit": a.limit, "engine": a.engine or arms[0]["engine"], "blocks": tried,
+                   "stopped": stopped, "wall_s": round(time.time() - t0, 1)}
+        hs.atomic_json(out / "verify.json", summary)
+        print(json.dumps(summary, indent=1))
+        return 3 if stopped else 0
+    if stopped or any(len(arm["replays"]) < len(arm["tasks"]) for arm in arms):
+        print(f"stopped ({stopped}); the replays on disk are kept, run again to resume")
+        return 3
+    meta = build_ruler(out, f"{champion_dir.parent.name}-{champion_dir.name}", f"{champion_dir.parent.name}/{champion_dir.name}", arms,
+                       a.engine or arms[0]["engine"], arms[0]["config"])
+    print(json.dumps({k: meta[k] for k in ("starts", "first", "second", "ruler_hash", "arrivals", "matched", "by_cell")}, indent=1))
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------------------- the arrival exam
+
+
+def policy_sha(player_dir: str | Path) -> str:
+    """The sha256 of the player's combat policy: the fight network's identity (a gym player and a run candidate that hold the same one are the same player)."""
+    h = hashlib.sha256()
+    with open(Path(player_dir) / "combat_policy.pt", "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def arrival_game_tasks(starts_file: Path, lite: dict[str, dict], who: str, config: str, done: set, js: tuple[int, ...]) -> list:
+    """The exam games `who` still has to play (`fight_exam.exam_game_steps`' tasks in the arrival namespace), draw by draw, long fights first (the
+    boss fights are all long: the order is the draw, then the start id)."""
+    info = {"starts": str(starts_file), "player": who, "config": config, "ns": ARRIVAL_NS, "label": who}
+    tasks = [("a3-v1", sid, j, s["cat"], info) for sid, s in lite.items() for j in js if (sid, j) not in done]
+    tasks.sort(key=lambda t: (t[2], t[1]))
+    return tasks
+
+
+def cmd_arrival_exam(a: argparse.Namespace) -> int:
+    """Play the ruler under the candidate's and the champion's fight network (config a3-v1, CPU prior, 6 draws a start, test k on draws 6k..6k+5) and
+    read S1: a report; no rule reads it."""
+    import fight_exam as fe  # noqa: PLC0415
+    import fight_gym as fg  # noqa: PLC0415
+    import gym_gate as gg  # noqa: PLC0415
+    import gym_loop as gl  # noqa: PLC0415
+
+    ruler = Path(a.ruler)
+    meta, lite = load_ruler(ruler)
+    cand_dir, champ_dir = Path(a.candidate), Path(a.champion)
+    shas = {"candidate": policy_sha(cand_dir), "champion": policy_sha(champ_dir)}
+    if shas["candidate"] == shas["champion"]:
+        print("the candidate and the champion hold the same fight network: nothing to compare")
+        return 2
+    names = {"candidate": f"arr-cand-{shas['candidate'][:8]}", "champion": f"arr-champ-{shas['champion'][:8]}"}
+    out = Path(a.out) if a.out else ruler / "exam"
+    out.mkdir(parents=True, exist_ok=True)
+    js = gg.arrival_js(a.test, a.draws)
+    if a.lib:
+        os.environ["STS2_LIB_PATH"] = a.lib
+    fe.ALLOW_QUIET[:] = list(a.allow_quiet or [])
+    until = a.until or None
+    stop_file = out / "STOP"
+    why = fe.blocked_reason(starting=True, until=until, stop_file=stop_file)
+    if why:
+        print(f"not started: {why}")
+        return 3
+    try:
+        fe.prepare_process()
+    except fe.Blocked as why2:
+        print(f"not started: {why2}")
+        return 3
+    eng = gl.engine_tag()
+    starts_file = ruler / f"{ARRIVAL_STEM}.jsonl"
+    games = {w: out / f"games-{names[w]}.jsonl" for w in names}
+    stop = SimpleStop(lambda: fe.blocked_reason(starting=False, until=until, stop_file=stop_file))
+    stopped = None
+    for w in ("champion", "candidate"):  # the champion first: its games are the reference of every later candidate
+        done = {(r["start"], int(r["j"])) for r in fg.read_jsonl(games[w]) if r.get("engine") == eng and r.get("config", ARRIVAL_CONFIG) == ARRIVAL_CONFIG}
+        tasks = arrival_game_tasks(starts_file, lite, names[w], ARRIVAL_CONFIG, done, js)
+        if not tasks:
+            continue
+        fe.say(out, f"arrival exam: {names[w]} plays {len(tasks)} games ({len(lite)} starts, draws {js[0]}-{js[-1]}, {ARRIVAL_CONFIG}, CPU prior, {a.procs} processes)")
+        stopped = fe.play_exam_tasks(out, stop, tasks, games[w], champ_dir if w == "champion" else cand_dir, names[w], procs=a.procs, k=a.k, prior="cpu")
+        n = gl.stamp_capped(games[w], tasks, lite, eng, ARRIVAL_CONFIG)
+        if n:
+            fe.say(out, f"arrival exam: {n} capped games of {names[w]} counted as lost")
+        if stopped:
+            break
+    idx = {w: gg.indexed([r for r in fg.read_jsonl(games[w]) if r.get("start") in lite and r.get("engine") == eng and r.get("config", ARRIVAL_CONFIG) == ARRIVAL_CONFIG],
+                         lambda j: j in set(js)) for w in names}
+    first = {sid for sid, s in lite.items() if int(s["boss_no"]) == 1}
+    second = {sid for sid, s in lite.items() if int(s["boss_no"]) == 2}
+    cells = {sid: s["cell"] for sid, s in lite.items()}
+    reading = gg.arrival_exam(idx["candidate"], idx["champion"], ids=first, test=a.test, draws=a.draws, ruler_hash=meta["ruler_hash"], cells=cells)
+    record = gg.arrival_exam(idx["candidate"], idx["champion"], ids=second, test=a.test, draws=a.draws, ruler_hash=meta["ruler_hash"], cells=cells)
+    result = {"rule": ARRIVAL_RULE, "config": ARRIVAL_CONFIG, "prior": "cpu", "engine": eng, "ruler": str(ruler.name), "ruler_hash": meta["ruler_hash"],
+              "candidate": {"dir": cand_dir.name, "policy_sha256": shas["candidate"]}, "champion": {"dir": champ_dir.name, "policy_sha256": shas["champion"]},
+              "test": a.test, "draws": list(js), "stopped": stopped, "first_boss": reading, "second_boss_record": record}
+    text = gg.arrival_report(result)
+    report_dir = Path(a.report_dir) if a.report_dir else out
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "report.txt").write_text(text + "\n", encoding="utf-8", newline="\n")
+    hs.atomic_json(report_dir / "results.json", result)
+    print(text)
+    return 3 if stopped or not reading["complete"] else 0
+
+
+class SimpleStop:
+    """What `fight_exam.play_exam_tasks` asks of its lock: a `stop_reason()` (the run is not under an `ExamLock`: its caller holds the QUIET line)."""
+
+    def __init__(self, fn) -> None:
+        self.stop_reason = fn
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -547,6 +950,33 @@ def main(argv=None) -> int:
     p.add_argument("--engine", choices=("old", "core2"), default="old")
     p.add_argument("--lib", default="")
     p.set_defaults(fn=cmd_own)
+    p = sub.add_parser("arrivals")
+    p.add_argument("--champion", required=True, help="the champion's agent folder (the arms are <champion>/arms/*; the arms were played by it)")
+    p.add_argument("--out", default="", help="the ruler's folder (default: gym-loop/arrival/<generation>-<folder>)")
+    p.add_argument("--arms", nargs="*", default=[], help="arm folders to read (default: the champion's arms except the blocks it was selected on)")
+    p.add_argument("--exclude-block", nargs="*", default=[], help="more blocks to leave out")
+    p.add_argument("--agent-root", default=str(AGENT_ROOT))
+    p.add_argument("--engine", default="", help="the engine to replay on (default: the one each arm was played on: `old` when its summary names none)")
+    p.add_argument("--procs", type=int, default=12)
+    p.add_argument("--limit", type=int, default=0, help="only check that this many arrivals replay (no ruler is written; verify.json)")
+    p.add_argument("--until", default="", help="a UTC stamp after which no replay starts")
+    p.add_argument("--allow-quiet", nargs="*", default=[], help="QUIET.lock tags to ignore besides the loop's (the caller's own line)")
+    p.add_argument("--lib", default="")
+    p.set_defaults(fn=cmd_arrivals)
+    p = sub.add_parser("arrival-exam")
+    p.add_argument("--ruler", required=True)
+    p.add_argument("--candidate", required=True, help="a folder with the candidate's combat_policy.pt and model.json (a gym player or a run candidate)")
+    p.add_argument("--champion", required=True, help="the champion's folder, the same way")
+    p.add_argument("--test", type=int, default=0, help="test k plays draws 6k to 6k + 5")
+    p.add_argument("--draws", type=int, default=ARRIVAL_DRAWS)
+    p.add_argument("--procs", type=int, default=12)
+    p.add_argument("--k", type=int, default=32, help="games a process plays at once")
+    p.add_argument("--out", default="", help="where the games are kept (default: <ruler>/exam)")
+    p.add_argument("--report-dir", default="", help="where report.txt and results.json go (default: --out)")
+    p.add_argument("--until", default="")
+    p.add_argument("--allow-quiet", nargs="*", default=[])
+    p.add_argument("--lib", default="")
+    p.set_defaults(fn=cmd_arrival_exam)
     a = ap.parse_args(argv)
     return a.fn(a)
 

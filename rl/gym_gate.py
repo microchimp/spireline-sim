@@ -562,3 +562,110 @@ def v5_decide(reads: dict[str, dict], stage: int, rule: dict) -> dict:
         return {"verdict": "continue", "stage": stage, "path": None, "worse": worse, "routes": routes, "flags": flags,
                 "why": f"stage {stage}: {why}; part {', '.join(near)} gains at least its near bar, so stage {stage + 1}"}
     return {"verdict": "reject", "stage": stage, "path": None, "worse": worse, "routes": routes, "flags": flags, "why": f"stage {stage}: {why}"}
+
+
+# ---------------------------------------------------------------------------------------------------------- the arrival exam (judge build 1; a report, no rule)
+#
+# S1 of the judge design (DESIGN.md sections 3 and 4): the candidate's fight network plays the champion's own first-Act-3-boss arrivals against the
+# champion's (`rl/act3_starts.py` builds the ruler and plays the games; the reading is here). One reading is the per-start mean of the survival
+# difference (candidate minus champion) over the draws of the test, averaged unweighted over the starts, its SE taken over the starts. The two bounds the
+# design names are printed and no rule reads them: S1 would hold at a gain of at least +1.0 passes per 100 arrivals with the one-sided 0.005 lower
+# bound above 0, and a 95% upper bound below 0 would count as a reversal for the gate.
+
+Z995 = 2.5758293035489004  # one-sided 99.5%: S1's hold bound (0.005)
+ARRIVAL_DRAWS = 6  # draws a start in one test: test k plays draws 6k to 6k + 5
+ARRIVAL_HOLD_POINTS = 1.0  # passes per 100 arrivals S1 would ask of a gain
+
+
+def arrival_js(test: int = 0, draws: int = ARRIVAL_DRAWS) -> tuple[int, ...]:
+    """The draws test `test` plays: `draws` x test to `draws` x test + `draws` - 1 (6k to 6k + 5), so every test's draws are new."""
+    if test < 0 or draws < 1:
+        raise ValueError("a test index is 0 or more and a test plays at least one draw")
+    return tuple(range(draws * test, draws * test + draws))
+
+
+def arrival_cell(per: dict[str, list[tuple[int, int]]]) -> dict:
+    """The reading of a set of starts: `per` {start: [(candidate win, champion win, ...) per draw]} as (cand, inc) pairs of 0/1; the per-start mean of
+    the difference, the unweighted mean over the starts, the SE over the starts (n - 1), both survival rates (per-start means, unweighted)."""
+    starts = len(per)
+    if not starts:
+        return {"starts": 0, "pairs": 0, "diff": None, "se": None, "pm2se": None, "points": None, "se_points": None, "pm2se_points": None,
+                "cand_rate": None, "inc_rate": None}
+    means = [math.fsum(c - i for c, i in v) / len(v) for v in per.values()]
+    mean = math.fsum(means) / starts
+    se = math.sqrt(math.fsum((x - mean) ** 2 for x in means) / (starts - 1) / starts) if starts > 1 else None
+    return {"starts": starts, "pairs": sum(len(v) for v in per.values()), "diff": mean, "se": se, "pm2se": None if se is None else MARGIN_Z * se,
+            "points": 100.0 * mean, "se_points": None if se is None else 100.0 * se, "pm2se_points": None if se is None else 100.0 * MARGIN_Z * se,
+            "cand_rate": math.fsum(math.fsum(c for c, _i in v) / len(v) for v in per.values()) / starts,
+            "inc_rate": math.fsum(math.fsum(i for _c, i in v) / len(v) for v in per.values()) / starts}
+
+
+def arrival_exam(cand: dict, inc: dict, *, ids=None, test: int = 0, draws: int = ARRIVAL_DRAWS, ruler_hash: str | None = None,
+                 cells: dict[str, str] | None = None, hold_points: float = ARRIVAL_HOLD_POINTS) -> dict:
+    """S1's reading on the indexed games ({(start, j): row}) of the candidate and the champion: the pairs both played, j in test `test`'s draws
+    (`arrival_js`), of the starts in `ids` (all by default). The statistic is the per-start mean survival difference (candidate minus champion; a
+    capped game is lost) averaged unweighted over the starts, its SE over the starts; `points`, `se_points` and `pm2se_points` are the same in passes
+    per 100 arrivals. `lb995` is the one-sided 0.005 lower bound and `ub95` the 95% upper bound (fractions); `reads` says what each would mean (S1 holds:
+    a gain of at least `hold_points` with `lb995` above 0; a reversal: `ub95` below 0): a report, nothing reads it. `complete` is true when every start
+    of `ids` has all its draws. `by_cell` (start id to cell name in `cells`) is the same reading per cell. `ruler_hash` is carried through."""
+    js = arrival_js(test, draws)
+    want = set(js)
+    keys = sorted(k for k in set(cand) & set(inc) if k[1] in want and (ids is None or k[0] in ids))
+    per: dict[str, list[tuple[int, int]]] = {}
+    for start, j in keys:
+        per.setdefault(start, []).append((win(cand[(start, j)]), win(inc[(start, j)])))
+    out = {"report_only": True, "statistic": "per-start mean survival difference (candidate minus champion), unweighted over the starts, SE over the starts",
+           "test": test, "draws": list(js), "draws_per_start": draws, "ruler_hash": ruler_hash, **arrival_cell(per)}
+    out["complete"] = bool(per) and all(len(v) == draws for v in per.values()) and (ids is None or len(per) == len(set(ids)))
+    m, se = out["diff"], out["se"]
+    out["lb995"] = None if m is None or se is None else m - Z995 * se
+    out["ub95"] = None if m is None or se is None else m + Z95 * se
+    out["hold_points"] = hold_points
+    out["reads"] = {"hold": bool(out["lb995"] is not None and 100.0 * m >= hold_points and out["lb995"] > 0.0),
+                    "reversal": bool(out["ub95"] is not None and out["ub95"] < 0.0)}
+    if cells:
+        by: dict[str, dict[str, list[tuple[int, int]]]] = {}
+        for start, v in per.items():
+            by.setdefault(cells.get(start, "?"), {})[start] = v
+        out["by_cell"] = {c: arrival_cell(v) for c, v in sorted(by.items())}
+    return out
+
+
+def _arrival_line(label: str, x: dict) -> str:
+    if x.get("diff") is None:
+        return f"{label}: no pairs"
+    pm = "" if x["pm2se_points"] is None else f", ±{x['pm2se_points']:.2f} (2 SE)"
+    se = "n/a" if x["se_points"] is None else f"{x['se_points']:.2f}"
+    return (f"{label}: {x['starts']} starts, {x['pairs']} games; the candidate passes {100 * x['cand_rate']:.1f} in 100, the champion {100 * x['inc_rate']:.1f}; "
+            f"difference {x['points']:+.2f} passes per 100 arrivals (SE {se}{pm})")
+
+
+def arrival_report(result: dict) -> str:
+    """The text of an arrival exam's result (`rl/act3_starts.py arrival-exam`): the players, the ruler's hash, the draws, the reading with its SE and
+    plus or minus 2 SE, both bounds, and what each would mean; second-boss starts and each cell on their own lines (for the record)."""
+    r = result["first_boss"]
+    js = result["draws"]
+    cand, champ = result["candidate"], result["champion"]
+    lines = ["Arrival exam (S1 of the judge design; a report: no rule reads it)",
+             f"candidate {cand['dir']} (fight network {cand['policy_sha256'][:12]}) against champion {champ['dir']} ({champ['policy_sha256'][:12]})",
+             f"ruler {result['ruler']}, hash {result['ruler_hash']}; config {result['config']} on the {result['prior'].upper()} prior, engine {result['engine']}; "
+             f"test {result['test']}: draws {js[0]} to {js[-1]} ({len(js)} a start, paired)",
+             _arrival_line("first Act 3 boss (the statistic)", r)]
+    if r.get("diff") is not None:
+        lb = "n/a" if r["lb995"] is None else f"{100 * r['lb995']:+.2f}"
+        ub = "n/a" if r["ub95"] is None else f"{100 * r['ub95']:+.2f}"
+        lines += [f"0.005 lower bound {lb} passes per 100; S1 would hold at a gain of at least {r['hold_points']:+.1f} with that bound above 0: "
+                  f"{'yes' if r['reads']['hold'] else 'no'}",
+                  f"95% upper bound {ub} passes per 100; a reversal when it is below 0: {'yes' if r['reads']['reversal'] else 'no'}"]
+    if not r.get("complete"):
+        lines.append(f"INCOMPLETE: not every start has its {len(js)} draws for both players ({r['pairs']} paired games of {r['starts']} starts)")
+    if result.get("stopped"):
+        lines.append(f"stopped: {result['stopped']}")
+    for cell, x in sorted((r.get("by_cell") or {}).items()):
+        lines.append("  " + _arrival_line(cell, x))
+    s = result.get("second_boss_record")
+    if s and s.get("starts"):
+        lines.append(_arrival_line("second Act 3 boss (for the record)", s))
+        for cell, x in sorted((s.get("by_cell") or {}).items()):
+            lines.append("  " + _arrival_line(cell, x))
+    return "\n".join(lines)
