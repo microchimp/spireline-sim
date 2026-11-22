@@ -37,6 +37,14 @@ the candidate is played on a second fresh block and judged on both pooled. Rule 
 The +1.0 is `MIN_GAIN`, the default of the `min_gain` argument of the functions that ask it (since 2026-11-19, D68 addendum 3: `--min-gain` on
 `gen0.py train`, `promote` and `rejudge`). A caller that names another minimum gets it in the verdict (`min_gain`, `routes["A"]["min_gain"]`), in the
 funnel's looks and in the futility stop; the module's constant is never changed.
+
+Route S (D68 addendum 6 outcome 4; docs/rl/KEEP_TEST_V3.md) is v3's second route to a promotion, for a candidate that is a fight-only swap of the
+champion (``judge_v3(..., s1=<reading>)``; with no reading v3 is exactly as above). S1 is the arrival exam's reading (`rl/act3_starts.py arrival-exam`
+through `s1_reading`): the candidate's fight network against the champion's on the champion's own first-Act-3-boss arrivals, in passes per 100
+arrivals; it holds when the mean is at least `S1_MIN` and the mean minus `S1_Z` SE is above 0 (`route_s1`). S2 is the whole-run judgement as the
+breakage check: the funnel's looks refuse only (`seq_call_v3(route_s=True)`: from `S2_FROM_PAIRS` pairs on, deep_f's 99% upper bound below 0 or a
+floor collapse), and the final judgement on every pair refuses when deep_f's 95% upper bound is below 0 and otherwise promotes if the collapse, crash and
+wins guards hold. Under S there is no futility stop, no early promotion and no extension. The ledger's route is "S" ("AS" when route A holds too).
 """
 
 from __future__ import annotations
@@ -76,6 +84,17 @@ COLLAPSE_FLOORS = -5.0  # v3: the floors refuse only a collapsed player: the pai
 COLLAPSE_ALPHA = 0.01  # the one-sided level of that bound
 EXTEND_ROUTE = "X"  # v3: the ledger's route for a block that is extended, not decided
 ADVISORY_V3 = ("attempt", "drift")  # v3: checks recorded with their value that decide nothing (the attempt cap since D65 addendum 2, the drift check since D66)
+
+# Route S, the boss-door route for fight-only swaps (D66 as amended by D68 addendum 6 outcome 4, 2026-11-22; docs/rl/KEEP_TEST_V3.md "Route S")
+RULE_S = "route-s-2026-11-22"
+ROUTE_S = "S"  # the ledger's route when S1 and S2 hold ("AS" when route A holds as well)
+ROUTE_AS = "AS"
+S1_MIN = 1.0  # S1: the arrival exam's mean gain is at least this many passes per 100 arrivals ...
+S1_Z = NormalDist().inv_cdf(1 - ROUTE_ALPHA)  # ... and the mean minus this many SE (2.576, the one-sided 0.005 bound) is above 0
+S2_FROM_PAIRS = 500  # S2's looks refuse only from this many whole-run pairs on (the D51 schedule's second look)
+S2_LOOK_ALPHA = 0.01  # a look refuses when deep_f's one-sided 99% upper bound is below 0 (or the floors collapse)
+S2_FINAL_ALPHA = 0.05  # the final look (2,000 pairs) refuses when deep_f's one-sided 95% upper bound is below 0
+S1_KEYS = ("ruler_hash", "candidate", "champion")  # what a reading must name the same as the pair it is applied to
 
 
 def check_min_gain(value: Any) -> float:
@@ -377,6 +396,93 @@ def floor_collapse(floor: Mapping[str, float]) -> dict[str, Any]:
             "n": int(floor["n"])}
 
 
+# ------------------------------------------------------------------ route S (D68 addendum 6 outcome 4): S1, the arrival exam's reading, and S2
+
+
+def _short(x: Any) -> str:
+    return str(x)[:12] if x is not None else "none"
+
+
+def s1_match(reading: Mapping[str, Any], expect: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Whether a reading names the pair it is applied to: its ruler's hash, its candidate (the sha256 of the fight network it played) and its
+    champion must equal `expect`'s (`ruler_hash`, `candidate`, `champion`). A key the caller cannot name cannot be checked, and an unchecked
+    reading is not applied. `reasons` says each failure in words; `expect` is kept in the record."""
+    reasons: list[str] = []
+    if expect is None:
+        reasons.append("no pair identity was given: the reading cannot be checked against the pair")
+    else:
+        for key in S1_KEYS:
+            want, got = expect.get(key), reading.get(key)
+            if want is None:
+                reasons.append(f"{key}: the pair's is not known, so the reading cannot be checked")
+            elif got != want:
+                reasons.append(f"{key} does not match (the reading names {_short(got)}, the pair {_short(want)})")
+    return {"verified": not reasons, "reasons": reasons, "expect": {k: (expect or {}).get(k) for k in S1_KEYS}}
+
+
+def s1_reading(result: Mapping[str, Any], expect: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """S1's reading from an arrival exam's results (`rl/act3_starts.py arrival-exam`, its `results.json`; `gym_gate.arrival_exam`'s figures) in the shape
+    the rule reads: `mean` and `se` in passes per 100 arrivals (the per-start mean survival difference, candidate minus champion, unweighted over the
+    starts, its SE over the starts), `starts`, `pairs`, `draws` (the draw numbers played), `test`, `complete` (every start has all its draws),
+    the ruler's hash and the sha256 of the candidate's and of the champion's fight network the exam was played for, and `match`
+    (`s1_match` against `expect`, the pair's own ruler hash and networks)."""
+    fb = result.get("first_boss") or {}
+    reading = {"rule": result.get("rule"), "config": result.get("config"), "engine": result.get("engine"), "mean": fb.get("points"),
+               "se": fb.get("se_points"), "starts": fb.get("starts"), "pairs": fb.get("pairs"), "draws": list(result.get("draws") or ()),
+               "draws_per_start": fb.get("draws_per_start"), "test": result.get("test"), "complete": bool(fb.get("complete")),
+               "stopped": result.get("stopped"), "ruler_hash": result.get("ruler_hash"),
+               "candidate": (result.get("candidate") or {}).get("policy_sha256"), "champion": (result.get("champion") or {}).get("policy_sha256"),
+               "candidate_dir": (result.get("candidate") or {}).get("dir"), "champion_dir": (result.get("champion") or {}).get("dir")}
+    reading["match"] = s1_match(reading, expect)
+    return reading
+
+
+def route_s1(reading: Mapping[str, Any] | None, *, fight_swap: bool = True, s1_min: float = S1_MIN, z: float = S1_Z) -> dict[str, Any] | None:
+    """S1: the arrival exam's reading holds when its mean is at least `s1_min` passes per 100 arrivals and the mean minus `z` SE (2.576, the one-sided
+    0.005 bound) is above 0. A reading that is not applied (`applied` false, the words in `reasons`) never holds: one that does not name the pair it
+    is for (`s1_match`), a candidate that is not a fight-only swap (`fight_swap`), one that is incomplete or has no mean or SE. None for no reading."""
+    if reading is None:
+        return None
+    reasons: list[str] = []
+    if not fight_swap:
+        reasons.append("the candidate is not a fight-only swap of the champion")
+    match = reading.get("match")
+    if not match:
+        reasons.append("the reading was not checked against the pair (`s1_reading(result, expect)` does that)")
+    elif not match.get("verified"):
+        reasons += list(match.get("reasons") or ["the reading does not match the pair"])
+    mean, se = reading.get("mean"), reading.get("se")
+    known = all(isinstance(x, (int, float)) and math.isfinite(x) for x in (mean, se))
+    if not known:
+        reasons.append("the reading has no mean or no SE")
+    if not reading.get("complete"):
+        reasons.append("the reading is incomplete: not every start has all its draws")
+    lower = float(mean) - z * float(se) if known else None
+    checks = {"min_gain": bool(known and mean >= s1_min), "bound": bool(known and lower > 0)}
+    applied = not reasons
+    return {"applied": applied, "holds": bool(applied and all(checks.values())), "checks": checks, "mean": mean if known else None,
+            "se": se if known else None, "pm2se": MARGIN_Z * float(se) if known else None, "lower": lower, "min": s1_min, "z": z,
+            "starts": reading.get("starts"), "pairs": reading.get("pairs"), "draws": list(reading.get("draws") or ()),
+            "test": reading.get("test"), "ruler_hash": reading.get("ruler_hash"), "candidate": reading.get("candidate"),
+            "champion": reading.get("champion"), "reasons": reasons}
+
+
+def route_s_parameters() -> dict[str, Any]:
+    """The route's named parameters, as `promotion.json` records them under `keep_v2.route_s.parameters`."""
+    return {"s1_min": S1_MIN, "s1_z": S1_Z, "s2_from_pairs": S2_FROM_PAIRS, "s2_look_alpha": S2_LOOK_ALPHA, "s2_final_alpha": S2_FINAL_ALPHA}
+
+
+def state_shift(per_arr: Mapping[str, Any], s1: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The whole-run pass rate per 100 arrivals' difference (candidate minus champion, `per_arrival`) minus S1's, with the two SEs combined as
+    independent: how far the whole run's arrivals and fights moved from what the fight brain does on the champion's own arrivals. None when either
+    figure cannot be worked out."""
+    a, sa, b, sb = per_arr.get("diff"), per_arr.get("se"), s1.get("mean"), s1.get("se")
+    if any(x is None or not math.isfinite(x) for x in (a, sa, b, sb)):
+        return None
+    se = math.hypot(sa, sb)
+    return {"whole_run_per_arrival": a, "s1": b, "diff": a - b, "se": se, "pm2se": MARGIN_Z * se, "unit": "per 100 arrivals"}
+
+
 # ------------------------------------------------------------------ the guards
 
 
@@ -448,8 +554,10 @@ def wins_clause(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapp
 def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
           frontier_info: Mapping[str, Any] | None = None, lineage: Sequence[tuple[int, int]] = (), previous_flagged: bool = False,
           prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED, rule: str = "v2",
-          extended: bool = False, final: bool = True, min_gain: float = MIN_GAIN) -> dict[str, Any]:
-    """The keep test v2 on one block (`rule` "v3": the keep rule v3, `judge_v3`; `extended` and `final` are read by v3 alone; `min_gain` is route A's
+          extended: bool = False, final: bool = True, min_gain: float = MIN_GAIN, s1: Mapping[str, Any] | None = None,
+          fight_swap: bool = True) -> dict[str, Any]:
+    """The keep test v2 on one block (`rule` "v3": the keep rule v3, `judge_v3`; `extended` and `final` are read by v3 alone, so are `s1` (route S's
+    reading, `s1_reading`) and `fight_swap`; `min_gain` is route A's
     smallest deep_f gain per 100 runs, MIN_GAIN by default, and is recorded in the verdict): both routes, the wins clause, the crash guard and the drift check, with the Act 1 guards reported and
     the attempt cap recorded (D65 addendum 2: `checks["attempt"]` is what the old cap said, `attempt_advisory` is true, nothing refuses on
     it). `frontier` is the frontier's index (`frontier_record` for the lineage); `lineage` the promoted lineage's
@@ -458,9 +566,12 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
     `blocks` is true when a check other than the routes and the advisory attempt fails (the promotion would be refused even on a route)."""
     if rule == "v3":
         return judge_v3(cand_rows, base_rows, frontier=frontier, frontier_info=frontier_info, lineage=lineage, previous_flagged=previous_flagged,
-                        prior_attempts=prior_attempts, cap=cap, boot=boot, seed=seed, extended=extended, final=final, min_gain=min_gain)
+                        prior_attempts=prior_attempts, cap=cap, boot=boot, seed=seed, extended=extended, final=final, min_gain=min_gain,
+                        s1=s1, fight_swap=fight_swap)
     if rule != "v2":
         raise ValueError(f"unknown keep rule {rule!r} (the rules of this module are {', '.join(RULE_VERSIONS)})")
+    if s1 is not None:
+        raise ValueError("route S is the keep rule v3's (rule='v3')")
     d = paired_diffs(cand_rows, base_rows, frontier)
     st = diff_stats(d["floor"], d["deep"], boot, seed)
     ra, rf = route_a(d["floor"], d["deep"], stats=st, min_gain=min_gain), route_f(d["floor"], d["deep"], stats=st)
@@ -486,7 +597,7 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
 def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
              frontier_info: Mapping[str, Any] | None = None, lineage: Sequence[tuple[int, int]] = (), previous_flagged: bool = False,
              prior_attempts: int = 0, cap: int = pg.ATTEMPT_CAP, boot: int = BOOT_B, seed: int = BOOT_SEED, extended: bool = False,
-             final: bool = True, min_gain: float = MIN_GAIN) -> dict[str, Any]:
+             final: bool = True, min_gain: float = MIN_GAIN, s1: Mapping[str, Any] | None = None, fight_swap: bool = True) -> dict[str, Any]:
     """The keep rule v3 (D66) on the paired arms of one judgement (one block, or the pooled blocks of an extended candidate: the rows are
     all the pairs). Route A alone promotes: deep_f's gain per 100 runs has its one-sided 0.005 bound above 0 and a point gain of at least
     `min_gain` (+1.0 by default), with no floor margin; route F is gone. The floors decide nothing but a collapse: `checks["floor_collapse"]` fails when the paired
@@ -498,7 +609,13 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
     `extended` (it was extended before, or this judgement already pools a second block) and route A's point gain is at least `min_gain` while its
     0.005 bound is not above 0, and no guard fails (no collapse, no crash, no wins failure): `extend` is true, `route` reads "X", and
     `promote` is false. Anything else that does not promote is a refusal. `route` reads "A" when route A holds (also when a guard blocks the
-    promotion, as in v2), "X" for an extension, "" otherwise."""
+    promotion, as in v2), "X" for an extension, "" otherwise.
+
+    Route S (D68 addendum 6 outcome 4): with `s1` (a reading from `s1_reading`, checked against the pair) and `fight_swap` (the candidate is a fight-only
+    swap), S1 is asked (`route_s1`). When it holds the decision is S's: the collapse, crash and wins guards as above, and S2's final bound, deep_f's
+    one-sided 95% upper bound not below 0 (`S2_FINAL_ALPHA`); there is no extension. `route` reads "S" ("AS" when route A holds too) and the verdict
+    carries `route_s` (the parameters, the S1 reading, the S2 bounds, the state shift). When S1 does not hold, or the reading is not applied (its reasons are
+    recorded in `route_s`), v3 decides as it always did. With no `s1` the verdict is exactly v3's and has no `route_s`."""
     d = paired_diffs(cand_rows, base_rows, frontier)
     st = diff_stats(d["floor"], d["deep"], boot, seed, floor_upper99=True)
     ra = route_a_v3(d["floor"], d["deep"], stats=st, min_gain=min_gain)
@@ -510,24 +627,44 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
     attempt = pg.retry_cap(prior_attempts, cap)
     seeds, c, b = paired_rows(cand_rows, base_rows)
     kills = {name: [sum(bosses_beaten(c[s])[j] for s in seeds), sum(bosses_beaten(b[s])[j] for s in seeds)] for j, name in enumerate(BOSSES)}
-    checks = {"route": bool(ra["holds"]), "floor_collapse": not collapse["collapsed"], "wins": bool(wins["holds"]), "crash": bool(crash["holds"]),
+    pa = per_arrival(cand_rows, base_rows)
+    s1_rec = route_s1(s1, fight_swap=fight_swap)
+    s_active = bool(s1_rec and s1_rec["holds"])  # S1 holds: S decides, and nothing is extended
+    s2 = None
+    if s_active:  # S2's final bound: deep_f's one-sided 95% upper bound (the bootstrap's, as route A's bounds) must not be below 0
+        ds = diff_summary(d["deep"], boot, seed, upper99=True)
+        s2 = {"pairs": int(ds["n"]), "deep_mean": ds["mean"], "deep_se": ds["se"], "upper95": ds["upper95"], "upper99": ds["upper99"],
+              "final_alpha": S2_FINAL_ALPHA, "final_ok": bool(ds["upper95"] >= 0), "look_alpha": S2_LOOK_ALPHA, "from_pairs": S2_FROM_PAIRS,
+              "note": "the funnel's looks refuse only (deep_f's 99% upper bound below 0 or a floor collapse, from 500 pairs on); the final look refuses when "
+                      "the 95% upper bound is below 0 and otherwise promotes if the guards hold"}
+    s_holds = bool(s2 and s2["final_ok"])
+    checks = {"route": bool(ra["holds"] or s_holds), "floor_collapse": not collapse["collapsed"], "wins": bool(wins["holds"]), "crash": bool(crash["holds"]),
               "drift": not drift["blocks"], "attempt": bool(attempt["within_cap"])}
     gating = {k: v for k, v in checks.items() if k not in ADVISORY_V3}
     blocking = [k for k, v in gating.items() if not v and k != "route"]
-    extend = bool(final and not extended and not ra["holds"] and ra["checks"]["min_gain"] and not ra["checks"]["deep_bound"] and not blocking)
-    route = "A" if ra["holds"] else EXTEND_ROUTE if extend else ""
-    return {"rule": RULE_V3, "boss_reading": BOSS_READING, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
-            "route": route, "routes": {"A": ra}, "floor": st["floor"], "deep": st["deep"], "kills": kills, "alpha": ROUTE_ALPHA,
-            "min_gain": min_gain, "collapse": collapse, "wins": wins, "crash": crash, "drift": drift, "attempt": attempt, "act1_review": a1,
-            "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),
-            "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "advisory_checks": list(ADVISORY_V3),
-            "review": drift["verdict"] == "flagged", "margins": margins(cand_rows, base_rows, frontier), "per_arrival": per_arrival(cand_rows, base_rows)}
+    extend = bool(final and not extended and not s_active and not ra["holds"] and ra["checks"]["min_gain"] and not ra["checks"]["deep_bound"]
+                  and not blocking)
+    route = (ROUTE_AS if ra["holds"] else ROUTE_S) if s_holds else "A" if ra["holds"] else EXTEND_ROUTE if extend else ""
+    out = {"rule": RULE_V3, "boss_reading": BOSS_READING, "frontier": {**dict(frontier_info or {}), "index": int(frontier), "name": BOSSES[int(frontier)]},
+           "route": route, "routes": {"A": ra}, "floor": st["floor"], "deep": st["deep"], "kills": kills, "alpha": ROUTE_ALPHA,
+           "min_gain": min_gain, "collapse": collapse, "wins": wins, "crash": crash, "drift": drift, "attempt": attempt, "act1_review": a1,
+           "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),
+           "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "advisory_checks": list(ADVISORY_V3),
+           "review": drift["verdict"] == "flagged", "margins": margins(cand_rows, base_rows, frontier), "per_arrival": pa}
+    if s1_rec is not None:  # a verdict with no reading is exactly v3's
+        why = ("S1 holds: S decides (S2's final bound, the guards; no extension)" if s_active
+               else "S1 did not hold: v3 decides" if s1_rec["applied"] else "S1 was not applied: v3 decides (" + "; ".join(s1_rec["reasons"]) + ")")
+        out["route_s"] = {"rule": RULE_S, "parameters": route_s_parameters(), "fight_swap": bool(fight_swap), "s1": s1_rec, "applies": s_active, "s2": s2,
+                          "holds": s_holds, "state_shift": state_shift(pa, s1_rec) if s1_rec["applied"] else None, "decided_by": "S" if s_active else "v3",
+                          "why": why}
+    return out
 
 
 def ledger_cells(verdict: Mapping[str, Any]) -> dict[str, Any]:
-    """The nine promotions.tsv columns a v2 row adds after `macro`: rule, frontier, route (A, F, AF or empty; v3: A, X for an extension, or
-    empty), k2_cand and k2_base (the Act 2 boss's kills, the headline, written whatever the verdict), d_deep and deep_lower (per 100 runs; the
-    0.005 bound), p_deep, floor_lower95."""
+    """The nine promotions.tsv columns a v2 row adds after `macro`: rule, frontier, route (A, F, AF or empty; v3: A, X for an extension, S or AS
+    when route S decided, or empty), k2_cand and k2_base (the Act 2 boss's kills, the headline, written whatever the verdict), d_deep and deep_lower
+    (per 100 runs; the 0.005 bound), p_deep, floor_lower95. The columns are fixed: route S's figures (S1's reading with plus or minus 2 SE, S2's
+    bound) are in the row's `guard` cell (`summary`) and in promotion.json (`keep_v2.route_s`)."""
     k2 = verdict["kills"]["B2"]
     return {"rule": LEDGER_RULE_V3 if verdict.get("rule") == RULE_V3 else LEDGER_RULE, "frontier": verdict["frontier"]["name"], "route": verdict["route"], "k2_cand": k2[0], "k2_base": k2[1],
             "d_deep": f"{verdict['deep']['mean']:.4f}", "deep_lower": f"{verdict['deep']['lower_route']:.4f}", "p_deep": f"{verdict['deep']['p']:.5f}",
@@ -561,6 +698,23 @@ def margin_parts(verdict: Mapping[str, Any]) -> list[str]:
     return parts
 
 
+def route_s_parts(verdict: Mapping[str, Any]) -> list[str]:
+    """The ledger line's route S parts (none for a verdict with no S1 reading): S1's mean in passes per 100 arrivals with plus or minus 2 SE, its starts,
+    draws and ruler, whether it holds (or why it was not applied), and, when S1 held, S2's final bound (deep_f's 95% upper bound, not below 0) and the
+    99% upper bound the looks read."""
+    rs = verdict.get("route_s")
+    if not rs:
+        return []
+    s1, s2 = rs["s1"], rs.get("s2")
+    if not s1["applied"]:
+        return [f"S1 not applied ({'; '.join(s1['reasons'])})"]
+    parts = [f"S1 {s1['mean']:+.2f}{_pm(s1.get('se'))} per 100 arrivals ({s1['starts']} starts, {len(s1['draws'])} draws, ruler {str(s1['ruler_hash'])[:8]}): "
+             + ("holds" if s1["holds"] else "does not hold, v3 decides")]
+    if s2:
+        parts.append(f"S2 deep 95% upper {s2['upper95']:+.2f} (final bound 0: {'ok' if s2['final_ok'] else 'FAILS'}; 99% upper {s2['upper99']:+.2f})")
+    return parts
+
+
 def summary(verdict: Mapping[str, Any]) -> str:
     """One line for the `guard` cell of promotions.tsv (no tabs): the route, the frontier, deep_f and the floor guard, then the crash,
     wins, drift and attempt checks, then the Act 1 guards that would have fired (reported only), then the margins (`margin_parts`). Every figure
@@ -573,7 +727,7 @@ def summary(verdict: Mapping[str, Any]) -> str:
     if verdict.get("rule") == RULE_V3:
         co = verdict["collapse"]
         parts = [f"v3{gain} route {r}" + (" (extend)" if verdict["extend"] else ""), f"frontier {verdict['frontier']['name']}",
-                 f"deep {dp['mean']:+.2f}{_pm(dp.get('se'))} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
+                 f"deep {dp['mean']:+.2f}{_pm(dp.get('se'))} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}", *route_s_parts(verdict),
                  f"floor {fl['mean']:+.2f}{_pm(fl.get('se'))} (99% upper {co['upper99']:+.2f}, collapse below {co['limit']:+.1f}: {'COLLAPSED' if co['collapsed'] else 'ok'})",
                  f"crash {'ok' if cr['holds'] else 'FAILS'} ({cr['cand']}/{cr['base']})",
                  "wins guard " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
@@ -617,12 +771,16 @@ def normal_stats(diffs: Sequence[float]) -> dict[str, float]:
 
 
 def seq_call_v3(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, looks: Sequence[int], *,
-                alpha_early: float = EARLY_ALPHA, min_gain: float = MIN_GAIN) -> dict[str, Any]:
+                alpha_early: float = EARLY_ALPHA, min_gain: float = MIN_GAIN, route_s: bool = False) -> dict[str, Any]:
     """The funnel's call at look `j` of `looks` under the keep rule v3 (normal statistics, as `seq_call`). The smoke look (j = 0) refuses
     nothing on these figures (D64; `funnel` still refuses a crashing candidate there); a later look refuses when route A is dead (deep_f's
     one-sided 99% upper bound below `min_gain`, +1.0 per 100 by default: not even an extension is in reach) or the floors have collapsed (their 99% upper bound
     below -5.0); an interim look is eligible to promote when route A's z reaches the early z (`early_z`, 3.72 for seven looks) with a gain of at
-    least +1.0. Nothing else about the floors is asked: no floor route, no floor margin. The last look is `final`."""
+    least +1.0. Nothing else about the floors is asked: no floor route, no floor margin. The last look is `final`.
+
+    `route_s` (S2 of route S, after S1 held): the looks refuse only. From `S2_FROM_PAIRS` (500) pairs on a look refuses when deep_f's one-sided 99% upper
+    bound (`S2_LOOK_ALPHA`) is below 0 or the floors have collapsed (as above); it is never eligible to promote early and never asks route A's gain, so
+    nothing here stops a candidate that is not dead. The smoke look and the last look are as above; the last look's decision is `judge`'s (S2's final bound)."""
     fl, dp = normal_stats(floor_diffs), normal_stats(deep_diffs)
     n_looks = len(looks)
     nd = NormalDist()
@@ -637,6 +795,20 @@ def seq_call_v3(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: in
     if j == 0:  # D64: the smoke look refuses nothing on the floor or on deep_f; the figures are recorded
         return {**out, "action": "continue", "smoke_would_refuse": False,
                 "reason": "smoke block: refuses nothing on these figures (D64; v3 asks the floors for a collapse and deep_f for route A at the later looks)"}
+    if route_s:  # S2: the looks refuse only, from 500 pairs on
+        out["route"] = ROUTE_S
+        if dp["n"] < S2_FROM_PAIRS:
+            return {**out, "action": "continue", "reason": f"route S: the looks refuse from {S2_FROM_PAIRS} pairs on ({dp['n']} played)"}
+        harm = d + nd.inv_cdf(1 - S2_LOOK_ALPHA) * t < 0
+        collapsed = out["upper99"] < COLLAPSE_FLOORS
+        if harm or collapsed:
+            why = []
+            if harm:
+                why.append(f"deep_f is down (route S: its 99% upper bound {d + nd.inv_cdf(1 - S2_LOOK_ALPHA) * t:+.2f} is below 0)")
+            if collapsed:
+                why.append(f"the floors collapsed (99% upper bound {out['upper99']:+.2f} below {COLLAPSE_FLOORS:+.1f})")
+            return {**out, "action": "refuse", "reason": " and ".join(why)}
+        return {**out, "action": "continue", "reason": "route S: the looks refuse only, and neither a harm nor a collapse is shown"}
     collapsed = out["upper99"] < COLLAPSE_FLOORS
     a_dead = out["deep_upper99"] < min_gain
     if collapsed or a_dead:
@@ -653,7 +825,7 @@ def seq_call_v3(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: in
 
 
 def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, looks: Sequence[int], *,
-             alpha_early: float = EARLY_ALPHA, rule: str = "v2", min_gain: float = MIN_GAIN) -> dict[str, Any]:
+             alpha_early: float = EARLY_ALPHA, rule: str = "v2", min_gain: float = MIN_GAIN, route_s: bool = False) -> dict[str, Any]:
     """The funnel's call at look `j` (0-based) of `looks` on the seeds played, normal statistics throughout: `action` is "refuse",
     "eligible" (a route clears the early z and its other conditions; `routes` names them; the caller still asks `judge`), "continue"
     or "final" (the last look: `judge` on all the seeds). With m, s, z the floor differences' mean, SE and z, and d, t, u the deep_f
@@ -665,12 +837,15 @@ def seq_call(floor_diffs: Sequence[float], deep_diffs: Sequence[float], j: int, 
       interim looks       eligible when route F's z reaches z_e with d + 1.645 t >= 0, or route A's u reaches z_e with d >= 1.0 and
                           m - 1.645 s >= -1.0; z_e = `early_z` (3.72 for seven looks).
 
-    `rule` "v3" is `seq_call_v3`. `min_gain` is the 1.0 above (route A's smallest gain, MIN_GAIN by default).
+    `rule` "v3" is `seq_call_v3`. `min_gain` is the 1.0 above (route A's smallest gain, MIN_GAIN by default). `route_s` (v3 only) is S2's looks
+    (`seq_call_v3(route_s=True)`): they refuse only.
     """
     if rule == "v3":
-        return seq_call_v3(floor_diffs, deep_diffs, j, looks, alpha_early=alpha_early, min_gain=min_gain)
+        return seq_call_v3(floor_diffs, deep_diffs, j, looks, alpha_early=alpha_early, min_gain=min_gain, route_s=route_s)
     if rule != "v2":
         raise ValueError(f"unknown keep rule {rule!r} (the rules of this module are {', '.join(RULE_VERSIONS)})")
+    if route_s:
+        raise ValueError("route S is the keep rule v3's (rule='v3')")
     fl, dp = normal_stats(floor_diffs), normal_stats(deep_diffs)
     n_looks = len(looks)
     nd = NormalDist()
