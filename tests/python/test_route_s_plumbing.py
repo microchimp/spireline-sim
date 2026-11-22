@@ -675,8 +675,18 @@ class RejudgeRouteSTests(World):
         self.assertTrue(all(x["action"] in ("continue", "final") for x in seq["looks"]))
         self.assertTrue(all(resume for _g, _n, resume, _kw in calls))  # the funnel's own resume: a seed with a row is not played again
         self.assertEqual([n for g, n, _r, _kw in calls if g == 4], [200, 500, 800, 1100, 1400, 1700, 2000])  # the looks are walked again over the stored rows
-        self.assertEqual(doc["rejudged"]["completed"], {"from_seeds": 1100, "to_seeds": 2000, "block": 2000, "earlier_stop": "futility",
-                                                        "text": "completed from 1100 to 2000 of 2000 seeds under route S (the stored rows kept)"})
+        done = doc["rejudged"]["completed"]
+        self.assertEqual({k: done[k] for k in ("from_seeds", "to_seeds", "block", "earlier_stop", "text")},
+                         {"from_seeds": 1100, "to_seeds": 2000, "block": 2000, "earlier_stop": "futility",
+                          "text": "completed from 1100 to 2000 of 2000 seeds under route S (the stored rows kept)"})
+        # the stored rows were copied aside before anything played into the arms (the funnel's resume rewrites runs.jsonl and starts it empty if the identity changed)
+        self.assertEqual(len(done["row_backups"]), 2)
+        for name in done["row_backups"]:
+            self.assertRegex(name, r"^(c1|candidate)/arms/Etest-r1-a3-v1/runs\.before-completion-\d{8}T\d{6}Z\.jsonl$")
+        for folder in (self.cand, self.champ):
+            copies = list((folder / "arms" / "Etest-r1-a3-v1").glob("runs.before-completion-*.jsonl"))
+            self.assertEqual(len(copies), 1)
+            self.assertEqual(len(copies[0].read_text().splitlines()), 1100)
         self.assertEqual(doc["keep_v2"]["route"], "S")
         self.assertEqual(doc["keep_v2"]["route_s"]["s2"]["pairs"], 2000)
         self.assertEqual(doc["base_reuse"]["action"], "none")  # both arms played the first 1,100 pairs together: nothing of the champion's is reused unchecked

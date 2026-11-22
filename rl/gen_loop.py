@@ -3389,6 +3389,23 @@ def base_arm_reuse(seeds: Sequence[str], cand: Path | str, base_dir: Path | str,
             "why": f"{len(differing)} of {len(window)} replayed seeds differ from the stored rows: the stored arm is set aside and the champion plays the block again"}
 
 
+def backup_arm_rows(arm_dirs: Sequence[Path | str]) -> list[str]:
+    """A copy of each arm's `runs.jsonl` beside it (`runs.before-completion-<UTC>.jsonl`; nothing reads that name) before a completion plays into the arm: the
+    funnel's resume (`gen0.resume_rows`) rewrites the file with the rows whose identity still matches and starts it empty when the agent or the setting has
+    changed, so the stored rows of a block are kept safe first. The names of the copies written."""
+    import shutil  # noqa: PLC0415
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    made: list[str] = []
+    for d in arm_dirs:
+        src = Path(d) / "runs.jsonl"
+        if src.is_file():
+            dst = src.with_name(f"runs.before-completion-{stamp}.jsonl")
+            shutil.copyfile(src, dst)
+            made.append(f"{Path(d).parent.parent.name}/arms/{Path(d).name}/{dst.name}")
+    return made
+
+
 def sequential_doc(seq: Mapping[str, Any], seeds: Sequence[str], *, smoke: int, batch: int, played: int, fut_min: int | None, v2: bool, rule: str,
                    frontier_name: str | None, route_s: bool = False) -> dict[str, Any]:
     """The `sequential` entry of a promotion.json: the funnel's schedule, stop and looks (what `promote` writes for a block played as the funnel; `rejudge`
@@ -3752,11 +3769,13 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     keep = None
     walked: dict[str, Any] | None = None
     reuse = None
+    backups: list[str] = []
     s1_kw = {"s1": s1, "fight_swap": bool(route_s_mode and route_s_mode["fight_swap"])} if s1 is not None else {}
     if v2:
         frontier_info = incumbent_frontier(agent_root, rows, config, block=[name, *pool_blocks])
         if s_on and stop is not None:  # complete the block: the funnel's own resume plays the seeds that have no row, S2's looks refuse only
             arm_kw = {"server_opts": server_opts} if server_opts is not None else {}
+            backups = backup_arm_rows([Path(cand) / "arms" / arm, base_dir / "arms" / arm])  # before anything plays into the stored arms
             reuse = base_arm_reuse(seeds, Path(cand), base_dir, base_agent, arm, config, procs, ascension, arm_kw=arm_kw, say=lambda m: print(m, flush=True))
 
             def rows_at(n: int) -> tuple[list[dict], list[dict]]:
@@ -3818,7 +3837,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             doc["base_reuse"] = reuse
     if walked is not None:  # the block was completed: S2's walk is the record, and the rejudgement says what it added
         doc["rejudged"]["completed"] = {"from_seeds": earlier_played, "to_seeds": played, "block": len(seeds), "earlier_stop": earlier_stop,
-                                        "text": f"completed from {earlier_played} to {played} of {len(seeds)} seeds under route S (the stored rows kept)"}
+                                        "text": f"completed from {earlier_played} to {played} of {len(seeds)} seeds under route S (the stored rows kept)",
+                                        "row_backups": backups}
         if stop is None:
             doc["sequential"] = seq_doc
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
