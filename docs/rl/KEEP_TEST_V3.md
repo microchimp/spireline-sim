@@ -83,7 +83,7 @@ passed the lab's own tag with `--allow-quiet lab-train` (the exam would otherwis
 landing, another's line) ends the stage with exit status 3: the job fails, the runner retries it, and the ruler's replays and the exam's games resume. The reading goes to `<candidate>/s1.json` and to promotion.json as `s1`.
 A champion that has no arms to build a ruler from, or a candidate that holds the champion's own fight network, is S1-unavailable: v3 decides and `route_s_mode.why` says so.
 
-**S2, the whole-run breakage check** (only when S1 holds). The funnel over the block (the D51 looks, 2,000 pairs) with its looks **refusing only** (`seq_call_v3(route_s=True)`): from `S2_FROM_PAIRS` (500)
+**S2, the whole-run breakage check** (only when S1 holds; `keep_v2.route_s` composes S1 and S2's final bound, `judge_v3` adds the guards). The funnel over the block (the D51 looks, 2,000 pairs) with its looks **refusing only** (`seq_call_v3(route_s=True)`): from `S2_FROM_PAIRS` (500)
 pairs on, a look refuses when deep_f's one-sided 99% upper bound (`S2_LOOK_ALPHA` 0.01) is below 0 or the floors have collapsed (the existing collapse test). **No futility stop, no early promotion, no extension.**
 The last look is `judge`'s: it refuses when deep_f's one-sided 95% upper bound (`S2_FINAL_ALPHA` 0.05) is below 0, and otherwise promotes if the collapse, crash and wins guards hold. The champion's stored arm on a block the
 candidate never played is reused only after `BASE_REUSE_SEEDS` (20) of its seeds replay with the same outcome rows (`gen_loop.OUTCOME_FIELDS`: index, win, floor, end, crash, lost, nodes, cards, rests, boss damage) on the current tree

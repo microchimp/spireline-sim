@@ -483,6 +483,28 @@ def state_shift(per_arr: Mapping[str, Any], s1: Mapping[str, Any]) -> dict[str, 
     return {"whole_run_per_arrival": a, "s1": b, "diff": a - b, "se": se, "pm2se": MARGIN_Z * se, "unit": "per 100 arrivals"}
 
 
+def route_s(deep_diffs: Sequence[float], s1: Mapping[str, Any] | None, *, fight_swap: bool = True, boot: int = BOOT_B, seed: int = BOOT_SEED) -> dict[str, Any] | None:
+    """Route S on the paired deep_f differences of the whole-run pairs (per 100 runs, as `paired_diffs`) and S1's reading (`s1_reading`, checked against the pair).
+    S1 (`route_s1`) holds when its mean is at least `S1_MIN` per 100 arrivals and the mean minus `S1_Z` SE is above 0. S2, asked only when S1 holds, is the
+    whole-run judgement as the breakage check: its final bound refuses when deep_f's one-sided 95% upper bound (`S2_FINAL_ALPHA`, the bootstrap's, as route A's bounds)
+    is below 0 (the funnel's looks read the 99% bound, `seq_call_v3(route_s=True)`; both bounds are recorded). `holds` is S1 and S2's final bound together; the
+    collapse, crash and wins guards are the verdict's (`judge_v3`). `applies` says S decides (S1 holds); a reading that is not applied, or does not hold, leaves
+    v3 to decide. None for no reading. The record is `keep_v2.route_s` in promotion.json (without the state shift and the verdict's words, which `judge_v3` adds)."""
+    s1_rec = route_s1(s1, fight_swap=fight_swap)
+    if s1_rec is None:
+        return None
+    applies = bool(s1_rec["holds"])
+    s2 = None
+    if applies:
+        ds = diff_summary(deep_diffs, boot, seed, upper99=True)
+        s2 = {"pairs": int(ds["n"]), "deep_mean": ds["mean"], "deep_se": ds["se"], "upper95": ds["upper95"], "upper99": ds["upper99"],
+              "final_alpha": S2_FINAL_ALPHA, "final_ok": bool(ds["upper95"] >= 0), "look_alpha": S2_LOOK_ALPHA, "from_pairs": S2_FROM_PAIRS,
+              "note": "the funnel's looks refuse only (deep_f's 99% upper bound below 0 or a floor collapse, from 500 pairs on); the final look refuses when "
+                      "the 95% upper bound is below 0 and otherwise promotes if the guards hold"}
+    return {"rule": RULE_S, "parameters": route_s_parameters(), "fight_swap": bool(fight_swap), "s1": s1_rec, "applies": applies, "s2": s2,
+            "holds": bool(s2 and s2["final_ok"])}
+
+
 # ------------------------------------------------------------------ the guards
 
 
@@ -628,16 +650,9 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
     seeds, c, b = paired_rows(cand_rows, base_rows)
     kills = {name: [sum(bosses_beaten(c[s])[j] for s in seeds), sum(bosses_beaten(b[s])[j] for s in seeds)] for j, name in enumerate(BOSSES)}
     pa = per_arrival(cand_rows, base_rows)
-    s1_rec = route_s1(s1, fight_swap=fight_swap)
-    s_active = bool(s1_rec and s1_rec["holds"])  # S1 holds: S decides, and nothing is extended
-    s2 = None
-    if s_active:  # S2's final bound: deep_f's one-sided 95% upper bound (the bootstrap's, as route A's bounds) must not be below 0
-        ds = diff_summary(d["deep"], boot, seed, upper99=True)
-        s2 = {"pairs": int(ds["n"]), "deep_mean": ds["mean"], "deep_se": ds["se"], "upper95": ds["upper95"], "upper99": ds["upper99"],
-              "final_alpha": S2_FINAL_ALPHA, "final_ok": bool(ds["upper95"] >= 0), "look_alpha": S2_LOOK_ALPHA, "from_pairs": S2_FROM_PAIRS,
-              "note": "the funnel's looks refuse only (deep_f's 99% upper bound below 0 or a floor collapse, from 500 pairs on); the final look refuses when "
-                      "the 95% upper bound is below 0 and otherwise promotes if the guards hold"}
-    s_holds = bool(s2 and s2["final_ok"])
+    rs = route_s(d["deep"], s1, fight_swap=fight_swap, boot=boot, seed=seed)  # route S: S1's reading, then S2's final bound when S1 holds
+    s_active = bool(rs and rs["applies"])  # S1 holds: S decides, and nothing is extended
+    s_holds = bool(rs and rs["holds"])
     checks = {"route": bool(ra["holds"] or s_holds), "floor_collapse": not collapse["collapsed"], "wins": bool(wins["holds"]), "crash": bool(crash["holds"]),
               "drift": not drift["blocks"], "attempt": bool(attempt["within_cap"])}
     gating = {k: v for k, v in checks.items() if k not in ADVISORY_V3}
@@ -651,12 +666,11 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
            "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),
            "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "advisory_checks": list(ADVISORY_V3),
            "review": drift["verdict"] == "flagged", "margins": margins(cand_rows, base_rows, frontier), "per_arrival": pa}
-    if s1_rec is not None:  # a verdict with no reading is exactly v3's
+    if rs is not None:  # a verdict with no reading is exactly v3's
+        s1_rec = rs["s1"]
         why = ("S1 holds: S decides (S2's final bound, the guards; no extension)" if s_active
                else "S1 did not hold: v3 decides" if s1_rec["applied"] else "S1 was not applied: v3 decides (" + "; ".join(s1_rec["reasons"]) + ")")
-        out["route_s"] = {"rule": RULE_S, "parameters": route_s_parameters(), "fight_swap": bool(fight_swap), "s1": s1_rec, "applies": s_active, "s2": s2,
-                          "holds": s_holds, "state_shift": state_shift(pa, s1_rec) if s1_rec["applied"] else None, "decided_by": "S" if s_active else "v3",
-                          "why": why}
+        out["route_s"] = {**rs, "state_shift": state_shift(pa, s1_rec) if s1_rec["applied"] else None, "decided_by": "S" if s_active else "v3", "why": why}
     return out
 
 

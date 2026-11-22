@@ -129,6 +129,39 @@ class RouteS1Tests(unittest.TestCase):
         self.assertIsNone(k2.route_s1(None))
 
 
+class RouteSFunctionTests(unittest.TestCase):
+    """`keep_v2.route_s`: S1's reading and S2's final bound on the whole-run deep_f differences."""
+
+    def test_s1_holding_asks_s2s_final_bound_and_the_bound_is_the_95_percent_one(self):
+        up = k2.route_s(std(-0.8, 27.0, 2000), reading(*HOLDS), boot=BOOT)  # SE 0.60: the 95% upper bound is the mean plus 0.99, above 0
+        self.assertEqual((up["applies"], up["holds"], up["s2"]["final_ok"]), (True, True, True))
+        self.assertAlmostEqual(up["s2"]["upper95"], -0.8 + 1.645 * 27.0 / 2000 ** 0.5, delta=0.1)
+        down = k2.route_s(std(-1.2, 27.0, 2000), reading(*HOLDS), boot=BOOT)  # -1.2 + 0.99 is below 0
+        self.assertEqual((down["applies"], down["holds"], down["s2"]["final_ok"]), (True, False, False))
+        self.assertLess(down["s2"]["upper95"], 0)
+        self.assertEqual((down["s2"]["pairs"], down["s2"]["final_alpha"], down["s2"]["look_alpha"], down["s2"]["from_pairs"]), (2000, 0.05, 0.01, 500))
+        self.assertEqual(down["parameters"], k2.route_s_parameters())
+        self.assertEqual((down["rule"], down["fight_swap"]), (k2.RULE_S, True))
+        self.assertGreater(up["s2"]["upper99"], up["s2"]["upper95"])
+
+    def test_s1_not_holding_or_not_applied_asks_nothing_of_s2(self):
+        for rd in (reading(0.5, 0.1), reading(*HOLDS, ruler="d" * 64), reading(*HOLDS, complete=False)):
+            got = k2.route_s(std(5.0, 27.0, 2000), rd, boot=BOOT)
+            self.assertEqual((got["applies"], got["holds"], got["s2"]), (False, False, None))
+        self.assertIsNone(k2.route_s(std(5.0, 27.0, 2000), None, boot=BOOT))
+        self.assertFalse(k2.route_s(std(5.0, 27.0, 2000), reading(*HOLDS), fight_swap=False, boot=BOOT)["applies"])
+
+    def test_the_verdict_carries_the_functions_record_with_the_decision_words(self):
+        _, c, b = block(prefix="K", seed=7)
+        v = v3(c, b, reading(*HOLDS))
+        d = k2.diff_summary(k2.paired_diffs(c, b, F_B3A)["deep"], BOOT, k2.BOOT_SEED, upper99=True)
+        rs = v["route_s"]
+        self.assertAlmostEqual(rs["s2"]["upper95"], d["upper95"], places=12)
+        self.assertEqual({k: rs[k] for k in ("rule", "parameters", "fight_swap", "applies", "holds")},
+                         {k: k2.route_s(k2.paired_diffs(c, b, F_B3A)["deep"], reading(*HOLDS), boot=BOOT)[k] for k in ("rule", "parameters", "fight_swap", "applies", "holds")})
+        self.assertEqual((rs["decided_by"], rs["why"][:8]), ("S", "S1 holds"))
+
+
 class JudgeRouteSTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
