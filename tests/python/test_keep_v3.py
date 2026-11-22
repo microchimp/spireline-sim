@@ -107,7 +107,7 @@ class JudgeV3Tests(unittest.TestCase):
         self.assertEqual(set(cells), {"rule", "frontier", "route", "k2_cand", "k2_base", "d_deep", "deep_lower", "p_deep", "floor_lower95"})
         line = k2.summary(v)
         self.assertTrue(line.startswith("v3 route X (extend) | frontier B3a | deep +1.45"), line)
-        for part in ("floor -1.95 (99% upper", "collapse below -5.0: ok", "drift skipped (advisory)", "act1 review: kill"):
+        for part in ("floor -1.95 ±", " (99% upper", "collapse below -5.0: ok", "drift skipped (advisory)", "act1 review: kill"):
             self.assertIn(part, line)
         self.assertNotIn("\t", line)
         self.assertEqual(k2.ledger_cells(old)["rule"], "v2")
@@ -689,6 +689,118 @@ class ExtensionRequeueTests(unittest.TestCase):
                                   ({"decision": {"promote": True, "extend": True}}, False), ({}, False)):
                 (cand / "promotion.json").write_text(json.dumps(verdict))
                 self.assertEqual(gen_loop.extension_of(cand) is not None, want, verdict)
+
+
+def nodes_row(seed: str, kind: str) -> dict:
+    """A run with a complete node string: "past" went past the first Act 3 boss (died on floor 49), "died" died at it (floor 48), "early" died on floor 30."""
+    base = "M" * 15 + "B" + "M" * 15 + "B" + "M" * 14 + "B"  # floors 2 to 48, the bosses on 17, 33 and 48
+    nodes, floor = {"past": (base + "B", 49), "died": (base, 48), "early": ("M" * 15 + "B" + "M" * 13, 30)}[kind]
+    return {"seed": seed, "floor": floor, "win": False, "end": "death", "crash": False, "nodes": nodes}
+
+
+class MarginsTests(unittest.TestCase):
+    """D68 addendum 6, decision 1 (judge half): every figure of a verdict carries its plus or minus 2 SE; nothing about the decision changes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.s1, cls.c1, cls.b1 = block(prefix="K", seed=7)
+        cls.v = v3(cls.c1, cls.b1)
+
+    def test_the_margins_are_the_counts_the_paired_differences_and_their_two_se(self):
+        m = self.v["margins"]
+        self.assertEqual((m["z"], m["pairs"]), (2.0, 2000))
+        self.assertEqual((m["B1"]["cand"], m["B1"]["base"]), (1259, 1473))
+        self.assertEqual((m["B3a"]["cand"], m["B3a"]["base"]), (115, 89))
+        self.assertEqual((m["wins"]["cand"], m["wins"]["base"]), (4, 1))
+        self.assertAlmostEqual(m["B1"]["diff"], 100.0 * (1259 - 1473) / 2000)
+        self.assertAlmostEqual(m["B3a"]["diff"], 1.3)
+        self.assertAlmostEqual(m["wins"]["diff"], 0.15)
+        self.assertAlmostEqual(m["deep_f"]["diff"], 1.45, places=9)
+        self.assertAlmostEqual(m["floors"]["diff"], -1.95, places=9)  # floors a run, not per 100
+        self.assertEqual(m["floors"]["discordant"]["cand_ahead"] + m["floors"]["discordant"]["base_ahead"] <= 2000, True)
+        for name in ("B1", "B2", "B3a", "wins", "deep_f", "floors", "arrivals"):
+            x = m[name]
+            self.assertAlmostEqual(x["pm2se"], 2.0 * x["se"], places=12, msg=name)
+            self.assertGreater(x["se"], 0, name)
+        # the SE of deep_f is the one the verdict's own summary gives (SD with n - 1 over the root of n)
+        self.assertAlmostEqual(m["deep_f"]["se"], self.v["deep"]["se"], places=9)
+        self.assertAlmostEqual(m["floors"]["se"], self.v["floor"]["se"], places=9)
+        # the discordant pairs: the candidate beat the first Act 3 boss where the incumbent did not in 111 + 4 pairs, the reverse in 88 + 1
+        self.assertEqual(m["B3a"]["discordant"], {"cand_ahead": 115, "base_ahead": 89})
+        self.assertEqual(m["wins"]["discordant"], {"cand_ahead": 4, "base_ahead": 1})
+        # arrivals at the first Act 3 boss: the fixture's rows have no node string, so a run arrived when its floor reached 48
+        want = [sum(k2.arrived_b3a(r) for r in rows) for rows in (self.c1, self.b1)]
+        self.assertEqual([m["arrivals"]["cand"], m["arrivals"]["base"]], want)
+        self.assertEqual(self.v["margins"], k2.margins(self.c1, self.b1, F_B3A))
+
+    def test_a_rate_per_arrival_has_its_own_binomial_se_and_the_difference_combines_them(self):
+        cand = [nodes_row(f"S{i}", k) for i, k in enumerate(["past"] + ["died"] * 3 + ["early"] * 6)]
+        base = [nodes_row(f"S{i}", k) for i, k in enumerate(["past"] * 2 + ["died"] * 3 + ["early"] * 5)]
+        pa = k2.per_arrival(cand, base)
+        self.assertEqual((pa["cand"]["arrivals"], pa["cand"]["passes"]), (4, 1))
+        self.assertEqual((pa["base"]["arrivals"], pa["base"]["passes"]), (5, 2))
+        self.assertAlmostEqual(pa["cand"]["rate"], 25.0)
+        self.assertAlmostEqual(pa["base"]["rate"], 40.0)
+        self.assertAlmostEqual(pa["cand"]["se"], 100 * (0.25 * 0.75 / 4) ** 0.5)
+        self.assertAlmostEqual(pa["base"]["se"], 100 * (0.4 * 0.6 / 5) ** 0.5)
+        self.assertAlmostEqual(pa["diff"], -15.0)
+        self.assertAlmostEqual(pa["se"], (pa["cand"]["se"] ** 2 + pa["base"]["se"] ** 2) ** 0.5)
+        self.assertAlmostEqual(pa["pm2se"], 2 * pa["se"])
+        self.assertEqual(pa["unit"], "per 100 arrivals")
+        # the margins' own arrivals count agrees, and an arm with no arrival has no rate
+        self.assertEqual((k2.margins(cand, base, 2)["arrivals"]["cand"], k2.margins(cand, base, 2)["arrivals"]["base"]), (4, 5))
+        none = k2.per_arrival(cand[4:], base[4:])  # the first four seeds (the arrivals of the candidate) dropped from both arms
+        self.assertEqual(none["cand"]["arrivals"], 0)
+        self.assertIsNone(none["cand"]["rate"])
+        self.assertIsNone(none["diff"])
+        # the same reading is in the verdict and, through the keep verdict, at the top of promotion.json
+        v = k2.judge(cand, base, frontier=2, rule="v3", boot=500)
+        self.assertEqual(v["per_arrival"], pa)
+
+    def test_the_arrival_reading(self):
+        self.assertTrue(k2.arrived_b3a({"win": True, "floor": 0}))
+        self.assertFalse(k2.arrived_b3a({"crash": True, "floor": 49}))
+        self.assertFalse(k2.arrived_b3a({"lost": True, "floor": 49}))
+        self.assertTrue(k2.arrived_b3a(nodes_row("a", "died")))
+        self.assertFalse(k2.arrived_b3a(nodes_row("a", "early")))
+        self.assertTrue(k2.arrived_b3a({"floor": 48}))  # no node string: the cut 48
+        self.assertFalse(k2.arrived_b3a({"floor": 47}))
+
+    def test_the_ledger_line_shows_two_se_beside_every_figure_and_the_decision_is_unchanged(self):
+        line = k2.summary(self.v)
+        for part in ("deep +1.45 ±", "(lower ", "floor -1.95 ±", " (99% upper", "B3a 115/89 +1.30 ±", "wins 4/1 +0.15 ±",
+                     "arrivals 115/89 +1.30 ±", "per arrival ", "B1 1259/1473 -10.70 ±", "B2 ", "wins guard off"):
+            self.assertIn(part, line)
+        self.assertNotIn("\t", line)
+        self.assertNotIn("\n", line)
+        parts = line.split(" | ")
+        for name in ("deep +1.45", "floor -1.95", "B3a ", "wins 4/1", "arrivals ", "per arrival ", "B1 ", "B2 "):
+            mine = [x for x in parts if x.startswith(name)]
+            self.assertEqual(len(mine), 1, name)
+            self.assertIn("±", mine[0], name)  # the margin is on the same part as the figure
+        self.assertEqual(line.count("per arrival"), 1)
+        # the memo's example ends with B1 and B2, so it reads in the design's order: Act 3 boss, wins, arrivals, per arrival, B1, B2
+        order = [line.index(x) for x in ("B3a 115", "wins 4/1", "arrivals 115", "per arrival", "B1 1259", "B2 ")]
+        self.assertEqual(order, sorted(order))
+        # an old verdict (no margins, no per_arrival) still gives the line, without the margin parts
+        old = {k: v for k, v in self.v.items() if k not in ("margins", "per_arrival")}
+        old_line = k2.summary(old)
+        self.assertNotIn("per arrival", old_line)
+        self.assertIn("deep +1.45 ±", old_line)  # deep_f's and the floors' margins come from the bootstrap summary's SE
+        # the decision of v3 is what it was: the same arms, the same checks
+        self.assertEqual((self.v["route"], self.v["promote"], self.v["extend"]), ("X", False, True))
+        # v2 prints them too
+        v2 = k2.judge(self.c1, self.b1, frontier=F_B3A, boot=BOOT)
+        self.assertIn("deep +1.45 ±", k2.summary(v2))
+        self.assertIn("B3a 115/89 +1.30 ±", k2.summary(v2))
+
+    def test_the_funnel_records_per_arrival_at_the_top_of_promotion_json(self):
+        keep = dict(self.v)
+        out = gen_loop.compare_arms(self.c1, self.b1, keep=keep, boot=500)
+        self.assertEqual(out["per_arrival"], keep["per_arrival"])
+        self.assertEqual(out["keep_v2"]["margins"], keep["margins"])
+        bare = {k: v for k, v in keep.items() if k != "per_arrival"}
+        self.assertNotIn("per_arrival", gen_loop.compare_arms(self.c1, self.b1, keep=bare, boot=500))  # a verdict an older judge wrote
 
 
 if __name__ == "__main__":

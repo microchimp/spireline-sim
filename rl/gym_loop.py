@@ -1781,10 +1781,25 @@ def v5_rule_line(loop: Loop, rule: dict) -> str:
 
 
 def _v5_part_line(p: str, x: dict) -> str:
+    """A part's figures in a stage line: the survival difference in points with its plus or minus 2 SE (and the SE), HP lost with its own."""
     if x.get("win_diff") is None:
         return f"part {p}: no pairs"
-    return (f"part {p} {100 * x['cand_rate']:.1f} / {100 * x['inc_rate']:.1f} ({100 * x['win_diff']:+.2f} points, SE {100 * (x['win_se'] or 0):.2f}; "
-            f"HP {x['hp_diff']:+.2f}) on {x['pairs']} games")
+    pm = f" ±{100 * x['win_pm2se']:.2f}" if x.get("win_pm2se") is not None else ""
+    hp_pm = f" ±{x['hp_pm2se']:.2f}" if x.get("hp_pm2se") is not None else ""
+    return (f"part {p} {100 * x['cand_rate']:.1f} / {100 * x['inc_rate']:.1f} ({100 * x['win_diff']:+.2f}{pm} points, SE {100 * (x['win_se'] or 0):.2f}; "
+            f"HP {x['hp_diff']:+.2f}{hp_pm}) on {x['pairs']} games")
+
+
+def _v5_cells_line(reads: dict) -> str:
+    """The cells of both parts in a stage line, each with its difference in points and plus or minus 2 SE (a cell is a few dozen starts: its margin
+    is wide, which is the point of printing it)."""
+    bits = []
+    for p in sorted(reads):
+        cs = ", ".join(f"{c} {100 * v['win_diff']:+.2f} ±{100 * v['win_pm2se']:.2f}" for c, v in sorted((reads[p].get("by_cell") or {}).items())
+                       if v.get("win_diff") is not None and v.get("win_pm2se") is not None)
+        if cs:
+            bits.append(f"{p}: {cs}")
+    return "cells, points ±2 SE: " + "; ".join(bits) if bits else ""
 
 
 def v5_human(fe, sets: dict, idx: dict, inc: str, cand: str, cfg: str, draws: int, read_h: dict) -> dict:
@@ -1856,16 +1871,17 @@ def run_gate_v5(loop: Loop, cand: str, cand_dir: Path, procs: int, k: int, daemo
             reads[p] = gg.strat_read(ci, ii, cells[p], parts[p]["weights"])
             if reads[p]["pairs"] < len(sets[p]) * len(js[p]):
                 short.append(f"part {p} {reads[p]['pairs']} of {len(sets[p]) * len(js[p])} pairs")
+        out["flags"] = gg.boss_flags(reads)  # information, never a refusal: a boss cell at -3 points or worse
         h = reads["h"]
         out.update(stage=stage, draws={p: [js[p][0], js[p][-1]] for p in parts}, parts=reads, pairs=h["pairs"], starts=h["starts"],
-                   cand_wins=h["cand_wins"], inc_wins=h["inc_wins"], win_diff=h["win_diff"], win_se=h["win_se"], hp_diff=h["hp_diff"],
-                   hp_se=h["hp_se"], cand_rate=h["cand_rate"], inc_rate=h["inc_rate"])
+                   cand_wins=h["cand_wins"], inc_wins=h["inc_wins"], win_diff=h["win_diff"], win_se=h["win_se"], win_pm2se=h["win_pm2se"],
+                   hp_diff=h["hp_diff"], hp_se=h["hp_se"], hp_pm2se=h["hp_pm2se"], cand_rate=h["cand_rate"], inc_rate=h["inc_rate"])
         if short:
             out.update(verdict="incomplete", path=None, why="; ".join(short))
             loop.log(f"gate {cand}: stage {stage} (era {era}) incomplete: {out['why']}")
             break
         v = gg.v5_decide(reads, stage, rule)
-        out.update(verdict=v["verdict"], path=v["path"], why=v["why"], worse=v["worse"], routes=v["routes"])
+        out.update(verdict=v["verdict"], path=v["path"], why=v["why"], worse=v["worse"], routes=v["routes"], flags=v["flags"])
         out["cost"] = {p: cost_by_cell(idx[p][0].values(), cells[p]) for p in parts}
         if stage >= 2:
             try:
@@ -1876,6 +1892,7 @@ def run_gate_v5(loop: Loop, cand: str, cand_dir: Path, procs: int, k: int, daemo
                 loop.log(f"gate {cand}: human bar: {type(error).__name__}: {error}")
         loop.log(f"gate {cand}: stage {stage} (era {era}; part h draws {js['h'][0]}-{js['h'][-1]}, part a3 draws {js['a3'][0]}-{js['a3'][-1]}) "
                  f"{v['verdict']}{' by route ' + v['path'] if v['path'] else ''}: " + "; ".join(_v5_part_line(p, reads[p]) for p in parts)
+                 + (f"; {_v5_cells_line(reads)}" if _v5_cells_line(reads) else "") + (f"; {gg.flag_text(v['flags'])}" if v["flags"] else "")
                  + (f"; {v['why']}" if v.get("why") else ""))
         if v["verdict"] != "continue":
             break
@@ -2324,9 +2341,17 @@ def promote(loop: Loop, cand: str, cand_dir: Path, verdict: dict, board: str) ->
         g5["era"] = int(verdict.get("era") if verdict.get("era") is not None else g5.get("era", 0)) + 1
         g5.setdefault("eras", []).append({"era": g5["era"], "incumbent": ver, "t": stamp(), "over": prev, "route": verdict.get("path")})
         loop.save()
+        parts = verdict.get("parts") or {}
+
+        def fig(part: str) -> str:  # a part's survival difference in points with its plus or minus 2 SE
+            x = parts.get(part) or {}
+            diff = x.get("win_diff") if x else verdict.get("win_diff") if part == "h" else None
+            pm = x.get("win_pm2se")
+            return f"{100 * (diff or 0):+.2f}" + ("" if pm is None else f" ±{100 * pm:.2f}")
+
         loop.log(f"promoted {cand} as {ver} over {prev} by rule v5 (route {verdict.get('path')}, stage {verdict.get('stage')}): part h "
-                 f"{100 * (verdict.get('win_diff') or 0):+.2f} points, part a3 {100 * ((verdict.get('parts') or {}).get('a3', {}).get('win_diff') or 0):+.2f}; "
-                 f"era {g5['era']} begins: {ver} plays its bar on draws nobody has played; no fight-board row")
+                 f"{fig('h')} points, part a3 {fig('a3')} points; " + (f"{gg.flag_text(verdict['flags'])}; " if verdict.get("flags") else "")
+                 + f"era {g5['era']} begins: {ver} plays its bar on draws nobody has played; no fight-board row")
         return ver
     if verdict.get("rule") == PROMOTION_RULE_V4["name"]:
         # v4 plays the exam, not the board's 200 starts: the candidate has no board games, so the board page gets no row for it here

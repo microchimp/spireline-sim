@@ -67,6 +67,7 @@ ACT_BOSS_FLOORS = (17, 33, 48)  # rl/run_fields.ACT_BOSS_FLOORS: the usual boss 
 BOSS_READING = "strict-2026-11-19"  # how a boss counts as beaten (`went_past`); the verdicts carry it as `boss_reading`
 BOOT_B = pg.BOOT_B
 BOOT_SEED = pg.BOOT_SEED
+MARGIN_Z = 2.0  # the margin every printed figure carries: plus or minus this many standard errors (D68 addendum 6 decision 1)
 
 RULE_V3 = "keep-v3-2026-11-18"
 LEDGER_RULE_V3 = "v3"  # the `rule` column of a promotions.tsv row judged by the keep rule v3
@@ -208,6 +209,81 @@ def paired_diffs(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Map
     return {"seeds": seeds,
             "floor": [float(c[s].get("floor") or 0) - float(b[s].get("floor") or 0) for s in seeds],
             "deep": [100.0 * (deep(c[s], f) - deep(b[s], f)) for s in seeds]}
+
+
+# ------------------------------------------------------------------ margins (D68 addendum 6, decision 1): every figure with its plus or minus 2 SE
+
+
+def arrived_b3a(row: Mapping[str, Any]) -> bool:
+    """Whether the run arrived at the first Act 3 boss (its fight began, or it went past): a win did; a crashed or lost seed did not; a row with
+    a complete node string arrived when the string has a third boss room; any other row when its floor reached the cut 48 (the first Act 3 boss's
+    floor at the usual map lengths). The same reading `went_past(row, 2)` is made on: passes are arrivals that went past."""
+    if row.get("win"):
+        return True
+    if row.get("crash") or row.get("lost"):
+        return False
+    if complete_nodes(row):
+        return len(boss_floors(row["nodes"])) >= 3
+    return int(row.get("floor") or 0) >= ACT_BOSS_FLOORS[2]
+
+
+def _finite(x: float) -> float | None:
+    return float(x) if math.isfinite(x) else None
+
+
+def paired_margin(cand: Sequence[float], base: Sequence[float], *, scale: float = 100.0, z: float = MARGIN_Z, counts: bool = True) -> dict[str, Any]:
+    """One measure's margin from the arms' per-seed values (same order, one pair a seed): `cand` and `base` (the totals when `counts`, else the
+    means), `diff` the paired mean difference (candidate minus incumbent) times `scale` (100: per 100 runs; 1 for floors, a run), `se` its standard
+    error (SD of the paired differences with n - 1, over the root of n: the SE the funnel reads), `pm2se` z x se (the plus or minus the ledger prints),
+    and `discordant` the pairs the candidate is ahead in and those the incumbent is. A figure that cannot be worked out (under two pairs) is None."""
+    n = len(cand)
+    diffs = [float(a) - float(b) for a, b in zip(cand, base, strict=True)]
+    st = normal_stats([scale * d for d in diffs])
+    se = st["se"]
+    return {"cand": sum(cand) if counts else (math.fsum(cand) / n if n else None), "base": sum(base) if counts else (math.fsum(base) / n if n else None),
+            "diff": _finite(st["mean"]), "se": _finite(se), "pm2se": _finite(z * se),
+            "discordant": {"cand_ahead": sum(1 for d in diffs if d > 0), "base_ahead": sum(1 for d in diffs if d < 0)}}
+
+
+def margins(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], frontier: int = 0, z: float = MARGIN_Z) -> dict[str, Any]:
+    """The margins of a judgement (`promotion.json` `keep_v2.margins`): over the seeds both arms played, for B1, B2, B3a (the boss beaten: a win
+    beats all), wins, deep_f at `frontier`, floors and arrivals at the first Act 3 boss, the counts of each arm, the paired difference per 100
+    runs (floors: floors a run), its SE, plus or minus `z` SE and the discordant pairs (`paired_margin`). Nothing here decides anything."""
+    seeds, c, b = paired_rows(cand_rows, base_rows)
+    beaten_c = {s: bosses_beaten(c[s]) for s in seeds}
+    beaten_b = {s: bosses_beaten(b[s]) for s in seeds}
+    out: dict[str, Any] = {"z": z, "pairs": len(seeds), "unit": "per 100 runs; floors a run"}
+    for j, name in enumerate(("B1", "B2", "B3a", "wins")):
+        out[name] = paired_margin([int(beaten_c[s][j]) for s in seeds], [int(beaten_b[s][j]) for s in seeds], z=z)
+    out["deep_f"] = paired_margin([deep(c[s], frontier) for s in seeds], [deep(b[s], frontier) for s in seeds], z=z)
+    out["floors"] = paired_margin([float(c[s].get("floor") or 0) for s in seeds], [float(b[s].get("floor") or 0) for s in seeds], scale=1.0, z=z,
+                                  counts=False)
+    out["arrivals"] = paired_margin([int(arrived_b3a(c[s])) for s in seeds], [int(arrived_b3a(b[s])) for s in seeds], z=z)
+    return out
+
+
+def _arrival_arm(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    arrived = [r for r in rows if arrived_b3a(r)]
+    passes = sum(1 for r in arrived if went_past(r, 2))
+    n = len(arrived)
+    p = passes / n if n else None
+    return {"arrivals": n, "passes": passes, "rate": None if p is None else 100.0 * p,
+            "se": None if p is None else 100.0 * math.sqrt(p * (1.0 - p) / n)}
+
+
+def per_arrival(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], z: float = MARGIN_Z) -> dict[str, Any]:
+    """Each arm's pass rate at the first Act 3 boss per 100 arrivals, with its binomial SE, over the seeds both arms played (`promotion.json`
+    `per_arrival`): the arm's arrivals, the passes among them (the run went past the boss; a win did), the rate and its SE per 100 arrivals, and the
+    candidate's rate minus the incumbent's with its SE (the two arms' SEs combined as independent: each arm's arrivals are its own runs) and plus or
+    minus `z` SE. One arm with no arrival has no rate."""
+    seeds, c, b = paired_rows(cand_rows, base_rows)
+    ca, ba = _arrival_arm([c[s] for s in seeds]), _arrival_arm([b[s] for s in seeds])
+    if ca["rate"] is None or ba["rate"] is None:
+        diff = se = pm = None
+    else:
+        diff, se = ca["rate"] - ba["rate"], math.hypot(ca["se"], ba["se"])
+        pm = z * se
+    return {"z": z, "pairs": len(seeds), "cand": ca, "base": ba, "diff": diff, "se": se, "pm2se": pm, "unit": "per 100 arrivals"}
 
 
 # ------------------------------------------------------------------ the bootstrap and the two routes
@@ -403,7 +479,8 @@ def judge(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[st
             "route": route, "routes": {"A": ra, "F": rf}, "floor": st["floor"], "deep": st["deep"], "kills": kills,
             "alpha": ROUTE_ALPHA, "floor_margin": FLOOR_MARGIN, "min_gain": min_gain, "wins": wins, "crash": crash, "drift": drift,
             "attempt": attempt, "act1_review": a1, "checks": checks, "promote": pg.checks_hold(checks), "blocks": bool(blocking),
-            "blocking": blocking, "attempt_advisory": True, "review": drift["verdict"] == "flagged"}
+            "blocking": blocking, "attempt_advisory": True, "review": drift["verdict"] == "flagged",
+            "margins": margins(cand_rows, base_rows, frontier), "per_arrival": per_arrival(cand_rows, base_rows)}
 
 
 def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping[str, Any]], *, frontier: int = 0,
@@ -444,7 +521,7 @@ def judge_v3(cand_rows: Sequence[Mapping[str, Any]], base_rows: Sequence[Mapping
             "min_gain": min_gain, "collapse": collapse, "wins": wins, "crash": crash, "drift": drift, "attempt": attempt, "act1_review": a1,
             "checks": checks, "promote": all(gating.values()), "extend": extend, "extended": bool(extended), "final": bool(final),
             "blocks": bool(blocking), "blocking": blocking, "attempt_advisory": True, "advisory_checks": list(ADVISORY_V3),
-            "review": drift["verdict"] == "flagged"}
+            "review": drift["verdict"] == "flagged", "margins": margins(cand_rows, base_rows, frontier), "per_arrival": per_arrival(cand_rows, base_rows)}
 
 
 def ledger_cells(verdict: Mapping[str, Any]) -> dict[str, Any]:
@@ -457,32 +534,61 @@ def ledger_cells(verdict: Mapping[str, Any]) -> dict[str, Any]:
             "floor_lower95": f"{verdict['floor']['lower95']:.4f}"}
 
 
+def _pm(se: float | None, z: float = MARGIN_Z, places: int = 2) -> str:
+    """` ±x` for a figure whose standard error is `se` (the margin is `z` SE); nothing when the SE cannot be worked out."""
+    return f" ±{z * se:.{places}f}" if se is not None and math.isfinite(se) else ""
+
+
+def margin_parts(verdict: Mapping[str, Any]) -> list[str]:
+    """The ledger line's margin parts, in the order of the design (D68 addendum 6, decision 1): the Act 3 boss kills, the wins, the arrivals at the
+    first Act 3 boss, the pass rate per 100 arrivals, then B1 and B2 -- each with its counts (candidate/incumbent), its paired difference per 100
+    runs (per 100 arrivals for the pass rate) and its plus or minus 2 SE. A verdict without margins (one an older judge wrote) has none."""
+    m, pa = verdict.get("margins"), verdict.get("per_arrival")
+    parts: list[str] = []
+
+    def one(label: str, key: str) -> None:
+        x = m.get(key) if m else None
+        if x and x.get("diff") is not None:
+            parts.append(f"{label} {x['cand']}/{x['base']} {x['diff']:+.2f}{_pm(x.get('se'), (m or {}).get('z', MARGIN_Z))}")
+
+    one("B3a", "B3a")
+    one("wins", "wins")
+    one("arrivals", "arrivals")
+    if pa and pa.get("diff") is not None:
+        parts.append(f"per arrival {pa['cand']['rate']:.1f}/{pa['base']['rate']:.1f} {pa['diff']:+.1f}{_pm(pa.get('se'), pa.get('z', MARGIN_Z), 1)}")
+    one("B1", "B1")
+    one("B2", "B2")
+    return parts
+
+
 def summary(verdict: Mapping[str, Any]) -> str:
     """One line for the `guard` cell of promotions.tsv (no tabs): the route, the frontier, deep_f and the floor guard, then the crash,
-    wins, drift and attempt checks, then the Act 1 guards that would have fired (reported only)."""
+    wins, drift and attempt checks, then the Act 1 guards that would have fired (reported only), then the margins (`margin_parts`). Every figure
+    carries its plus or minus 2 SE (since D68 addendum 6): deep_f and the floors in place, the rest in the margin parts."""
     dp, fl, k2 = verdict["deep"], verdict["floor"], verdict["kills"]["B2"]
     r, w, cr, d, a = verdict["route"] or "none", verdict["wins"], verdict["crash"], verdict["drift"], verdict["attempt"]
     mg = verdict.get("min_gain", MIN_GAIN)
     gain = f" min gain {mg:g}" if mg != MIN_GAIN else ""  # the note after the rule's name, only when the minimum is not the default
+    margins_ = margin_parts(verdict)
     if verdict.get("rule") == RULE_V3:
         co = verdict["collapse"]
         parts = [f"v3{gain} route {r}" + (" (extend)" if verdict["extend"] else ""), f"frontier {verdict['frontier']['name']}",
-                 f"deep {dp['mean']:+.2f} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
-                 f"floor {fl['mean']:+.2f} (99% upper {co['upper99']:+.2f}, collapse below {co['limit']:+.1f}: {'COLLAPSED' if co['collapsed'] else 'ok'})",
+                 f"deep {dp['mean']:+.2f}{_pm(dp.get('se'))} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
+                 f"floor {fl['mean']:+.2f}{_pm(fl.get('se'))} (99% upper {co['upper99']:+.2f}, collapse below {co['limit']:+.1f}: {'COLLAPSED' if co['collapsed'] else 'ok'})",
                  f"crash {'ok' if cr['holds'] else 'FAILS'} ({cr['cand']}/{cr['base']})",
-                 "wins " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
+                 "wins guard " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
                  f"drift {d['verdict']} (advisory)" + (f" ({d['cand_rate']:.4f} vs pooled {d['pooled_rate']:.4f})" if "cand_rate" in d else ""),
                  f"attempt {a['attempt']}/{a['cap']}{pg.attempt_note(a)}",
-                 "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none")]
+                 "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none"), *margins_]
         return " | ".join(parts).replace("\t", " ")
     parts = [f"v2{gain} route {r}", f"frontier {verdict['frontier']['name']}",
-             f"deep {dp['mean']:+.2f} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
-             f"floor lower95 {fl['lower95']:+.2f}",
+             f"deep {dp['mean']:+.2f}{_pm(dp.get('se'))} (lower {dp['lower_route']:+.2f}) K2 {k2[0]}/{k2[1]}",
+             f"floor lower95 {fl['lower95']:+.2f} (mean {fl['mean']:+.2f}{_pm(fl.get('se'))})",
              f"crash {'ok' if cr['holds'] else 'FAILS'} ({cr['cand']}/{cr['base']})",
-             "wins " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
+             "wins guard " + (("ok" if w["holds"] else "FAILS") if w["active"] else "off"),
              f"drift {d['verdict']}" + (f" ({d['cand_rate']:.4f} vs pooled {d['pooled_rate']:.4f})" if "cand_rate" in d else ""),
              f"attempt {a['attempt']}/{a['cap']}{pg.attempt_note(a)}",
-             "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none")]
+             "act1 review: " + (", ".join(verdict["act1_review"]["fires"]) if verdict["act1_review"]["fires"] else "none"), *margins_]
     return " | ".join(parts).replace("\t", " ")
 
 

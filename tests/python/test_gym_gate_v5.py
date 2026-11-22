@@ -6,8 +6,9 @@ above 0 and HP lost not worse by 0.5, part a3 not clearly worse) or by route A3 
 clearly worse); a part gaining its near bar goes on to the next stage, never past the last; the draws are numbered by era, so after a v5
 promotion the new incumbent plays its bar on fresh draws (its selection games are never its bar); stored rows of another engine are used only
 after an identity check per part; the ruler is built once from starts outside the fight exam and the loop's practice, at most one a run, its
-runs added to the exam's exclusion list; the command line's default rule is v5 and v4 and v3 remain. Nothing plays a game: `play_tasks` is
-replaced.
+runs added to the exam's exclusion list; the command line's default rule is v5 and v4 and v3 remain; every part and cell of a reading carries its plus or
+minus 2 SE, and a boss cell at -3 points or worse is flagged in the stage line and in the verdict row (a flag, never a refusal; D68 addendum 6
+decision 1). Nothing plays a game: `play_tasks` is replaced.
 """
 
 from __future__ import annotations
@@ -157,6 +158,83 @@ class Decide(unittest.TestCase):
         self.assertEqual(gl.era_js(r, "a3", 2, 3), tuple(range(16, 24)))
 
 
+def cell_read(points, se_points, cell_starts=10):
+    """A cell's entry of a reading (`strat_read`'s by_cell) with a survival difference of `points` and an SE of `se_points` (both in points)."""
+    return {"starts": cell_starts, "pairs": 4 * cell_starts, "win_diff": points / 100, "win_se": se_points / 100, "win_pm2se": 2 * se_points / 100}
+
+
+class Margins(unittest.TestCase):
+    """The plus or minus 2 SE of every figure and the boss-cell flag (D68 addendum 6, decision 1)."""
+
+    def test_every_part_and_cell_carries_its_two_se(self):
+        cells = {"x0": "X", "x1": "X", "y0": "Y", "y1": "Y", "y2": "Y"}
+        c = [row("x0", 0, True), row("x0", 1, False), row("x1", 0, False), row("x1", 1, False), row("y0", 0, True), row("y0", 1, True),
+             row("y1", 0, False), row("y1", 1, False), row("y2", 0, True), row("y2", 1, True)]
+        i = [row("x0", 0, False), row("x0", 1, False), row("x1", 0, False), row("x1", 1, False), row("y0", 0, False), row("y0", 1, False),
+             row("y1", 0, True), row("y1", 1, False), row("y2", 0, True), row("y2", 1, True)]
+        r = gg.strat_read(keyed(c), keyed(i), cells, {"X": 3.0, "Y": 1.0})
+        self.assertAlmostEqual(r["win_pm2se"], 2 * r["win_se"])
+        self.assertAlmostEqual(r["hp_pm2se"], 2 * r["hp_se"])
+        for cell in ("X", "Y"):
+            x = r["by_cell"][cell]
+            self.assertAlmostEqual(x["win_pm2se"], 2 * x["win_se"])
+            self.assertAlmostEqual(x["hp_pm2se"], 2 * x["hp_se"])
+            self.assertGreater(x["win_pm2se"], 0)
+        self.assertEqual(gg.MARGIN_Z, 2.0)
+        none = gg.strat_read({}, {}, cells, {"X": 1.0})  # no pairs: no figure, no margin
+        self.assertEqual((none["win_diff"], none["win_pm2se"], none["hp_pm2se"]), (None, None, None))
+
+    def test_a_boss_cell_at_minus_3_points_or_worse_is_flagged(self):
+        reads = {"h": {"by_cell": {"act1-boss": cell_read(-2.9, 1.0), "act2-boss": cell_read(-3.0, 1.5), "act2-elite": cell_read(-9.0, 1.0)}},
+                 "a3": {"by_cell": {"act3-boss1-73": cell_read(-4.03, 1.84, 62), "act3-boss1-80": cell_read(1.0, 1.0),
+                                    "act3-boss2-78": cell_read(-3.75, 2.62, 40)}}}
+        flags = gg.boss_flags(reads)
+        self.assertEqual([(f["part"], f["cell"]) for f in flags], [("a3", "act3-boss1-73"), ("a3", "act3-boss2-78"), ("h", "act2-boss")])
+        f = flags[0]
+        self.assertAlmostEqual(f["points"], -4.03)
+        self.assertAlmostEqual(f["pm2se"], 3.68)  # two SE of 1.84
+        self.assertEqual((f["starts"], f["pairs"]), (62, 248))
+        # an act1-boss cell at -2.9 is not flagged, an elite cell at -9 is not a boss cell
+        self.assertNotIn("act1-boss", [x["cell"] for x in flags])
+        self.assertNotIn("act2-elite", [x["cell"] for x in flags])
+        text = gg.flag_text(flags)
+        self.assertIn("FLAG", text)
+        self.assertIn("act3-boss1-73 -4.03 ±3.68 points", text)
+        self.assertIn("not a refusal", text)
+        self.assertEqual(gg.flag_text([]), "")
+        self.assertEqual(gg.boss_flags({"h": {}, "a3": {"by_cell": {"act3-boss1-73": {"starts": 0, "win_diff": None}}}}), [])  # a cell with no pairs is not flagged
+        self.assertEqual(gg.boss_flags(reads, points=-5.0), [])  # the threshold is a parameter
+
+    def test_the_stored_verdicts_of_c0390_and_c0384_flag_as_the_memo_says(self):
+        """The by-cell figures of the two stored v5 stage-2 verdicts (points and SE, rounded as the verdict rows hold them): c0390 flags nothing;
+        c0384 flags the first Act 3 boss with the Aeonglass (-4.03, SE 1.84) and the second with the Queen (-3.75, SE 2.62)."""
+        c0390 = {"h": {"by_cell": {"act1-boss": cell_read(1.71, 1.03), "act1-elite": cell_read(1.0, 2.03), "act1-hallway": cell_read(0.0, 0.0),
+                                   "act2-boss": cell_read(1.08, 1.07), "act2-elite": cell_read(0.29, 1.05), "act2-hallway": cell_read(0.94, 1.13)}},
+                 "a3": {"by_cell": {"act3-boss1-73": cell_read(-1.21, 1.57), "act3-boss1-78": cell_read(0.40, 1.86), "act3-boss1-80": cell_read(1.61, 1.32),
+                                    "act3-boss2-73": cell_read(3.75, 1.91), "act3-boss2-78": cell_read(0.0, 2.83), "act3-boss2-80": cell_read(2.14, 1.42)}}}
+        c0384 = {"h": {"by_cell": {"act1-boss": cell_read(1.34, 0.96), "act1-elite": cell_read(2.0, 2.47), "act1-hallway": cell_read(-1.25, 1.25),
+                                   "act2-boss": cell_read(-0.54, 1.11), "act2-elite": cell_read(-1.18, 1.16), "act2-hallway": cell_read(0.63, 0.89)}},
+                 "a3": {"by_cell": {"act3-boss1-73": cell_read(-4.03, 1.84), "act3-boss1-78": cell_read(-0.81, 2.57), "act3-boss1-80": cell_read(-1.61, 1.19),
+                                    "act3-boss2-73": cell_read(3.75, 1.43), "act3-boss2-78": cell_read(-3.75, 2.62), "act3-boss2-80": cell_read(-1.79, 1.28)}}}
+        self.assertEqual(gg.boss_flags(c0390), [])
+        flags = gg.boss_flags(c0384)
+        self.assertEqual([f["cell"] for f in flags], ["act3-boss1-73", "act3-boss2-78"])
+        self.assertEqual([(round(f["points"], 1), round(f["pm2se"], 1)) for f in flags], [(-4.0, 3.7), (-3.8, 5.2)])
+
+    def test_a_flag_is_information_and_never_changes_a_verdict(self):
+        R = gl.PROMOTION_RULE_V5
+        flagged = {"win_diff": 0.0, "win_se": 0.009, "hp_diff": 0.0, "by_cell": {"act3-boss1-73": cell_read(-6.0, 1.0)}}
+        quiet = {"win_diff": 0.0, "win_se": 0.009, "hp_diff": 0.0, "by_cell": {"act3-boss1-73": cell_read(0.0, 1.0)}}
+        for stage in (1, 2, 3):
+            for h_read in (read(0.0, 0.6), read(1.5, 0.6), read(0.6, 0.6)):
+                a = gg.v5_decide({"h": h_read, "a3": flagged}, stage, R)
+                b = gg.v5_decide({"h": h_read, "a3": quiet}, stage, R)
+                self.assertEqual(a["flags"], gg.boss_flags({"h": h_read, "a3": flagged}))
+                self.assertEqual(b["flags"], [])
+                self.assertEqual({k: v for k, v in a.items() if k != "flags"}, {k: v for k, v in b.items() if k != "flags"})
+        self.assertEqual(gg.v5_decide({"h": read(1.5, 0.6), "a3": flagged}, 2, R)["verdict"], "promote")  # a flagged cell inside a part that is not worse
+
+
 class Cli(unittest.TestCase):
     def test_v5_is_the_default_and_v4_and_v3_remain(self):
         p = gl.build_parser()
@@ -252,6 +330,38 @@ class Gate(unittest.TestCase):
         n = len(self.played)
         self.assertEqual(self.gate()["verdict"], "promote")
         self.assertEqual(len(self.played), n)  # the games are on disk
+
+    def test_the_stage_line_and_the_verdict_row_carry_two_se_and_the_boss_flag(self):
+        # part h gains six starts (route F); one part a3 start loses one of its draws at the Test Subject's cell: that cell reads -4.2 points
+        self.outcome["cand"] = lambda s, j: s in H_IDS[:16] or (s in A_IDS[:6] and not (s == "a0" and j == 0))
+        v = self.gate()
+        self.assertEqual((v["verdict"], v["path"]), ("promote", "F"))  # the flag refuses nothing
+        a3 = v["parts"]["a3"]
+        self.assertAlmostEqual(a3["by_cell"]["act3-boss1-80"]["win_diff"], -0.25 / 6, places=9)
+        for part in v["parts"].values():
+            self.assertAlmostEqual(part["win_pm2se"], 2 * part["win_se"])
+            for cell in part["by_cell"].values():
+                self.assertAlmostEqual(cell["win_pm2se"], 2 * cell["win_se"])
+        self.assertAlmostEqual(v["win_pm2se"], 2 * v["win_se"])  # the top-level figures are part h's
+        self.assertEqual([(f["part"], f["cell"]) for f in v["flags"]], [("a3", "act3-boss1-80")])
+        self.assertAlmostEqual(v["flags"][0]["points"], -100 * 0.25 / 6, places=6)
+        log = (self.root / "loop.log").read_text(encoding="utf-8")
+        stage = [x for x in log.splitlines() if "stage 2 (era 0" in x][-1]
+        self.assertIn("\u00b1", stage)
+        self.assertIn("cells, points \u00b12 SE:", stage)
+        self.assertIn("act3-boss1-80 -4.17 \u00b1", stage)
+        self.assertIn("FLAG, a boss cell at -3 points or worse (information, not a refusal)", stage)
+        ver = gl.promote(self.loop, "cand", Path(self.tmp.name) / "cand", v, "off")
+        promoted = [x for x in (self.root / "loop.log").read_text(encoding="utf-8").splitlines() if f"promoted cand as {ver}" in x][-1]
+        self.assertRegex(promoted, "part h [+-][0-9.]+ \u00b1[0-9.]+ points, part a3 [+-][0-9.]+ \u00b1[0-9.]+ points")
+        self.assertIn("FLAG", promoted)
+
+    def test_a_verdict_with_no_boss_cell_down_has_no_flag(self):
+        self.outcome["cand"] = lambda s, j: s in H_IDS[:16] or s in A_IDS[:6]
+        v = self.gate()
+        self.assertEqual(v["flags"], [])
+        log = (self.root / "loop.log").read_text(encoding="utf-8")
+        self.assertNotIn("FLAG", log)
 
     def test_stage_1_rejects_a_candidate_clearly_worse_at_act_3(self):
         self.outcome["v3"] = lambda s, j: s in H_IDS[:10] or s.startswith("a")

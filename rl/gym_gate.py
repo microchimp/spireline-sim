@@ -426,6 +426,8 @@ def identity_check(stored: dict[tuple[str, int], dict], replay: dict[tuple[str, 
 # part not clearly worse. Everything here is pure: rows in, numbers out.
 
 Z975 = 1.959963984540054  # one-sided 97.5%: each of the two routes, so the rule as a whole stays near 5 in 100
+MARGIN_Z = 2.0  # every printed figure carries its plus or minus this many standard errors (D68 addendum 6 decision 1)
+BOSS_FLAG_POINTS = -3.0  # a boss cell whose difference is this many points or worse is flagged (a flag, never a refusal; D68 addendum 6 decision 1)
 
 
 def strat_read(cand: dict, inc: dict, cells: dict[str, str], weights: dict[str, float]) -> dict:
@@ -455,25 +457,48 @@ def strat_read(cand: dict, inc: dict, cells: dict[str, str], weights: dict[str, 
         dv = sum((x - dm) ** 2 for x in d_s) / (m - 1) if m > 1 else 0.0
         hv = sum((x - hm) ** 2 for x in h_s) / (m - 1) if m > 1 else 0.0
         by[c] = {"starts": m, "pairs": n, "weight": float(weights.get(c, 0.0)), "win_diff": dm, "win_se": math.sqrt(dv / m),
-                 "hp_diff": hm, "hp_se": math.sqrt(hv / m), "cand_rate": cw / n, "inc_rate": iw / n, "cand_hp_lost": ch / n,
-                 "inc_hp_lost": ih / n, "_dv": dv, "_hv": hv}
+                 "win_pm2se": MARGIN_Z * math.sqrt(dv / m), "hp_diff": hm, "hp_se": math.sqrt(hv / m), "hp_pm2se": MARGIN_Z * math.sqrt(hv / m),
+                 "cand_rate": cw / n, "inc_rate": iw / n, "cand_hp_lost": ch / n, "inc_hp_lost": ih / n, "_dv": dv, "_hv": hv}
     counted = {c: x for c, x in by.items() if x["weight"] > 0}
     wsum = sum(x["weight"] for x in counted.values())
     out = {"pairs": len(keys), "starts": sum(x["starts"] for x in by.values()), "cells": len(by),
            "cand_wins": sum(win(cand[k]) for k in keys), "inc_wins": sum(win(inc[k]) for k in keys),
            "by_cell": {c: {k: v for k, v in x.items() if not k.startswith("_")} for c, x in by.items()}}
     if not counted or wsum <= 0:
-        return {**out, "win_diff": None, "win_se": None, "hp_diff": None, "hp_se": None, "cand_rate": None, "inc_rate": None,
-                "cand_hp_lost": None, "inc_hp_lost": None, "thin": []}
+        return {**out, "win_diff": None, "win_se": None, "win_pm2se": None, "hp_diff": None, "hp_se": None, "hp_pm2se": None, "cand_rate": None,
+                "inc_rate": None, "cand_hp_lost": None, "inc_hp_lost": None, "thin": []}
     w = {c: x["weight"] / wsum for c, x in counted.items()}
 
     def wsum_of(key: str) -> float:
         return sum(w[c] * x[key] for c, x in counted.items())
 
-    return {**out, "win_diff": wsum_of("win_diff"), "win_se": math.sqrt(sum(w[c] ** 2 * x["_dv"] / x["starts"] for c, x in counted.items())),
-            "hp_diff": wsum_of("hp_diff"), "hp_se": math.sqrt(sum(w[c] ** 2 * x["_hv"] / x["starts"] for c, x in counted.items())),
+    win_se = math.sqrt(sum(w[c] ** 2 * x["_dv"] / x["starts"] for c, x in counted.items()))
+    hp_se = math.sqrt(sum(w[c] ** 2 * x["_hv"] / x["starts"] for c, x in counted.items()))
+    return {**out, "win_diff": wsum_of("win_diff"), "win_se": win_se, "win_pm2se": MARGIN_Z * win_se,
+            "hp_diff": wsum_of("hp_diff"), "hp_se": hp_se, "hp_pm2se": MARGIN_Z * hp_se,
             "cand_rate": wsum_of("cand_rate"), "inc_rate": wsum_of("inc_rate"), "cand_hp_lost": wsum_of("cand_hp_lost"),
             "inc_hp_lost": wsum_of("inc_hp_lost"), "thin": sorted(c for c, x in counted.items() if x["starts"] < 2)}
+
+
+def boss_flags(reads: dict[str, dict], points: float = BOSS_FLAG_POINTS) -> list[dict]:
+    """The boss cells of the parts' readings (`strat_read`; a cell whose name holds "boss": act1-boss, act3-boss1-80, ...) whose survival difference
+    is `points` or worse, in points: [{part, cell, points, pm2se, starts, pairs}], parts and cells in name order. A flag is information on the
+    verdict, never a refusal: nothing in `v5_decide` reads it. A cell with no pairs is not flagged."""
+    out = []
+    for part in sorted(reads):
+        for cell, x in sorted((reads[part].get("by_cell") or {}).items()):
+            if "boss" in cell and x.get("win_diff") is not None and 100.0 * x["win_diff"] <= points:
+                out.append({"part": part, "cell": cell, "points": 100.0 * x["win_diff"],
+                            "pm2se": None if x.get("win_se") is None else 100.0 * MARGIN_Z * x["win_se"], "starts": x.get("starts"), "pairs": x.get("pairs")})
+    return out
+
+
+def flag_text(flags: list[dict]) -> str:
+    """The flags as one clause of a stage line ("" when there are none): each cell with its difference and plus or minus 2 SE, in points."""
+    if not flags:
+        return ""
+    return ("FLAG, a boss cell at " + f"{BOSS_FLAG_POINTS:+.0f}" + " points or worse (information, not a refusal): "
+            + "; ".join(f"part {f['part']} {f['cell']} {f['points']:+.2f}" + ("" if f["pm2se"] is None else f" ±{f['pm2se']:.2f}") + " points" for f in flags))
 
 
 def v5_worse(read: dict, part: dict, z: float = Z95) -> dict:
@@ -509,11 +534,12 @@ def v5_decide(reads: dict[str, dict], stage: int, rule: dict) -> dict:
     parts = rule["parts"]
     worse = {p: v5_worse(reads[p], parts[p], float(rule.get("z_worse", Z95))) for p in parts}
     bad = [p for p in parts if worse[p]["worse"]]
+    flags = boss_flags(reads, float(rule.get("flag_points", BOSS_FLAG_POINTS)))  # information on the verdict: nothing below reads it
     why_bad = "; ".join(f"part {p} is clearly worse (95% upper bound {100 * worse[p]['ub95']:+.2f} points, under {parts[p]['worse']:+.1f})"
                         for p in bad)
     if stage == 1:
         return {"verdict": "reject" if bad else "continue", "stage": 1, "path": None, "why": f"stage 1: {why_bad}" if bad else None,
-                "worse": worse, "routes": {}}
+                "worse": worse, "routes": {}, "flags": flags}
     routes = {}
     for name, r in rule["routes"].items():
         own = v5_route(reads[r["part"]], r)
@@ -521,7 +547,7 @@ def v5_decide(reads: dict[str, dict], stage: int, rule: dict) -> dict:
         routes[name] = {**own, "ok": own["ok"] and not others, "own_ok": own["ok"], "blocked_by": others}
     for name in rule["routes"]:
         if routes[name]["ok"]:
-            return {"verdict": "promote", "stage": stage, "path": name, "why": None, "worse": worse, "routes": routes}
+            return {"verdict": "promote", "stage": stage, "path": name, "why": None, "worse": worse, "routes": routes, "flags": flags}
     last = stage >= max(len(p["stage_draws"]) for p in parts.values())
     near = [p for p in parts if reads[p].get("win_diff") is not None and 100.0 * reads[p]["win_diff"] >= float(parts[p]["near"])]
 
@@ -533,6 +559,6 @@ def v5_decide(reads: dict[str, dict], stage: int, rule: dict) -> dict:
 
     why = "; ".join(route_why(n, x) for n, x in routes.items())
     if near and not bad and not last:
-        return {"verdict": "continue", "stage": stage, "path": None, "worse": worse, "routes": routes,
+        return {"verdict": "continue", "stage": stage, "path": None, "worse": worse, "routes": routes, "flags": flags,
                 "why": f"stage {stage}: {why}; part {', '.join(near)} gains at least its near bar, so stage {stage + 1}"}
-    return {"verdict": "reject", "stage": stage, "path": None, "worse": worse, "routes": routes, "why": f"stage {stage}: {why}"}
+    return {"verdict": "reject", "stage": stage, "path": None, "worse": worse, "routes": routes, "flags": flags, "why": f"stage {stage}: {why}"}

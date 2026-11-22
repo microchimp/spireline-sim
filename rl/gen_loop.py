@@ -2614,8 +2614,8 @@ def compare_arms(cand_rows: list[dict], base_rows: list[dict], alpha: float = AL
     cw = sum(bool(c[s]["win"]) for s in seeds) / max(1, len(seeds))
     bw = sum(bool(b[s]["win"]) for s in seeds) / max(1, len(seeds))
     out: dict[str, Any] = {"paired_seeds": len(seeds), "floor": floor, "boss_kill": boss, "wins": wins}
-    if keep is not None:
-        return {**out, "keep_v2": keep, "decision": decide_v2(keep)}
+    if keep is not None:  # `per_arrival` (each arm's pass rate at the first Act 3 boss per 100 arrivals, with its SE) is also a field of promotion.json itself
+        return {**out, "keep_v2": keep, **({"per_arrival": keep["per_arrival"]} if "per_arrival" in keep else {}), "decision": decide_v2(keep)}
     if guard is None:
         return {**out, "decision": decide(floor, boss, wins, cw, bw, alpha)}
     return {**out, "review_guard": guard, "decision": decide_review(floor, boss, wins, cw, bw, guard, alpha)}
