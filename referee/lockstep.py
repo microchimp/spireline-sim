@@ -448,6 +448,7 @@ class Lockstep:
                 self._lose(i, f"choose_error:{type(e).__name__}:{e}"[:200], kind=kind, msg=msg)
         if ranked and getattr(self.emu, "ai_state_assumed", False):
             self.assumed.add(i)
+        by_agent = choice is not None
         if choice is None:
             choice = self.fallback(msg)
         choice = self._not_again(msg, choice)  # before the copy is told: a refused answer is not mirrored
@@ -464,6 +465,7 @@ class Lockstep:
             sp = self.open["not_ranked_span"]
             sp["first"] = i if sp["first"] is None else sp["first"]
             sp["last"], sp["count"] = i, sp["count"] + 1
+        self._boss_tally(i, kind, msg, by_agent)
         self.prev_kind = kind
         if isinstance(choice, int) and 0 <= choice < len(labels):
             self.prev_act = {"type": act_type(kind, labels[choice]), "kind": kind, "label": labels[choice]}
@@ -531,6 +533,37 @@ class Lockstep:
                 self._fields("boss_enemies", obs.get("act") or 0, lambda: run_fields.real_enemies(combat))
         elif self.fields.in_boss_fight:
             self._fields("boss_over", won=True)
+
+    def _boss_tally(self, i: int, kind: str, msg: dict, by_agent: bool) -> None:
+        """Who played each boss fight, decision by decision, into `stats["boss_fights"]`: one entry a fight, {act, floor, first (its
+        first decision), decisions, stand_in (decisions the stand-in answered: the agent was not asked, or the search gave nothing),
+        first_stand_in (the first of them, None when the agent answered every one)}. A fight is the unbroken run of fight decisions
+        on a boss floor (the observation's act and floor, as `_boss_fight` names it), a new floor a new fight (the Act 3 bosses are
+        on two floors with no question between them). The rows' readers could not tell who played a boss: a lost row carries the
+        first loss of the whole run, and 7 of the 95 lost first-Act-3-boss arrivals of the 2026-11-20 block had the agent play that
+        boss and lose track only at the second. With this field a boss fight is the agent's when `stand_in` is 0."""
+        import run_fields  # noqa: PLC0415
+
+        obs = msg.get("obs") or {}
+        combat = obs.get("combat")
+        on_boss = kind in COMBAT_KINDS and bool(combat) and (
+            self.room_type == "Boss" or run_fields.is_boss_floor(obs.get("act"), obs.get("floor")))
+        if not on_boss:
+            self._boss_open = False
+            return
+        fights = self.stats.setdefault("boss_fights", [])
+        cur = fights[-1] if fights and self._boss_open else None
+        if cur is None or cur["floor"] != obs.get("floor"):
+            cur = {"act": obs.get("act"), "floor": obs.get("floor"), "first": i, "decisions": 0, "stand_in": 0, "first_stand_in": None}
+            fights.append(cur)
+            self._boss_open = True
+        cur["decisions"] += 1
+        if not by_agent:
+            cur["stand_in"] += 1
+            if cur["first_stand_in"] is None:
+                cur["first_stand_in"] = i
+
+    _boss_open = False  # the last entry of stats["boss_fights"] is the fight in progress
 
     def _fields(self, name: str, *args, **kwargs) -> None:
         """One record-field hook, fenced: the fields are telemetry on the run's record, so a fault in them is recorded once
@@ -686,6 +719,8 @@ class Lockstep:
         plan = reanchor_plan(kind, self.prev_kind)
         if plan is None or kind not in MAPPED_KINDS or not self._reanchor(plan, kind, labels, msg):
             return False
+        if self.open is not None:  # where the loss ended: its span says how many decisions, this says where and how it was recovered
+            self.open["resumed_at"] = {"decision": i, "floor": (msg.get("obs") or {}).get("floor"), "plan": plan}
         self.lost, self.open = None, None
         self.stats["resumed"] += 1
         return True
