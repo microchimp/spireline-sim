@@ -76,12 +76,40 @@ ruler hash, candidate or champion (the sha256 of the fight network) does not mat
 the reason is recorded (`keep_v2.route_s.s1.reasons`, the ledger's `guard` cell: `S1 not applied (...)`) and v3 decides.
 
 **S1 inside `promote`** (`gen_loop.s1_stage`, after the cheap fight screen and before any arm is played). The champion's ruler is used when its `meta.json` names this champion and its starts file hashes
-to the meta's hash (`act3_starts.load_ruler`), else built there (`arrivals`, 12 processes, about 1.6 h). The test index k is one more than any test played against the ruler (the ledger
-`s1-ledger.json` beside it, and any draws a games file in its `exam` folder holds), so no draw (6k to 6k + 5) is used by two candidates; a resumed or repeated judgement of the same candidate keeps its own k, and a
+to the meta's hash (`act3_starts.load_ruler`), else built there (`arrivals`, 12 processes, about 1.6 h); a ruler that lacks arms the champion has played since is extended first ("The ruler grows with the champion", below). The test index k is one more than any test played against the ruler
+**at its current hash** (the ledger `s1-ledger.json` beside it, and any draws a games file of that hash in its `exam` folder holds), so no draw (6k to 6k + 5) is used by two candidates; a resumed or repeated judgement of the same candidate keeps its own k, and a
 reading that stands in the candidate's folder (`s1.json`, for this ruler, champion and candidate) is not played again. 12 processes. Both children inherit the train job's priority (BelowNormal), hold no QUIET.lock line and are
 passed the lab's own tag with `--allow-quiet lab-train` (the exam would otherwise read the runner's line as another's and stop); the gym daemon is not touched. A stop or a block (the night window, PAUSE, HALT, a
 landing, another's line) ends the stage with exit status 3: the job fails, the runner retries it, and the ruler's replays and the exam's games resume. The reading goes to `<candidate>/s1.json` and to promotion.json as `s1`.
-A champion that has no arms to build a ruler from, or a candidate that holds the champion's own fight network, is S1-unavailable: v3 decides and `route_s_mode.why` says so.
+A champion that has no arms to build a ruler from, or a candidate that holds the champion's own fight network, is S1-unavailable: v3 decides and `route_s_mode.why` says so. The ledger's `guard` cell says `S1 unavailable: <why>; v3 decides` (`gen_loop.route_s_note`; promotion.json's `route_s_mode.reason` holds the reason) whenever route S was asked and S1 had no reading; a reading that was played prints its own parts instead.
+
+**The ruler grows with the champion** (judge build 3, D68 addendum 6 outcome 5). A champion plays one more judged block each time it is the base of a challenger's judgement, so its pool of
+independent first-boss arrivals grows over its tenure; a ruler built once would stay as thin as on the day it was built (gen21's first ruler would hold about 465 first-boss arrivals for the whole tenure, and a hold at
++1.0 per 100 arrivals needs the mean minus 2.576 SE above 0, which is about +1.6 at that size). So `s1_stage` compares the champion's eligible arms (`act3_starts.champion_arms`: its judged arms except the
+blocks it was selected on and except the block being judged now, which it is still playing) with the arms the ruler's `meta.json` names (`arms[].block` and the rows each had when read), `act3_starts.ruler_gap`.
+A block the ruler does not hold, or one that holds more rows than the ruler read (a block completed since), makes the stage run `arrivals` on the same folder, which **extends** the ruler: only those arms are
+replayed (a replay with a row on disk is not played again), every start the ruler holds is kept as it is, and the whole set is written again with a new `ruler_hash`. `meta.json` keeps a `history`
+(when, which arms, how many starts each added, `previous_hash`); it is written last, so a write that stopped half way leaves no ruler a test could be played on and the next run builds it again from
+the replays on disk. A candidate whose own reading (`s1.json`) already stands for the ruler is not given a bigger one: a v3 extension block of the same judgement reads the same reading.
+`arrivals --rebuild` forgets the ruler in the folder and builds from the arms; with nothing to add it leaves the folder as it is (status 0).
+
+**What a test index means.** Test k plays draws 6k to 6k + 5 on the ruler of **one hash**. A ruler that grew has a new hash and its tests start at 0 with draws of its own: `s1_used_tests` counts the
+ledger's entries and the games files of the current hash only. The exam's games of the old hash are put away under `exam/<old hash first 8>/` when the ruler grows, and `exam/ruler_hash.txt` names the hash the games in
+`exam/` were played on, so the exam never reads another hash's games as played (`act3_starts.retire_exam`, `exam_games`; `arrival-exam` does the same for a folder that names another owner); the ledger's entries of
+the old hash stay as the record. A reading names its ruler's hash and is applied only to that hash (`keep_v2.s1_match`): a reading on the old hash is not applied to the new ruler. Cost: the champion's games are
+played again on the new ruler (the exam plays 6 draws on every start for both players, about 1.7 h at 1,100 starts, half of it the champion's); a test's draws 0 to 5 on the starts the old ruler held are the ones an earlier test used on them (the champion's
+games there are the same games, the candidate's are its own).
+
+**The exclusions.** The exam plays the ruler's fights, so the practice must never draw them. After a ruler is built or extended, and at every later read of it (the S1 stage, `rejudge --s1`, a candidate's stored
+reading), `act3_starts.merge_exclusions` puts the ruler's run seeds and start ids on the fight loop's `gym-loop/exam/exclude_runs.json`, which the loop reads at each segment draw (nothing else tells it): the union,
+sorted; `by_stratum["arrival-own"]` counts the arrival starts merged; `arrival.<ruler folder>` records the rule, the time, the ruler's starts and runs, what this merge added and the ruler's hash. The old file is kept
+once as `exclude_runs.json.pre-arrival.bak`; every write is a temporary file replaced over the file. It is idempotent (a ruler already merged is not rewritten: the hand merge of 2026-11-22 reads as merged). A list that is
+not the fight exam's, or unreadable, is never rewritten: in the train job's stage it stops the judgement before the exam plays (the ruler and its replays are kept), elsewhere it is said and the reading is still read; a
+loop with no list gets none made. `act3_starts.py merge-exclusions --ruler DIR [--dry]` is the hand way, for a ruler built outside the train job (as `judge-design/S1-v5.sh` does) until a stage reads it.
+
+**A fresh champion.** A champion with no judged arm outside the block it was selected on (just promoted: no challenger has had it as the base yet) has no ruler to build. S1 is unavailable, v3 decides, the
+ledger's `guard` cell says `S1 unavailable: <why>; v3 decides`, and no ruler folder is made. The cost, stated plainly: **the first challenger after each promotion is judged by v3's route A on Act 3 kills**, which a
+fight step usually cannot show. The block that challenger's judgement plays gives the champion its first arm, and the next challenger is read on a ruler built from it.
 
 **S2, the whole-run breakage check** (only when S1 holds; `keep_v2.route_s` composes S1 and S2's final bound, `judge_v3` adds the guards). The funnel over the block (the D51 looks, 2,000 pairs) with its looks **refusing only** (`seq_call_v3(route_s=True)`): from `S2_FROM_PAIRS` (500)
 pairs on, a look refuses when deep_f's one-sided 99% upper bound (`S2_LOOK_ALPHA` 0.01) is below 0 or the floors have collapsed (the existing collapse test). **No futility stop, no early promotion, no extension.**
@@ -103,7 +131,7 @@ columns are unchanged.
 **The undo.** Remove `--route-s auto` from the train job's command in `LAB/jobs.json` (or set `off`): the next judgement is v3 as above. Nothing in the verdicts of v3 changes with the flag off: no key is added, the child's command line is as it was. A candidate promoted by route S stays promoted;
 its `s1.json`, `s1/` folder and the ledger beside the ruler are only records.
 
-**Not verified.** That the champion's stored arms (played with the prior on the GPU server) replay bit for bit through the server on this tree: if they do not, the check refuses the reuse and the champion plays the block afresh, which costs time and breaks nothing.
+**Not verified.** That the real fight loop's exclusion list (written by hand on 2026-11-22) reads as merged byte for byte: the tests use a list built the way the hand script built it, not the file itself. That the champion's stored arms (played with the prior on the GPU server) replay bit for bit through the server on this tree: if they do not, the check refuses the reuse and the champion plays the block afresh, which costs time and breaks nothing.
 
 ## Run it
 
