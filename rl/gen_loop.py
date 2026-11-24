@@ -3162,6 +3162,15 @@ class S1Unavailable(RuntimeError):
     goes on under v3 and records why."""
 
 
+def route_s_note(mode: Mapping[str, Any] | None, s1: Mapping[str, Any] | None) -> str | None:
+    """The words a ledger row's `guard` cell carries when route S was asked (`--route-s auto`) and there was no S1 reading to print: `S1 unavailable: <reason>;
+    v3 decides` (the reason is `route_s_mode.reason`: not a fight-only swap, the champion has no arm to build a ruler from, the same network twice, no reading
+    to read). None when route S was not asked, when it applies, or when S1 was read: keep_v2's own parts then say how it went (holds, does not hold, not applied)."""
+    if not mode or mode.get("applies") or s1 is not None:
+        return None
+    return f"S1 unavailable: {mode.get('reason') or mode.get('why') or 'no reading'}; v3 decides"
+
+
 def route_s_of(value: str | None) -> str:
     """`--route-s`: "auto" or "off" (the default). Any other value is an error, not a silent off: a rule that decides a promotion is never guessed."""
     v = "off" if value is None or str(value).strip() == "" else str(value).strip().lower()
@@ -3217,13 +3226,26 @@ def s1_ledger(ruler: Path) -> dict[str, Any]:
     return doc
 
 
+def ruler_hash_of(ruler: Path) -> str | None:
+    """The hash in a ruler's meta.json (what its tests are played on); None when there is no readable meta."""
+    try:
+        h = read_json(Path(ruler) / "meta.json").get("ruler_hash")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return str(h) if h else None
+
+
 def s1_used_tests(ruler: Path, ledger: Mapping[str, Any]) -> set[int]:
-    """The test indices that have been played against the ruler: the ledger's, and every one whose draws (6k to 6k + 5) a games file in the ruler's `exam`
-    folder holds (a test played by hand, before there was a ledger, still counts)."""
+    """The test indices that have been played against the ruler **at its current hash**: the ledger's entries for this hash (an entry that names no hash counts:
+    it cannot be told apart, and a draw is never used twice), and every one whose draws (6k to 6k + 5) a games file in the ruler's `exam` folder holds for this
+    hash (a test played by hand, before there was a ledger, still counts). A ruler that grew has a new hash and its tests start at 0: what was played on the
+    old hash stays in the ledger and in `exam/<old hash first 8>/` as a record, and is not counted (`act3_starts.retire_exam`, `exam_games`). A ruler whose
+    meta cannot be read counts everything."""
     import act3_starts as a3  # noqa: PLC0415
 
-    used = {int(t["test"]) for t in ledger["tests"]}
-    for f in sorted((Path(ruler) / "exam").glob("games-arr-*.jsonl")):
+    cur = ruler_hash_of(ruler)
+    used = {int(t["test"]) for t in ledger["tests"] if cur is None or t.get("ruler_hash") in (None, cur)}
+    for f in a3.exam_games(Path(ruler) / "exam", cur):
         for line in f.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 with contextlib.suppress(ValueError, KeyError, TypeError):
@@ -3247,13 +3269,29 @@ def register_s1_test(ruler: Path | str, reading: Mapping[str, Any], cand_dir_nam
     return True
 
 
+def standing_reading(stored: Path, expect: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The reading stored in a candidate's folder (`s1.json`) when it is complete and names this ruler hash, champion and candidate network, else None."""
+    if not Path(stored).is_file():
+        return None
+    try:
+        old = read_json(stored)
+        again = {**old, "match": keep_v2_module().s1_match(old, expect)}
+        return again if again["match"]["verified"] and again.get("complete") else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_agent: Agent, *, procs: int = S1_PROCS, ruler_root: Path | str | None = None,
-             python: str | None = None, run: Callable[..., Any] | None = None, say: Callable[[str], None] | None = None) -> dict[str, Any]:
+             python: str | None = None, run: Callable[..., Any] | None = None, say: Callable[[str], None] | None = None, block: str | None = None) -> dict[str, Any]:
     """S1 for a fight-only swap: the first stage of `promote` under `--route-s auto`. Returns the reading (`keep_v2.s1_reading`, checked against this pair),
     written to the candidate's folder as `s1.json`.
 
     1. The champion's ruler (`D:/spireline/referee/gym-loop/arrival/<champion folder name>/`, `rl/act3_starts.py arrivals`): used when its `meta.json` names this
-       champion and its starts file hashes to the meta's hash; else built there, from the champion's arms, on `procs` processes.
+       champion and its starts file hashes to the meta's hash; else built there, from the champion's arms, on `procs` processes. A ruler that lacks arms the
+       champion now has (`act3_starts.ruler_gap`: a block it played since, or one that grew) is **extended** first: only those arms are replayed, every start
+       the ruler holds is kept, and the hash is the whole set's. `block` is the block being judged now: the champion's arm on it is left out (it is still being
+       played, and the ruler must not change between two tries of one judgement). A champion with no arm to read has no ruler: `S1Unavailable`, and no folder is
+       made for it.
     2. The test index k: the candidate's own when the ruler's ledger already holds a test for this fight network (a resumed or repeated judgement plays
        the same draws, and one whose `s1.json` stands for this ruler, champion and candidate is not played again); else one more than any test played
        against the ruler (`s1_used_tests`), so no draw (6k to 6k + 5) is used by two candidates. The ledger is written before the games are.
@@ -3271,34 +3309,43 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
     script = str(ROOT / "rl" / "act3_starts.py")
     lib = os.environ.get("STS2_LIB_PATH")
     allow = ["--allow-quiet", LAB_TRAIN_TAG, *(["--lib", lib] if lib else [])]
+    import act3_starts as a3  # noqa: PLC0415
+
+    same = s1_expect(cand_agent, base_agent, None)
+    if same["candidate"] == same["champion"]:  # before any ruler is built or extended: nothing to compare
+        raise S1Unavailable("the candidate and the champion hold the same fight network: nothing to compare")
+    stored = cand / S1_FILE
     meta = usable_ruler(ruler, base_dir)
-    if meta is None:
-        if not (base_dir / "arms").is_dir():
-            raise S1Unavailable(f"the champion {base_dir.parent.name}/{base_dir.name} has no arms to build a ruler from")
-        say(f"S1: building the ruler of {base_dir.parent.name}/{base_dir.name} in {ruler.name} (the champion's arrivals, {procs} processes)")
-        rc = run([py, script, "arrivals", "--champion", str(base_dir), "--out", str(ruler), "--procs", str(int(procs)), *allow], check=False).returncode
+    if meta is not None:
+        # this candidate was read against this ruler already: the reading stands, and the ruler is not grown under it (a second block of the same
+        # judgement, v3's extension, reads the same reading rather than a new test on a bigger ruler)
+        standing = standing_reading(stored, s1_expect(cand_agent, base_agent, meta["ruler_hash"]))
+        if standing is not None:
+            say(f"S1: {S1_FILE} stands for this ruler, champion and candidate: not played again")
+            return standing
+    gap = a3.ruler_gap(meta, base_dir, [block] if block else ())  # the champion's arms the ruler lacks (all of them when there is no ruler)
+    if meta is None and not gap:
+        raise S1Unavailable(f"the champion {base_dir.parent.name}/{base_dir.name} has no arm outside the blocks it was selected on to build a ruler from")
+    if gap:
+        who = f"{base_dir.parent.name}/{base_dir.name}"
+        say(f"S1: building the ruler of {who} in {ruler.name} ({len(gap)} arms, {procs} processes)" if meta is None else
+            f"S1: extending the ruler of {who} in {ruler.name} ({meta['starts']} starts) by {', '.join(g['label'] for g in gap)} ({procs} processes)")
+        rc = run([py, script, "arrivals", "--champion", str(base_dir), "--out", str(ruler), "--procs", str(int(procs)),
+                  *(["--exclude-block", block] if block else []), *allow], check=False).returncode
         if rc == 3:
             raise S1Blocked("the ruler's replays were stopped or blocked; what they wrote is kept")
         if rc == 2:
-            raise S1Unavailable("the ruler cannot be built: no arm to read, or an arm another agent played")
+            raise S1Unavailable("the ruler cannot be " + ("built" if meta is None else "extended") + ": no arm to read, or an arm another agent played")
         if rc != 0:
             raise RuntimeError(f"the ruler's builder ended with status {rc}")
         meta = usable_ruler(ruler, base_dir)
         if meta is None:
             raise RuntimeError(f"the ruler's builder left no usable ruler in {ruler.name}")
     expect = s1_expect(cand_agent, base_agent, meta["ruler_hash"])
-    if expect["candidate"] == expect["champion"]:
-        raise S1Unavailable("the candidate and the champion hold the same fight network: nothing to compare")
-    stored = cand / S1_FILE
-    if stored.is_file():  # this candidate was read against this ruler already: the reading stands
-        try:
-            old = read_json(stored)
-            again = {**old, "match": keep_v2_module().s1_match(old, expect)}
-            if again["match"]["verified"] and again.get("complete"):
-                say(f"S1: {S1_FILE} stands for this ruler, champion and candidate: not played again")
-                return again
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+    standing = standing_reading(stored, expect)  # the ruler was just extended, or the first look found no usable one
+    if standing is not None:
+        say(f"S1: {S1_FILE} stands for this ruler, champion and candidate: not played again")
+        return standing
     ledger = s1_ledger(ruler)
     entry = next((t for t in ledger["tests"] if t.get("candidate") == expect["candidate"] and t.get("champion") == expect["champion"]
                   and t.get("ruler_hash") == expect["ruler_hash"] and t.get("done") is None), None)
@@ -3525,11 +3572,13 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         route_s_mode = {"mode": "auto", "fight_swap": fight_only_swap(cand)}
         if not route_s_mode["fight_swap"]:
             route_s_mode["why"] = "not a fight-only swap (agent.json built.swap does not read 'fight'): v3 decides"
+            route_s_mode["reason"] = "not a fight-only swap"
         else:
             try:
-                s1 = s1_stage(cand, base_dir, cand_agent, base_agent, procs=min(int(procs), S1_PROCS), say=lambda m: print(m, flush=True))
+                s1 = s1_stage(cand, base_dir, cand_agent, base_agent, procs=min(int(procs), S1_PROCS), say=lambda m: print(m, flush=True), block=name)
             except S1Unavailable as why:
                 route_s_mode["why"] = f"S1 could not be played ({why}): v3 decides"
+                route_s_mode["reason"] = str(why)
     s_on = bool(s1 is not None and keep_v2_module().route_s1(s1, fight_swap=True)["holds"])  # S1 holds: S decides and S2 is the funnel
     if route_s_mode is not None:
         route_s_mode["applies"] = s_on
@@ -3614,6 +3663,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         cells["guard"] = f"{cells['guard']} | {screen_doc['line']}".replace("\t", " ")
     if keep_rule_why:  # the train job chose the rule between the marker's and the lab's: the row says which and why
         cells["guard"] = f"{cells['guard']} | keep rule {rule}: {keep_rule_why}".replace("\t", " ")
+    if route_s_note(route_s_mode, s1):  # route S was asked and had no reading: the row says so (a reading prints its own parts)
+        cells["guard"] = f"{cells['guard']} | {route_s_note(route_s_mode, s1)}".replace("\t", " ")
     if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
         said = (f"funnel {seq['stop']['rule']} of {len(seeds)} seeds" if seq["stop"]["action"] == "futility"
                 else f"funnel {seq['stop']['action']} at {played} of {len(seeds)} seeds")
@@ -3737,6 +3788,7 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             route_s_mode["source"] = f"the candidate's {S1_FILE}"
         else:
             route_s_mode["why"] = f"no S1 reading (no --s1 file, no {S1_FILE} in the candidate's folder): v3 decides"
+            route_s_mode["reason"] = f"no S1 reading (no --s1 file, no {S1_FILE} in the candidate's folder)"
     s_on = bool(s1 is not None and keep_v2_module().route_s1(s1, fight_swap=bool(route_s_mode and route_s_mode["fight_swap"]))["holds"])
     if route_s_mode is not None:
         route_s_mode["applies"] = s_on
@@ -3844,6 +3896,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     cells = keep_cells(keep, attempt) if v2 else guard_cells(guard, attempt)
     if pool_blocks:
         cells["guard"] = f"{cells['guard']} | {pooled_say(doc['pooled'])}".replace("\t", " ")
+    if route_s_note(route_s_mode, s1):
+        cells["guard"] = f"{cells['guard']} | {route_s_note(route_s_mode, s1)}".replace("\t", " ")
     if stop is not None:
         said = f"{played} of {len(seeds)} seeds, where the funnel stopped on a {stop['action']}"
         doc["rejudged"]["seeds"] = {"judged": played, "block": len(seeds), "funnel_stop": stop["action"],

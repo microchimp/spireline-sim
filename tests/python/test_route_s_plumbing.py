@@ -52,11 +52,12 @@ def holds(expect: dict, points: float = 1.8, se: float = 0.4, **kw) -> dict:
     return k2.s1_reading(result(points, se, ruler=expect["ruler_hash"], cand=expect["candidate"], champ=expect["champion"], **kw), expect)
 
 
-def make_ruler(folder: Path, champion: str = "gen3-candidate", champion_dir: str = "gen3/candidate") -> dict:
-    """A small valid ruler (three starts) in `folder`, for the champion `champion_dir`."""
+def make_ruler(folder: Path, champion: str = "gen3-candidate", champion_dir: str = "gen3/candidate", label: str = "Eprev", rows_in_arm: int = 2000) -> dict:
+    """A small valid ruler (three starts) in `folder`, for the champion `champion_dir`, built from one arm: the block `label` of `rows_in_arm` judged runs
+    (the champion's arm `World` writes, so the ruler lacks nothing the champion has)."""
     rows = {r["seed"]: r for r in [nodes_row("p1", "past", 1), nodes_row("d1", "died", 2)]}
-    recs, counts = a3.arrival_records([replay_row(rows["p1"], "B"), replay_row(rows["d1"], "B")], "B", rows, "old")
-    return a3.build_ruler(folder, champion, champion_dir, [{"label": "B", "records": recs, "counts": counts, "rows": 10, "arrivals": 2}], "old", "a3-v1")
+    recs, counts = a3.arrival_records([replay_row(rows["p1"], label), replay_row(rows["d1"], label)], label, rows, "old")
+    return a3.build_ruler(folder, champion, champion_dir, [{"label": label, "records": recs, "counts": counts, "rows": rows_in_arm, "arrivals": 2}], "old", "a3-v1")
 
 
 class World(unittest.TestCase):
@@ -96,6 +97,8 @@ class World(unittest.TestCase):
         arm = folder / "arms" / f"{name}-a3-v1"
         arm.mkdir(parents=True)
         (arm / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        # the summary the arm runner writes: what makes the folder an arm to `act3_starts.champion_arms` (the champion's judged arms a ruler is built from)
+        (arm / "summary.json").write_text(json.dumps({"config": "a3-v1", "agent": {"dir": f"{folder.parent.name}/{folder.name}"}}), encoding="utf-8")
         return arm
 
     def seed_file(self, name: str, seeds: list[str]) -> Path:

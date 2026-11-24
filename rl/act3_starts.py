@@ -6,7 +6,8 @@
     python rl/act3_starts.py decks  --out DIR                                                   the decks walked in with: skills, attacks, powers by boss and result
     python rl/act3_starts.py human  --out DIR [--procs 4] [--engine old|core2] [--only-ids FILE]  deal the human positions' openings on the copy
     python rl/act3_starts.py own    --out DIR [--stores S ...] [--n-first N] [--n-second N]       our own Act 3 boss arrivals, from the plain-run stores
-    python rl/act3_starts.py arrivals --champion DIR --out DIR [--limit N]        the champion's first-Act-3-boss arrivals from its judged arms (S1's ruler)
+    python rl/act3_starts.py arrivals --champion DIR --out DIR [--limit N] [--rebuild]   the champion's first-Act-3-boss arrivals from its judged arms (S1's ruler);
+                                                                                          a ruler already in --out is extended by the arms it lacks
     python rl/act3_starts.py arrival-exam --ruler DIR --candidate DIR --champion DIR   S1: the candidate's fight network on that ruler (a report)
 
 Why. The two Act 3 bosses (floors 48 and 49 at Ascension 10; the second is met only by a run that beat the first) hold nine tenths of the gap
@@ -39,6 +40,7 @@ import os
 import sys
 import time
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -526,8 +528,16 @@ def cmd_own(a: argparse.Namespace) -> int:
 # map path, the cards taken and the rests up to the boss). The champion's judged arms were played with the prior on the GPU server and the
 # replay uses the in-process prior: a replay that does not match is dropped, never repaired, and the match rate is in the ruler's meta.
 #
-#   python rl/act3_starts.py arrivals     --champion DIR --out DIR [--limit N]   rebuild the ruler (with --limit N: only check that N rows replay)
+#   python rl/act3_starts.py arrivals     --champion DIR --out DIR [--limit N] [--rebuild]   build the ruler (with --limit N: only check that N rows replay)
 #   python rl/act3_starts.py arrival-exam --ruler DIR --candidate DIR --champion DIR [--test K]   play it and read S1 (a report, no rule)
+#
+# The ruler grows with the champion (judge build 3, D68 addendum 6 outcome 5). The champion plays one more judged block each time it is the base of a
+# challenger's judgement, and a ruler built after the first block would stay that thin for the champion's whole tenure. `arrivals` on a folder that
+# already holds this champion's ruler (its starts hash to its meta) therefore replays only the arms the ruler lacks (an arm it has no entry for, or one
+# that holds more rows than the ruler's entry: a block completed since), keeps every start it has (no second replay of an arm in the ruler), and writes
+# the whole set again with a new hash. The hash names the ruler: a test played on the old hash stays valid for it, and the exam's games of the old hash
+# are put away under `exam/<old hash first 8>/` so that the new hash's tests start at 0 with draws of their own (`retire_exam`; `exam/ruler_hash.txt`
+# says which hash the games in `exam/` were played on). `meta.json` keeps the history: when, which arms, how many starts each added.
 
 ARRIVAL_RULE = "act3-arrival-v1"
 ARRIVAL_STEM = "starts-arrival"
@@ -565,10 +575,40 @@ def champion_arms(champion_dir: str | Path, exclude: Sequence[str] = ()) -> list
     skip = selected_blocks(champion_dir) | set(exclude)
     out = []
     for d in sorted((Path(champion_dir) / "arms").glob("*")):
-        if (d / "summary.json").is_file() and (d / "runs.jsonl").is_file():
-            cfg = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("config") or ARRIVAL_CONFIG
-            if arm_label(d, cfg) not in skip:
-                out.append(d)
+        if (d / "summary.json").is_file() and (d / "runs.jsonl").is_file() and arm_label(d, arm_config(d)) not in skip:
+            out.append(d)
+    return out
+
+
+def arm_config(folder: str | Path) -> str:
+    """The config an arm folder was played under (its summary's `config`, `a3-v1` when it names none)."""
+    return json.loads((Path(folder) / "summary.json").read_text(encoding="utf-8")).get("config") or ARRIVAL_CONFIG
+
+
+def count_rows(folder: str | Path) -> int:
+    """The judged runs in an arm folder: the non-blank lines of its runs.jsonl."""
+    with open(Path(folder) / "runs.jsonl", encoding="utf-8") as fh:
+        return sum(1 for line in fh if line.strip())
+
+
+def ruler_arms(meta: dict | None) -> dict[str, dict]:
+    """The arms a ruler was built from, by block label: the entries of its meta's `arms` ({block, rows, arrivals, replays, matched, ...}). Empty for no ruler."""
+    return {str(x["block"]): x for x in (meta or {}).get("arms") or []}
+
+
+def ruler_gap(meta: dict | None, champion_dir: str | Path, exclude: Sequence[str] = ()) -> list[dict]:
+    """The champion's eligible arms (`champion_arms`) that a ruler does not hold, oldest name first: [{label, path, rows, why}]. `why` is `new` for an arm the
+    ruler has no entry for and `grown` for one that has more rows now than its entry's (a block completed since the ruler was built: its extra runs may
+    hold arrivals). With no ruler (`meta` None) every eligible arm is new: an empty answer then means there is nothing to build a ruler from."""
+    have = ruler_arms(meta)
+    out = []
+    for d in champion_arms(champion_dir, exclude):
+        label, rows = arm_label(d, arm_config(d)), count_rows(d)
+        got = have.get(label)
+        if got is None:
+            out.append({"label": label, "path": d, "rows": rows, "why": "new"})
+        elif rows > int(got.get("rows") or 0):
+            out.append({"label": label, "path": d, "rows": rows, "why": "grown"})
     return out
 
 
@@ -696,10 +736,37 @@ def load_ruler(folder: str | Path) -> tuple[dict, dict[str, dict]]:
     return meta, lite
 
 
-def build_ruler(folder: str | Path, champion: str, champion_dir: str, arms: list[dict], engine: str, config: str) -> dict:
-    """Write the ruler from the arms' kept starts: `arms` [{label, path, records, counts, rows}] (`arrival_records` of each). The starts file, its byte
-    index and lite list (the shape `gym_loop.load_start` reads), `meta.json` with the ruler's hash and the counts, and `exclude_runs.json`. Returns
-    the meta. A start id that two arms made is an error (the seeds were taken once, `arrival_tasks`)."""
+def read_ruler_records(folder: str | Path) -> list[dict]:
+    """The full start records of a written ruler (documents included), in file order. `load_ruler` is the check that they are the ruler's own."""
+    recs = []
+    with open(Path(folder) / f"{ARRIVAL_STEM}.jsonl", encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                recs.append(json.loads(line))
+    return recs
+
+
+def history_of(meta: dict) -> list[dict]:
+    """A ruler's build history: the meta's `history`, or for a ruler written before there was one (one build, no extensions) the single entry it implies."""
+    if meta.get("history"):
+        return [dict(x) for x in meta["history"]]
+    return [{"written": meta.get("written"), "action": "built", "ruler_hash": meta.get("ruler_hash"), "starts": meta.get("starts"), "first": meta.get("first"),
+             "second": meta.get("second"), "added": [{"block": x["block"], "rows": x.get("rows"), "arrivals": x.get("arrivals"),
+                                                      "starts": int(x.get("first") or 0) + int(x.get("second") or 0), "first": x.get("first"), "second": x.get("second")}
+                                                     for x in meta.get("arms") or []]}]
+
+
+def build_ruler(folder: str | Path, champion: str, champion_dir: str, arms: list[dict], engine: str, config: str, previous: dict | None = None) -> dict:
+    """Write the ruler from the arms' kept starts: `arms` [{label, path, records, counts, rows, arrivals}] (`arrival_records` of each; a kept arm of an earlier
+    ruler brings its own records and counts back). The starts file, its byte index and lite list (the shape `gym_loop.load_start` reads), `exclude_runs.json`
+    and, last, `meta.json` with the ruler's hash, the counts and the history. Returns the meta. A start id that two arms made is an error (the seeds were
+    taken once, `arrival_tasks`).
+
+    The meta is written last because it is what makes the ruler usable: `load_ruler` reads a starts file that does not hash to the meta's as no ruler, so a
+    write stopped between two files leaves nothing a test could be played on, and the next `arrivals` builds it again from the replays on disk.
+
+    `previous` is the meta of the ruler this one extends (`cmd_arrivals`): its history is carried and an entry added, naming the arms with `added` set (the
+    new and the grown ones) and how many starts each brought. A first build adds every arm."""
     folder = Path(folder)
     records = [r for a in arms for r in a["records"]]
     ids = [r["id"] for r in records]
@@ -710,28 +777,86 @@ def build_ruler(folder: str | Path, champion: str, champion_dir: str, arms: list
     first = [r for r in records if r["boss_no"] == 1]
     second = [r for r in records if r["boss_no"] == 2]
     by_cell = Counter(r["cell"] for r in records)
+    written = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry = {"written": written, "action": "extended" if previous else "built", "ruler_hash": h, "starts": n, "first": len(first), "second": len(second),
+             "added": [{"block": a["label"], "rows": a["rows"], "arrivals": a["arrivals"], "starts": len(a["records"]),
+                        "first": sum(1 for r in a["records"] if r["boss_no"] == 1), "second": sum(1 for r in a["records"] if r["boss_no"] == 2)}
+                       for a in arms if a.get("added", previous is None)]}
+    if previous:
+        entry["previous_hash"] = previous.get("ruler_hash")
     meta = {"rule": ARRIVAL_RULE, "champion": champion, "champion_dir": champion_dir, "engine": engine, "config": config, "ruler_hash": h,
-            "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "starts": n, "first": len(first), "second": len(second),
+            "written": written, "starts": n, "first": len(first), "second": len(second),
             "by_cell": dict(sorted(by_cell.items())), "arms": [{"block": a["label"], "rows": a["rows"], "arrivals": a["arrivals"], **a["counts"]} for a in arms],
             "arrivals": sum(a["arrivals"] for a in arms), "matched": sum(a["counts"]["matched"] for a in arms),
+            "history": [*(history_of(previous) if previous else []), entry],
             "note": "first-boss starts are the exam's statistic; second-boss starts are played for the record. Replays are kept only when they match "
                     "their row (map path, cards, rests); the arms were played with the prior on the server and replay on the CPU prior."}
-    hs.atomic_json(folder / "meta.json", meta)
     hs.atomic_json(folder / "exclude_runs.json", exclusion_of(records))
+    hs.atomic_json(folder / "meta.json", meta)
     return meta
 
 
+# The exam's games are played on one hash. A ruler that grows has a new hash, and a test index means draws of one hash only, so the games of the old hash are
+# put away (under `exam/<old hash first 8>/`) when the hash changes and the folder says which hash the games in it belong to.
+EXAM_MARK = "ruler_hash.txt"
+EXAM_PER_HASH = ("games-arr-*.jsonl", "report.txt", "results.json")  # the exam's files that belong to one hash (its log and STOP file do not)
+
+
+def exam_owner(exam_dir: str | Path) -> str | None:
+    """The hash the games in an exam folder were played on (`exam/ruler_hash.txt`); None when the folder says nothing (a folder from before the ruler grew:
+    its games are taken to belong to the ruler it sits beside)."""
+    try:
+        return (Path(exam_dir) / EXAM_MARK).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def exam_games(exam_dir: str | Path, ruler_hash_: str | None) -> list[Path]:
+    """The games files in an exam folder that count for the ruler with this hash: all of them when the folder names no owner (or `ruler_hash_` is None), none
+    when it names another hash. `gen_loop.s1_used_tests` reads the folder through this, and `retire_exam` puts away what it would not count."""
+    owner = exam_owner(exam_dir)
+    if ruler_hash_ is not None and owner is not None and owner != ruler_hash_:
+        return []
+    return sorted(Path(exam_dir).glob(EXAM_PER_HASH[0]))
+
+
+def retire_exam(exam_dir: str | Path, ruler_hash_: str, old_hash: str | None = None) -> list[str]:
+    """Make an exam folder the games of `ruler_hash_`'s: files of the exam that belong to one hash (`EXAM_PER_HASH`) move to `<exam_dir>/<owner first 8>/` when
+    the owner (the folder's `ruler_hash.txt`, else `old_hash`, the hash the ruler had before it was extended) is another hash, and the owner is written down. A
+    folder with no owner and no `old_hash` is a legacy folder of this ruler: it gets the owner file and keeps its games. Returns the moved file names.
+    A name already taken in the destination gets a numbered suffix: nothing is ever overwritten."""
+    exam_dir = Path(exam_dir)
+    if not exam_dir.is_dir():
+        return []
+    owner = exam_owner(exam_dir) or old_hash
+    moved: list[str] = []
+    if owner is not None and owner != ruler_hash_:
+        dest = exam_dir / owner[:8]
+        for pat in EXAM_PER_HASH:
+            for f in sorted(exam_dir.glob(pat)):
+                dest.mkdir(exist_ok=True)
+                target, i = dest / f.name, 1
+                while target.exists():
+                    target, i = dest / f"{f.name}.{i}", i + 1
+                os.replace(f, target)
+                moved.append(f.name)
+    if exam_owner(exam_dir) != ruler_hash_:
+        (exam_dir / EXAM_MARK).write_text(ruler_hash_ + "\n", encoding="utf-8", newline="\n")
+    return moved
+
+
 def replay_arms(arms: list[dict], out: Path, *, agent_root: Path, engine: str | None, procs: int, limit: int, until: str | None, stop_file: Path,
-                say=print) -> tuple[list[dict], str | None]:
+                say=print, taken: set | frozenset = frozenset()) -> tuple[list[dict], str | None]:
     """Replay each arm's arrivals (`fight_gym._replay_task` in `procs` spawned workers; a replay with a row on disk is not played again, so a stop
     loses only the replays in flight). Returns (the arms with `replays` read back, the stop reason). `limit`: only the first `limit` tasks of the
-    hash order over all the arms (a check that the arms load, not a ruler)."""
+    hash order over all the arms (a check that the arms load, not a ruler). `taken`: seeds an arm already in the ruler holds (an extension): they are
+    left to that arm, as a seed two blocks hold is left to the first."""
     import fight_exam as fe  # noqa: PLC0415
     import fight_gym as fg  # noqa: PLC0415
 
     fg.MAX_PROCS = max(fg.MAX_PROCS, procs)
     tasks_by_arm: list[list[tuple]] = []
-    taken: set = set()
+    taken = set(taken)
     for a in arms:
         tasks_by_arm.append(arrival_tasks(a["all_rows"], a["label"], a["config"], taken))
         a["arrivals"] = len(tasks_by_arm[-1])
@@ -764,13 +889,38 @@ def load_arm(folder: Path) -> dict:
             "agent_dir": summ["agent"]["dir"], "all_rows": rows, "rows": len(rows), "by_seed": {r["seed"]: r for r in rows}}
 
 
+def prior_ruler(out: Path, champion: str, champion_dir: str) -> tuple[dict, list[dict]] | None:
+    """(meta, full records) of the ruler already in `out` when it is this champion's and its starts hash to its meta's (`load_ruler`), else None: a folder with
+    no ruler, a ruler of another champion, one somebody edited and one whose writing was stopped half way are all built (again) from the arms."""
+    try:
+        meta, _lite = load_ruler(out)
+    except (OSError, ValueError, KeyError):
+        return None
+    if meta.get("champion") != champion or meta.get("champion_dir") != champion_dir:
+        return None
+    return meta, read_ruler_records(out)
+
+
+def carried_arm(entry: dict, records: list[dict]) -> dict:
+    """An arm of an earlier ruler kept as it was: its starts (the records of its block) and its counts, from the meta's entry. Nothing is replayed for it."""
+    counts = {k: v for k, v in entry.items() if k not in ("block", "rows", "arrivals")}
+    return {"label": entry["block"], "records": [r for r in records if r.get("block") == entry["block"]], "counts": counts, "rows": entry["rows"],
+            "arrivals": entry["arrivals"]}
+
+
 def cmd_arrivals(a: argparse.Namespace) -> int:
-    """Rebuild the champion's arrival ruler (or, with `--limit`, check that the judge's arms replay)."""
+    """Build the champion's arrival ruler, or extend the one in `--out` (with `--limit`, only check that the judge's arms replay).
+
+    A ruler already in `--out` that is this champion's (and `--rebuild` is not given) is extended: the arms it has an entry for, with no more rows than the
+    entry says, are carried over with their own starts; the arms it lacks, and those that hold more rows now, are replayed (a replay with a row on disk is not
+    played again); the starts are written again with the hash of the whole set. The exam's games of the old hash are put away (`retire_exam`). With nothing to
+    add the folder is left as it is. Status: 0 built, extended or up to date; 2 no arm to read (no folder is made), or arms another agent played; 3 stopped
+    or blocked (what was replayed is kept; run again)."""
     import fight_exam as fe  # noqa: PLC0415
 
     champion_dir = Path(a.champion)
     out = Path(a.out) if a.out else ARRIVAL_ROOT / f"{champion_dir.parent.name}-{champion_dir.name}"
-    out.mkdir(parents=True, exist_ok=True)
+    name, rel = f"{champion_dir.parent.name}-{champion_dir.name}", f"{champion_dir.parent.name}/{champion_dir.name}"
     folders = [Path(x) for x in a.arms] if a.arms else champion_arms(champion_dir, a.exclude_block)
     if not folders:
         print(f"no arm to read under {champion_dir / 'arms'}")
@@ -778,11 +928,22 @@ def cmd_arrivals(a: argparse.Namespace) -> int:
     if a.lib:
         os.environ["STS2_LIB_PATH"] = a.lib
     arms = [load_arm(f) for f in folders]
-    own = f"{champion_dir.parent.name}/{champion_dir.name}"
-    foreign = [x["label"] for x in arms if x["agent_dir"].replace("\\", "/") != own]
+    foreign = [x["label"] for x in arms if x["agent_dir"].replace("\\", "/") != rel]
     if foreign:
-        print(f"these arms were not played by {own}: {', '.join(foreign)}")
+        print(f"these arms were not played by {rel}: {', '.join(foreign)}")
         return 2
+    existing = prior_ruler(out, name, rel)
+    prior = None if a.rebuild or a.limit else existing
+    todo, carried = arms, []
+    if prior is not None:
+        pmeta, precs = prior
+        have = ruler_arms(pmeta)
+        todo = [x for x in arms if x["label"] not in have or x["rows"] > int(have[x["label"]].get("rows") or 0)]
+        mine = {x["label"] for x in todo}
+        carried = [carried_arm(e, precs) for lab, e in have.items() if lab not in mine]
+        if not todo:
+            print(json.dumps({"action": "up to date", **{k: pmeta[k] for k in ("starts", "first", "second", "ruler_hash", "arrivals", "matched")}}, indent=1))
+            return 0
     fe.ALLOW_QUIET[:] = list(a.allow_quiet or [])
     until = a.until or None
     stop_file = out / "STOP"
@@ -795,29 +956,44 @@ def cmd_arrivals(a: argparse.Namespace) -> int:
     except fe.Blocked as why2:
         print(f"not started: {why2}")
         return 3
+    out.mkdir(parents=True, exist_ok=True)  # the folder is made once there is something to write in it
+    taken: set = set()
+    replaying = {x["label"] for x in todo}
+    for x in arms:  # a seed an arm the ruler keeps holds is left to that arm
+        if x["label"] not in replaying:
+            arrival_tasks(x["all_rows"], x["label"], x["config"], taken)
+    taken |= {str(r["run"]) for c in carried for r in c["records"]}
     t0 = time.time()
-    arms, stopped = replay_arms(arms, out, agent_root=Path(a.agent_root), engine=a.engine or None, procs=a.procs, limit=a.limit, until=until,
-                                stop_file=stop_file, say=lambda m: print(f"{time.strftime('%H:%M:%SZ', time.gmtime())} {m}", flush=True))
-    kept, counts = {}, {}
-    for arm in arms:
+    todo, stopped = replay_arms(todo, out, agent_root=Path(a.agent_root), engine=a.engine or None, procs=a.procs, limit=a.limit, until=until,
+                                stop_file=stop_file, say=lambda m: print(f"{time.strftime('%H:%M:%SZ', time.gmtime())} {m}", flush=True), taken=taken)
+    for arm in todo:
         recs, c = arrival_records(arm["replays"], arm["label"], arm["by_seed"], a.engine or arm["engine"])
         secs = [float(r["seconds"]) for r in arm["replays"] if r.get("seconds") is not None]
         c["seconds_mean"] = round(sum(secs) / len(secs), 1) if secs else None
         arm["records"], arm["counts"] = recs, c
-        kept[arm["label"]], counts[arm["label"]] = recs, c
-    tried = {arm["label"]: {"arrivals": arm["arrivals"], "rows": arm["rows"], "tried": len(arm["tasks"]), **arm["counts"]} for arm in arms}
+    tried = {arm["label"]: {"arrivals": arm["arrivals"], "rows": arm["rows"], "tried": len(arm["tasks"]), **arm["counts"]} for arm in todo}
     if a.limit:
         summary = {"rule": ARRIVAL_RULE, "mode": "check", "limit": a.limit, "engine": a.engine or arms[0]["engine"], "blocks": tried,
                    "stopped": stopped, "wall_s": round(time.time() - t0, 1)}
         hs.atomic_json(out / "verify.json", summary)
         print(json.dumps(summary, indent=1))
         return 3 if stopped else 0
-    if stopped or any(len(arm["replays"]) < len(arm["tasks"]) for arm in arms):
+    if stopped or any(len(arm["replays"]) < len(arm["tasks"]) for arm in todo):
         print(f"stopped ({stopped}); the replays on disk are kept, run again to resume")
         return 3
-    meta = build_ruler(out, f"{champion_dir.parent.name}-{champion_dir.name}", f"{champion_dir.parent.name}/{champion_dir.name}", arms,
-                       a.engine or arms[0]["engine"], arms[0]["config"])
-    print(json.dumps({k: meta[k] for k in ("starts", "first", "second", "ruler_hash", "arrivals", "matched", "by_cell")}, indent=1))
+    for arm in todo:
+        arm["added"] = True
+    final = sorted([*carried, *todo], key=lambda x: x["label"])
+    engine = a.engine or (prior[0]["engine"] if prior else arms[0]["engine"])
+    config = prior[0]["config"] if prior else arms[0]["config"]
+    meta = build_ruler(out, name, rel, final, engine, config, previous=prior[0] if prior else None)
+    moved: list[str] = []
+    if existing is not None and existing[0]["ruler_hash"] != meta["ruler_hash"]:  # a new hash: the games of the old one are put away
+        moved = retire_exam(out / "exam", meta["ruler_hash"], existing[0]["ruler_hash"])
+    last = meta["history"][-1]
+    print(json.dumps({**{k: meta[k] for k in ("starts", "first", "second", "ruler_hash", "arrivals", "matched", "by_cell")}, "action": last["action"],
+                      "added": [f"{x['block']}: {x['starts']} starts" for x in last["added"]],
+                      **({"previous_hash": last["previous_hash"], "exam_files_put_away": moved} if "previous_hash" in last else {})}, indent=1))
     return 0
 
 
@@ -860,6 +1036,9 @@ def cmd_arrival_exam(a: argparse.Namespace) -> int:
     names = {"candidate": f"arr-cand-{shas['candidate'][:8]}", "champion": f"arr-champ-{shas['champion'][:8]}"}
     out = Path(a.out) if a.out else ruler / "exam"
     out.mkdir(parents=True, exist_ok=True)
+    moved = retire_exam(out, meta["ruler_hash"])  # games of another hash in this folder are not this ruler's: put away, never read as done
+    if moved:
+        print(f"the games in {out.name} were played on another ruler hash: {len(moved)} files put away")
     js = gg.arrival_js(a.test, a.draws)
     if a.lib:
         os.environ["STS2_LIB_PATH"] = a.lib
@@ -959,6 +1138,7 @@ def main(argv=None) -> int:
     p.add_argument("--engine", default="", help="the engine to replay on (default: the one each arm was played on: `old` when its summary names none)")
     p.add_argument("--procs", type=int, default=12)
     p.add_argument("--limit", type=int, default=0, help="only check that this many arrivals replay (no ruler is written; verify.json)")
+    p.add_argument("--rebuild", action="store_true", help="ignore the ruler already in --out (default: it is extended by the arms it lacks)")
     p.add_argument("--until", default="", help="a UTC stamp after which no replay starts")
     p.add_argument("--allow-quiet", nargs="*", default=[], help="QUIET.lock tags to ignore besides the loop's (the caller's own line)")
     p.add_argument("--lib", default="")
