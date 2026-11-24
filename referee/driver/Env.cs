@@ -6,6 +6,8 @@
 // then reads one command per line on stdin:
 //   {"cmd":"reset","spec":{run spec: seed, potions, ...},"hash":false,"record":"<path>"?}   start a run
 //   {"a":K}                                                                                   answer the open decision
+//   {"cmd":"anchor_state"}       the open decision's hidden state, ENV {"t":"anchor_state","state":{...}}; the decision stays
+//                                open and is not sent again (only in a run whose reset spec asked for "anchor_state"; Reply.cs)
 //   {"cmd":"quit"}                                                                            exit 0
 // and writes, per pending choice with two or more legal actions,
 //   ENV {"t":"decide","kind":k,"obs":{...},"actions":[...],"ctx":...,"h":"<state hash>"?,"unasked":[...]}
@@ -157,13 +159,35 @@ internal static class Env
         }
 
         Asked++;
+        bool send = true;
         while (true)
         {
-            Send(msg);
+            if (send) Send(msg);
+            send = true;
             var reply = Read() ?? throw new Closed();
-            if ((string?)reply["cmd"] == "quit") throw new Closed();
-            int a = reply["a"] is JsonValue v && v.TryGetValue(out int k) ? k : -1;
-            if (a >= 0 && a < n) return a;
+            var (what, a) = Reply.Of(reply, n, AnchorState);
+            if (what == Reply.What.Quit) throw new Closed();
+            if (what == Reply.What.Answer) return a;
+            if (what == Reply.What.AnchorState)
+            {
+                // The lockstep's mid-fight re-anchor (referee/lockstep.py, plan mid_fight): the open decision's hidden state, for its
+                // emulator side only, and the decision stays open as it is (not sent again).
+                JsonObject answer;
+                try
+                {
+                    answer = new JsonObject { ["t"] = "anchor_state", ["state"] = AnchorStateOf() };
+                }
+                catch (Exception ex)
+                {
+                    // A state that cannot be read costs the re-anchor (the lockstep anchors on the observation), never the run.
+                    answer = new JsonObject { ["t"] = "anchor_state", ["state"] = null, ["error"] = ex.GetType().Name };
+                }
+
+                Send(answer);
+                send = false;
+                continue;
+            }
+
             Send(new JsonObject { ["t"] = "bad_action", ["n"] = n, ["got"] = reply.ToJsonString() });
             msg.Remove("h");
             if (Hashing) msg["h"] = Hash();

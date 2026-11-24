@@ -306,6 +306,29 @@ class GameEnv:
         self._send({"a": int(a)})
         return self._next(timeout)
 
+    anchor_cmd = True  # False once the driver has shown it does not know the anchor_state command (an old driver)
+
+    def anchor_state(self, timeout: float = 120) -> dict | None:
+        """The open decision's hidden state (driver command anchor_state: stream counters, the draw pile in order, the deck's and
+        relics' holdings), for the lockstep's emulator side only (lockstep.Lockstep's mid-fight re-anchor; nothing else may read
+        it). The decision stays open: the next `step` answers it. None from a driver that does not know the command, or from a run
+        whose reset did not ask for the hidden state: the driver answers bad_action and sends the decision again, both are read
+        and dropped (the decision is the one the caller holds), and this process is not asked again."""
+        if not self.anchor_cmd:
+            return None
+        self._send({"cmd": "anchor_state"})
+        m = self._recv(timeout)
+        if m.get("t") == "anchor_state":
+            state = m.get("state")
+            return state if isinstance(state, dict) else None
+        if m.get("t") == "bad_action":
+            again = self._recv(timeout)
+            if again.get("t") != "decide":
+                raise GameDied(f"anchor_state: after bad_action, {again.get('t')} instead of the decision")
+            self.anchor_cmd = False
+            return None
+        raise GameDied(f"anchor_state: unexpected {m.get('t')}")
+
     def _next(self, timeout: float) -> tuple[dict, bool]:
         m = self._recv(timeout)
         if m.get("t") == "bad_action":
@@ -1052,6 +1075,11 @@ class _Timed:
         if self._n > self.streak["n"]:
             self.streak = {"n": self._n, "screen": pair[0], "action": pair[1]}
         return self.env.step(a, timeout=self.timeout)
+
+    def anchor_state(self):
+        """GameEnv.anchor_state with the step timeout (None from an env without it)."""
+        ask = getattr(self.env, "anchor_state", None)
+        return ask(timeout=self.timeout) if ask is not None else None
 
 
 def select_runs(seeds: list, runs: int, only: str | None) -> tuple[list, list]:

@@ -138,10 +138,31 @@ class DivergenceTests(unittest.TestCase):
         self.run_stream([msg("combat", obs(hp=60, combat=True))], emu)
         self.assertEqual(emu.reanchored, ["fight_start"])
 
-    def test_no_reanchor_mid_fight(self):
+    def test_mid_fight_reanchor_only_for_a_side_that_anchors_mid_fight_and_only_when_it_holds(self):
+        """The rule inside a fight (lane 22, fix d; it was "no re-anchor mid-fight"): a difference found at a fight decision that is
+        not the fight's first re-anchors the copy at that very decision, plan "mid_fight", when the side anchors inside a fight
+        (`anchors_mid_fight`, EmuLock) and mid-fight re-anchors are on; it counts only when afterwards the views agree, the
+        energy agrees, the second comparison is empty and the copy's legal actions are the game's (test_lockstep_mid_fight.py
+        has each condition); a side that does not anchor mid-fight is never asked inside a fight and the loss stands."""
         c = obs(combat=True)
         emu = FakeEmu([view_of(c), view_of(obs(hp=50, combat=True))], reanchor_ok=True)
         ls, _ = self.run_stream([msg("combat", c), msg("combat", c)], emu)
+        self.assertEqual(emu.reanchored, [])
+        self.assertIsNotNone(ls.lost)
+
+        class MidFightEmu(FakeEmu):
+            anchors_mid_fight = True
+
+        emu = MidFightEmu([view_of(c), view_of(obs(hp=50, combat=True))], reanchor_ok=True)
+        ls, _ = self.run_stream([msg("combat", c), msg("combat", c)], emu)
+        self.assertEqual(emu.reanchored, ["mid_fight"])
+        self.assertIsNone(ls.lost)
+        self.assertEqual(ls.log.records[0]["reanchor_plan"], "mid_fight")
+        self.assertTrue(ls.log.records[0]["reanchored"])
+        emu = MidFightEmu([view_of(c), view_of(obs(hp=50, combat=True))], reanchor_ok=True)
+        ls = lockstep.Lockstep(emu, lambda m: 0, mid_fight=False)  # SPIRELINE_MID_FIGHT=0
+        for m in (msg("combat", c), msg("combat", c)):
+            ls.decide(m)
         self.assertEqual(emu.reanchored, [])
         self.assertIsNotNone(ls.lost)
 

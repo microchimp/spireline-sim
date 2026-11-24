@@ -17,5 +17,6 @@
     <Compile Include="..\driver\AnchorHoldings.cs" Link="AnchorHoldings.cs" />
     <Compile Include="..\driver\ActionTargets.cs" Link="ActionTargets.cs" />
     <Compile Include="..\driver\Unasked.cs" Link="Unasked.cs" />
+    <Compile Include="..\driver\Reply.cs" Link="Reply.cs" />
   </ItemGroup>
 </Project>

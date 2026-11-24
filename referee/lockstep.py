@@ -8,8 +8,9 @@ Round A1 (PLAN.md section 5 "The bridge, decided"). One `Lockstep` per run:
     reads the lockstep state's RNG counters or draw order), everything else by the rules policy;
   * the referee's observation and the emulator's are projected onto the same agent-visible fields and
     hashed; a difference is logged as an agent-weighted divergence record and, where a re-anchor exists
-    (fight start, room entry), the emulator is re-anchored from the referee's record; otherwise the run goes
-    on on the referee alone and every later decision is scored but not ranked (`ranked: false`).
+    (fight start, room entry, and a fight decision inside a fight: `Lockstep._mid_fight_plan`), the emulator is
+    re-anchored from the referee's record; otherwise the run goes on on the referee alone and every later
+    decision is scored but not ranked (`ranked: false`).
 
 The pure parts (projection, divergence log, re-anchor plan, the loop over a message stream) import no native
 code, so they run against a fake referee stream; `EmuLock` is the real emulator side and imports the fork's
@@ -288,13 +289,36 @@ def act_type(kind: str, label: Any) -> str:
 
 
 def reanchor_plan(kind: str, prev_kind: str | None) -> str | None:
-    """Where a re-anchor can happen: the first decision of a fight (fight start) or a map choice (room entry).
-    Mid-fight and mid-screen divergences wait for the next boundary."""
+    """Where a re-anchor can happen at a boundary: the first decision of a fight (fight start) or a map choice (room entry).
+    Inside a fight a side that can (`Lockstep.mid_fight`) is re-anchored at a fight decision too (plan "mid_fight",
+    `Lockstep._mid_fight_plan`); mid-screen divergences wait for the next fight decision or boundary."""
     if kind in COMBAT_KINDS and prev_kind not in COMBAT_KINDS:
         return "fight_start"
     if kind == "map":
         return "room_entry"
     return None
+
+
+# Mid-fight re-anchors tried in one fight at most (lane 22, fix d), held or not: a fight whose copy keeps parting from the game
+# is left to the stand-in after that many, as every loss inside a fight was before.
+MID_FIGHT_LIMIT = 8
+
+
+def game_action_keys(labels: list) -> set:
+    """The game's legal fight actions as the copy's can be set against them: one key a card ("play:<id>", every hand position and
+    target of it one key), "end", and one a potion ("potion:<id>", every slot and target of it one key)."""
+    keys = set()
+    for lab in labels:
+        if isinstance(lab, list) and lab and lab[0] == "end":
+            keys.add("end")
+        elif isinstance(lab, list) and len(lab) > 2 and lab[0] in ("play", "potion"):
+            keys.add(f"{lab[0]}:{lab[2]}")
+    return keys
+
+
+def emu_action_keys(names: list) -> set:
+    """The copy's legal fight actions (`EmuLock.probe`'s emu_legal: play:<card>, end, potion:<id>) as `game_action_keys` keys them."""
+    return {n for n in names if isinstance(n, str) and (n == "end" or n.startswith(("play:", "potion:")))}
 
 
 STALL_LIMIT = 3  # answers given to one unchanged decision before the run is stopped as `stalled` (`StallGuard`)
@@ -387,8 +411,18 @@ class Lockstep:
     """
 
     def __init__(self, emu: EmuSide | None, fallback, seed: str = "", sims: int = 60,
-                 agent_seed=None, stall_limit: int | None = None):
+                 agent_seed=None, stall_limit: int | None = None, ask_hidden=None, mid_fight: bool | None = None):
         self.emu, self.fallback, self.seed, self.sims = emu, fallback, seed, sims
+        # Mid-fight re-anchors (lane 22, fix d): a side that can (`anchors_mid_fight`, EmuLock) is put back on the game's record at
+        # the fight decision where a difference is found, or at the next fight decision after a loss; `mid_fight` False turns it off
+        # (play_run: SPIRELINE_MID_FIGHT=0). `ask_hidden` (play_run: the GameEnv's anchor_state) fetches the open decision's hidden
+        # state for it, which goes to the side's `take_anchor_state` and nowhere else; None (or an answer of None) anchors on the
+        # observation alone.
+        self.mid_fight = getattr(emu, "anchors_mid_fight", False) is True and (mid_fight is None or bool(mid_fight))
+        self.ask_hidden = ask_hidden
+        self._fight_tries = 0  # mid-fight re-anchors tried in the fight in progress (MID_FIGHT_LIMIT)
+        self._fight_floor = None
+        self._mid_now: list | None = None  # this decision's mid-fight re-anchor: [held, failed], for `_boss_tally`
         # `stall_limit` (play_run: STALL_LIMIT): no answer is given twice to a decision the game left unchanged, and the run
         # is stopped (`Stalled`) after that many. None: no guard (the fake streams of the tests repeat one state).
         self.guard = StallGuard(stall_limit) if stall_limit else None
@@ -433,6 +467,11 @@ class Lockstep:
         kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
+        floor = (msg.get("obs") or {}).get("floor")
+        if kind not in COMBAT_KINDS or self.prev_kind not in COMBAT_KINDS or floor != self._fight_floor:
+            self._fight_tries = 0  # a new fight (the two Act 3 bosses: a new floor with no question between them)
+        self._fight_floor = floor if kind in COMBAT_KINDS else None
+        self._mid_now = None
         self._track(kind, msg)
         if self.emu is not None and self._after_the_end(msg):
             # Both sides have ended the run at the same death: nothing is compared, ranked or added to an open span.
@@ -544,7 +583,10 @@ class Lockstep:
         on a boss floor (the observation's act and floor, as `_boss_fight` names it), a new floor a new fight (the Act 3 bosses are
         on two floors with no question between them). The rows' readers could not tell who played a boss: a lost row carries the
         first loss of the whole run, and 7 of the 95 lost first-Act-3-boss arrivals of the 2026-11-20 block had the agent play that
-        boss and lose track only at the second. With this field a boss fight is the agent's when `stand_in` is 0."""
+        boss and lose track only at the second. With this field a boss fight is the agent's when `stand_in` is 0.
+
+        With mid-fight re-anchors on (`mid_fight`) an entry also counts them: `reanchors` (held: the copy was put back on the game's
+        record inside this fight and the agent answered from there on) and `reanchor_failed` (tried and not held)."""
         import run_fields  # noqa: PLC0415
 
         obs = msg.get("obs") or {}
@@ -558,8 +600,13 @@ class Lockstep:
         cur = fights[-1] if fights and self._boss_open else None
         if cur is None or cur["floor"] != obs.get("floor"):
             cur = {"act": obs.get("act"), "floor": obs.get("floor"), "first": i, "decisions": 0, "stand_in": 0, "first_stand_in": None}
+            if self.mid_fight:
+                cur.update(reanchors=0, reanchor_failed=0)
             fights.append(cur)
             self._boss_open = True
+        if self._mid_now and "reanchors" in cur:
+            cur["reanchors"] += self._mid_now[0]
+            cur["reanchor_failed"] += self._mid_now[1]
         cur["decisions"] += 1
         if not by_agent:
             cur["stand_in"] += 1
@@ -676,31 +723,115 @@ class Lockstep:
         return reason, diff, r, e
 
     def _reanchor(self, plan: str, kind: str, labels: list, msg: dict) -> bool:
-        """Re-anchor, then the same comparison again: a re-anchor counts only when the views agree after it."""
+        """Re-anchor, then the same comparison again: a re-anchor counts only when the views agree after it. A mid-fight one
+        (`_mid_fight_plan`) first fetches the open decision's hidden state for the side (`_give_hidden`), and counts only when
+        the conditions of `_mid_fight_holds` hold too; its outcome is kept in `self.mid_outcome` for the record."""
+        if plan == "mid_fight":
+            self._fight_tries += 1
+            self._give_hidden()
         try:
             ok = self.emu.reanchor(plan, msg)
         except Exception:  # noqa: BLE001 -- a failed re-anchor waits for the next point
             ok = False
-        reason, d = None, []
+        reason, d, cond = None, [], None
         if ok:
             reason, d, _, _ = self._equal(kind, labels, msg)
             ok = not reason and not d
+            if ok and plan == "mid_fight":
+                cond = self._mid_fight_holds(labels, msg)
+                ok = cond is None
         self.stats["reanchors" if ok else "reanchor_failed"] += 1
         how = getattr(self.emu, "anchored_with", None)  # what the emulator side anchored with: the game's hidden state or the observation
         if ok:  # "none": it held, but neither the hidden state nor the observation nor a moved stream seeded anything
             with_ = self.stats.setdefault("anchored_with", {})
             with_[how or "none"] = with_.get(how or "none", 0) + 1
-        if not ok:  # why: the emulator side's own reason, else the views that still differ after it
-            why = getattr(self.emu, "fail", None) or (reason or "diff:" + ",".join(f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4]))
+        why = None
+        if not ok:  # why: the emulator side's own reason, else the views that still differ after it, else the condition that failed
+            why = getattr(self.emu, "fail", None) or reason or cond or "diff:" + ",".join(
+                f"{x[0]}{x[1]}/{x[2]}" if x[0] in (".floor", ".act") else str(x[0]) for x in d[:4])
             fails = self.stats.setdefault("reanchor_fail_reasons", {})
             fails[f"{plan}:{why}"[:80]] = fails.get(f"{plan}:{why}"[:80], 0) + 1
         self._note_streams(getattr(self.emu, "streams", None))
         self._note_walk(getattr(self.emu, "walk", None))
         by = self.stats.setdefault("reanchor_by_plan", {})
         by[f"{plan}:{'ok' if ok else 'failed'}"] = by.get(f"{plan}:{'ok' if ok else 'failed'}", 0) + 1
+        if plan == "mid_fight":
+            self.mid_outcome = {"try": self._fight_tries, "ok": ok, "why": None if ok else str(why)[:80], "with": how,
+                                "moves": getattr(self.emu, "anchor_moves", None)}
+            self._mid_now = [int(ok), int(not ok)]
         if ok:
             self.hidden_run = self.hidden_ended = None  # the copy is on the game's record again: a new run of differences starts there
         return ok
+
+    mid_outcome: dict | None = None  # the last mid-fight re-anchor: {try, ok, why, with, moves}
+
+    # Run-level fields a fight's record cannot put right (the deck, the relics, where the run is): a difference in one waits for the
+    # next room entry or fight start, as before, instead of spending the fight's tries.
+    MID_FIGHT_UNFIXABLE = (".deck", ".relics", ".floor", ".act")
+
+    def _mid_fight_plan(self, kind: str, msg: dict, diff: list | None = None) -> str | None:
+        """"mid_fight" where a fight decision can re-anchor the copy inside the fight (lane 22, fix d): mid-fight re-anchors are on
+        for this side, the decision is a fight's own (kind combat: a card screen waits for the fight decision after it) and not its
+        first (that is fight_start), the observation holds the fight, the difference (`diff`, when known) is none a fight's record
+        cannot put right, the loss in force (while lost) was opened in this fight, and the fight has had fewer than
+        MID_FIGHT_LIMIT tries. A loss from before the fight waits for the next fight start or room entry, as before."""
+        if not self.mid_fight or kind != "combat" or self.prev_kind not in COMBAT_KINDS:
+            return None
+        obs = msg.get("obs") or {}
+        if not obs.get("combat"):
+            return None
+        if diff and _drop_paths(diff, self.MID_FIGHT_UNFIXABLE) != diff:
+            return None
+        if self.lost is not None and not (self.open is not None and self.open.get("room") == "combat"
+                                          and self.open.get("floor") == obs.get("floor")):
+            return None
+        if self._fight_tries >= MID_FIGHT_LIMIT:
+            self.stats["mid_fight_capped"] = self.stats.get("mid_fight_capped", 0) + 1
+            return None
+        return "mid_fight"
+
+    def _give_hidden(self) -> None:
+        """The open decision's hidden state from the driver (`ask_hidden`, the GameEnv's anchor_state command) to the side's
+        `take_anchor_state` and nowhere else (the firewall of `_take_hidden`): no record, stat or message holds it, and the side
+        drops it once its re-anchor has used it. Without the command (an old driver, or no channel) the side is told None and
+        anchors on the observation; `stats["mid_fight_hidden"]` counts the tries that had the hidden state."""
+        take = getattr(self.emu, "take_anchor_state", None)
+        if take is None:
+            return
+        hidden = self.ask_hidden() if self.ask_hidden is not None else None
+        take(hidden if isinstance(hidden, dict) else None)
+        if isinstance(hidden, dict):
+            self.stats["mid_fight_hidden"] = self.stats.get("mid_fight_hidden", 0) + 1
+
+    def _mid_fight_holds(self, labels: list, msg: dict) -> str | None:
+        """Why a mid-fight re-anchor whose views agree does not count, or None when it does: the copy's energy is the game's
+        (obs.combat.player.energy against the side's probe), the second, unranked comparison (`hidden_diff`: block and powers of
+        the player and of each enemy) finds nothing, and the copy's legal actions are the game's (`game_action_keys`: one key a
+        card, End Turn, one a potion). A side without the probe or the reader is not judged on that part."""
+        c = (msg.get("obs") or {}).get("combat") or {}
+        probe = getattr(self.emu, "probe", None)
+        got = {}
+        if probe is not None:
+            try:
+                got = probe() or {}
+            except Exception as e:  # noqa: BLE001
+                return f"probe:{type(e).__name__}"
+        want_energy = (c.get("player") or {}).get("energy")
+        if "emu_energy" in got and want_energy is not None and got["emu_energy"] != want_energy:
+            return f"energy:{want_energy}/{got['emu_energy']}"
+        look = getattr(self.emu, "hidden_diff", None)
+        if look is not None:
+            try:
+                found = look(msg.get("obs") or {})
+            except Exception as e:  # noqa: BLE001
+                return f"hidden_error:{type(e).__name__}"
+            if found:
+                return "hidden:" + ",".join(sorted({str(x[0]) for x in found}))[:60]
+        if "emu_legal" in got:
+            game, emu = game_action_keys(labels), emu_action_keys(got["emu_legal"])
+            if game != emu:
+                return "legal:" + ",".join(sorted(f"+{k}" for k in game - emu) + sorted(f"-{k}" for k in emu - game))[:60]
+        return None
 
     def _note_streams(self, rep: dict | None) -> None:
         """What the emulator side's last room-entry stream anchor did (EmuLock.streams): the streams the game's counters named,
@@ -726,8 +857,13 @@ class Lockstep:
             w[k] += rep.get(k, 0)
 
     def _resume(self, i: int, kind: str, labels: list, msg: dict) -> bool:
-        plan = reanchor_plan(kind, self.prev_kind)
-        if plan is None or kind not in MAPPED_KINDS or not self._reanchor(plan, kind, labels, msg):
+        plan = reanchor_plan(kind, self.prev_kind) or self._mid_fight_plan(kind, msg)
+        if plan is None or kind not in MAPPED_KINDS:
+            return False
+        held = self._reanchor(plan, kind, labels, msg)
+        if plan == "mid_fight" and self.open is not None:  # each try inside the fight, on the loss it tried to end
+            self.open.setdefault("mid_fight_tries", []).append({"decision": i, **self.mid_outcome})
+        if not held:
             return False
         if self.open is not None:  # where the loss ended: its span says how many decisions, this says where and how it was recovered
             self.open["resumed_at"] = {"decision": i, "floor": (msg.get("obs") or {}).get("floor"), "plan": plan}
@@ -797,9 +933,11 @@ class Lockstep:
                            reason=reason, gap=gap, diff=d[:12], n_diff=len(d), agent_weighted=True, **self.ctx,
                            **self._probe(msg))
         self._note_hidden(rec, hidden)
-        plan = reanchor_plan(kind, self.prev_kind)
+        plan = reanchor_plan(kind, self.prev_kind) or (None if gap else self._mid_fight_plan(kind, msg, d))
         rec["reanchor_plan"] = plan
         rec["reanchored"] = bool(plan) and not gap and self._reanchor(plan, kind, labels, msg)
+        if plan == "mid_fight":
+            rec["reanchor"] = dict(self.mid_outcome)  # held or not, and why not
         if rec["reanchored"]:
             return True
         self._lose(i, reason or "state_diverged", rec=rec)
@@ -893,6 +1031,8 @@ class EmuLock:
     SCREEN = {"neow": "neow", "ancient": "neow", "map": "map", "card_reward": "card_reward", "rest": "rest",
               "select_cards": "card_select", "shop": "shop", "bundle": "bundle", "event": "event"}
     wants_anchor_state = True  # play_run asks the driver for the game's hidden state, which only this side reads
+    anchors_mid_fight = True  # Lockstep re-anchors this side inside a fight too (plan "mid_fight", lane 22 fix d)
+    anchor_moves: str | None = None  # the last fight anchor's enemy-move status (the native call's "moves=": same, set, unknown, ...)
     _hidden: dict | None = None  # the game's hidden state at the current decision (take_anchor_state)
     anchored_with: str | None = None  # "hidden", "observation" or "streams": what the last re-anchor used; None: none of them
     walk: dict | None = None  # the last re-anchor's walk to the map: {"walks", "floors", "picks", "fights"}, else None
@@ -1468,17 +1608,23 @@ class EmuLock:
             self.anchored_with = "streams"  # a call that moved none seeded nothing: not reported as a stream anchor
         return moved >= 0
 
-    def _anchor_fight(self, obs: dict) -> bool:
+    def _anchor_fight(self, obs: dict, belt: bool = False) -> bool:
         """Put the fight the emulator stands in on the referee's record of it (obs["combat"], as the agent is shown it:
         the draw pile as a sorted list, no streams). With the game's hidden state (take_anchor_state: the streams and the
         draw pile in order) the record also carries them and the native call puts the combat, and the run's streams, on the
         game's; without it the call keeps the emulator's own streams and, where its cards are the record's, its draw
         order. Either way a search that follows resamples the hidden state from the emulator's clone
-        (resample_hidden=True): the game's order is the lockstep state's, never the search's."""
+        (resample_hidden=True): the game's order is the lockstep state's, never the search's.
+
+        `belt` (the mid-fight re-anchor): the record also carries the game's potion belt slot by slot (obs["potions"], an empty
+        slot as null), which the native loader writes into the fight (the slots and their count); a fight start leaves the belt
+        as the walk or the fight's entry set it. `anchor_moves` keeps the native call's enemy-move status (same, set, unknown)."""
         record = obs.get("combat")
         if not record:
             self.fail = "no_record"
             return False
+        if belt and isinstance(obs.get("potions"), list):
+            record = {**record, "potions": obs["potions"]}
         hidden = self._hidden or {}
         if isinstance(hidden.get("rng"), dict) and isinstance(hidden.get("draw"), list):
             full = {**record, "draw": hidden["draw"], "rng": hidden["rng"]}
@@ -1490,6 +1636,8 @@ class EmuLock:
         if status < 0:
             self.fail = f"anchor:{why}"[:60]
             return False
+        note = str(why or "")
+        self.anchor_moves = note.split(";")[0][len("moves="):] if note.startswith("moves=") else None
         if self.anchored_with == "hidden":
             self._order_deck(obs)
         # The game's relic counters (its post-tick values) go in once the emulator is in the fight, whatever the anchor used:
@@ -1553,7 +1701,21 @@ class EmuLock:
         self.walk = None
         self.deck_order = None
         self.relic_counters = None
+        self.anchor_moves = None
         obs = msg.get("obs", {})
+        if plan == "mid_fight":
+            # Inside a fight (Lockstep._mid_fight_plan): the copy's own fight, at the game's floor, with no card screen open (a
+            # screen's state is not in the record), put on the game's record of this decision, belt included. A copy whose fight
+            # has ended (the game's goes on) or that stands elsewhere is not re-anchored here: that waits for the next fight start.
+            if self.s.phase != self.E.rc.PHASE_COMBAT:
+                self.fail = "not_in_fight"
+            elif obs.get("floor") is not None and self.s.view().floor != obs.get("floor"):
+                self.fail = "floor"
+            elif self._end_action() is None:
+                self.fail = "selection_open"
+            else:
+                return self._anchor_fight(obs, belt=True)
+            return False
         if plan == "room_entry":
             if not self._to_map(obs.get("floor")):
                 self.fail = "to_map"
@@ -1839,9 +2001,13 @@ def play_run(env, seed: str, *, ascension: int = 10, sims: int = 60, emu_factory
     (`wants_anchor_state`), unless the environment variable SPIRELINE_ANCHOR_STATE is 0 (the A/B switch of the old behaviour)."""
     agent_seed = list(agent_seed) if agent_seed is not None else [fresh_agent_seed(), 0]
     emu = (emu_factory or (lambda s: EmuLock(s, ascension, sims, agent_seed, character)))(seed)
-    ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed, stall_limit=stall_limit)
     if anchor_state is None:
         anchor_state = bool(getattr(emu, "wants_anchor_state", False)) and os.environ.get("SPIRELINE_ANCHOR_STATE", "1") != "0"
+    # Mid-fight re-anchors (lane 22, fix d) on unless SPIRELINE_MID_FIGHT is 0; the hidden state for them only when the reset asks
+    # the driver for it (the command is the driver's anchor_state, which a run started without it refuses).
+    ls = Lockstep(emu, referee_only_policy, seed, sims, agent_seed, stall_limit=stall_limit,
+                  ask_hidden=getattr(env, "anchor_state", None) if anchor_state else None,
+                  mid_fight=os.environ.get("SPIRELINE_MID_FIGHT", "1") != "0")
     try:
         m, done = env.reset(seed, hash=True, **({"spec": {"anchor_state": True}} if anchor_state else {}),
                             **({} if character == "IRONCLAD" else {"character": character}))
