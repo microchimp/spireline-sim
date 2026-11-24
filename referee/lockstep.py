@@ -908,10 +908,33 @@ class EmuLock:
         """Whether the emulator's run has ended with the player dead (`Lockstep._after_the_end`)."""
         return self.s.phase == self.E.rc.PHASE_COMPLETE and self.s.view().hp <= 0
 
+    def _deck_view(self, deck) -> list:
+        """The copy's deck for the comparison, [card, upgraded] each. The run view reads the deck off the observation's deck block,
+        which holds at most `RUN_OBS_LAYOUT["max_deck"]` cards (64); the engine's deck has no such limit. A deck past it (the game
+        doubles the whole deck at Reflections' Shatter) read 64 cards on the copy's side at every decision, and every re-anchor after
+        it failed on `.deck`, to the end of the run (9 of the 95 first-Act-3-boss arrivals the 2026-11-20 real block lost were this;
+        no re-anchor could have held). At the limit the whole deck is read from the run's state list 0 (`State.Deck`; an upgraded
+        card's id is negative) when its length is the deck count the run reports for the fight in progress (`Sts2Run_GetInfo` 3, the
+        deck less a card a Thieving Hopper holds): the two differ only while a stolen card is out of the deck, and then the
+        observation's 64 stand, as before. Under the limit nothing changes."""
+        cards = [self._card(c) for c in deck]
+        layout = getattr(self.native, "RUN_OBS_LAYOUT", None)
+        cap = layout.get("max_deck", 0) if isinstance(layout, dict) else 0
+        if not cap or len(cards) < cap:
+            return cards
+        try:
+            count = int(self.native.run_info(self.s.handle)[3])
+            flat = self.native.run_state_list(self.s.handle, 0, max(count, cap) + 1)
+        except Exception:  # noqa: BLE001 -- a library or a stub without the list: the observation's deck, as before
+            return cards
+        if len(flat) != count or count <= len(cards):
+            return cards
+        return [[self.slug["cards"].get(abs(c), f"?{abs(c)}"), int(c < 0)] for c in flat]
+
     def view(self) -> dict:
         v = self.s.view()
         out = {"act": self.s.act_index, "floor": v.floor, "hp": v.hp, "max_hp": v.max_hp, "gold": v.gold,
-               "deck": [self._card(c) for c in v.deck],
+               "deck": self._deck_view(v.deck),
                # The game keeps a melted relic in the player's list (flagged), and its observation lists it; the copy keeps it
                # beside the relics in play (state list 24), so the two lists are the same list.
                "relics": [self.slug["relics"].get(r, f"?{r}") for r in v.relics] + (self._melted_relics() or []),
