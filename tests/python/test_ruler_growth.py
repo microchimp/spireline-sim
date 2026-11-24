@@ -723,6 +723,331 @@ class GuardCellTests(trs.World):
         self.assertEqual(doc["route_s_mode"]["applies"], False)
 
 
+# --------------------------------------------------------------------------------------------------------------------------- step 2: the exclusions
+
+
+def numbered_ruler(folder: Path, name: str, n: int, label: str = "L") -> dict:
+    """A ruler of `n` runs that each went past the first boss (two starts a run), for the champion `gen20/candidate-chain`'s folder name."""
+    rows = {f"{label}{i}": nodes_row(f"{label}{i}", "past", i) for i in range(n)}
+    recs, counts = a3.arrival_records([replay_row(r, label) for r in rows.values()], label, rows, "old")
+    return a3.build_ruler(folder, name, "gen20/candidate-chain", [{"label": label, "records": recs, "counts": counts, "rows": n, "arrivals": n}], "old", "a3-v1")
+
+
+def grow_ruler(folder: Path, n: int, label: str = "M") -> dict:
+    """The ruler in `folder` extended by an arm of `n` runs that each went past the first boss: what `arrivals` leaves after an extension."""
+    old = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    records = a3.read_ruler_records(folder)
+    rows = {f"{label}{i}": nodes_row(f"{label}{i}", "past", i) for i in range(n)}
+    recs, counts = a3.arrival_records([replay_row(r, label) for r in rows.values()], label, rows, "old")
+    arms = [a3.carried_arm(e, records) for e in old["arms"]] + [{"label": label, "records": recs, "counts": counts, "rows": n, "arrivals": n, "added": True}]
+    return a3.build_ruler(folder, old["champion"], old["champion_dir"], arms, "old", "a3-v1", previous=old)
+
+
+def exam_exclusions(run_seeds, start_ids) -> dict:
+    """The fight loop's `exam/exclude_runs.json` in the shape the exam writes it."""
+    return {"rule": "fight-exam-v1", "run_seeds": sorted(run_seeds), "start_ids": sorted(start_ids), "starts": 400, "by_stratum": {"own": 300, "human": 100},
+            "human_stratum": {"rule": "fight-exam-human-v1", "written": "2026-11-10T00:00:00Z", "starts": 100, "runs": 100}}
+
+
+def write_hand(path: Path, doc: dict) -> bytes:
+    """A file as the hand script of 2026-11-22 wrote it: indent 1, no ASCII escaping, no final newline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(doc, indent=1, ensure_ascii=False).encode("utf-8")
+    path.write_bytes(raw)
+    return raw
+
+
+def hand_merge(e: dict, ruler: Path) -> dict:
+    """What `judge-design/merge_arrival_exclusions.py` did to the exam's list (its algorithm, for the fixture of its result)."""
+    r = json.loads((ruler / "exclude_runs.json").read_text(encoding="utf-8"))
+    meta = json.loads((ruler / "meta.json").read_text(encoding="utf-8"))
+    es, ei = set(e["run_seeds"]), set(e["start_ids"])
+    new_s, new_i = sorted(set(r["run_seeds"]) - es), sorted(set(r["start_ids"]) - ei)
+    e["run_seeds"], e["start_ids"] = sorted(es | set(new_s)), sorted(ei | set(new_i))
+    e["by_stratum"]["arrival-own"] = int(e["by_stratum"].get("arrival-own", 0)) + len(new_i)
+    e.setdefault("arrival", {})[ruler.name] = {"rule": r["rule"], "written": "2026-11-22T09:56:00Z", "starts": len(r["start_ids"]), "runs": len(r["run_seeds"]),
+                                               "added_starts": len(new_i), "added_runs": len(new_s), "ruler_hash": meta["ruler_hash"],
+                                               "why": "the Act 3 arrival exam (route S, S1) plays these starts; the practice must not draw them"}
+    return e
+
+
+class MergeTests(unittest.TestCase):
+    """`act3_starts.merge_exclusions`: the ruler's runs and starts into the fight loop's list."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.loop = Path(self.tmp.name) / "gym-loop"
+        self.ruler = self.loop / "arrival" / "gen20-candidate-chain"
+        self.exam = self.loop / "exam" / "exclude_runs.json"
+        self.backup = self.exam.with_name("exclude_runs.json.pre-arrival.bak")
+        self.meta = numbered_ruler(self.ruler, "gen20-candidate-chain", 30)  # 30 runs, 60 starts
+        self.before = exam_exclusions([f"x{i}" for i in range(50)], [f"x{i}|f40" for i in range(80)])
+        self.raw = write_hand(self.exam, self.before)
+
+    def doc(self) -> dict:
+        return json.loads(self.exam.read_text(encoding="utf-8"))
+
+    def test_the_union_is_sorted_and_the_entry_and_the_count_say_what_was_added(self):
+        rec = a3.merge_exclusions(self.ruler)
+        self.assertEqual((rec["status"], rec["wrote"], rec["added_starts"], rec["added_runs"]), ("merged", True, 60, 30))
+        e = self.doc()
+        self.assertEqual(len(e["run_seeds"]), 80)
+        self.assertEqual(len(e["start_ids"]), 140)
+        self.assertEqual(e["run_seeds"], sorted(e["run_seeds"]))
+        self.assertEqual(e["start_ids"], sorted(e["start_ids"]))
+        self.assertTrue({f"L{i}" for i in range(30)} <= set(e["run_seeds"]))
+        self.assertTrue({"L:L0|f48", "L:L0|f49"} <= set(e["start_ids"]))
+        self.assertEqual(e["by_stratum"], {"own": 300, "human": 100, "arrival-own": 60})
+        entry = e["arrival"]["gen20-candidate-chain"]
+        self.assertEqual({k: entry[k] for k in ("rule", "starts", "runs", "added_starts", "added_runs", "ruler_hash")},
+                         {"rule": "act3-arrival-v1", "starts": 60, "runs": 30, "added_starts": 60, "added_runs": 30, "ruler_hash": self.meta["ruler_hash"]})
+        self.assertRegex(entry["written"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        for key in ("rule", "starts", "human_stratum"):  # nothing else of the exam's file is touched
+            self.assertEqual(e[key], self.before[key])
+
+    def test_the_old_file_is_kept_once_and_no_temporary_file_is_left(self):
+        a3.merge_exclusions(self.ruler)
+        self.assertEqual(self.backup.read_bytes(), self.raw)
+        self.assertEqual(sorted(f.name for f in self.exam.parent.iterdir()), ["exclude_runs.json", "exclude_runs.json.pre-arrival.bak"])
+        grow_ruler(self.ruler, 5)  # a later merge does not replace the backup
+        self.assertEqual(a3.merge_exclusions(self.ruler)["status"], "merged")
+        self.assertEqual(self.backup.read_bytes(), self.raw)
+
+    def test_a_ruler_already_merged_changes_nothing_and_writes_nothing(self):
+        a3.merge_exclusions(self.ruler)
+        once = self.exam.read_bytes()
+        stamp = self.exam.stat().st_mtime_ns
+        rec = a3.merge_exclusions(self.ruler)
+        self.assertEqual((rec["status"], rec["wrote"], rec["added_starts"], rec["added_runs"]), ("already merged", False, 0, 0))
+        self.assertEqual((self.exam.read_bytes(), self.exam.stat().st_mtime_ns), (once, stamp))  # idempotent: not even rewritten
+
+    def test_what_the_hand_script_left_on_the_22nd_reads_as_already_merged(self):
+        """The gym's list as the hand merge left it for generation 20's ruler: 3,712 run seeds and 4,229 start ids, `arrival.gen20-candidate-chain`."""
+        base = exam_exclusions([f"x{i}" for i in range(3712 - 30)], [f"x{i}|f40" for i in range(4229 - 60)])
+        merged = hand_merge(base, self.ruler)
+        self.assertEqual((len(merged["run_seeds"]), len(merged["start_ids"])), (3712, 4229))
+        raw = write_hand(self.exam, merged)
+        self.backup.unlink(missing_ok=True)
+        rec = a3.merge_exclusions(self.ruler)
+        self.assertEqual((rec["status"], rec["wrote"]), ("already merged", False))
+        self.assertEqual(self.exam.read_bytes(), raw)  # not a byte changed
+        e = self.doc()
+        self.assertEqual((len(e["run_seeds"]), len(e["start_ids"]), len(set(e["run_seeds"])), len(set(e["start_ids"]))), (3712, 4229, 3712, 4229))  # no duplicates
+        self.assertEqual(e["by_stratum"]["arrival-own"], 60)
+        self.assertFalse(self.backup.exists())  # this wrote nothing: the hand run's own backup is the one that stands
+
+    def test_a_ruler_that_grew_adds_only_its_new_ids_and_updates_its_entry(self):
+        write_hand(self.exam, hand_merge(self.before, self.ruler))
+        old = json.loads((self.ruler / "meta.json").read_text(encoding="utf-8"))
+        new = grow_ruler(self.ruler, 10)
+        self.assertNotEqual(new["ruler_hash"], old["ruler_hash"])
+        rec = a3.merge_exclusions(self.ruler)
+        self.assertEqual((rec["status"], rec["added_starts"], rec["added_runs"]), ("merged", 20, 10))
+        e = self.doc()
+        self.assertEqual((len(e["run_seeds"]), len(e["start_ids"])), (50 + 30 + 10, 80 + 60 + 20))
+        self.assertEqual(e["by_stratum"]["arrival-own"], 80)  # the starts merged, each once
+        entry = e["arrival"]["gen20-candidate-chain"]
+        self.assertEqual((entry["starts"], entry["runs"], entry["added_starts"], entry["added_runs"], entry["ruler_hash"]), (80, 40, 20, 10, new["ruler_hash"]))
+        self.assertEqual(a3.merge_exclusions(self.ruler)["status"], "already merged")
+
+    def test_the_practice_reads_the_merged_list(self):
+        import practice_mix as pmix  # noqa: PLC0415
+
+        start = {"id": "L:L0|f48", "seed": "L0", "run": "L0"}
+        self.assertFalse(pmix.excluded(start, pmix.read_exclusion(self.loop)))
+        a3.merge_exclusions(self.ruler)
+        ex = pmix.read_exclusion(self.loop)
+        self.assertTrue(pmix.excluded(start, ex))
+        self.assertTrue(pmix.excluded({"id": "other|f48", "seed": "L7", "run": "L7"}, ex))  # a start of the same run, by its run
+        self.assertTrue({"x0", "x49"} <= set(ex))  # the old ids are still there
+
+    def test_a_loop_with_no_exclusion_file_gets_none_made(self):
+        self.exam.unlink()
+        rec = a3.merge_exclusions(self.ruler)
+        self.assertEqual((rec["status"], rec["wrote"]), ("no exclusion file", False))
+        self.assertFalse(self.exam.exists())
+
+    def test_a_file_that_is_not_the_rules_own_is_never_rewritten(self):
+        raw = write_hand(self.exam, {**self.before, "rule": "something-else"})
+        with self.assertRaisesRegex(ValueError, "not the fight exam's file"):
+            a3.merge_exclusions(self.ruler)
+        self.assertEqual(self.exam.read_bytes(), raw)
+        self.exam.write_text("{not json", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            a3.merge_exclusions(self.ruler)
+        self.assertEqual(self.exam.read_text(encoding="utf-8"), "{not json")
+        self.assertFalse(self.backup.exists())
+
+    def test_a_ruler_list_that_does_not_match_its_meta_is_not_merged(self):
+        r = json.loads((self.ruler / "exclude_runs.json").read_text(encoding="utf-8"))
+        r["start_ids"] = r["start_ids"][:-1]
+        (self.ruler / "exclude_runs.json").write_text(json.dumps(r), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "start ids and its meta"):
+            a3.merge_exclusions(self.ruler)
+        r["rule"] = "other"
+        (self.ruler / "exclude_runs.json").write_text(json.dumps(r), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "names rule 'other'"):
+            a3.merge_exclusions(self.ruler)
+        self.assertEqual(self.exam.read_bytes(), self.raw)
+
+    def test_a_write_that_fails_leaves_the_file_as_it_was(self):
+        with mock.patch("os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            a3.merge_exclusions(self.ruler)
+        self.assertEqual(self.exam.read_bytes(), self.raw)  # the list is replaced whole or not at all
+        for f in self.exam.parent.glob("*.tmp*"):
+            f.unlink()
+        wrote = []
+        real = os.replace
+
+        def spy(src, dst, *a, **k):
+            wrote.append((Path(src).parent == Path(dst).parent, Path(src).name != Path(dst).name))
+            return real(src, dst, *a, **k)
+
+        with mock.patch("os.replace", spy):
+            a3.merge_exclusions(self.ruler)
+        self.assertEqual(wrote, [(True, True)])  # a temporary file beside it, then replaced over it
+
+    def test_a_dry_run_says_what_it_would_do_and_writes_nothing(self):
+        rec = a3.merge_exclusions(self.ruler, dry=True)
+        self.assertEqual((rec["status"], rec["wrote"], rec["added_starts"]), ("merged", False, 60))
+        self.assertEqual(self.exam.read_bytes(), self.raw)
+        self.assertFalse(self.backup.exists())
+
+    def test_the_command(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = a3.main(["merge-exclusions", "--ruler", str(self.ruler), "--exam-file", str(self.exam), "--dry"])
+        self.assertEqual((rc, json.loads(buf.getvalue())["added_starts"]), (0, 60))
+        self.assertEqual(self.exam.read_bytes(), self.raw)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(a3.main(["merge-exclusions", "--ruler", str(self.ruler)]), 0)  # the default file: the loop's, beside the ruler's folder
+        self.assertEqual(self.doc()["by_stratum"]["arrival-own"], 60)
+        self.exam.unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(a3.main(["merge-exclusions", "--ruler", str(self.ruler)]), 2)
+        write_hand(self.exam, {**self.before, "rule": "x"})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(a3.main(["merge-exclusions", "--ruler", str(self.ruler)]), 2)
+        self.assertIn("not merged", out.getvalue())
+
+    def test_the_fight_exams_rule_is_the_one_named_here(self):
+        self.assertEqual(a3.EXAM_EXCLUDE_RULE, fe.EXAM_RULE)
+
+    def test_the_loops_file_is_found_beside_the_rulers_folder(self):
+        self.assertEqual(a3.exam_exclusion_file(self.ruler), self.exam)
+        self.assertEqual(a3.exam_exclusion_file(a3.ARRIVAL_ROOT / "gen21-candidate-fight-v5"), a3.ARRIVAL_ROOT.parent / "exam" / "exclude_runs.json")
+
+
+class ExclusionStageTests(GrowthBase):
+    """The S1 stage and the readers of a ruler merge its exclusions by themselves."""
+
+    def setUp(self):
+        super().setUp()
+        self.exam = self.root / "exam" / "exclude_runs.json"  # beside the ruler root's folder, as the loop's is
+        self.backup = self.exam.with_name("exclude_runs.json.pre-arrival.bak")
+        self.before = exam_exclusions([f"x{i}" for i in range(50)], [f"x{i}|f40" for i in range(80)])
+        self.raw = write_hand(self.exam, self.before)
+        self.said: list[str] = []
+
+    def stage_say(self, cand=None, **kw):
+        cand = cand or self.cand
+        return gen_loop.s1_stage(cand, self.champ, gen_loop.load_agent(cand), gen_loop.load_agent(self.champ), ruler_root=self.ruler_root, run=self.child,
+                                 python="py", say=self.said.append, **kw)
+
+    def doc(self) -> dict:
+        return json.loads(self.exam.read_text(encoding="utf-8"))
+
+    def test_a_ruler_built_in_the_stage_is_on_the_list_before_the_exam_plays(self):
+        listed = []
+        real = trs.S1StageTests.answer
+
+        def watch(self_, cmd, check=False):
+            if cmd[2] == "arrival-exam":
+                listed.append("arrival" in self.doc())
+            return real(self_, cmd)
+
+        with mock.patch.object(trs.S1StageTests, "answer", watch):
+            self.stage_say()
+        self.assertEqual(listed, [True])  # the practice's list held the ruler when the exam was asked for its first game
+        e = self.doc()
+        meta = a3.load_ruler(self.ruler)[0]
+        entry = e["arrival"]["gen3-candidate"]
+        self.assertEqual((entry["ruler_hash"], entry["starts"], entry["runs"]), (meta["ruler_hash"], 3, 2))
+        self.assertEqual((len(e["run_seeds"]), len(e["start_ids"]), e["by_stratum"]["arrival-own"]), (52, 83, 3))
+        self.assertEqual(self.backup.read_bytes(), self.raw)
+        self.assertTrue(any("on the practice's exclusion list now" in m for m in self.said))
+
+    def test_a_ruler_that_grew_is_merged_again_and_one_that_did_not_is_left_alone(self):
+        self.stage_say()
+        write_arm(self.champ, "B", B_ROWS, agent="gen3/candidate")
+        c2 = self.sha("c2", "sha-c2")
+        gen_loop.s1_stage(c2, self.champ, gen_loop.load_agent(c2), gen_loop.load_agent(self.champ), ruler_root=self.ruler_root,
+                          run=lambda cmd, check=False: self.run_for(cmd, "sha-c2"), python="py", say=self.said.append)
+        e = self.doc()
+        meta = a3.load_ruler(self.ruler)[0]
+        self.assertEqual((e["arrival"]["gen3-candidate"]["ruler_hash"], e["arrival"]["gen3-candidate"]["starts"]), (meta["ruler_hash"], 6))
+        self.assertEqual((len(e["run_seeds"]), len(e["start_ids"]), e["by_stratum"]["arrival-own"]), (50 + 4, 80 + 6, 6))
+        once = self.exam.read_bytes()
+        c3 = self.sha("c3", "sha-c3")
+        gen_loop.s1_stage(c3, self.champ, gen_loop.load_agent(c3), gen_loop.load_agent(self.champ), ruler_root=self.ruler_root,
+                          run=lambda cmd, check=False: self.run_for(cmd, "sha-c3"), python="py", say=self.said.append)
+        self.assertEqual(self.exam.read_bytes(), once)  # nothing to add: not rewritten
+        self.assertEqual(self.backup.read_bytes(), self.raw)
+
+    def test_a_ruler_built_by_hand_is_merged_the_first_time_a_stage_reads_it(self):
+        self.assertEqual(arrivals(self.champ, self.ruler, self.agents)[0], 0)  # outside the train job
+        self.assertNotIn("arrival", self.doc())
+        self.stage_say()
+        self.assertIn("gen3-candidate", self.doc()["arrival"])
+        # also when the candidate's reading stands and nothing is played
+        self.exam.write_bytes(self.raw)
+        self.calls.clear()
+        self.stage_say()
+        self.assertEqual(self.calls, [])
+        self.assertIn("gen3-candidate", self.doc()["arrival"])
+
+    def test_a_list_that_cannot_be_merged_stops_the_stage_before_the_exam_plays(self):
+        raw = write_hand(self.exam, {**self.before, "rule": "something-else"})
+        with self.assertRaisesRegex(ValueError, "not the fight exam's file"):
+            self.stage_say()
+        self.assertEqual([c[2] for c in self.calls], ["arrivals"])  # the ruler was built; no game was asked for
+        self.assertEqual(self.exam.read_bytes(), raw)
+
+    def test_a_loop_with_no_list_is_said_and_the_stage_goes_on(self):
+        self.exam.unlink()
+        self.exam.parent.rmdir()
+        self.stage_say()
+        self.assertFalse(self.exam.parent.exists())  # no file or folder is made for it
+        self.assertTrue(any("no exclusion file" in m for m in self.said))
+        self.assertEqual([c[2] for c in self.calls], ["arrivals", "arrival-exam"])
+
+    def test_a_reading_read_from_a_file_merges_a_hand_built_ruler_and_never_stops_for_a_bad_list(self):
+        self.assertEqual(arrivals(self.champ, self.ruler, self.agents)[0], 0)
+        meta = a3.load_ruler(self.ruler)[0]
+        path = self.root / "s1-results.json"
+        path.write_text(json.dumps(trs.result(1.8, 0.4, ruler=meta["ruler_hash"], cand=trs.CAND_SHA, champ=trs.CHAMP_SHA)), encoding="utf-8")
+        agents = (gen_loop.load_agent(self.cand), gen_loop.load_agent(self.champ))
+        gen_loop.s1_from_file(path, self.cand, self.champ, *agents, ruler_root=self.ruler_root, register=False)  # a dry run writes nothing anywhere
+        self.assertNotIn("arrival", self.doc())
+        reading = gen_loop.s1_from_file(path, self.cand, self.champ, *agents, ruler_root=self.ruler_root)
+        self.assertTrue(reading["match"]["verified"])
+        self.assertEqual(self.doc()["arrival"]["gen3-candidate"]["ruler_hash"], meta["ruler_hash"])
+        raw = write_hand(self.exam, {**self.before, "rule": "something-else"})  # a list that is not the exam's: said, and the reading is still read
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            reading = gen_loop.s1_from_file(path, self.cand, self.champ, *agents, ruler_root=self.ruler_root)
+        self.assertTrue(reading["match"]["verified"])
+        self.assertIn("could not be put on the practice's exclusion list", buf.getvalue())
+        self.assertEqual(self.exam.read_bytes(), raw)
+
+    def test_the_sync_says_nothing_when_nothing_changed(self):
+        self.stage_say()
+        self.said.clear()
+        rec = gen_loop.sync_ruler_exclusions(self.ruler, self.said.append)
+        self.assertEqual((rec["status"], self.said), ("already merged", []))
+
 
 if __name__ == "__main__":
     unittest.main()

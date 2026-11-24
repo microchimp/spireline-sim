@@ -9,6 +9,7 @@
     python rl/act3_starts.py arrivals --champion DIR --out DIR [--limit N] [--rebuild]   the champion's first-Act-3-boss arrivals from its judged arms (S1's ruler);
                                                                                           a ruler already in --out is extended by the arms it lacks
     python rl/act3_starts.py arrival-exam --ruler DIR --candidate DIR --champion DIR   S1: the candidate's fight network on that ruler (a report)
+    python rl/act3_starts.py merge-exclusions --ruler DIR [--exam-file F] [--dry]       the ruler's runs and starts into the fight loop's exclusion list
 
 Why. The two Act 3 bosses (floors 48 and 49 at Ascension 10; the second is met only by a run that beat the first) hold nine tenths of the gap
 between the loop and the average human, and one boss in particular, the Test Subject, passes in 2 of 100 for us and 70 of 100 for humans. The
@@ -712,10 +713,77 @@ def ruler_hash(records: list[dict]) -> str:
 
 
 def exclusion_of(records: list[dict]) -> dict:
-    """The practice's exclusion list for the ruler (`fight_exam.exclusion`'s shape): every run behind a start and every start id. Merging it into
-    `exam/exclude_runs.json` is the loop owner's step; the file is only written beside the ruler."""
+    """The practice's exclusion list for the ruler (`fight_exam.exclusion`'s shape): every run behind a start and every start id. It is written beside the
+    ruler (`exclude_runs.json`); `merge_exclusions` puts it into the fight loop's `exam/exclude_runs.json`, which the practice reads at each segment draw."""
     return {"rule": ARRIVAL_RULE, "run_seeds": sorted({str(r["seed"]) for r in records}), "start_ids": sorted(r["id"] for r in records),
             "starts": len(records), "by_stratum": dict(Counter(r.get("stratum", "own") for r in records))}
+
+
+# The ruler's runs and starts must never be practised on: the exam plays them, and a fight the practice has trained on is no exam. The fight loop reads
+# `<loop>/exam/exclude_runs.json` at each segment draw (`practice_mix.read_exclusion`), so the ruler's list is merged into it (judge build 3, step 2; it was
+# a hand step, `judge-design/merge_arrival_exclusions.py`, on 2026-11-22).
+EXAM_EXCLUDE_RULE = "fight-exam-v1"  # the rule the fight exam's own exclusion file names (`fight_exam.EXAM_RULE`)
+EXCLUDE_FILE = "exclude_runs.json"
+EXCLUDE_BACKUP = EXCLUDE_FILE + ".pre-arrival.bak"
+EXCLUDE_STRATUM = "arrival-own"  # `by_stratum`'s count of the arrival starts merged
+
+
+def exam_exclusion_file(ruler: str | Path) -> Path:
+    """The fight loop's exclusion file for a ruler in `<loop>/arrival/<name>/`: `<loop>/exam/exclude_runs.json`."""
+    return Path(ruler).parent.parent / "exam" / EXCLUDE_FILE
+
+
+def merge_exclusions(ruler: str | Path, exam_file: str | Path | None = None, *, dry: bool = False) -> dict:
+    """Merge the ruler's exclusion list (`<ruler>/exclude_runs.json`: `run_seeds`, `start_ids`) into the fight loop's (`exam_file`, by default the loop's
+    `exam/exclude_runs.json` beside the ruler's `arrival/` folder), so the practice never draws those fights.
+
+    The union is sorted; `by_stratum["arrival-own"]` counts the arrival starts merged; `arrival[<ruler folder name>]` records the merge (rule, when, the ruler's
+    starts and runs, what this merge added, the ruler's hash). The first time the old file is kept as `exclude_runs.json.pre-arrival.bak`; every write is a
+    temporary file replaced over the file (`gym_loop.write_json`, which is patient with a reader that has the file open). It is idempotent: a ruler whose
+    entry names its present hash and whose ids are all in already changes nothing (no write). A ruler that grew (a new hash) adds its new ids and updates its entry.
+
+    Returns {status, ruler, ruler_hash, starts, runs, added_starts, added_runs, wrote}; `status` is `merged`, `already merged`, or `no exclusion file` (the
+    loop has none: nothing to merge into, nothing written). A ruler list or a loop file that is not the rule's own, unreadable, or a ruler list that does not
+    match its meta is an error (ValueError, OSError): a file somebody else's is never rewritten on a guess. `dry` reads everything and writes nothing."""
+    from gym_loop import write_json  # noqa: PLC0415
+
+    ruler = Path(ruler)
+    exam_file = Path(exam_file) if exam_file is not None else exam_exclusion_file(ruler)
+    if not exam_file.is_file():
+        return {"status": "no exclusion file", "ruler": ruler.name, "wrote": False}
+    r = json.loads((ruler / EXCLUDE_FILE).read_text(encoding="utf-8"))
+    meta = json.loads((ruler / "meta.json").read_text(encoding="utf-8"))
+    raw = exam_file.read_bytes()
+    e = json.loads(raw.decode("utf-8"))
+    if r.get("rule") != ARRIVAL_RULE:
+        raise ValueError(f"{ruler.name}: the ruler's exclusion list names rule {r.get('rule')!r}, not {ARRIVAL_RULE!r}")
+    if e.get("rule") != EXAM_EXCLUDE_RULE:
+        raise ValueError(f"{exam_file.parent.name}/{exam_file.name} names rule {e.get('rule')!r}, not {EXAM_EXCLUDE_RULE!r}: not the fight exam's file, left as it is")
+    rs, ri = [str(x) for x in r.get("run_seeds") or []], [str(x) for x in r.get("start_ids") or []]
+    if len(ri) != int(meta.get("starts", -1)) or len(set(ri)) != len(ri):
+        raise ValueError(f"{ruler.name}: the ruler's exclusion list holds {len(ri)} start ids and its meta {meta.get('starts')} starts: not merged")
+    if not isinstance(e.get("by_stratum", {}), dict) or not isinstance(e.get("arrival", {}), dict):
+        raise ValueError(f"{exam_file.name}: `by_stratum` or `arrival` is not a map: left as it is")
+    have_s, have_i = {str(x) for x in e.get("run_seeds") or []}, {str(x) for x in e.get("start_ids") or []}
+    new_s, new_i = sorted(set(rs) - have_s), sorted(set(ri) - have_i)
+    entry = (e.get("arrival") or {}).get(ruler.name)
+    summary = {"ruler": ruler.name, "ruler_hash": meta.get("ruler_hash"), "starts": len(ri), "runs": len(rs), "added_starts": len(new_i), "added_runs": len(new_s)}
+    if entry is not None and entry.get("ruler_hash") == meta.get("ruler_hash") and not new_s and not new_i:
+        return {"status": "already merged", **summary, "wrote": False}
+    e["run_seeds"] = sorted(have_s | set(new_s))
+    e["start_ids"] = sorted(have_i | set(new_i))
+    by = e.setdefault("by_stratum", {})
+    by[EXCLUDE_STRATUM] = int(by.get(EXCLUDE_STRATUM, 0)) + len(new_i)
+    e.setdefault("arrival", {})[ruler.name] = {"rule": ARRIVAL_RULE, "written": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "starts": len(ri), "runs": len(rs),
+                                               "added_starts": len(new_i), "added_runs": len(new_s), "ruler_hash": meta.get("ruler_hash"),
+                                               "why": "the Act 3 arrival exam (route S, S1) plays these starts; the practice must not draw them"}
+    if dry:
+        return {"status": "merged", **summary, "wrote": False}
+    backup = exam_file.with_name(EXCLUDE_BACKUP)
+    if not backup.exists():
+        backup.write_bytes(raw)
+    write_json(exam_file, e)
+    return {"status": "merged", **summary, "wrote": True}
 
 
 def load_ruler(folder: str | Path) -> tuple[dict, dict[str, dict]]:
@@ -1018,6 +1086,18 @@ def arrival_game_tasks(starts_file: Path, lite: dict[str, dict], who: str, confi
     return tasks
 
 
+def cmd_merge_exclusions(a: argparse.Namespace) -> int:
+    """Merge a ruler's exclusion list into the fight loop's (what the train job's S1 stage does by itself; this is the hand way). Status 0 merged or already
+    merged, 2 nothing to merge into or a file that is not the rule's own."""
+    try:
+        rec = merge_exclusions(a.ruler, a.exam_file or None, dry=a.dry)
+    except (OSError, ValueError) as why:
+        print(f"not merged: {why}")
+        return 2
+    print(json.dumps(rec, indent=1))
+    return 2 if rec["status"] == "no exclusion file" else 0
+
+
 def cmd_arrival_exam(a: argparse.Namespace) -> int:
     """Play the ruler under the candidate's and the champion's fight network (config a3-v1, CPU prior, 6 draws a start, test k on draws 6k..6k+5) and
     read S1: a report; no rule reads it."""
@@ -1143,6 +1223,11 @@ def main(argv=None) -> int:
     p.add_argument("--allow-quiet", nargs="*", default=[], help="QUIET.lock tags to ignore besides the loop's (the caller's own line)")
     p.add_argument("--lib", default="")
     p.set_defaults(fn=cmd_arrivals)
+    p = sub.add_parser("merge-exclusions")
+    p.add_argument("--ruler", required=True, help="the ruler's folder (its exclude_runs.json and meta.json)")
+    p.add_argument("--exam-file", default="", help="the fight loop's exclusion file (default: exam/exclude_runs.json beside the ruler's arrival/ folder)")
+    p.add_argument("--dry", action="store_true", help="read both and say what would be added; write nothing")
+    p.set_defaults(fn=cmd_merge_exclusions)
     p = sub.add_parser("arrival-exam")
     p.add_argument("--ruler", required=True)
     p.add_argument("--candidate", required=True, help="a folder with the candidate's combat_policy.pt and model.json (a gym player or a run candidate)")

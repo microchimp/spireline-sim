@@ -3210,6 +3210,30 @@ def usable_ruler(ruler: Path, base_dir: Path) -> dict[str, Any] | None:
     return meta if ok and meta.get("ruler_hash") else None
 
 
+def sync_ruler_exclusions(ruler: Path, say: Callable[[str], None] | None = None, *, strict: bool = True) -> dict[str, Any] | None:
+    """Put the ruler's runs and starts on the practice's exclusion list (`act3_starts.merge_exclusions`: the fight loop's `exam/exclude_runs.json` beside the
+    ruler's `arrival/` folder), so the fight loop never practises on the fights the exam plays. Called wherever a stage reads a usable ruler, so a ruler built or
+    extended in the train job, and one built outside it (by hand, `judge-design/S1-v5.sh`), reach the practice with no hand step; a ruler already merged changes
+    nothing. `strict` (the train job's S1 stage, before the exam plays): a list that cannot be merged (a file that is not the rule's own, one unreadable) is an
+    error. Not strict (a reading read from a file, a rejudgement): it is said and the judgement goes on. A loop with no exclusion file is said, never made."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    say = say or (lambda m: print(m, flush=True))
+    try:
+        rec = a3.merge_exclusions(ruler)
+    except (OSError, ValueError, KeyError) as why:
+        if strict:
+            raise
+        say(f"S1: the ruler's runs and starts could not be put on the practice's exclusion list ({why})")
+        return None
+    if rec["wrote"]:
+        say(f"S1: the ruler's runs and starts are on the practice's exclusion list now ({rec['added_runs']} runs and {rec['added_starts']} starts added; "
+            f"the list before is kept once as {a3.EXCLUDE_BACKUP})")
+    elif rec["status"] == "no exclusion file":
+        say(f"S1: no exclusion file beside {Path(ruler).parent.name}/: the ruler's runs and starts are not on any practice list")
+    return rec
+
+
 def s1_expect(cand_agent: Agent, base_agent: Agent, ruler_hash: str | None) -> dict[str, Any]:
     """What a reading must name to be applied to this pair: the ruler's hash (None when the ruler cannot be read) and the sha256 of each fight network."""
     return {"ruler_hash": ruler_hash, "candidate": cand_agent.describe().get("prior_sha256"), "champion": base_agent.describe().get("prior_sha256")}
@@ -3317,6 +3341,7 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
     stored = cand / S1_FILE
     meta = usable_ruler(ruler, base_dir)
     if meta is not None:
+        sync_ruler_exclusions(ruler, say)  # a ruler built by hand reaches the practice the first time a stage reads it
         # this candidate was read against this ruler already: the reading stands, and the ruler is not grown under it (a second block of the same
         # judgement, v3's extension, reads the same reading rather than a new test on a bigger ruler)
         standing = standing_reading(stored, s1_expect(cand_agent, base_agent, meta["ruler_hash"]))
@@ -3341,6 +3366,7 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
         meta = usable_ruler(ruler, base_dir)
         if meta is None:
             raise RuntimeError(f"the ruler's builder left no usable ruler in {ruler.name}")
+        sync_ruler_exclusions(ruler, say)  # before the exam plays a start of it: the practice must not draw these fights
     expect = s1_expect(cand_agent, base_agent, meta["ruler_hash"])
     standing = standing_reading(stored, expect)  # the ruler was just extended, or the first look found no usable one
     if standing is not None:
@@ -3382,6 +3408,8 @@ def s1_from_file(path: Path | str, cand: Path | str, base_dir: Path | str, cand_
     and champion against the two fight networks. With `register` the test is entered in the ruler's ledger (the next test then takes new draws)."""
     ruler = s1_ruler_dir(base_dir, ruler_root)
     meta = usable_ruler(ruler, Path(base_dir))
+    if meta and register:  # a ruler built outside the train job (the hand run of 2026-11-22) is put on the practice's list the first time a stage reads it
+        sync_ruler_exclusions(ruler, strict=False)
     reading = keep_v2_module().s1_reading(read_json(path), s1_expect(cand_agent, base_agent, meta["ruler_hash"] if meta else None))
     if register and meta and reading["match"]["verified"]:
         register_s1_test(ruler, reading, Path(cand).name)
@@ -3783,6 +3811,8 @@ def rejudge(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             route_s_mode["source"] = f"--s1 {Path(s1_file).name}"
         elif (Path(cand) / S1_FILE).is_file():
             meta = usable_ruler(s1_ruler_dir(base_dir, ruler_root), base_dir)
+            if meta and out is None:
+                sync_ruler_exclusions(s1_ruler_dir(base_dir, ruler_root), strict=False)
             s1 = {**read_json(Path(cand) / S1_FILE)}
             s1["match"] = keep_v2_module().s1_match(s1, s1_expect(cand_agent, base_agent, meta["ruler_hash"] if meta else None))
             route_s_mode["source"] = f"the candidate's {S1_FILE}"
