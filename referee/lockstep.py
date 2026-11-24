@@ -427,6 +427,9 @@ class Lockstep:
 
     def decide(self, msg: dict) -> int:
         msg = self._take_hidden(msg)
+        take_unasked = getattr(self.emu, "take_unasked", None)
+        if take_unasked is not None:  # the game's lone fight actions since its last question (driver "unasked"; None: an old driver)
+            take_unasked(msg.get("unasked"))
         kind, labels = msg["kind"], msg["actions"]
         i, self.n = self.n, self.n + 1
         self.stats["decisions"] += 1
@@ -591,6 +594,9 @@ class Lockstep:
             out["prev_ref_energy"], out["prev_ref_hand_cost"] = self._ref_prev.values()
         if "potions" in obs:
             out["ref_potions"] = [p for p in obs.get("potions") or [] if p]
+        unasked = (msg or {}).get("unasked")
+        if isinstance(unasked, list) and unasked:  # what the game took without asking just before this decision (driver "unasked")
+            out["ref_unasked"] = unasked[:8]
         probe = getattr(self.emu, "probe", None)
         if probe is not None:
             try:
@@ -612,8 +618,12 @@ class Lockstep:
         return isinstance(hp, (int, float)) and hp <= 0 and callable(over) and bool(over())
 
     def finish(self, outcome: dict) -> None:
-        """Run end: every divergence record carries the run id, the agent seed and the run's outcome."""
+        """Run end: every divergence record carries the run id, the agent seed and the run's outcome. `stats["unasked"]`: how the
+        copy followed the game's End Turns taken without a question (`EmuLock.unasked_counts`; absent with an old driver)."""
         self._fields("finish", won_run=outcome.get("class") == "win")
+        counts = getattr(self.emu, "unasked_counts", None)
+        if isinstance(counts, dict):
+            self.stats["unasked"] = dict(counts)
         for r in self.log.records:
             r["run"], r["agent_seed"], r["outcome"] = self.seed, self.agent_seed, outcome
             r["ai_state_assumed"] = r["decision"] in self.assumed
@@ -889,6 +899,11 @@ class EmuLock:
     relic_counters: int | None = None  # the last re-anchor's relic counters put on the game's (the driver's anchor_state), else None
     deck_order: str | None = None  # the last hidden fight-start re-anchor's run-deck order: "set", "same", "other_deck", "unknown_id", else None
     streams: dict | None = None  # the last room-entry stream anchor: {"named", "moved", "unmoved", "unmoved_names"}, else None
+    # The End Turns the game took without asking at this decision that the copy has still to take (take_unasked); None: the driver
+    # sent no list (an old driver), and the copy's lone actions are taken as they always were.
+    _unasked_ends: int | None = None
+    _held_noted = False  # this decision's held lone End Turn is counted once, however often the copy is synced
+    unasked_counts: dict | None = None  # how the copy followed the game's unasked End Turns, over the run (Lockstep.finish)
 
     def __init__(self, seed: str, ascension: int = 10, sims: int = 60, agent_seed=None, character: str = "IRONCLAD"):
         import leakprobes  # noqa: PLC0415 -- the native library's location
@@ -1205,16 +1220,64 @@ class EmuLock:
             out += hd.relic_diff(relics, self._relic_state(), self._melted_relics(), refset.relic_counter_writes)
         return out
 
+    def take_unasked(self, unasked) -> None:
+        """The lone fight actions the game took without a question since its last asked decision (the driver's "unasked", a list of
+        [kind, label]; `Lockstep.decide` hands it over once per decision). Its End Turns ([combat, [end]]) are what `_auto_combat`
+        steps on the copy. Anything but a list (an old driver sends no key) leaves the copy's lone actions taken as they always were."""
+        self._held_noted = False
+        if not isinstance(unasked, list):
+            self._unasked_ends = None
+            return
+        ends = sum(1 for x in unasked if isinstance(x, list) and len(x) > 1 and x[0] == "combat" and x[1] == ["end"])
+        self._unasked_ends = ends
+        self._count("game_end_turns", ends)
+
+    def _count(self, key: str, k: int = 1) -> None:
+        counts = self.__dict__.get("unasked_counts")
+        if counts is None:
+            counts = self.unasked_counts = {"game_end_turns": 0, "stepped": 0, "stepped_with_choice": 0, "held_lone_end": 0}
+        counts[key] = counts.get(key, 0) + k
+
+    def _end_action(self) -> int | None:
+        """The copy's End Turn action (one past the hand), or None while a card screen is open (its actions are the cards)."""
+        obs, ls = self._obs(), self.ls
+        return None if obs[ls._SELECTION_KIND] else len(self._hand())
+
     def _auto_combat(self) -> None:
-        """The referee asks only when two or more actions are legal (Env.Decide), so a lone End Turn is taken for it."""
+        """The referee asks only when two or more actions are legal (Env.Decide), so the game's lone actions are taken here for the
+        copy. With the driver's list of them (`take_unasked`) the copy's End Turn is stepped exactly as often as the game took one,
+        also while the copy still has something else to play: the game's player had nothing left (a card the game would not let it
+        play, Chains of Binding at the Queen, a cost the copy has lower) and the game ended the turn, and the copy stood a turn behind
+        (lane 21's group A2: 10 of the 95 lost first-Act-3-boss arrivals of 2026-11-20, 251 of the block's 1,459 loss records). A lone
+        End Turn of the copy's own that the game did not take is not taken: the comparison shows the difference, or the agent answers
+        from the copy's list. The copy's other lone actions (a fight card screen's one card) are taken as before. Without the list
+        (an old driver) every lone action of the copy is taken, as before."""
         env = self.s.env
         for _ in range(40):
             if self.s.phase != self.E.rc.PHASE_COMBAT:
                 return
-            legal = [i for i in range(32) if self.native.run_action_mask(self.s.handle, 32)[i]]
-            if len(legal) != 1:
-                return
-            self.native.run_step(self.s.handle, legal[0], -1, env._run_obs_buf, env._run_rew_buf, env._run_terminal_buf,
+            mask = self.native.run_action_mask(self.s.handle, 32)
+            legal = [i for i in range(32) if mask[i]]
+            ends = self._unasked_ends
+            if ends is None:
+                if len(legal) != 1:
+                    return
+                action = legal[0]
+            else:
+                end = self._end_action()
+                if len(legal) == 1 and legal[0] != end:
+                    action = legal[0]
+                elif ends > 0 and end is not None and end in legal:
+                    action, self._unasked_ends = end, ends - 1
+                    self._count("stepped")
+                    if len(legal) > 1:
+                        self._count("stepped_with_choice")
+                else:
+                    if ends == 0 and legal == [end] and not self._held_noted:
+                        self._held_noted = True
+                        self._count("held_lone_end")
+                    return
+            self.native.run_step(self.s.handle, action, -1, env._run_obs_buf, env._run_rew_buf, env._run_terminal_buf,
                                  env._run_truncated_buf)
 
     def _screen_state(self, kind: str, labels: list, msg: dict | None) -> str | None:
@@ -1483,6 +1546,8 @@ class EmuLock:
 
     def _reanchor_with(self, plan: str, msg: dict) -> bool:
         self.fail = None
+        if self._unasked_ends is not None:
+            self._unasked_ends = 0  # the game's record is of this decision, after its unasked steps: none is left to take
         self.anchored_with = None
         self.streams = None
         self.walk = None

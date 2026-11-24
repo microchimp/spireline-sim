@@ -8,11 +8,14 @@
 //   {"a":K}                                                                                   answer the open decision
 //   {"cmd":"quit"}                                                                            exit 0
 // and writes, per pending choice with two or more legal actions,
-//   ENV {"t":"decide","kind":k,"obs":{...},"actions":[...],"ctx":...,"h":"<state hash>"?}
+//   ENV {"t":"decide","kind":k,"obs":{...},"actions":[...],"ctx":...,"h":"<state hash>"?,"unasked":[...]}
 // and at the run's end (its reason: death, victory, or what stopped it)
-//   ENV {"t":"end","end":reason,"floor":F,"decisions":D,"ms":M}
-// A choice with one legal action is taken without asking. ENV is the line prefix "\u001eENV "; everything else on
-// stdout is the game's own log. An answer out of range gets ENV {"t":"bad_action"} and the same decision again.
+//   ENV {"t":"end","end":reason,"floor":F,"decisions":D,"ms":M,"unasked":[...]}
+// A choice with one legal action is taken without asking. In a fight (kinds combat, select_cards_combat, card_reward_combat)
+// each such action is listed as [kind, label] in "unasked", sent with the next asked decision and with the end message
+// (UnaskedLog, Unasked.cs); the list is always present, empty when nothing was taken. ENV is the line prefix "\u001eENV ";
+// everything else on stdout is the game's own log. An answer out of range gets ENV {"t":"bad_action"} and the same
+// decision again.
 //
 // Without a channel the same decision points pick with the run's seeded rng exactly as before (RunPlay.cs); with
 // job "env_trace": true each pick is also recorded as [kind, n, index, hash] in the run's "env_trace", so a recorded
@@ -77,6 +80,9 @@ internal static class Env
     /// <summary>Card reward screens checked against the screen's own alternatives list, and how many differed.</summary>
     internal static int AltChecked, AltMismatch;
 
+    /// <summary>The fight actions taken without asking since the last asked decision (Unasked.cs): "unasked" on the next one.</summary>
+    internal static readonly UnaskedLog Unasked = new();
+
     private static Stream? _out;
     private static TextReader? _in;
 
@@ -118,7 +124,7 @@ internal static class Env
     /// <summary>
     /// One decision point with n legal actions. Without a channel: fallback() (the seeded random pick, which may draw
     /// from the rng even when n is 1, exactly as the driver always did), traced when n &gt; 1. With one: the agent's
-    /// answer, asked only when n &gt; 1.
+    /// answer, asked only when n &gt; 1; a lone fight action taken unasked is listed (Unasked) for the next asked decision.
     /// </summary>
     internal static int Decide(string kind, int n, Func<JsonArray> actions, Func<int> fallback, Func<JsonNode?>? ctx = null)
     {
@@ -134,10 +140,16 @@ internal static class Env
             return idx;
         }
 
-        if (n <= 1) return n == 1 ? 0 : fallback();
+        if (n <= 1)
+        {
+            if (n == 1 && UnaskedLog.FightKind(kind)) Unasked.Took(kind, LoneLabel(actions));
+            return n == 1 ? 0 : fallback();
+        }
+
         var msg = new JsonObject { ["t"] = "decide", ["kind"] = kind, ["obs"] = Obs(), ["actions"] = actions() };
         if (ctx != null) msg["ctx"] = ctx();
         if (Hashing) msg["h"] = Hash();
+        msg["unasked"] = Unasked.Drain();
         if (AnchorState)
         {
             if (AnchorPoint(kind)) msg["anchor_state"] = AnchorStateOf();
@@ -298,6 +310,20 @@ internal static class Env
 
     private static bool CombatKind(string? kind) => kind is "combat" or "select_cards_combat" or "card_reward_combat";
 
+    /// <summary>The label of a decision's one action, for Unasked; null when the list is empty or cannot be built.</summary>
+    private static JsonNode? LoneLabel(Func<JsonArray> actions)
+    {
+        try
+        {
+            var a = actions();
+            return a.Count > 0 ? a[0] : null;
+        }
+        catch (Exception)
+        {
+            return null;  // a label is a record of what was taken; it never costs the step
+        }
+    }
+
     /// <summary>The decisions referee/lockstep.py re-anchors at: a map choice (room entry) and the first decision of a fight.</summary>
     private static bool AnchorPoint(string kind) => kind == "map" || (CombatKind(kind) && !CombatKind(AnchorPrevKind));
 
@@ -451,6 +477,7 @@ public static partial class Driver
             foreach (var d in (result["decisions"] as JsonArray) ?? new JsonArray())
                 if (d?["fight"]?["error"] is { } fe) errs.Add(fe.DeepClone());
             if (errs.Count > 0) msg["fight_errors"] = errs;
+            msg["unasked"] = Env.Unasked.Drain();  // the lone fight actions after the last asked decision (the End Turn a death followed)
             if (cmd["record"] is JsonValue rec && rec.TryGetValue(out string? path) && path != null)
                 File.WriteAllText(path, result.ToJsonString());
             if (StaleState() is { } stale) msg["stale"] = stale;

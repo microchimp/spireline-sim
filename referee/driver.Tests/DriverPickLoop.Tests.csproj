@@ -16,5 +16,6 @@
     <Compile Include="..\driver\PickLoop.cs" Link="PickLoop.cs" />
     <Compile Include="..\driver\AnchorHoldings.cs" Link="AnchorHoldings.cs" />
     <Compile Include="..\driver\ActionTargets.cs" Link="ActionTargets.cs" />
+    <Compile Include="..\driver\Unasked.cs" Link="Unasked.cs" />
   </ItemGroup>
 </Project>

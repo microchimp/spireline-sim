@@ -170,6 +170,7 @@ public static partial class Driver
         Env.AnchorPrevKind = null;
         Env.FullSelect = (bool?)spec["full_select"] == true;
         Env.AltChecked = Env.AltMismatch = 0;
+        Env.Unasked.Clear();  // Unasked.cs: the lone fight actions of this run only
         Env.Trace = Env.Tracing ? new JsonArray() : null;
         FirstChoiceSelector.PickHook = Env.Live || Env.Tracing ? FightPick : null;
         FirstChoiceSelector.CardRewardHook = Env.Live || Env.Tracing ? FightCardReward : null;
