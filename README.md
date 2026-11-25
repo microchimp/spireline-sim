@@ -1,5 +1,7 @@
 # Slay the Spire 2 Emulator
 
+> **Spireline's fork (published 2026-11-25).** This repository is the simulator of [Spireline](https://github.com/microchimp/spireline), an attempt at the best play in Slay the Spire 2 at Ascension 10: the r33hab/sts2 emulator extended for fidelity and coverage and refereed against the game's own code, with the learning machine (`rl/`), the lab (`tools/lab/`) and the referee (`referee/`). Start with [FORK.md](FORK.md). The project's final report is [docs/FINAL_REPORT.md](https://github.com/microchimp/spireline/blob/main/docs/FINAL_REPORT.md) in the Spireline repository. The project is paused since 2026-11-25 and the machine runs unattended; its daily status is [status/latest.md](https://github.com/microchimp/spireline/blob/main/status/latest.md). The trained champion player is on the Releases page. Everything below this note is upstream's README as of commit `b745217`, kept for the build instructions. No game files, assets or decompiled source are in this repository (`decompiled/` is regenerated locally from your own copy of the game).
+
 > Forked from [Zamiell/slay-the-spire-2-emulator](https://github.com/Zamiell/slay-the-spire-2-emulator)
 > (MIT). This fork adds macOS support and is the base for an AlphaZero-style agent —
 > start with [HANDOFF.md](HANDOFF.md) (current state + how-to + next steps), then
