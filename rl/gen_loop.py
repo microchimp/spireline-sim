@@ -3305,8 +3305,141 @@ def standing_reading(stored: Path, expect: Mapping[str, Any]) -> dict[str, Any] 
         return None
 
 
+# ------------------------------------------------------------------ the base block (D68 addendum 7 item 2, lane 25)
+#
+# A champion that was just promoted has no judged arm outside the block it was selected on (its selection block is excluded by design), so S1 had no ruler to
+# build and the first challenger after every promotion was judged by v3 alone, which a fight step cannot pass. With `--base-block auto` (the default under
+# `--route-s auto`) `s1_stage` plays the arm the champion lacks: a **base block**, 2,000 runs of the champion alone on fresh seeds, into its own `arms/` folder
+# in the shape every judged arm has, so `act3_starts.champion_arms` finds it, the ruler is built from it and S1 goes on. `--base-block off` keeps the old way
+# (S1 unavailable, v3 decides).
+
+BASE_BLOCK_MODES = ("auto", "off")
+BASE_BLOCK_RUNS = 2000  # runs of a base block: the size of a judged block
+BASE_BLOCK_SUFFIX = "-base"  # a base block's name ends so: `E22-2026-11-25-base`, its arm folder `E22-2026-11-25-base-a3-v1`
+BASE_BLOCK_FILE = "base-block.json"  # in the arm folder: why and when the block was played (the first judgement's, kept across the job's retries)
+BASE_BLOCK_RULE = "base-block-v1"
+
+
+def base_block_of(value: str | None) -> str:
+    """`--base-block`: "auto" (the default) or "off". Any other value is an error, not a silent off: a rule that decides a promotion is never guessed."""
+    v = "auto" if value is None or str(value).strip() == "" else str(value).strip().lower()
+    if v not in BASE_BLOCK_MODES:
+        raise ValueError(f"unknown --base-block {value!r} (the modes are {', '.join(BASE_BLOCK_MODES)})")
+    return v
+
+
+@dataclass(frozen=True)
+class BaseBlock:
+    """What `s1_stage` needs to play a base block: its `name` (the arm folder is `<name>-<config>`), the folder its seed file goes to (the lab's `seeds`, beside
+    the E-blocks) and the arms' own settings (`config`, `ascension`, `arm_kw`: the prior transport, as the judgement's whole-run arms play)."""
+
+    name: str
+    seeds_dir: Path
+    config: str = "a3-v1"
+    ascension: int = 10
+    n: int = BASE_BLOCK_RUNS
+    arm_kw: Mapping[str, Any] = field(default_factory=dict)
+    lab_runs: tuple[Path, ...] = ()
+    extra_dirs: tuple[Path, ...] = ()
+
+
+def base_block_name(generation: int, judged: str | None = None, today: str | None = None) -> str:
+    """The base block's name for the judgement of the E-block `judged`: its name without a `-r<n>` retry or extension suffix, then `-base` (`E22-2026-11-25-r1`
+    -> `E22-2026-11-25-base`). The name is the same on every try of a judgement, so a job that was stopped resumes the block it had started. With no `judged`
+    block: `E<generation>-<date>-base`. It is deliberately a name `resolve_e_block` never takes for a judged block (it skips every `-base` file)."""
+    stem = re.sub(r"-r\d+$", "", judged) if judged else f"E{generation}-{today or datetime.now(UTC).strftime('%Y-%m-%d')}"
+    return stem + BASE_BLOCK_SUFFIX
+
+
+def base_block_arm(base_dir: Path | str, plan: BaseBlock) -> Path:
+    """The champion's arm folder of the base block: `<champion>/arms/<name>-<config>`."""
+    return Path(base_dir) / "arms" / f"{plan.name}-{plan.config}"
+
+
+def base_block_seeds(plan: BaseBlock) -> list[str]:
+    """The base block's seeds: derived from its name as every E-block's are (`gen0.e_block`), checked against every other known block and the lab's self-play
+    runs, and written to `<seeds_dir>/<name>.json` so that later blocks are checked against them. A file that is already there must hold the same seeds."""
+    import gen0  # noqa: PLC0415
+
+    seeds = gen0.e_block(plan.name, plan.n)
+    check_disjoint(seeds, known_seed_sets(plan.seeds_dir, list(plan.lab_runs) or None, plan.name, plan.extra_dirs))
+    path = Path(plan.seeds_dir) / f"{plan.name}.json"
+    if path.is_file():
+        if gen0.load_seeds(path) != seeds:
+            raise ValueError(f"{path.name} exists and does not hold the seeds its name gives")
+    else:
+        gen0.write_seed_file(plan.name, plan.n, path)
+    return seeds
+
+
+def base_block_unfinished(base_dir: Path | str, plan: BaseBlock) -> bool:
+    """Whether a base block was started and not finished: its arm folder holds a `runs.jsonl` but no `summary.json`, or fewer rows than the block has seeds
+    (a job that was killed, or a block that ended short). It is played on first, before the champion's arms are read, so a ruler is never built from half a block."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    arm = base_block_arm(base_dir, plan)
+    if not (arm / "runs.jsonl").is_file():
+        return False
+    return not ((arm / "summary.json").is_file() and a3.count_rows(arm) >= plan.n)
+
+
+def play_base_block(base_dir: Path | str, base_agent: Agent, plan: BaseBlock, *, procs: int, judged: str | None = None, candidate: str = "",
+                    play: Callable[..., list[dict]] | None = None, say: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Play the champion alone on the base block: `run_arm` (the whole-run stage's own block player; `play` replaces it in tests) into
+    `<champion>/arms/<name>-<config>`, resumable (a stopped job continues where it was), `procs` processes. When every seed has a row `base-block.json` is
+    written in the arm folder (once: a later try of the same judgement keeps the first time) and its record returned: {rule, written, block, for_block,
+    candidate, runs, config, seeds_file}. A block that ends short raises `S1Blocked` (its rows are kept and the next try finishes it)."""
+    say = say or (lambda m: print(m, flush=True))
+    play = play or run_arm
+    seeds = base_block_seeds(plan)
+    arm = base_block_arm(base_dir, plan)
+    who = f"{Path(base_dir).parent.name}/{Path(base_dir).name}"
+    have = len({r["seed"] for r in arm_rows(arm)}) if (arm / "runs.jsonl").is_file() else 0
+    say(f"S1: the champion {who} has no arm outside the blocks it was selected on to build a ruler from: playing a base block of {len(seeds)} runs "
+        f"({plan.name}, the champion alone, {int(procs)} processes" + (f", {have} rows on disk" if have else "") + ")")
+    rows = play(seeds, arm, base_agent, plan.config, int(procs), plan.ascension, resume=True, **dict(plan.arm_kw))
+    played = {r["seed"] for r in rows} & set(seeds)
+    if len(played) < len(seeds):
+        raise S1Blocked(f"the base block {plan.name} ended with {len(played)} of {len(seeds)} runs; what it played is kept and the next try finishes it")
+    mark = arm / BASE_BLOCK_FILE
+    if not mark.is_file():
+        write_json(mark, {"rule": BASE_BLOCK_RULE, "written": utc_now(), "block": plan.name, "for_block": judged, "candidate": candidate, "runs": len(seeds),
+                          "config": plan.config, "seeds_file": f"{plan.name}.json"})
+    say(f"S1: the base block {plan.name} is played ({len(seeds)} runs)")
+    return read_json(mark)
+
+
+def base_block_record(base_dir: Path | str, plan: BaseBlock, judged: str | None, ruler_root: Path | str | None = None) -> dict[str, Any] | None:
+    """The record of the base block played for the judgement of `judged` (the arm folder's `base-block.json`, when it names this block as its `for_block`) with what
+    the champion's ruler holds of it (`arrivals`: the runs that reached the first Act 3 boss; `starts`, `matched`: the starts kept and the replays that matched), or
+    None when no base block was played for this judgement. `arrivals` is None while no ruler holds it."""
+    import act3_starts as a3  # noqa: PLC0415
+
+    try:
+        rec = read_json(base_block_arm(base_dir, plan) / BASE_BLOCK_FILE)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or rec.get("for_block") != judged:
+        return None
+    meta = usable_ruler(s1_ruler_dir(base_dir, ruler_root), Path(base_dir))
+    entry = a3.ruler_arms(meta).get(plan.name) if meta else None
+    return {**rec, "arrivals": entry.get("arrivals") if entry else None,
+            "starts": (int(entry.get("first") or 0) + int(entry.get("second") or 0)) if entry else None, "matched": entry.get("matched") if entry else None}
+
+
+def base_block_note(rec: Mapping[str, Any] | None, s1_read: bool = True) -> str | None:
+    """The ledger `guard` cell's words for a base block: `S1 on a base block played <ts>: N runs, M arrivals` (an S1 reading was made on the ruler it gave), or
+    `a base block was played <ts>: N runs, no S1 reading` when the stage could not go on after it. None when no base block was played for the judgement."""
+    if not rec:
+        return None
+    if s1_read and rec.get("arrivals") is not None:
+        return f"S1 on a base block played {rec['written']}: {rec['runs']} runs, {rec['arrivals']} arrivals"
+    return f"a base block was played {rec['written']}: {rec['runs']} runs, no S1 reading"
+
+
 def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_agent: Agent, *, procs: int = S1_PROCS, ruler_root: Path | str | None = None,
-             python: str | None = None, run: Callable[..., Any] | None = None, say: Callable[[str], None] | None = None, block: str | None = None) -> dict[str, Any]:
+             python: str | None = None, run: Callable[..., Any] | None = None, say: Callable[[str], None] | None = None, block: str | None = None,
+             base_block: BaseBlock | None = None, play: Callable[..., list[dict]] | None = None) -> dict[str, Any]:
     """S1 for a fight-only swap: the first stage of `promote` under `--route-s auto`. Returns the reading (`keep_v2.s1_reading`, checked against this pair),
     written to the candidate's folder as `s1.json`.
 
@@ -3315,7 +3448,9 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
        champion now has (`act3_starts.ruler_gap`: a block it played since, or one that grew) is **extended** first: only those arms are replayed, every start
        the ruler holds is kept, and the hash is the whole set's. `block` is the block being judged now: the champion's arm on it is left out (it is still being
        played, and the ruler must not change between two tries of one judgement). A champion with no arm to read has no ruler: `S1Unavailable`, and no folder is
-       made for it.
+       made for it, unless `base_block` (`--base-block auto`, `BaseBlock`) is given: the champion then plays a **base block** first (`play_base_block`: 2,000
+       runs of the champion alone on fresh seeds, into `arms/<name>-<config>`, the whole-run stage's own block player, resumable) and the ruler is built from that
+       arm. A base block that was started and not finished is finished first, whatever else the champion has.
     2. The test index k: the candidate's own when the ruler's ledger already holds a test for this fight network (a resumed or repeated judgement plays
        the same draws, and one whose `s1.json` stands for this ruler, champion and candidate is not played again); else one more than any test played
        against the ruler (`s1_used_tests`), so no draw (6k to 6k + 5) is used by two candidates. The ledger is written before the games are.
@@ -3324,7 +3459,8 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
     Both heavy steps run as children of this process, so they run at its priority (the train job's: BelowNormal), hold no QUIET.lock line of their own and
     are told to ignore the lab's own `lab-train` line (`--allow-quiet`): the exam's `blocked_reason` would read it as another's and stop. They touch nothing
     of the gym daemon. A stop or a block raises `S1Blocked` (the job fails, the runner retries it, the work resumes); a pair S1 cannot be played for raises
-    `S1Unavailable`. `run` (default `subprocess.run`) and `python` (default this interpreter) are replaced by tests."""
+    `S1Unavailable`. `run` (default `subprocess.run`), `python` (default this interpreter) and `play` (default `run_arm`, the base block's player) are replaced by
+    tests."""
     say = say or (lambda m: print(m, flush=True))
     run = run or subprocess.run
     py = python or sys.executable
@@ -3349,6 +3485,9 @@ def s1_stage(cand: Path | str, base_dir: Path | str, cand_agent: Agent, base_age
             say(f"S1: {S1_FILE} stands for this ruler, champion and candidate: not played again")
             return standing
     gap = a3.ruler_gap(meta, base_dir, [block] if block else ())  # the champion's arms the ruler lacks (all of them when there is no ruler)
+    if base_block is not None and (base_block_unfinished(base_dir, base_block) or (meta is None and not gap)):  # no arm to read: the champion plays one, alone
+        play_base_block(base_dir, base_agent, base_block, procs=procs, judged=block, candidate=cand.name, play=play, say=say)
+        gap = a3.ruler_gap(meta, base_dir, [block] if block else ())
     if meta is None and not gap:
         raise S1Unavailable(f"the champion {base_dir.parent.name}/{base_dir.name} has no arm outside the blocks it was selected on to build a ruler from")
     if gap:
@@ -3497,7 +3636,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
             review_guard: bool | None = None, server_opts=None, sequential: bool = False, smoke: int = SEQ_SMOKE,
             batch: int = SEQ_BATCH, keep_rule: str | None = None, futility: bool | None = None,
             futility_min_seeds: int | None = None, screen: bool | None = None, pool_blocks: Sequence[str] = (),
-            keep_rule_why: str | None = None, min_gain: float | None = None, route_s: str | None = None) -> dict[str, Any]:
+            keep_rule_why: str | None = None, min_gain: float | None = None, route_s: str | None = None,
+            base_block: str | None = None) -> dict[str, Any]:
     """Play candidate and base on the same E-block seeds, test, and record the decision. With the review guard on
     (`review_guard`, default the SPIRELINE_REVIEW_GUARD variable; off) the decision is `decide_review`'s and the tsv row carries the attempt
     and the guard's verdict. A third attempt of a generation is played and judged like any other (D65 addendum 2): the old cap of two
@@ -3552,7 +3692,12 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     When S1 holds, S2 is the funnel over the whole block with its looks refusing only (`funnel(route_s=True)`: no futility stop, no early promotion, no
     extension), the champion's stored arm is reused on a block the candidate never played only after 20 of its seeds replay identically (`base_arm_reuse`,
     promotion.json's `base_reuse`), and the verdict is route S's (`keep_v2.judge_v3(s1=)`). When S1 does not hold, or cannot be played for this pair,
-    the judgement is v3's exactly as before, with the reason recorded (`route_s_mode`). Any other candidate is judged as before."""
+    the judgement is v3's exactly as before, with the reason recorded (`route_s_mode`). Any other candidate is judged as before.
+
+    `base_block` ("auto", the default, or "off"; `--base-block`; D68 addendum 7 item 2, only under `route_s` "auto"): a champion with no judged arm outside the blocks it
+    was selected on (just promoted) plays a **base block** first, 2,000 runs of the champion alone on fresh seeds (`s1_stage(base_block=)`, `play_base_block`: the block
+    `<E-block>-base`, its seeds file beside the E-block's, its arm in the champion's `arms/`), and S1 is read on the ruler that arm gives. The ledger's `guard` cell says
+    `S1 on a base block played <ts>: N runs, M arrivals` and promotion.json's `route_s_mode.base_block` holds the record. "off" is the old way: S1 unavailable, v3 decides."""
     import gen0  # noqa: PLC0415
 
     rule = keep_rule_of(keep_rule)
@@ -3560,6 +3705,7 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
     if pool_blocks and rule != "v3":
         raise ValueError("pooling blocks is the keep rule v3's (--keep-rule v3)")
     mode = route_s_of(route_s)
+    base_mode = base_block_of(base_block)
     if mode == "auto" and rule != "v3":
         raise ValueError("route S is the keep rule v3's (--keep-rule v3)")
     gain = min_gain_of(min_gain, rule)  # None under v1; the keep rules' route A minimum otherwise
@@ -3596,17 +3742,25 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
                                 attempt=attempt, cand_sha=cand_sha, head_sha=head_sha, recipe=recipe, rule=rule if v2 else None, lab=lab)
     s1: dict[str, Any] | None = None  # route S: S1's reading for this pair (None: not asked, or not playable)
     route_s_mode: dict[str, Any] | None = None
+    base_rec: dict[str, Any] | None = None  # the base block played for this judgement, with what the ruler holds of it
     if mode == "auto":
         route_s_mode = {"mode": "auto", "fight_swap": fight_only_swap(cand)}
         if not route_s_mode["fight_swap"]:
             route_s_mode["why"] = "not a fight-only swap (agent.json built.swap does not read 'fight'): v3 decides"
             route_s_mode["reason"] = "not a fight-only swap"
         else:
+            base_plan = (BaseBlock(name=base_block_name(cand_agent.generation, name), seeds_dir=lab_seed_dir(lab) if lab else Path(seeds_file).parent, config=config,
+                                   ascension=ascension, n=BASE_BLOCK_RUNS, arm_kw=arm_kw, lab_runs=tuple(Path(x) for x in lab_runs or ()),
+                                   extra_dirs=(lab_seed_dir(lab),) if lab else ()) if base_mode == "auto" else None)
             try:
-                s1 = s1_stage(cand, base_dir, cand_agent, base_agent, procs=min(int(procs), S1_PROCS), say=lambda m: print(m, flush=True), block=name)
+                s1 = s1_stage(cand, base_dir, cand_agent, base_agent, procs=min(int(procs), S1_PROCS), say=lambda m: print(m, flush=True), block=name,
+                              **({"base_block": base_plan} if base_plan is not None else {}))
             except S1Unavailable as why:
                 route_s_mode["why"] = f"S1 could not be played ({why}): v3 decides"
                 route_s_mode["reason"] = str(why)
+            base_rec = base_block_record(base_dir, base_plan, name) if base_plan is not None else None
+            if base_rec:
+                route_s_mode["base_block"] = base_rec
     s_on = bool(s1 is not None and keep_v2_module().route_s1(s1, fight_swap=True)["holds"])  # S1 holds: S decides and S2 is the funnel
     if route_s_mode is not None:
         route_s_mode["applies"] = s_on
@@ -3693,6 +3847,8 @@ def promote(cand: Path, base: Path | None, seeds_file: Path, *, agent_root: Path
         cells["guard"] = f"{cells['guard']} | keep rule {rule}: {keep_rule_why}".replace("\t", " ")
     if route_s_note(route_s_mode, s1):  # route S was asked and had no reading: the row says so (a reading prints its own parts)
         cells["guard"] = f"{cells['guard']} | {route_s_note(route_s_mode, s1)}".replace("\t", " ")
+    if base_rec:  # the champion played a base block for this judgement: S1 was read on the ruler it gave
+        cells["guard"] = f"{cells['guard']} | {base_block_note(base_rec, s1 is not None)}".replace("\t", " ")
     if stopped_early:  # the row's guard cell carries the stop; the columns are the block's as ever
         said = (f"funnel {seq['stop']['rule']} of {len(seeds)} seeds" if seq["stop"]["action"] == "futility"
                 else f"funnel {seq['stop']['action']} at {played} of {len(seeds)} seeds")
@@ -3981,7 +4137,8 @@ def resolve_e_block(template: str, k: int, n: int = 2000, *, tsv: Path | None = 
     found: dict[str, Path] = {}
     for d in (path.parent, *map(Path, [COMMITTED_SEEDS] if also_dirs is None else also_dirs)):
         for p in sorted(d.glob(f"E{k}-*.json")):
-            found.setdefault(p.stem, p)
+            if not p.stem.endswith(BASE_BLOCK_SUFFIX):  # a base block (the champion alone, no candidate) is no block to judge on
+                found.setdefault(p.stem, p)
     existing = [found[name] for name in sorted(found)]
     for p in existing:
         if not block_used_by_another(tsv, p.stem, cand_sha or "none", head_sha, recipe):
@@ -4029,14 +4186,15 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
                            prior_server_flags: tuple[str, ...] = (), sequential: bool = False, keep_rule: str | None = None,
                            futility: bool | None = None, futility_min_seeds: int | None = None, screen: bool | None = None,
                            pool_blocks: Sequence[str] = (), keep_rule_why: str | None = None, min_gain: float | None = None,
-                           route_s: str | None = None) -> int:
+                           route_s: str | None = None, base_block: str | None = None) -> int:
     """From the train job (GPU venv): promotion plays emulators, which run in the emulator venv. The child inherits the
     environment, so the SPIRELINE_REVIEW_GUARD variable reaches it; `review_guard` passes the explicit flag on, and
     `prior_server_flags` the server options (none by default: the arms play on the CPU path); `sequential` plays the block as the
     funnel (`promote(sequential=True)`); `keep_rule` ("v1", "v2" or "v3") is passed on as `--keep-rule` when named, and the child reads the
     SPIRELINE_KEEP_RULE variable otherwise; `pool_blocks` (v3) are passed on as `--pool-block`, one each; `keep_rule_why` (the train job's choice
     between the marker's rule and the lab's) as `--keep-rule-why`; `min_gain` as `--min-gain` when it is named and is not the default (+1.0);
-    `route_s` as `--route-s auto` when it is "auto" (the child's default is off: nothing is passed for off)."""
+    `route_s` as `--route-s auto` when it is "auto" (the child's default is off: nothing is passed for off); `base_block` as `--base-block off` when it is "off"
+    (the child's default is auto, which only acts under route S: nothing is passed for auto)."""
     cmd = [emu_python, str(ROOT / "rl" / "gen0.py"), "promote", "--cand", str(cand), "--seeds-file", str(seeds_file),
            "--agent-root", str(agent_root), "--procs", str(procs)]
     if base:
@@ -4065,6 +4223,8 @@ def run_promote_subprocess(emu_python: str, cand: Path, base: Path | None, seeds
         cmd += ["--no-screen"]
     if route_s_of(route_s) == "auto":
         cmd += ["--route-s", "auto"]
+    if base_block_of(base_block) == "off":
+        cmd += ["--base-block", "off"]
     for block in pool_blocks:
         cmd += ["--pool-block", str(block)]
     cmd += list(prior_server_flags)  # none by default: the promotion arms play on the CPU path unless a flag says otherwise

@@ -49,6 +49,10 @@ ROUTE_S_HELP = ("route S, the boss-door route for fight-only swaps (keep rule v3
                 "auto: a candidate whose agent.json says built.swap: fight is read by S1, the arrival exam on the champion's own first-Act-3-boss "
                 "arrivals, before any arm is played; when S1 holds the whole-run judgement is S2 (looks refuse only, no futility stop, no early promotion, "
                 "no extension) and the decision is route S's; when it does not, v3 decides as it always did. off (the default): v3 as it was")
+BASE_BLOCK_HELP = ("route S, a champion with no judged arm outside the blocks it was selected on (just promoted; D68 addendum 7 item 2, docs/rl/KEEP_TEST_V3.md): "
+                   "auto (the default; acts only under --route-s auto): S1 first plays a base block, 2,000 runs of the champion alone on fresh seeds "
+                   "(<E-block>-base, about 2 hours at 12 processes), and reads the exam on the ruler that block gives; off: S1 is unavailable for such a "
+                   "champion and v3 decides, as before")
 S1_FILE_HELP = ("rejudge under --route-s auto: an arrival exam's results.json (rl/act3_starts.py arrival-exam; judge-design/S1-v5.sh writes one), "
                 "checked against the champion's ruler hash and the two fight networks; a mismatch is not applied and the reason is recorded. "
                 "Without it the candidate's own s1.json is read, else v3 decides")
@@ -860,6 +864,7 @@ def train_cmd(a: argparse.Namespace) -> int:
               "the marker stays", file=sys.stderr)
         return 2
     route_s = gen_loop.route_s_of(getattr(a, "route_s", None))
+    base_block = gen_loop.base_block_of(getattr(a, "base_block", None))
     if route_s == "auto" and a.promote and gen_loop.keep_rule_of(keep_rule) != "v3":
         print(f"--route-s auto is the keep rule v3's but the rule judging is {gen_loop.keep_rule_of(keep_rule)}: nothing trained or judged; the marker stays",
               file=sys.stderr)
@@ -918,7 +923,8 @@ def train_cmd(a: argparse.Namespace) -> int:
                                                    futility=False if getattr(a, "no_futility", False) else None,
                                                    futility_min_seeds=getattr(a, "futility_min_seeds", None),
                                                    screen=False if getattr(a, "no_screen", False) else None, pool_blocks=pool,
-                                                   **({"route_s": route_s} if route_s == "auto" else {}))
+                                                   **({"route_s": route_s} if route_s == "auto" else {}),
+                                                   **({"base_block": "off"} if base_block == "off" else {}))
 
         rc = play(seeds_file)
         # The keep rule v3 extends a candidate whose deep_f gain is +1.0 per 100 or more but whose 0.005 bound is not above 0 (D66): the
@@ -1145,7 +1151,7 @@ def _promote_doc(a: argparse.Namespace, opts, gen_loop) -> dict:
                            keep_rule_why=getattr(a, "keep_rule_why", None), min_gain=min_gain_flag(a),
                            futility=False if getattr(a, "no_futility", False) else None, futility_min_seeds=getattr(a, "futility_min_seeds", None),
                            screen=False if getattr(a, "no_screen", False) else None, pool_blocks=list(getattr(a, "pool_block", None) or ()),
-                           route_s=getattr(a, "route_s", None),
+                           route_s=getattr(a, "route_s", None), base_block=getattr(a, "base_block", None),
                            **({"server_opts": opts} if opts.mode != "off" else {}))
 
 
@@ -1507,6 +1513,7 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     t.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
     t.add_argument("--route-s", choices=("auto", "off"), default="off", help=ROUTE_S_HELP)
+    t.add_argument("--base-block", choices=("auto", "off"), default="auto", help=BASE_BLOCK_HELP)
     t.add_argument("--no-futility", action="store_true", help="switch the futility stop off (" + FUTILITY_HELP + ")")
     t.add_argument("--futility-min-seeds", type=int, default=None, help="the paired seeds a futility stop waits for (default: gen_loop.FUTILITY_MIN_SEEDS)")
     t.add_argument("--no-screen", action="store_true", help="switch the cheap screens before the arms off (rl/screens.py: screen:fight, screen:prior)")
@@ -1623,6 +1630,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--keep-rule", choices=("v1", "v2", "v3"), default=None, help=KEEP_RULE_HELP)
     pr.add_argument("--min-gain", type=min_gain_type, default=MIN_GAIN_DEFAULT, help=MIN_GAIN_HELP)
     pr.add_argument("--route-s", choices=("auto", "off"), default="off", help=ROUTE_S_HELP)
+    pr.add_argument("--base-block", choices=("auto", "off"), default="auto", help=BASE_BLOCK_HELP)
     pr.add_argument("--keep-rule-why", default=None, help="the train job's reason for the rule it chose between the marker's and the lab's "
                     "(jobs.choose_keep_rule): written to promotion.json (keep_rule_choice) and the end of the ledger row's guard cell")
     pr.add_argument("--pool-block", action="append", default=[], help=POOL_BLOCK_HELP + " (the keep rule v3's second look at an extended candidate)")
